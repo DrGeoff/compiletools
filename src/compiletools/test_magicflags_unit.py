@@ -1,7 +1,6 @@
 """Unit tests for magicflags.py flag handler methods and helpers."""
 
 import os
-import tempfile
 from argparse import Namespace
 from collections import defaultdict
 from types import SimpleNamespace
@@ -51,28 +50,21 @@ class TestHandleSource:
     def _make_base(self):
         return _make_partial()
 
-    def test_handle_source_absolute(self):
+    def test_handle_source_absolute(self, tmp_path):
         obj = self._make_base()
-        with tempfile.NamedTemporaryFile(suffix=".cpp", delete=False) as f:
-            f.write(b"int x;")
-            tmppath = f.name
-        try:
-            magic_flag_data = {"source_file_context": None}
-            result = obj._handle_source(sz.Str(tmppath), magic_flag_data, "/some/main.cpp", sz.Str("SOURCE"))
-            assert str(result).endswith(".cpp")
-        finally:
-            os.unlink(tmppath)
+        tmpfile = tmp_path / "x.cpp"
+        tmpfile.write_bytes(b"int x;")
+        magic_flag_data = {"source_file_context": None}
+        result = obj._handle_source(sz.Str(str(tmpfile)), magic_flag_data, "/some/main.cpp", sz.Str("SOURCE"))
+        assert str(result).endswith(".cpp")
 
-    def test_handle_source_relative(self):
+    def test_handle_source_relative(self, tmp_path):
         obj = self._make_base()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            source = os.path.join(tmpdir, "helper.cpp")
-            with open(source, "w") as f:
-                f.write("int x;")
-            main_file = os.path.join(tmpdir, "main.cpp")
-            magic_flag_data = {"source_file_context": None}
-            result = obj._handle_source(sz.Str("helper.cpp"), magic_flag_data, main_file, sz.Str("SOURCE"))
-            assert str(result).endswith("helper.cpp")
+        (tmp_path / "helper.cpp").write_text("int x;")
+        main_file = str(tmp_path / "main.cpp")
+        magic_flag_data = {"source_file_context": None}
+        result = obj._handle_source(sz.Str("helper.cpp"), magic_flag_data, main_file, sz.Str("SOURCE"))
+        assert str(result).endswith("helper.cpp")
 
     def test_handle_source_nonexistent(self):
         obj = self._make_base()
@@ -126,34 +118,28 @@ class TestHandleSourceVerbose:
     def _make_base(self):
         return _make_partial(verbose=9)
 
-    def test_handle_source_verbose_with_context(self, capsys):
+    def test_handle_source_verbose_with_context(self, tmp_path, capsys):
         obj = self._make_base()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            source = os.path.join(tmpdir, "helper.cpp")
-            with open(source, "w") as f:
-                f.write("int x;")
-            context_file = os.path.join(tmpdir, "context.hpp")
-            magic_flag_data = {"source_file_context": context_file}
-            result = obj._handle_source(
-                sz.Str("helper.cpp"), magic_flag_data, os.path.join(tmpdir, "main.cpp"), sz.Str("SOURCE")
-            )
-            captured = capsys.readouterr()
-            assert "context_file=" in captured.out
-            assert str(result).endswith("helper.cpp")
+        (tmp_path / "helper.cpp").write_text("int x;")
+        context_file = str(tmp_path / "context.hpp")
+        magic_flag_data = {"source_file_context": context_file}
+        result = obj._handle_source(
+            sz.Str("helper.cpp"), magic_flag_data, str(tmp_path / "main.cpp"), sz.Str("SOURCE")
+        )
+        captured = capsys.readouterr()
+        assert "context_file=" in captured.out
+        assert str(result).endswith("helper.cpp")
 
-    def test_handle_source_verbose_no_context(self, capsys):
+    def test_handle_source_verbose_no_context(self, tmp_path, capsys):
         obj = self._make_base()
-        with tempfile.NamedTemporaryFile(suffix=".cpp", delete=False) as f:
-            f.write(b"int x;")
-            tmppath = f.name
-        try:
-            magic_flag_data = {"source_file_context": None}
-            obj._handle_source(sz.Str(tmppath), magic_flag_data, tmppath, sz.Str("SOURCE"))
-            captured = capsys.readouterr()
-            assert "SOURCE:" in captured.out
-            assert "context_file=" not in captured.out
-        finally:
-            os.unlink(tmppath)
+        tmpfile = tmp_path / "x.cpp"
+        tmpfile.write_bytes(b"int x;")
+        tmppath = str(tmpfile)
+        magic_flag_data = {"source_file_context": None}
+        obj._handle_source(sz.Str(tmppath), magic_flag_data, tmppath, sz.Str("SOURCE"))
+        captured = capsys.readouterr()
+        assert "SOURCE:" in captured.out
+        assert "context_file=" not in captured.out
 
 
 class TestHandleIncludeVerbose:
@@ -172,26 +158,21 @@ class TestResolveReadmacrosPath:
     def _make_base(self):
         return _make_partial()
 
-    def test_resolve_absolute_path(self):
+    def test_resolve_absolute_path(self, tmp_path):
         obj = self._make_base()
-        with tempfile.NamedTemporaryFile(suffix=".hpp", delete=False) as f:
-            f.write(b"#define FOO 1")
-            tmppath = f.name
-        try:
-            result = obj._resolve_readmacros_path(sz.Str(tmppath), "/some/source.cpp")
-            assert result == os.path.realpath(tmppath)
-        finally:
-            os.unlink(tmppath)
+        tmpfile = tmp_path / "x.hpp"
+        tmpfile.write_bytes(b"#define FOO 1")
+        tmppath = str(tmpfile)
+        result = obj._resolve_readmacros_path(sz.Str(tmppath), "/some/source.cpp")
+        assert result == os.path.realpath(tmppath)
 
-    def test_resolve_relative_path(self):
+    def test_resolve_relative_path(self, tmp_path):
         obj = self._make_base()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            header = os.path.join(tmpdir, "macros.hpp")
-            with open(header, "w") as f:
-                f.write("#define FOO 1")
-            source = os.path.join(tmpdir, "source.cpp")
-            result = obj._resolve_readmacros_path(sz.Str("macros.hpp"), source)
-            assert result == os.path.realpath(header)
+        header = tmp_path / "macros.hpp"
+        header.write_text("#define FOO 1")
+        source = str(tmp_path / "source.cpp")
+        result = obj._resolve_readmacros_path(sz.Str("macros.hpp"), source)
+        assert result == os.path.realpath(str(header))
 
     def test_resolve_nonexistent_raises(self):
         obj = self._make_base()
@@ -207,16 +188,13 @@ class TestHandleReadmacros:
         obj._explicit_macro_files = set()
         return obj
 
-    def test_handle_readmacros_adds_to_set(self):
+    def test_handle_readmacros_adds_to_set(self, tmp_path):
         obj = self._make_base()
-        with tempfile.NamedTemporaryFile(suffix=".hpp", delete=False) as f:
-            f.write(b"#define FOO 1")
-            tmppath = f.name
-        try:
-            obj._handle_readmacros(sz.Str(tmppath), "/some/source.cpp")
-            assert os.path.realpath(tmppath) in obj._explicit_macro_files
-        finally:
-            os.unlink(tmppath)
+        tmpfile = tmp_path / "x.hpp"
+        tmpfile.write_bytes(b"#define FOO 1")
+        tmppath = str(tmpfile)
+        obj._handle_readmacros(sz.Str(tmppath), "/some/source.cpp")
+        assert os.path.realpath(tmppath) in obj._explicit_macro_files
 
 
 class TestExtractMacrosFromPreprocessor:
@@ -372,34 +350,32 @@ class TestCollectExplicitMacroFiles:
 class TestMainFunction:
     """Test magicflags.main() entry point."""
 
-    def test_main_with_style_null(self):
+    def test_main_with_style_null(self, tmp_path):
         """Test main() runs with null style (covers lines 1172-1194)."""
         from compiletools.magicflags import main
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            source = os.path.join(tmpdir, "test.cpp")
-            with open(source, "w") as f:
-                f.write("int main() { return 0; }\n")
-            # main() requires a functional build environment; mock the heavy parts
-            with (
-                patch("compiletools.apptools.create_parser") as mock_cp,
-                patch("compiletools.apptools.parseargs") as mock_pa,
-                patch("compiletools.headerdeps.create"),
-                patch("compiletools.magicflags.create") as mock_create,
-            ):
-                mock_args = SimpleNamespace(
-                    filename=[source],
-                    style="null",
-                    verbose=0,
-                    git_root=tmpdir,
-                    strip_git_root=False,
-                )
-                mock_pa.return_value = mock_args
-                mock_parser = MagicMock()
-                mock_cp.return_value = mock_parser
-                mock_magicparser = MagicMock()
-                mock_magicparser.parse.return_value = {sz.Str("LDFLAGS"): [sz.Str("-lm")]}
-                mock_create.return_value = mock_magicparser
+        source = tmp_path / "test.cpp"
+        source.write_text("int main() { return 0; }\n")
+        # main() requires a functional build environment; mock the heavy parts
+        with (
+            patch("compiletools.apptools.create_parser") as mock_cp,
+            patch("compiletools.apptools.parseargs") as mock_pa,
+            patch("compiletools.headerdeps.create"),
+            patch("compiletools.magicflags.create") as mock_create,
+        ):
+            mock_args = SimpleNamespace(
+                filename=[str(source)],
+                style="null",
+                verbose=0,
+                git_root=str(tmp_path),
+                strip_git_root=False,
+            )
+            mock_pa.return_value = mock_args
+            mock_parser = MagicMock()
+            mock_cp.return_value = mock_parser
+            mock_magicparser = MagicMock()
+            mock_magicparser.parse.return_value = {sz.Str("LDFLAGS"): [sz.Str("-lm")]}
+            mock_create.return_value = mock_magicparser
 
-                result = main(argv=["test.cpp"])
-                assert result == 0
+            result = main(argv=["test.cpp"])
+            assert result == 0
