@@ -8,14 +8,17 @@ Continue work in /home/gericksson/compiletools-worktree/master.
 
   Current state
   -------------
-  Latest commit: 92768388
-    test: extract _bare_creator helper for 10 __init__-bypass sites in
-    test_compilation_database
+  Latest commit: 65936456
+    test: extract _bare_slurm_backend helper for 13 __init__-bypass sites in
+    test_slurm_backend
 
-  Latest commit context: module-level `_bare_creator(**args_kwargs)` bypasses
-  __init__ via `cls.__new__(cls)`; 10 defensive-path sites converted, class
-  `_make_creator` now delegates, `import types` dropped. -24 net. Codex
-  APPROVE. 17 tests passed.
+  Latest commit context: module-level `_bare_slurm_backend(**args_kwargs)`
+  mirrors `_bare_creator`. 13 pure 2-line sites converted across 7 test
+  classes; 2 sites with extra-attr setup (TestQueryStates._make_backend,
+  test_generate_before_execute_required) also adopt the helper. Two
+  load-bearing comments preserved above call site. SlurmBackendTestContext
+  intentionally NOT converted (different shape). -11 net. 128 tests pass.
+  Codex APPROVE.
 
   For older commit narrative, run `git log --oneline`. The git history is
   authoritative; this file only records active state (skip-list, exhaustion
@@ -87,7 +90,8 @@ Continue work in /home/gericksson/compiletools-worktree/master.
   test_slurm_backend, test_stringzilla_utils, test_test_command_for,
   test_test_xml_output_e2e, test_testhelper, test_timing_report,
   test_timing_timeline, test_transitive_cache_bug, test_tree,
-  test_trim_cache, test_undef_bug_sample, test_backend_integration
+  test_trim_cache, test_undef_bug_sample, test_backend_integration,
+  test_slurm_backend
 
   Promising remaining candidates (have not been touched in this arc)
   -----------------------------------------------------------------
