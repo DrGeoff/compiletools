@@ -6,8 +6,9 @@ Continue work in /home/gericksson/compiletools-worktree/master.
 
   Current state:
   - Latest commit:
-    dbbd8bf6 test: extract _result helper for 9 multi-line SimpleNamespace sites in TestTransitiveHeaderModuleImports
+    13ac08e4 test: extract _args helper for 3 multi-line SimpleNamespace sites in TestAddIncludePathsToFlags
   - Prior related commits:
+    dbbd8bf6 test: extract _result helper for 9 multi-line SimpleNamespace sites in TestTransitiveHeaderModuleImports
     5074ee0a Revert "test: extract _args helper for SimpleNamespace ceremony in test_diagnostics"
     76f02faa test: extract _args helper for SimpleNamespace ceremony in test_diagnostics  [REVERTED by 5074ee0a — false economy]
     c97911bf test: convert temp_lock_file fixture to tmp_path in test_file_locking
@@ -139,6 +140,25 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     e5b18a45 test: parametrize helper cases
     7009bd6a test: simplify pytest cases
   - Latest commit touched:
+    src/compiletools/test_apptools.py (-3 net, +15/-18):
+    Second round under the new helper-extraction rule. Added a
+    class-scoped `_args(*, cppflags="-Wall", verbose=0) -> SimpleNamespace`
+    helper to TestAddIncludePathsToFlags. The 3 test sites that previously
+    inlined a 7-line `SimpleNamespace(INCLUDE="/tmp/inc", CPPFLAGS="-Wall",
+    CFLAGS="-Wall", CXXFLAGS="-Wall", verbose=...)` ceremony — varying
+    only CPPFLAGS (test 2: seed an existing -I entry) and verbose (test 3:
+    trigger the print path) — collapse to one-line `self._args(...)` calls.
+    3 invariant kwargs hidden (INCLUDE, CFLAGS, CXXFLAGS) AND multi-line→
+    one-line compression, so both arms of the rule satisfied. Helper carries
+    an 8-line block; net win is modest (-3 lines) but signal-to-noise
+    improves significantly. Rationale comment "/tmp/inc already a proper -I
+    entry in CPPFLAGS; do not add again" preserved verbatim on
+    test_no_duplicate_include_paths. Codex /codex:adversarial-review APPROVE
+    (verified helper recreates the same 5-field namespace; converted call
+    sites preserve original CPPFLAGS/verbose combinations; duplicate-path
+    rationale comment intact). 3 tests pass in 0.29s.
+
+  - Prior commit touched:
     src/compiletools/test_build_backend.py (-36 net, +18/-54):
     First round under the new helper-extraction rule. Added
     `_result(*, exports=(), implements=(), imports=(), header_imports=())
@@ -635,11 +655,11 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     vestigial blank lines a prior batch tool left after `def test_`
     headers. Codex review confirmed no correctness regression.
 
-  - Verification for latest commit (dbbd8bf6) passed:
-    ruff check src/compiletools/test_build_backend.py (clean)
+  - Verification for latest commit (13ac08e4) passed:
+    ruff check src/compiletools/test_apptools.py (clean)
     git diff --check (clean)
-    pytest -q -k TestTransitiveHeaderModuleImports src/compiletools/test_build_backend.py
-      11 passed in 0.46s
+    pytest -q -k TestAddIncludePathsToFlags src/compiletools/test_apptools.py
+      3 passed in 0.29s
   - Final git status was clean.
 
   Start by running:
@@ -762,7 +782,11 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     test_ct_lock_helper
     test_file_analyzer
     test_cxx_modules
-    test_apptools
+    test_apptools (TestAddIncludePathsToFlags follow-up: class-scoped `_args`
+      helper hides 3 invariant kwargs (INCLUDE/CFLAGS/CXXFLAGS) across 3
+      sites; 7-line→1-line compression. TestExtractCommandLineMacros is
+      EXHAUSTED — Round 26 helper extraction was rejected by user pushback
+      and the family's invariants are too thin to retry)
     test_build_backend (`_result` sibling helper for `_empty_result` collapses
       9 multi-line 6-line SimpleNamespace(module_*=...) sites in
       TestTransitiveHeaderModuleImports to one-line `self._result(...)`
