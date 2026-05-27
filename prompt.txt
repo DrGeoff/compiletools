@@ -1,0 +1,551 @@
+Continue work in /home/gericksson/compiletools-worktree/master.
+
+  Goal: keep examining the pytest suite for scoped simplifications that reduce repetition without losing test intent or coverage. Favor small, local changes: parameterize repetitive tests when
+  readable, extract tiny helpers where they improve clarity, and preserve existing rationale comments/docstrings for regression and boundary cases. Avoid broad refactors and avoid changing
+  historical test names unless the gain is clearly worth it.
+
+  Current state:
+  - Latest commit:
+    b0e4665e test: fold monkeypatch.setenv("PATH", ...) into _make_fake_ct_cake helper
+  - Prior related commits:
+    d2f4b245 test: extract config_mocks fixture for 5 sites in test_config
+    ef407275 test: extract conf_and_cwd fixture in test_conf_env_expansion (12 sites)
+    f9669550 test: extract conf_and_cwd fixture in test_cas_variant_suffix (6 sites)
+    906faa92 test: extract _resolved_compiler_args + _std_check_args helpers in apptools
+    32a66874 test: extract _seed_makefile_with_matching_header for 6 sites in test_makefile
+    90eff48b test: extract pkgconfig_dir fixture in TestSetupPkgConfigOverrides
+    854a192d test: extract hunter_factory fixture in test_hunter (27 sites)
+    513c5c86 test: extract _pch_hash helper for 2 PCH warning-filter tests
+    03733119 test: extract _write_makefile helper for 4 sites in TestMakeRunsTestsInBuildPhase
+    e4a7907a test: extend make_lock factory to 6 more multi-fixture lock tests
+    2fe5fd56 test: extract _make_bare_shake_backend helper for 5 trace/verify tests
+    976b0bdf test: extend _temp_dir_with_config adoption to 6 more sites
+    402eadb3 test: extract _write_fake_exe + _make_namer_backend helpers in test_bazel_backend
+    0b8b0d8e test: extract _write_default_config helper to collapse remaining 10 sites in test_cake
+    a1fb3d1d test: extract _tmpdir_with_config context manager to collapse 17 sites in test_cake
+    4fe6e8a7 test: convert _CacheTestBase setup/teardown_method to autouse monkeypatch fixture in preprocessing_cache cases
+    ceb45a4f test: extract _make_creator helper for module-analysis stubbing in compilation_database cases
+    c28457a4 test: extract _generate helper in TestBazelGenerate + 2 cmake_backend classes to collapse 25 tests
+    2b885a61 test: extract _generate helper in TestNinjaGenerate to collapse 7 tests
+    5986f73a test: extract _generate helper in TestMakefileGenerate to collapse 5 tests
+    0511056b test: extract _make_lockdir_with_pid helper in cleanup_locks cases
+    bd5bc788 test: extract _stub_gitroot_and_chdir helper in apptools TestSetupPkgConfigOverrides
+    0077e9cf test: extract per-class autouse chdir-to-tmp fixtures in shake + bazel cases
+    61d60bfe test: extract per-class autouse chdir-to-tmp fixtures in 3 backend RunsTestsInBuild cases
+    aa006dd6 test: extract per-class autouse chdir-to-tmp fixtures in timing_report cases
+    2cca146c test: consolidate get_filesystem_type.cache_clear() into autouse fixture in filesystem_utils cases
+    084d32ab test: consolidate compiler_identity.cache_clear() into autouse fixture in compiler_identity_hash cases
+    ca6e67fb test: consolidate cache_clear calls into class autouse fixtures in compiler_macros cases
+    f00ddc68 test: complete tmp_path conversion in test_multiuser_cache (script + 1 hand-converted Pool test)
+    12e6c4e4 test: finish tmp_path conversion in test_locking — script handles class boundaries and trailing decorators
+    484b0b16 test: hand-convert 3 remaining namer tests to tmp_path (incl. nested via sub-paths)
+    3c81e615 test: simplify tmpdir_with_locks fixture and hand-convert one missed test_namer test
+    5c4853d7 test: bulk-convert 8 namer + 1 multiuser_cache tests to tmp_path fixture
+    e07a7f7e test: bulk-convert 33 locking tests to tmp_path fixture with tmpdir shim
+    cef35f42 test: convert tempfile.TemporaryDirectory to tmp_path in file_locking, locking_contract, findtargets cases
+    5107fb4a test: convert 4 tests in apptools and git_utils from tempfile.TemporaryDirectory to tmp_path fixture
+    7f4903d9 test: use _make_partial helper in 3 magicflags_unit cases that duplicated the pattern
+    e374936a test: remove redundant super-only setup_method in TestHeaderDepsUnitTests
+    325542aa test: extract parsers_reset fixture in apptools and _CtxBase in fd_fix_integration cases
+    aa2e419d test: convert single-class setup/teardown_method to autouse fixtures in 5 cases
+    8a1c58c9 test: extract module-level autouse parser-reset fixture in pch_cache_scoping cases
+    bd42c275 test: extract _FileAnalyzerIntegrationBase shared scaffolding in file_analyzer_integration cases
+    76cef379 test: extract autouse monkeypatch fixture for get_filepath_by_hash stub in simple_preprocessor cases
+    37fe4d0e test: extract module-level autouse parser-reset fixture in compilation_database cases
+    bead50e4 test: extract module-level autouse parser-reset fixture in hunter_cache_scoping cases
+    16b83f1b test: extract module-level autouse parser-reset fixture in makefile_backend cases
+    6b92d37c test: extract module-level autouse parser-reset fixture in hunter cases
+    b4bf68f0 test: extract module-level autouse parser-reset fixture in findtargets cases
+    77ec90b5 test: extract autouse parser-reset fixture across 18 namer cases
+    01f993d3 test: extract _temporary_umask helper and parametrize umask cases in makefile
+    3a113374 test: extract parsers_reset fixture and _parseargs_with_temp_config helper in flags cases
+    db4399e8 test: extract class-scoped autouse parser-reset fixture in apptools_cache_helpers cases
+    1105274a test: extract autouse parser-reset fixture in cap cases
+    6842acb4 test: hoist inline imports in global_hash_registry cases
+    6b2e13da test: hoist inline imports in pch_cache_scoping cases
+    6d126fee test: hoist inline backend imports in library cases
+    e0cb0987 test: extract _hash_both helper in compiler_identity_acceptance cases
+    19eb342f test: extract _make_mock_args helper in magicpkgconfig cases
+    a1f904a3 test: convert pkgconfig_env params to usefixtures in magicpkgconfig cases
+    cad16905 test: convert pkgconfig_env params to usefixtures and drop decorative prints in magicflags cases
+    1b8eca9b test: drop decorative prints in headertree_hunter_agreement and compilation_database cases
+    ba5e8993 test: hoist inline imports in trim_cache, makefile, and makefile_backend cases
+    fa32c2e3 test: hoist inline imports in file_analyzer_integration, slurm_backend, and shake_backend cases
+    d0dccfca test: hoist inline imports in apptools_cache_helpers, magicflags, and locking cases
+    e5000bef test: hoist inline imports in multiuser_cache and bazel_backend cases
+    5de6f4c8 test: hoist inline imports in namer, cake, and compilation_database cases
+    0e1e2efe test: hoist inline imports in build_backend cases
+    6550a1b8 test: hoist inline imports in apptools cases
+    b14dc679 test: hoist inline imports in cxx_modules cases
+    971b1282 test: hoist inline imports in file_analyzer cases
+    08b0ee14 test: extract _run_helper and _assert_lock_cleaned helpers in ct_lock_helper cases
+    2bad661f test: extract _make_partial helper for MagicFlagsBase mock in magicflags_unit cases
+    e937b558 test: extract _make_wrapper_script helper in compiler_identity_hash cases
+    2b7516e4 test: extract functional_compiler fixture in environment_assumptions cases
+    fa47057a test: extract _make_args helper and hoist inline imports in fd_fix_integration cases
+    b9f913d9 test: extract _write_conf helper in conf_dir_placeholder cases
+    fbb1cfff test: hoist inline imports and use tmp_path in filesystem_utils cases
+    232ffd78 test: thread temp_config fixture through pch_cache_scoping helper and tests
+    b0f18ef2 test: extract _xml_cmd helper and use tmp_path in test_command_for cases
+    a9f94f94 test: extract _run_cake and _variant_for helpers in test_xml_output_e2e cases
+    43ea06dc test: extract temp_config fixture in hunter_cache_scoping and pch_scope_diagnostics cases
+    8f551a5f test: extract temp_config fixture in scope_diagnostics cases
+    2f5af4ad test: extract noop signal handler in apptools_graceful_shutdown cases
+    9a2e71a2 test: extract argparser helper and trim narrative prints in macro_state_dependency cases
+    937457cb test: reuse base tmp dir in file_analyzer_integration cases
+    e0195721 test: refactor 2 missed locking cases to lock fixture
+    a00a9ea4 test: extract class-scoped lock fixtures and collapse tempfile boilerplate in locking cases
+    7b8a0b9a test: extract class-scoped lock fixtures in file_locking cases
+    d29cda8f test: extract cleaner fixture in cleanup_locks cases
+    1e29eae0 test: extract lock fixture in locking_contract cases
+    884d8667 test: reuse base tmp dir in shared_cache and parametrize in_tree cases
+    05bb3173 test: share base tmp dir and extract setup helpers in pkg_config/transitive_cache cases
+    8c189ccc test: use base-class tmp dir and trim scaffolding in macro_bug cases
+    c90a6ded test: trim chdir/imports/scaffolding in file_open_efficiency and undef_bug cases
+    5f870c2e test: monkeypatch.chdir and trim scaffolding in hunter_macro_propagation case
+    4a256df0 test: parametrize anchor_root caller lint into one test
+    b92b757f test: use monkeypatch.chdir and tmp_path in macro_state cases
+    04af3d1b test: extract parse_or_skip helper and hoist imports in magicflags_scoping cases
+    5d6d342f test: parametrize mutator/filter pairs in preprocessing_cache_scoping cases
+    050bfe55 test: consolidate pypy skipif and shared cache setup in preprocessing_cache cases
+    53f0fcf1 test: hoist inline imports and dedupe helper in simple_preprocessor cases
+    1ca508c8 test: extract fixtures in preprocessor/jobs cases
+    26b439c6 test: extract parser-setup helpers in findtargets/namer cases
+    a86235c6 test: simplify analyzer and headerdeps cases
+    324542ea test: parametrize utility test cases
+    e5b18a45 test: parametrize helper cases
+    7009bd6a test: simplify pytest cases
+  - Latest commit touched:
+    src/compiletools/test_check_venv.py (+4 net, +23/-19):
+    `_make_fake_ct_cake(tmp_path, monkeypatch, *, shebang_target, ...)`
+    now folds `monkeypatch.setenv("PATH", str(bin_dir))` into the helper.
+    9 call sites previously did `bin_dir = helper(...); monkeypatch.setenv(
+    "PATH", bin_dir)` as a two-line idiom — the second line is now
+    unconditional inside the helper. Helper still returns str(bin_dir)
+    for option-preservation. 4 tests with hand-built bin_dir (missing /
+    directory / unreadable / env-style shebang) are unaffected. Codex
+    review skipped after 3 prior timeouts; self-review confirmed every
+    site only used bin_dir for the setenv (grep-verified).
+
+  - Prior commit touched:
+    src/compiletools/test_config.py (-5 net, +46/-51):
+    function-scoped `config_mocks` fixture yields
+    SimpleNamespace(create, add, parse) of the 3 mock.patch contexts
+    that wrap each test_main_* unit test. 5 of 6 tests adopt; the 6th
+    (test_main_none_argv_appends_verbose) keeps an inline 4-patch block
+    because it adds a `mock.patch("compiletools.config.sys")`. Fixture
+    pre-sets create.return_value to a fresh MagicMock so tests can
+    either read it (for parseargs(cap, ...) assertions) or overwrite it
+    (for explicit `cap = MagicMock()` setups). test_main_help
+    (subprocess) untouched. Codex review timed out at 15min; self-review
+    confirmed mechanical equivalence (function-scoped fixture matches
+    per-test inline mock lifecycle; per-test docstrings verbatim).
+
+  - Earlier prior commit touched:
+    src/compiletools/test_conf_env_expansion.py (-45 net, +40/-85):
+    same `conf_and_cwd(tmp_path)` fixture shape just adopted in
+    test_cas_variant_suffix (f9669550). Replaces the identical 5-line
+    conf_dir+conf+other_cwd preamble in 12 of 13 tests; the 13th
+    (test_pkg_config_provenance_label_includes_literal_when_expanded)
+    is a pure unit test and untouched. test_conf_dir_expanded_before_env
+    assertion swaps `conf_dir` → `conf.parent` (byte-identical Path).
+    Codex review timed out at 10min; self-review confirmed mechanical
+    equivalence.
+
+  - Further prior commit touched:
+    src/compiletools/test_cas_variant_suffix.py (-14 net, +27/-41):
+    module-level `conf_and_cwd(tmp_path)` fixture returns
+    `(conf, other_cwd)` — unwritten `<tmp_path>/axis-confs/extras.conf`
+    path + mkdir-ed `<tmp_path>/other/`. Replaces the identical 5-line
+    conf_dir+conf+other_cwd preamble in all 6 cas-variant-suffix tests.
+    Each test writes its own conf body and passes other_cwd to parse_fn.
+    Codex review timed out at 15min; self-review confirmed mechanical
+    equivalence (function-scoped fixture shares tmp_path with the test;
+    autouse _clear_apptools_cache setup runs before / teardown after,
+    no ordering drift; docstrings preserved verbatim).
+
+  - Yet further prior commit touched:
+    src/compiletools/test_apptools.py (-49 net, +25/-74):
+    two module-level SimpleNamespace builders dedupe the recurring
+    5+ field construction in TestResolvedCompilerAvailable (4 of 5
+    tests; the sentinel test keeps inline because CC/LD differ from
+    CXX) and TestCompilerSupportsRequestedStandard (all 5 tests).
+    Default `cflags="-O0"` matches the majority case; the no-std
+    test passes the default implicitly because the function
+    short-circuits when CXXFLAGS lacks `-std=`. Cosmetic: dropped
+    vestigial blank lines a prior batch tool left after `def test_`
+    headers. Codex review confirmed no correctness regression.
+
+  - Even further prior commit touched:
+    src/compiletools/test_makefile.py (-18 net, +26/-44):
+    extracted module-level `_seed_makefile_with_matching_header(tmp_path,
+    *, verbose=8, extra_content="")` helper that pre-seeds
+    `<tmp_path>/Makefile` with the args_signature-matching header and
+    returns (backend, args, makefile_path). 5 TestMakefileBackendUptodate
+    tests + 1 TestMakefileBackendGenerate test converted from the 5-line
+    args+makefile_path+expected_header+open+write block (+1 extra
+    backend construction). test_generate_skips_when_uptodate uses
+    extra_content="existing content\n". Codex confirmed
+    `_args_signature()` depends only on args (not per-instance state),
+    so reusing one backend for both header computation and the test
+    body is identical to the original two-backend construction.
+  - Verification for latest commit passed:
+    ruff/pyright/git diff --check all green
+    pytest -q src/compiletools/test_check_venv.py: 14 passed, 1 skipped in 0.30s
+  - Final git status was clean.
+
+  Start by running:
+    git status --short
+    git log -1 --oneline
+
+  Then continue scanning remaining tests under src/compiletools for safe simplifications. Prefer files with obvious repeated pure-unit setup or assertion patterns. Be conservative with backend/
+  integration/e2e tests unless the simplification is very localized.
+
+  Files already touched in this simplification arc (skip unless a new opportunity is obvious):
+    test_analyzer / test_headerdeps / test_headerdeps_extract
+    test_compiler_macros / test_ct_lock_helper / test_filesystem_utils
+    test_flags / test_listvariants / test_magicflags_unit / test_timing_timeline
+    test_apptools_cache_helpers / test_apptools_include_paths / test_cmdline_macro_index
+    test_hash_irrelevant_tokens / test_testhelper
+    test_cache_key_canonicalizer / test_cas_path_binding_acceptance
+    test_cas_variant_suffix (module-level `conf_and_cwd(tmp_path)` fixture
+      returns (conf, other_cwd) — unwritten extras.conf path + mkdir-ed
+      other/ cwd dir — adopted by all 6 cas-variant-suffix tests; -14 net)
+    test_conf_env_expansion (same `conf_and_cwd(tmp_path)` fixture adopted
+      by 12 of 13 tests; 13th [_pkg_config_provenance_label unit test]
+      untouched. test_conf_dir_expanded_before_env assertion swapped
+      `conf_dir` → `conf.parent` [byte-identical Path]; -45 net)
+    test_examples_registry / test_listbackends / test_stringzilla_utils
+    test_pch_command_hash_canonicalized / test_pcm_command_hash_canonicalized
+    test_findtargets / test_namer
+    test_preprocessor / test_jobs
+    test_simple_preprocessor
+    test_preprocessing_cache
+    test_preprocessing_cache_scoping
+    test_magicflags_scoping
+    test_macro_state_pollution / test_macro_state_isolation
+    test_anchor_root_required
+    test_hunter_macro_propagation
+    test_file_open_efficiency / test_undef_bug_sample
+    test_empty_macro_bug / test_parse_order_macro_bug
+    test_pkg_config_header_deps / test_transitive_cache_bug
+    test_shared_cache_low_mtime_resolution / test_tree
+    test_locking_contract
+    test_cleanup_locks
+    test_file_locking
+    test_locking (20 of ~70 simple-pattern tests refactored to use `lock` fixture;
+      6 more converted via new per-class `make_lock(self, tmp_path)` factory
+      fixtures on TestLockdirLock/TestFcntlLock/TestFlockLock/TestCIFSLock for
+      the override case; 6 further multi-fixture sites converted in
+      e4a7907a — script-bug fix this round avoided multi-line docstring
+      capture)
+    test_apptools (`_resolved_compiler_args(value, *, variant)` +
+      `_std_check_args(*, variant, cc, cxx, cflags, cxxflags)` module
+      helpers dedupe the recurring 5+ field SimpleNamespace
+      construction in TestResolvedCompilerAvailable [4 of 5 tests] +
+      TestCompilerSupportsRequestedStandard [all 5 tests]; net -49
+      lines including vestigial blank-line cleanup. Earlier:
+      `_parseargs_for_variant(repo_root, argv, *, add_link)`
+      module-level helper collapses the 5-line `DirectoryContext +
+      create_parser + add_common_arguments + ParserContext + parseargs`
+      block in 8 TestAppendFlagsAccumulateAcrossConfHierarchy sites.
+      Follow-up `_temp_repo_with_ct_conf(variant, canonical_order)`
+      ctxmgr helper collapses the 8-line TempDirContextNoChange + conf_d
+      + ct.conf write block in 5 of those sites. Latest follow-up:
+      class-scoped `pkgconfig_dir(self, tmp_path)` fixture in
+      TestSetupPkgConfigOverrides for the 2-line ct.conf.d/pkgconfig
+      mkdir setup in 8 tests.)
+    test_compilation_database (`_temp_dir_with_config()` ctxmgr helper
+      replaces the 2-line `TempDirContext + TempConfigContext(tempdir=
+      os.getcwd())` nesting in 6 TestCompilationDatabase tests, dedenting
+      their bodies one level. Follow-up extends adoption to 6 more sites
+      in TestSymlinkBehavior / TestMultiAxisVariant)
+    test_multiuser_cache (`cas_objdir(self, tmp_path)` class-scoped fixture
+      replaces the 3-line `tmpdir + Path(tmpdir) / "cas_objdir" +
+      mkdir(mode=0o2775)` setup in 14 TestMultiUserCache tests; fixture
+      explicitly wraps mkdir in os.umask(0o002) because
+      @with_group_writable_umask only patches test_* methods. Follow-up
+      `_run_in_spawn_pool(worker_func, args_list, num_workers)` module
+      helper collapses the 3-line `multiprocessing.spawn ctx + Pool +
+      starmap` block in 7 sites)
+    test_bazel_backend (`_patched_bazel_execute(backend)` ctxmgr helper
+      wraps the standard 5-patch block [shutil.which + os.path.isdir +
+      _run_bazel + _write_bazelrc + _publish_test_results] in 6
+      TestBazelRunsTestsInBuildPhase tests; yields (mock_run, mock_publish))
+    test_shake_backend (`backend(self, tmp_path)` class-scoped fixture
+      on TestCALinkShortCircuit replaces the 4-line bare-ShakeBackend
+      `__new__` + MagicMock-args setup in 4 _ca_target tests. Follow-up
+      `_make_bare_shake_backend(tmp_path, *, cas_subdir, context)`
+      module-level helper covers 5 trace/verify tests that also need
+      `backend.context = BuildContext()` or a MagicMock context)
+    test_trim_cache (`_touch_obj`'s dep_hash + macro_hash params got
+      default values matching the constants every caller passed; 27
+      callers shed both args)
+    test_bazel_backend (`_make_bazelrc_backend` + `_bazelrc_content`
+      module helpers replace 3 per-class `_backend_with` methods +
+      identical `_bazelrc_for` staticmethods on TestBazelLinkerDefault /
+      TestBazelJvmStackSize / TestBazelActiveProcessorCount; 14 call
+      sites adopt them, 6 per-class methods deleted)
+    test_slurm_backend (`_expect_sbatch_failure(graph, *, sbatch_id,
+      state)` module helper bundles SlurmBackendTestContext + check_output
+      side_effect + RuntimeError-raises in 3 TestJobFailures cases)
+    test_bazel_backend follow-up (4 TestBazelExecute bazelrc tests
+      adopt _bazelrc_content + _make_bazelrc_backend; @patch decorators
+      and inline `with patch(os.path.exists)` blocks dropped)
+    test_bazel_backend further follow-up (all 3 TestBazelWriteBazelrc
+      tests adopt `_make_bazelrc_backend(parallel=2)`, dropping the
+      identical 8-line MagicMock args setup; 3rd follow-up adds
+      `_write_fake_exe` + `_make_namer_backend` for 3+2 sites in
+      TestBazelCopyExecutables / TestBazelPublishOutputs)
+    test_file_analyzer_integration
+    test_macro_state_dependency
+    test_apptools_graceful_shutdown
+    test_scope_diagnostics
+    test_hunter_cache_scoping / test_pch_scope_diagnostics
+    test_test_xml_output_e2e
+    test_test_command_for
+    test_pch_cache_scoping
+    test_filesystem_utils
+    test_conf_dir_placeholder
+    test_fd_fix_integration
+    test_environment_assumptions
+    test_compiler_identity_hash
+    test_magicflags_unit
+    test_ct_lock_helper
+    test_file_analyzer
+    test_cxx_modules
+    test_apptools
+    test_build_backend
+    test_namer / test_cake / test_compilation_database
+    test_multiuser_cache / test_bazel_backend
+    test_apptools_cache_helpers / test_magicflags / test_locking
+    test_file_analyzer_integration / test_slurm_backend / test_shake_backend
+    test_trim_cache / test_makefile / test_makefile_backend
+    test_headertree_hunter_agreement / test_compilation_database
+    test_magicflags (decorative prints + pkgconfig_env usefixtures cleanup)
+    test_magicpkgconfig (pkgconfig_env usefixtures cleanup + _make_mock_args
+      helper extraction)
+    test_compiler_identity_acceptance (_hash_both helper for 5 tests)
+    test_library (5 backend imports hoisted)
+    test_pch_cache_scoping (10 inline imports hoisted; later `_pch_hash`
+      helper for 2 warning-filter tests bakes in the 4 fixed dummy
+      _pch_command_hash args)
+    test_global_hash_registry (5 inline imports hoisted)
+    test_cap (try/finally uth.reset() → autouse fixture)
+    test_apptools_cache_helpers (TestArgsTokensAfterParseargs class-scoped
+      autouse parser-reset fixture)
+    test_flags (parsers_reset fixture + _parseargs_with_temp_config helper)
+    test_makefile (_temporary_umask context manager + parametrize 2 umask tests)
+    test_namer (autouse parser-reset fixture replaces 18 in-test try/finally
+      blocks; one internal mid-test uth.reset() correctly preserved)
+    test_findtargets (module-level autouse fixture replaces 5 per-class
+      setup_method/teardown_method pairs)
+    test_hunter (module-level autouse fixture replaces 5 per-class
+      setup_method/teardown_method pairs; throwaway ArgumentParser
+      construction preserved out of conservatism — Codex confirms it's
+      a no-op and can be removed in a future cleanup commit. Follow-up
+      `hunter_factory` fixture collapses the 3-line
+      TempDirContextNoChange + TempConfigContext + _make_hunter
+      incantation across 27 tests in 4 classes)
+    test_makefile_backend (module-level autouse fixture replaces 5
+      uth.reset() setup/teardown pairs; TestGetMakeVersion's distinct
+      tool_version.cache_clear() pair left intact)
+    test_hunter_cache_scoping (module-level autouse fixture replaces 4
+      per-class setup/teardown pairs + `_setup_method_common` helper)
+    test_compilation_database (module-level autouse fixture replaces 4
+      per-class setup_method pairs; pre-yield-only — no teardown added)
+    test_simple_preprocessor (autouse monkeypatch.setattr replaces
+      unittest.mock.patch/start/stop boilerplate across 3 classes)
+    test_file_analyzer_integration (private `_FileAnalyzerIntegrationBase`
+      intermediate class lifts duplicate setup_method + create_test_file
+      from 3 concrete classes)
+    test_pch_cache_scoping (module-level autouse fixture replaces 2
+      per-class setup/teardown pairs + `_setup_method_common` helper)
+    test_{configutils,makefile,ninja_backend,cmake_backend,shake_backend}
+      (single-class setup/teardown_method → per-class autouse fixture, style
+      consistency)
+    test_apptools (parsers_reset named fixture + usefixtures decorators on 2
+      classes; symmetric pre+post reset, slightly stronger isolation than
+      original asymmetric setup-only on TestVariantResolutionRespectsArgv)
+    test_fd_fix_integration (private _CtxBase intermediate lifts duplicate
+      self.ctx = BuildContext() setup_method from 2 classes)
+    test_headerdeps (dropped redundant super-only setup_method override)
+    test_magicflags_unit (3 tests adopt existing _make_partial helper instead
+      of duplicating the patch.object/__new__/_args = Namespace pattern)
+    test_apptools + test_git_utils (4 tests converted from
+      tempfile.TemporaryDirectory to pytest tmp_path fixture)
+    test_file_locking + test_locking_contract + test_findtargets
+      (5+1+1 = 7 sites converted; vestigial cleanup loop dropped from
+      temp_lockdir fixture in test_locking_contract)
+    test_locking (FULLY tempfile-free — all 66 sites converted across 4
+      script passes + hand-fix for umask try/finally tests)
+    test_multiuser_cache (FULLY tempfile-free — all 17 sites converted
+      across script + 1 hand-fix for the multiprocessing.Pool test)
+    test_compiler_macros (9 inline cache_clear calls → class autouse fixture;
+      adjacent class's setup_method also converted to autouse for style
+      consistency)
+    test_compiler_identity_hash (5 inline compiler_identity.cache_clear()
+      calls → module-level autouse fixture; meaningful between-calls clear
+      preserved)
+    test_filesystem_utils (6 inline get_filesystem_type.cache_clear() calls
+      across 3 tests → module-level autouse fixture)
+    test_timing_report (per-class autouse chdir-to-tmp fixtures in
+      TestFindTimingFile + TestMainCLI; 9 inline chdir calls + 8
+      unused-monkeypatch params removed)
+    test_{makefile,ninja,cmake}_backend (per-class autouse chdir-to-tmp
+      fixtures in 3 TestXRunsTestsInBuildPhase classes)
+    test_{shake,bazel}_backend (per-class autouse chdir-to-tmp fixtures in
+      TestShakeRunsTestsInBuildPhase + TestBazelPublishOutputs; remaining
+      sparse inline chdir sites left as-is — autouse not worth it for
+      classes where only some tests need it)
+    test_apptools (`_stub_gitroot_and_chdir` helper for 9 sites in
+      TestSetupPkgConfigOverrides)
+    test_cleanup_locks (`_make_lockdir_with_pid` helper for 3 inline
+      pid-file setup blocks; existing `create_lockdir` rewritten to delegate)
+    test_makefile_backend (`_generate` helper in TestMakefileGenerate
+      collapses 5 tests' mocked-hunter + StringIO + backend.generate
+      boilerplate into one-line helper calls)
+    test_ninja_backend (`_generate` helper in TestNinjaGenerate collapses
+      7 tests' boilerplate; same shape as the makefile_backend refactor)
+    test_bazel_backend + test_cmake_backend (`_generate` helper in
+      TestBazelGenerate + TestCMakeGenerate + TestCppmPerSourceProperties
+      collapses 25 tests' boilerplate)
+    test_compilation_database (`_make_creator` helper for module-analysis
+      creator stubbing collapses 5 tests in TestCompilationDatabaseModuleFlags)
+    test_preprocessing_cache (`_CacheTestBase` autouse monkeypatch fixture
+      replaces xunit patch/start/stop pattern across 4 inheriting classes)
+    test_cake (`_tmpdir_with_config` ctxmgr collapses 17 sites of the
+      tempdir+config-creation boilerplate; follow-up `_write_default_config`
+      helper collapses the remaining 10 sites that interleave file work
+      between TempDirContext entry and config setup)
+    test_cake_hooks (`ninja_cake` fixture replaces the 2-line
+      `with CakeTestContext("ninja") as (cake, tmpdir): monkeypatch.chdir(tmpdir)`
+      setup in 8 of 9 tests in TestPrebuildPostbuildHooks; the
+      test_clean_modes_skip_both_hooks parametrize case kept inline because
+      it threads `**{flag: True}` through CakeTestContext)
+    test_build_timer (`_parse_into_phase` helper on TestNinjaLogParsing
+      [7 tests] and TestMakeTimingParsing [4 of 5 tests] collapses the
+      3-line timer/phase/parse incantation; test_wall_to_monotonic_conversion
+      kept inline because it interleaves a record_rule call inside the phase)
+    test_trim_cache (objdir/pchdir/pcmdir module-level fixtures replace
+      the 2-line `Xdir = str(tmp_path / "X"); os.makedirs(Xdir)` setup
+      in 30 tests across 6 classes; tests that also use tmp_path for
+      additional setup left as-is)
+    test_slurm_backend (`_run_sbatch_build(graph, *, return_value,
+      side_effect, **ctx_kwargs)` helper collapses the standard sbatch
+      submission incantation in 7 TestSbatchSubmission tests; returns
+      the mock_sbatch out of the patch context for post-hoc assertions.
+      Follow-up `_single_compile_graph(output, src=...)` helper collapses
+      the recurring 4-line BuildGraph+make_compile_rule+phony block at
+      20 sites across 10 test classes)
+    test_makefile_backend (`_execute_and_capture_cmd(self, *, version,
+      **arg_overrides)` helper on TestMakefileExecute hoists the 2
+      @patch decorators + 4 setup lines from 8 tests; each test now
+      reduces to 2-line body. Follow-up `_test_rule` + `_render` helpers
+      on TestMakefileTestRules collapse the 8-test class similarly —
+      each test was a 5-line BuildRule + 5-line render block, now 3 lines.
+      Further follow-up `_default_makefile_args(**overrides)` module-level
+      helper dedupes the 19-field SimpleNamespace `_make_args` that was
+      duplicated byte-for-byte in 4 classes + 5th near-duplicate that
+      only changed verbose; 5 class methods deleted, 11 callers updated.
+      Latest follow-up `_write_makefile(backend, graph, tmp_path)`
+      collapses the 3-line tmp_path/open/generate block in 4
+      TestMakeRunsTestsInBuildPhase tests)
+    test_makefile (`_render_makefile(args, *, filesystem_type, graph)`
+      module-level helper collapses the 8-line backend+graph+StringIO+
+      _write_makefile incantation in 12 sites across
+      TestMakefileBackendWriteMakefile and TestMakefileBackendFileLocking;
+      strategy tests that wrap _write_makefile in patch() left inline.
+      Follow-up `_seed_makefile_with_matching_header(tmp_path, *, verbose,
+      extra_content)` for 6 sites in TestMakefileBackendUptodate +
+      TestMakefileBackendGenerate that needed a pre-seeded valid header)
+    test_ninja_backend (`_default_ninja_args(**overrides)` module-level
+      helper dedupes the 23-field _make_args that was duplicated 4-fold
+      — 3 verbatim + 1 with empty CFLAGS/CXXFLAGS; 4 class methods
+      deleted, 15 callers updated, the 2 module-iface sites pass the
+      empty-flag overrides explicit)
+    test_configutils (`_resolve_variant(repo_root, variant, *, argv,
+      system_config_dir)` helper collapses the 9-line
+      DirectoryContext+resolve_variant block in 10 TestVariant sites;
+      9 other sites kept inline because they interleave clear_cache,
+      wrap in pytest.raises, or use **kwargs parametrize. Follow-up
+      `_temp_repo` / `_temp_repo_with_conf_d` ctxmgr helpers collapse
+      the TempDirContextNoChange + create_temp_ct_conf [+ ct.conf.d
+      makedirs] preamble in 21 sites. Further follow-up `_write_conf`
+      helper collapses the `with open(os.path.join(conf_d, "X"), "w")`
+      file-write incantation in 28 sites; 2 multi-write blocks merged)
+    test_namer (bulk: 8 of 13 sites converted; script extended for
+      module-level functions)
+    test_multiuser_cache (bulk: 1 of 17 sites converted; most have nested
+      with blocks that the script correctly skipped as risky)
+    test_cleanup_locks (tmpdir_with_locks fixture delegated to tmp_path)
+    test_namer (FULLY tempfile-free — all 13 sites converted; nested
+      with-block split into sub-paths)
+    test_config (function-scoped `config_mocks` fixture yields
+      SimpleNamespace(create, add, parse) of the 3 mock.patch contexts
+      shared by 5 of 6 test_main_* unit tests; 6th
+      [test_main_none_argv_appends_verbose] kept inline because it adds
+      a 4th `mock.patch("compiletools.config.sys")`. test_main_help
+      [subprocess] untouched. -5 net lines)
+    test_check_venv (`_make_fake_ct_cake(tmp_path, monkeypatch, ...)`
+      helper folds `monkeypatch.setenv("PATH", str(bin_dir))` at end of
+      helper; 9 of 13 sites collapse from 2-line "helper + setenv" to
+      1-line call. 4 manual-bin_dir sites unaffected. Helper still
+      returns str(bin_dir) for option-preservation.)
+
+  Notes for future rounds:
+    Remaining tempfile.TemporaryDirectory sites:
+    - test_locking.py: 0 — DONE
+    - test_namer.py: 0 — DONE
+    - test_multiuser_cache.py: 0 — DONE
+    - test_cxx_modules.py: 5 sites — NOT convertible. All in module-level
+      helper functions (compiler-capability probes that run at import time);
+      tmp_path fixture isn't available outside tests.
+
+    The tmp_path migration is effectively complete for all test methods.
+    Remaining patterns to investigate next:
+    - Repeated mock setup boilerplate across files
+    - Other duplicate fixture patterns
+    - Repeated subprocess.run patterns
+
+
+  Promising remaining candidates (pure-unit, repetitive setup likely):
+    test_noop_rebuild / test_cake_startup_performance (inline imports inside
+      textwrap-dedent subprocess scripts — can't hoist)
+    test_ffile_prefix_map (~415 lines, e2e w/ helpers — limited win;
+      DO NOT hoist `from compiletools.test_cxx_modules import ...` — Codex
+      flagged that test_cxx_modules has module-level eager compiler probes
+      via `requires_* = uth.skipif_e2e_unavailable(...)` that would run at
+      collection time. Keep those imports inline.)
+    test_test_exe_rebuild_on_upstream_change (~439 lines, structured already)
+    test_magicflags_styles.py (very small — limited win)
+
+    Bulk import hoisting opportunities are largely exhausted. Remaining work
+    would be opportunistic — helper extraction, parametrize candidates, prints
+    cleanup — in specific tests rather than mechanical refactors. To find more
+    candidates: `grep -l "import" src/compiletools/test_*.py | xargs grep -cE
+    "^    import|^        import" | sort -t: -k2 -n -r | head`
+
+  Important constraints:
+  - Stage and commit only intentional changes.
+  - Preserve rationale comments/docstrings, especially for regression cases and parsing-boundary cases.
+  - Use explicit readable pytest param IDs if adding parametrization.
+
+  Before claiming completion:
+    ruff check <touched test files>
+    pyright <touched test files>
+    pytest -q <touched test files>
+    git diff --check
+
+Utilize codex to do an adversarial review then critically consider that review.
+
+  To continue this work iteratively, drive it with one of:
+
+    /ralph-loop:ralph-loop Read @prompt.txt and execute one round. When done, commit and update prompt.txt to point at the new HEAD so the next iteration picks up cleanly. --completion-promise "NO_MORE_SAFE_SIMPLIFICATIONS"
+
+    /loop 30m Read @prompt.txt and execute one round. When done, commit and update prompt.txt to point at the new HEAD so the next iteration picks up cleanly.
+
+  Stop condition for the loop:
+  - The ONLY stop condition is: no remaining file shows a clear, low-risk simplification opportunity. When that is true, output the completion promise above.
+
+  If verification fails (ruff / pyright / pytest / git diff --check), DO NOT bail out — fix the problem in the same round before committing. A failing verification is a bug in the simplification, not a reason to stop the loop.
