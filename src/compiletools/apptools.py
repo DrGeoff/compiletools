@@ -3225,6 +3225,55 @@ def _check_resolved_compiler_available(args) -> None:
             )
 
 
+def _check_wild_linker_usable(args) -> None:
+    """Fail loud when the wild linker is selected but unusable.
+
+    Fires only when wild is the selected linker — either the LD tokens carry
+    ``-fuse-ld=wild`` / ``--ld-path=wild`` (the ``wild`` axis; the clang
+    rewrite in ``_normalize_wild_linker`` runs before this), or the
+    ``wild-B`` axis is selected.
+
+    Two failure modes:
+      1. ``wild`` not on PATH -> raise with the install instruction.
+      2. ``wild`` axis on gcc < 16 -> raise (gcc that old can't drive
+         ``-fuse-ld=wild``; use clang, upgrade gcc, or the ``wild-B`` axis).
+         ``wild-B`` has no version gate (working on old gcc is its purpose).
+    """
+    import shutil
+
+    ldflags = getattr(args, "LDFLAGS", "") or ""
+    ld_tokens = split_command_cached(ldflags)
+    wild_axis = "-fuse-ld=wild" in ld_tokens or "--ld-path=wild" in ld_tokens
+    wild_b_axis = _variant_has_axis(args, "wild-B")
+    if not (wild_axis or wild_b_axis):
+        return
+
+    variant = getattr(args, "variant", "<unknown>")
+    if shutil.which("wild") is None:
+        raise RuntimeError(
+            "Wild linker selected but the 'wild' binary is not on PATH.\n"
+            f"  variant: {variant}\n"
+            "  Install it with: cargo install --locked wild-linker\n"
+            "  (the binary lands in ~/.cargo/bin; ensure that is on PATH),\n"
+            "  or switch to a different linker axis (e.g. --variant=...,mold)."
+        )
+
+    if wild_axis and not wild_b_axis:
+        cxx = _effective_link_driver(args)
+        identity = _compiler_major_version(cxx) if cxx else None
+        if identity is not None:
+            family, major = identity
+            if family == "gcc" and major < 16:
+                raise RuntimeError(
+                    f"Wild linker (-fuse-ld=wild) requires gcc >= 16.1, but "
+                    f"resolved link driver {cxx!r} is gcc {major}.\n"
+                    f"  variant: {variant}\n"
+                    "  Use clang (--variant=clang,wild), upgrade gcc to >= 16.1, "
+                    "or use the -B fallback axis (--variant=...,wild-B), which "
+                    "works on any gcc."
+                )
+
+
 def _check_compiler_supports_requested_standard(args) -> None:
     """Fail loud when the resolved compiler's major version is too old for
     the language standard requested by the variant.
@@ -3883,6 +3932,7 @@ def parseargs(cap, argv, verbose=None, *, context):
     # Both checks emit a clear diagnostic naming the variant and
     # suggesting either a different variant or a toolchain upgrade.
     _check_resolved_compiler_available(args)
+    _check_wild_linker_usable(args)
     _check_compiler_supports_requested_standard(args)
 
     # Populate tokenized flag lists alongside the raw strings. Consumers

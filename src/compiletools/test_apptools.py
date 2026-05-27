@@ -2388,3 +2388,50 @@ def test_materialize_wild_b_falls_back_to_tempdir_without_gitroot(tmp_path, monk
     result = apptools._materialize_wild_b_searchdir()
     assert result == str(faketmp / "ct-wild-ld")
     assert (faketmp / "ct-wild-ld" / "ld").is_symlink()
+
+
+def test_check_wild_usable_missing_wild_raises(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    args = _wild_args("g++", "-fuse-ld=wild", "gcc.wild.release")
+    with pytest.raises(RuntimeError, match="wild-linker"):
+        apptools._check_wild_linker_usable(args)
+
+
+def test_check_wild_usable_old_gcc_raises(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
+    monkeypatch.setattr(apptools, "_compiler_major_version", lambda c: ("gcc", 15))
+    args = _wild_args("g++", "-fuse-ld=wild", "gcc.wild.release")
+    with pytest.raises(RuntimeError, match="gcc >= 16"):
+        apptools._check_wild_linker_usable(args)
+
+
+def test_check_wild_usable_gcc16_ok(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
+    monkeypatch.setattr(apptools, "_compiler_major_version", lambda c: ("gcc", 16))
+    args = _wild_args("g++", "-fuse-ld=wild", "gcc.wild.release")
+    apptools._check_wild_linker_usable(args)  # no raise
+
+
+def test_check_wild_usable_clang_ok(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
+    monkeypatch.setattr(apptools, "_compiler_major_version", lambda c: ("clang", 22))
+    # post-rewrite form on clang
+    args = _wild_args("clang++", "--ld-path=wild", "clang.wild.release")
+    apptools._check_wild_linker_usable(args)  # no raise
+
+
+def test_check_wild_b_old_gcc_ok(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
+    monkeypatch.setattr(apptools, "_compiler_major_version", lambda c: ("gcc", 11))
+    # wild-B has no version gate — that's its whole purpose.
+    args = _wild_args("g++", "", "gcc.wild-B.release")
+    apptools._check_wild_linker_usable(args)  # no raise
+
+
+def test_check_wild_usable_not_selected_noop(monkeypatch):
+    def _boom(name):
+        raise AssertionError("should not probe when wild is not selected")
+
+    monkeypatch.setattr(shutil, "which", _boom)
+    args = _wild_args("g++", "-O2 -lm", "gcc.release")
+    apptools._check_wild_linker_usable(args)  # returns before any probe
