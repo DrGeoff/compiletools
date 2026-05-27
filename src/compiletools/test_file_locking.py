@@ -3,7 +3,6 @@
 import multiprocessing
 import os
 import shutil
-import tempfile
 import time
 from unittest.mock import Mock, patch
 
@@ -29,21 +28,19 @@ def mock_args():
 
 
 @pytest.fixture
-def temp_lock_file():
-    """Create temporary file for lock testing."""
-    with tempfile.NamedTemporaryFile(delete=False) as f:
-        temp_path = f.name
-    yield temp_path
-    # Cleanup
-    for ext in ["", ".lockdir", ".lock", ".lock.excl", ".lock.pid"]:
-        try:
-            path = temp_path + ext
-            if os.path.isdir(path):
-                shutil.rmtree(path)
-            elif os.path.exists(path):
-                os.unlink(path)
-        except OSError:
-            pass
+def temp_lock_file(tmp_path):
+    """Create temporary file for lock testing.
+
+    Each test gets a unique tmp_path subdirectory, so the target plus
+    every lock sidecar (.lockdir, .lock, .lock.excl, .lock.pid) live
+    in an isolated namespace — no cross-test pollution. tmp_path's
+    retention is governed by pytest's tmp_path_retention_policy
+    (default 'all': keeps the last 3 sessions, GCs older runs at
+    session start); set it to 'failed' or 'none' to reclaim sooner.
+    """
+    target = tmp_path / "lockfile"
+    target.touch()
+    return str(target)
 
 
 class TestLockdirLock:
