@@ -174,29 +174,16 @@ class TestMakefileRealclean:
     can be a shared location used by peer sub-projects."""
 
     def _make_args(self, **overrides):
-        defaults = dict(
-            verbose=0,
-            cas_objdir="/tmp/cas-objdir",
-            bindir="/tmp/proj/bin",
-            git_root="",
-            file_locking=False,
-            makefilename="Makefile",
-            filename=[],
-            tests=[],
-            static=[],
-            dynamic=[],
-            CC="gcc",
-            CXX="g++",
-            CFLAGS="-O2",
-            CXXFLAGS="-O2",
-            LD="g++",
-            LDFLAGS="",
-            serialisetests=False,
-            build_only_changed=None,
-            use_mtime=False,
-        )
-        defaults.update(overrides)
-        return SimpleNamespace(**defaults)
+        # Delegate to the module-level helper; only the two path defaults
+        # differ from the module default (the realclean assertions below
+        # reference these exact strings). Merge via dict spread so a caller
+        # passing cas_objdir / bindir overrides doesn't trip a duplicate-kw
+        # TypeError.
+        return _default_makefile_args(**{
+            "cas_objdir": "/tmp/cas-objdir",
+            "bindir": "/tmp/proj/bin",
+            **overrides,
+        })
 
     def _build_graph(self):
         graph = BuildGraph()
