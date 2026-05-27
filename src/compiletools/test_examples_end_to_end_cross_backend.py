@@ -216,6 +216,20 @@ _EXAMPLE_PLANS: dict[str, ExamplePlan] = {
     "cxx_modules_header_unit_isystem": ExamplePlan(
         skip_for_backends=frozenset({"bazel", "cmake"}),
     ),
+    # Sibling of the isystem case: the header unit's ``-isystem`` arrives
+    # not from ``append-CXXFLAGS`` but from a ``//#PKG-CONFIG=extlib``
+    # magic flag whose ``.pc`` exports ``-I<sample>/include`` (converted
+    # to ``-isystem`` by ``filter_pkg_config_cflags``). Regression guard
+    # for commit 77c8ce0c threading those per-source PKG-CONFIG-derived
+    # ``-isystem`` paths into the gcc/clang header-unit precompile pre-pass
+    # (``_header_unit_extra_system_includes``). The sample self-configures
+    # via ``prepend-PKG-CONFIG-PATH = ${CONF_DIR}/extlib_pc`` in its
+    # ct.conf, so it builds vanilla with no test-side PKG_CONFIG_PATH. Same
+    # bazel/cmake hermeticity skip as the isystem sibling: their sandboxes
+    # reject the absolute ``-isystem`` path pkg-config resolves to.
+    "cxx_modules_header_unit_pkg_config": ExamplePlan(
+        skip_for_backends=frozenset({"bazel", "cmake"}),
+    ),
     # Transitive header unit: a consumer (main.cpp) whose ONLY module
     # interaction is a header unit (`import <vector>;`) reached through a
     # #include'd wrapper header (vecutil.h), never imported directly. The

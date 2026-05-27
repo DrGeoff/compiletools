@@ -914,24 +914,21 @@ def test_cxx_modules_transitive_header_unit_builds_with_clang(tmp_path, monkeypa
     _run_transitive_header_unit_sample_with(cxx, tmp_path, monkeypatch)
 
 
-def _run_header_unit_isystem_sample_with(cxx: str, tmp_path, monkeypatch):
-    """Build the cxx_modules_header_unit_isystem sample and assert it
-    prints ``caught=boom``.
+def _build_header_unit_sample_and_assert(sample_name, cxx: str, tmp_path, monkeypatch):
+    """Build header-unit sample *sample_name* with ``ct-cake`` and assert
+    it prints ``caught=boom``.
 
-    The sample's ``import <extlib/Exception.h>;`` reaches a header that
-    only resolves through the user-supplied
-    ``-isystem <abs>/extlib/include`` (anchored via ``${CONF_DIR}``).
-    Pre-fix, the gcc cas-pcmdir mapper-resolution probe in
-    ``_resolve_system_header_abs_paths`` ran ``g++ -M -x c++ -``
-    without propagating the user's include flags, failed to resolve
-    the header, left ``_gcc_header_unit_resolved`` empty for the
-    token, and the precompile fell through to the global-mapper path.
-    gcc then reported the include as ``unknown compiled module
-    interface: no such module``.
+    Shared by the ``-isystem`` and ``PKG-CONFIG`` regression guards
+    below. Both samples reach ``import <extlib/Exception.h>;`` only
+    through a header unit whose include path the sample's own ct.conf
+    supplies (``append-CXXFLAGS = -isystem ${CONF_DIR}/extlib/include``
+    for one, ``prepend-PKG-CONFIG-PATH = ${CONF_DIR}/extlib_pc`` for the
+    other), so each builds vanilla with no external environment. The
+    per-regression rationale lives in each caller's docstring.
     """
-    sample_src = uth.example_path("cxx_modules_header_unit_isystem")
+    sample_src = uth.example_path(sample_name)
     assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
-    workdir = tmp_path / "cxx_modules_header_unit_isystem"
+    workdir = tmp_path / sample_name
     shutil.copytree(sample_src, workdir)
     monkeypatch.chdir(workdir)
 
@@ -955,63 +952,19 @@ def _run_header_unit_isystem_sample_with(cxx: str, tmp_path, monkeypatch):
 def test_cxx_modules_header_unit_isystem_builds_with_gcc(tmp_path, monkeypatch):
     """A header unit reached only via ``-isystem`` builds with gcc.
 
-    Regression guard for the cas-pcmdir mapper-resolution probe: the
-    probe must speak the same include-path vocabulary as the actual
-    precompile, otherwise the canonical-path mapper entry is missing
-    and gcc reports ``unknown compiled module interface``.
+    The sample's ``import <extlib/Exception.h>;`` resolves only through
+    the user-supplied ``-isystem <abs>/extlib/include`` (anchored via
+    ``${CONF_DIR}`` in ct.conf). Regression guard for the cas-pcmdir
+    mapper-resolution probe in ``_resolve_system_header_abs_paths``:
+    pre-fix the probe ran ``g++ -M -x c++ -`` without propagating the
+    user's include flags, failed to resolve the header, left
+    ``_gcc_header_unit_resolved`` empty for the token, and the precompile
+    fell through to the global-mapper path — gcc then reported the
+    include as ``unknown compiled module interface: no such module``.
     """
     cxx = compiletools.apptools.get_functional_cxx_compiler()
     assert cxx is not None, "requires_gcc_header_units should have skipped without a working compiler"
-    _run_header_unit_isystem_sample_with(cxx, tmp_path, monkeypatch)
-
-
-def _run_header_unit_pkg_config_sample_with(cxx: str, tmp_path, monkeypatch):
-    """Build the cxx_modules_header_unit_pkg_config sample and assert it
-    prints ``caught=boom``.
-
-    Sibling regression to ``_run_header_unit_isystem_sample_with``: the
-    sample's header unit is reachable only via a PKG-CONFIG-derived
-    ``-isystem`` flag (``PKG-CONFIG = extlib`` in ct.conf, where
-    ``extlib.pc`` exports ``-I<sample>/include`` which
-    ``filter_pkg_config_cflags`` converts to ``-isystem``). Pre-fix,
-    the gcc header-unit precompile pre-pass and rule emitter only
-    consulted ``args.flags.cxx`` and missed PKG-CONFIG-derived
-    ``-isystem`` flags entirely (they live in per-source magic
-    CXXFLAGS / CPPFLAGS), so the precompile command ran without the
-    include and gcc died with
-    ``cc1plus: fatal error: extlib/Exception.h: No such file or
-    directory``.
-    """
-    sample_src = uth.example_path("cxx_modules_header_unit_pkg_config")
-    assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
-    workdir = tmp_path / "cxx_modules_header_unit_pkg_config"
-    shutil.copytree(sample_src, workdir)
-    # ``ct-cake --auto`` discovers targets via the git tracked-files
-    # registry; without a local git root the worktree pytest is running
-    # from would shadow ``workdir`` and discovery would find nothing.
-    # ``git init`` is enough — no commits required.
-    subprocess.run(["git", "init", "-q"], cwd=workdir, check=True)
-    monkeypatch.chdir(workdir)
-
-    # Point pkg-config at the .pc shipped alongside the sample (uses
-    # ``${pcfiledir}`` so it resolves portably to the copied location).
-    pkg_config_path = workdir / "extlib_pc"
-    monkeypatch.setenv("PKG_CONFIG_PATH", str(pkg_config_path))
-
-    with uth.CompilerEnvContext(cxx):
-        r = subprocess.run(
-            ["ct-cake"],
-            capture_output=True,
-            text=True,
-            cwd=workdir,
-            timeout=180,
-        )
-    assert r.returncode == 0, f"ct-cake --auto (CXX={cxx}) failed:\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
-    exe = workdir / "bin" / "main"
-    assert exe.exists(), f"executable not produced (CXX={cxx}):\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
-    run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=10)
-    assert run.returncode == 0, f"{run.stdout}\n{run.stderr}"
-    assert "caught=boom" in run.stdout, f"exception message missing/wrong: {run.stdout!r}"
+    _build_header_unit_sample_and_assert("cxx_modules_header_unit_isystem", cxx, tmp_path, monkeypatch)
 
 
 @requires_gcc_header_units
@@ -1030,11 +983,13 @@ def test_cxx_modules_header_unit_pkg_config_builds_with_gcc(tmp_path, monkeypatc
     ``-isystem``) were silently dropped from the precompile command,
     so gcc failed with
     ``cc1plus: fatal error: extlib/Exception.h: No such file or
-    directory``.
+    directory``. The sample self-configures pkg-config via
+    ``prepend-PKG-CONFIG-PATH = ${CONF_DIR}/extlib_pc`` in its ct.conf,
+    so the test needs no PKG_CONFIG_PATH of its own.
     """
     cxx = compiletools.apptools.get_functional_cxx_compiler()
     assert cxx is not None, "requires_gcc_header_units should have skipped without a working compiler"
-    _run_header_unit_pkg_config_sample_with(cxx, tmp_path, monkeypatch)
+    _build_header_unit_sample_and_assert("cxx_modules_header_unit_pkg_config", cxx, tmp_path, monkeypatch)
 
 
 # ---------------------------------------------------------------------------
