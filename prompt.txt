@@ -6,8 +6,9 @@ Continue work in /home/gericksson/compiletools-worktree/master.
 
   Current state:
   - Latest commit:
-    353fbc5c test: extract local git() helper in tmp_git_repo fixture
+    6fabe794 test: extract _mock_subprocess_result factory in test_compiler_macros
   - Prior related commits:
+    353fbc5c test: extract local git() helper in tmp_git_repo fixture
     b0e4665e test: fold monkeypatch.setenv("PATH", ...) into _make_fake_ct_cake helper
     d2f4b245 test: extract config_mocks fixture for 5 sites in test_config
     ef407275 test: extract conf_and_cwd fixture in test_conf_env_expansion (12 sites)
@@ -117,6 +118,22 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     e5b18a45 test: parametrize helper cases
     7009bd6a test: simplify pytest cases
   - Latest commit touched:
+    src/compiletools/test_compiler_macros.py (-6 net, +22/-28):
+    module-level `_mock_subprocess_result(stdout="", returncode=0)`
+    factory builds the MagicMock that 6 sites previously hand-built
+    (mock_result = MagicMock(); mock_result.returncode = N;
+    mock_result.stdout = S) before passing to patch("subprocess.run",
+    return_value=...). Two returncode=1 sites
+    (test_get_compiler_macros_failure_nonzero_return,
+    test_returns_0_on_nonzero_return_code) now get stdout="" by default
+    — equivalent because compiler_macros.py:41/47 and :125/131 both
+    check returncode != 0 and early-return before reading .stdout. The
+    `as mock_run` site (test_cppflags_passed_to_compiler) still binds
+    patcher mock and asserts on call_args. Codex timed out at 10min
+    (4th consecutive); self-review verified via grep on
+    compiler_macros.py. 22 tests pass.
+
+  - Prior commit touched:
     src/compiletools/test_git_sha_report.py (-11 net, +9/-20):
     `tmp_git_repo` fixture's 5 `subprocess.run(["git", *args], cwd=repo,
     check=True, capture_output=True)` calls collapsed via a local
@@ -124,7 +141,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     `git("init")`, `git("config", ...)`, etc. Semantics unchanged
     (check=True, capture_output=True still applied). 9 tests pass.
 
-  - Prior commit touched:
+  - Earlier prior commit touched:
     src/compiletools/test_check_venv.py (+4 net, +23/-19):
     `_make_fake_ct_cake(tmp_path, monkeypatch, *, shebang_target, ...)`
     now folds `monkeypatch.setenv("PATH", str(bin_dir))` into the helper.
@@ -136,7 +153,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     review skipped after 3 prior timeouts; self-review confirmed every
     site only used bin_dir for the setenv (grep-verified).
 
-  - Earlier prior commit touched:
+  - Further prior commit touched:
     src/compiletools/test_config.py (-5 net, +46/-51):
     function-scoped `config_mocks` fixture yields
     SimpleNamespace(create, add, parse) of the 3 mock.patch contexts
@@ -150,7 +167,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     confirmed mechanical equivalence (function-scoped fixture matches
     per-test inline mock lifecycle; per-test docstrings verbatim).
 
-  - Further prior commit touched:
+  - Yet further prior commit touched:
     src/compiletools/test_conf_env_expansion.py (-45 net, +40/-85):
     same `conf_and_cwd(tmp_path)` fixture shape just adopted in
     test_cas_variant_suffix (f9669550). Replaces the identical 5-line
@@ -161,7 +178,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     Codex review timed out at 10min; self-review confirmed mechanical
     equivalence.
 
-  - Yet further prior commit touched:
+  - Even further prior commit touched:
     src/compiletools/test_cas_variant_suffix.py (-14 net, +27/-41):
     module-level `conf_and_cwd(tmp_path)` fixture returns
     `(conf, other_cwd)` — unwritten `<tmp_path>/axis-confs/extras.conf`
@@ -173,7 +190,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     autouse _clear_apptools_cache setup runs before / teardown after,
     no ordering drift; docstrings preserved verbatim).
 
-  - Even further prior commit touched:
+  - Older prior commit touched:
     src/compiletools/test_apptools.py (-49 net, +25/-74):
     two module-level SimpleNamespace builders dedupe the recurring
     5+ field construction in TestResolvedCompilerAvailable (4 of 5
@@ -185,7 +202,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     vestigial blank lines a prior batch tool left after `def test_`
     headers. Codex review confirmed no correctness regression.
 
-  - Older prior commit touched:
+  - Even older prior commit touched:
     src/compiletools/test_makefile.py (-18 net, +26/-44):
     extracted module-level `_seed_makefile_with_matching_header(tmp_path,
     *, verbose=8, extra_content="")` helper that pre-seeds
@@ -200,7 +217,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     body is identical to the original two-backend construction.
   - Verification for latest commit passed:
     ruff/pyright/git diff --check all green
-    pytest -q src/compiletools/test_git_sha_report.py: 9 passed in 0.22s
+    pytest -q src/compiletools/test_compiler_macros.py: 22 passed in 0.48s
   - Final git status was clean.
 
   Start by running:
@@ -392,7 +409,12 @@ Continue work in /home/gericksson/compiletools-worktree/master.
       across script + 1 hand-fix for the multiprocessing.Pool test)
     test_compiler_macros (9 inline cache_clear calls → class autouse fixture;
       adjacent class's setup_method also converted to autouse for style
-      consistency)
+      consistency. Follow-up: module-level
+      `_mock_subprocess_result(stdout="", returncode=0)` factory replaces
+      6 sites of the MagicMock+returncode+stdout boilerplate that wrapped
+      patch("subprocess.run", return_value=...). Safe because both
+      compiler_macros.py functions early-return on returncode != 0
+      before reading .stdout.)
     test_compiler_identity_hash (5 inline compiler_identity.cache_clear()
       calls → module-level autouse fixture; meaningful between-calls clear
       preserved)
