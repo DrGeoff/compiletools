@@ -2517,7 +2517,7 @@ def test_check_wild_b_with_bazel_backend_raises(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
     args = _wild_args("g++", "", "gcc.wild-B.release")
     args.backend = "bazel"
-    with pytest.raises(RuntimeError, match="wild-B.*--backend=bazel"):
+    with pytest.raises(RuntimeError, match=r"wild-B.*--backend=bazel"):
         apptools._check_wild_linker_usable(args)
 
 
