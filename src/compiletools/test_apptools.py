@@ -1872,6 +1872,7 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
             f"{sorted(o for o in opts if 'PKG-CONFIG' in o)!r}"
         )
 
+    @pytest.mark.filterwarnings("ignore:pkg-config package .* not found:UserWarning")
     def test_three_axis_append_pkg_config_all_present(self):
         """``append-PKG-CONFIG = <pkg>`` in three layered axis confs must
         accumulate into ``args.pkg_config`` end-to-end — same accumulation
@@ -1901,6 +1902,7 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
                     f"args.append_pkg_config={getattr(args, 'append_pkg_config', '<unset>')!r}"
                 )
 
+    @pytest.mark.filterwarnings("ignore:pkg-config package .* not found:UserWarning")
     def test_cli_append_pkg_config_combines_with_conf(self):
         """A CLI ``--append-PKG-CONFIG=<pkg>`` token must combine with conf-file
         ``append-PKG-CONFIG = ...`` values rather than suppressing them via
@@ -1930,6 +1932,7 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
                     f"args.append_pkg_config={getattr(args, 'append_pkg_config', '<unset>')!r}"
                 )
 
+    @pytest.mark.filterwarnings("ignore:pkg-config package .* not found:UserWarning")
     def test_prepend_pkg_config_lands_before_existing(self):
         """``--prepend-PKG-CONFIG=foo`` must land ahead of any existing
         ``--pkg-config`` / ``append-PKG-CONFIG`` entries in
