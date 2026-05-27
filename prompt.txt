@@ -6,8 +6,9 @@ Continue work in /home/gericksson/compiletools-worktree/master.
 
   Current state:
   - Latest commit:
-    8fc6abe1 test: extract _args helper for SimpleNamespace ceremony in test_apptools_include_paths
+    0d9a5ad6 test: delegate TestMakefileRealclean._make_args to module-level helper
   - Prior related commits:
+    8fc6abe1 test: extract _args helper for SimpleNamespace ceremony in test_apptools_include_paths
     f091b466 test: extract _patch_proc_mounts_unavailable helper for 3 sites in test_filesystem_utils
     a378bb88 test: extract _bindir_objdir_argv helper for 3 sites in test_cake_diagnostics
     b9fc1ea6 test: extend _make_exe_entry with bad_manifest kwarg, mirroring sibling helpers
@@ -129,6 +130,26 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     e5b18a45 test: parametrize helper cases
     7009bd6a test: simplify pytest cases
   - Latest commit touched:
+    src/compiletools/test_makefile_backend.py (-13 net, +10/-23):
+    `TestMakefileRealclean._make_args` previously duplicated the 19-field
+    SimpleNamespace defaults of the module-level `_default_makefile_args`
+    helper byte-for-byte, differing only in two path defaults
+    (cas_objdir="/tmp/cas-objdir" vs "/tmp/obj"; bindir="/tmp/proj/bin"
+    vs "/tmp/bin"). Replaced the body with a one-line delegation:
+    `_default_makefile_args(**{"cas_objdir": "/tmp/cas-objdir",
+    "bindir": "/tmp/proj/bin", **overrides})`. Dict-spread (rather than
+    explicit cas_objdir=/bindir= kwargs + **overrides) preserves the
+    original `defaults.update(overrides)` semantics — a caller passing
+    cas_objdir or bindir doesn't trip a duplicate-kw TypeError. Both
+    realclean assertions still reference the exact "/tmp/cas-objdir"
+    and "/tmp/proj/bin" strings literally. 2 of 19 defaults differ;
+    17 of 19 default-paths now flow through the single source of truth.
+    Codex /codex:adversarial-review initially returned REVISE flagging
+    the duplicate-kw narrowing on the explicit-kwargs first draft;
+    adopted Codex's exact dict-spread fix and re-verified — implicit
+    APPROVE. 2 TestMakefileRealclean tests pass in 0.17s.
+
+  - Prior commit touched:
     src/compiletools/test_apptools_include_paths.py (-14 net, +13/-27):
     extracted module-level `_args(*, include, cpp="", c="", cxx="") ->
     SimpleNamespace` helper for the recurring 5-attribute SimpleNamespace
@@ -148,7 +169,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     APPROVE (verified helper preserves 5-attribute shape including
     verbose=0; all 4 sites equivalent). 12 tests pass.
 
-  - Prior commit touched:
+  - Earlier prior commit touched:
     src/compiletools/test_filesystem_utils.py (-9 net, +15/-24):
     extracted module-level `_patch_proc_mounts_unavailable(monkeypatch,
     exc)` helper for the recurring 8-line `real_open = builtins.open` +
@@ -403,8 +424,8 @@ Continue work in /home/gericksson/compiletools-worktree/master.
 
   - Verification for latest commit passed:
     ruff/pyright/git diff --check all green
-    pytest -q src/compiletools/test_apptools_include_paths.py
-      12 passed in 25.10s
+    pytest -q src/compiletools/test_makefile_backend.py::TestMakefileRealclean
+      2 passed in 0.17s
   - Final git status was clean.
 
   Start by running:
@@ -672,9 +693,13 @@ Continue work in /home/gericksson/compiletools-worktree/master.
       helper dedupes the 19-field SimpleNamespace `_make_args` that was
       duplicated byte-for-byte in 4 classes + 5th near-duplicate that
       only changed verbose; 5 class methods deleted, 11 callers updated.
-      Latest follow-up `_write_makefile(backend, graph, tmp_path)`
+      Follow-up `_write_makefile(backend, graph, tmp_path)`
       collapses the 3-line tmp_path/open/generate block in 4
-      TestMakeRunsTestsInBuildPhase tests)
+      TestMakeRunsTestsInBuildPhase tests. Latest follow-up:
+      TestMakefileRealclean._make_args now delegates to module-level
+      _default_makefile_args via dict-spread idiom — was a 19-field
+      verbatim duplicate differing only in cas_objdir / bindir defaults;
+      -13 net lines)
     test_makefile (`_render_makefile(args, *, filesystem_type, graph)`
       module-level helper collapses the 8-line backend+graph+StringIO+
       _write_makefile incantation in 12 sites across
