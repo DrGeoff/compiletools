@@ -266,6 +266,17 @@ def add_common_arguments(cap, argv=None, variant=None):
     )
     _add_xxpend_argument(
         cap,
+        "pkg-config",
+        extrahelp=(
+            "Merged into the --pkg-config package list; prepend lands "
+            "leftmost, append lands rightmost. Use the append-/prepend- "
+            "form in conf files so values accumulate across the variant "
+            "hierarchy instead of last-writer-wins clobbering the bare "
+            "pkg-config = ... key."
+        ),
+    )
+    _add_xxpend_argument(
+        cap,
         "pkg-config-path",
         extrahelp="Directories are applied to the PKG_CONFIG_PATH environment variable.",
     )
@@ -2768,6 +2779,33 @@ def _do_xxpend(args, name):
             setattr(args, name, attr)
 
 
+def _do_xxpend_list(args, name, dest_name=None):
+    """List-typed sibling of ``_do_xxpend`` for attrs whose canonical form
+    is a Python list (e.g. ``args.pkg_config``), not a flag string. The
+    base attr is read from ``args.<dest_name or name.replace('-','_')>``,
+    and the prepend/append sources from
+    ``args.{prepend,append}_<dest_name or name.replace('-','_')>``.
+
+    Mirrors ``_do_xxpend``'s dedup-and-place rule (prepend leftmost,
+    append rightmost, skip duplicates already present in the base) so
+    consumers of ``--prepend-PKG-CONFIG`` / ``--append-PKG-CONFIG`` get
+    the same composition semantics that compiler-flag slots have.
+    """
+    dest = (dest_name or name).lower().replace("-", "_")
+    base = list(getattr(args, dest, []) or [])
+    for xx in ("prepend", "append"):
+        xxpendname = f"{xx}_{dest}"
+        xxpendattr = getattr(args, xxpendname, None) or []
+        extras = [v for v in xxpendattr if v not in base]
+        if not extras:
+            continue
+        if xx == "prepend":
+            base = extras + base
+        else:
+            base = base + extras
+    setattr(args, dest, base)
+
+
 def _unify_cpp_cxx_flags(args):
     """Combine CPPFLAGS and CXXFLAGS into a single deduplicated value.
 
@@ -2823,6 +2861,11 @@ def _tier_one_modifications(args):
     flaglist = ("INCLUDE", "CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS")
     for flag in flaglist:
         _do_xxpend(args, flag)
+
+    # args.pkg_config is a list of package names (not a flag string), so
+    # it needs the list-typed merge — _do_xxpend would " ".join() it into
+    # a single space-separated string and break downstream consumers.
+    _do_xxpend_list(args, "pkg-config")
 
     # Deduplicate all compiler/linker flags after all processing is complete
     _deduplicate_all_flags(args)

@@ -1847,6 +1847,120 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
                     f"conf hierarchy. args.prepend_cxxflags={args.prepend_cxxflags!r}"
                 )
 
+    def test_append_prepend_pkg_config_cli_flags_registered(self):
+        """``--append-PKG-CONFIG`` and ``--prepend-PKG-CONFIG`` must exist as
+        CLI options, mirroring the ``--append-PKG-CONFIG-PATH`` /
+        ``--prepend-PKG-CONFIG-PATH`` pair already registered for the
+        environment-variable path. Without them, ``pkg-config = foo`` keys
+        in conf files are last-writer-wins (every other ``append-*`` /
+        ``prepend-*`` key accumulates across the hierarchy), and there is
+        no CLI way to add to the package list without also clobbering any
+        conf-file values via configargparse's ``already_on_command_line``
+        suppression.
+        """
+        cap = apptools.create_parser("registration test", argv=[], include_config=False)
+        apptools.add_common_arguments(cap, argv=[])
+        opts = {opt for a in cap._actions for opt in a.option_strings}
+        assert "--append-PKG-CONFIG" in opts, (
+            f"--append-PKG-CONFIG not registered; feature parity gap with "
+            f"--append-PKG-CONFIG-PATH. Registered options containing 'PKG-CONFIG': "
+            f"{sorted(o for o in opts if 'PKG-CONFIG' in o)!r}"
+        )
+        assert "--prepend-PKG-CONFIG" in opts, (
+            f"--prepend-PKG-CONFIG not registered; feature parity gap with "
+            f"--prepend-PKG-CONFIG-PATH. Registered options containing 'PKG-CONFIG': "
+            f"{sorted(o for o in opts if 'PKG-CONFIG' in o)!r}"
+        )
+
+    def test_three_axis_append_pkg_config_all_present(self):
+        """``append-PKG-CONFIG = <pkg>`` in three layered axis confs must
+        accumulate into ``args.pkg_config`` end-to-end — same accumulation
+        rule that ``append-CXXFLAGS`` / ``append-INCLUDE`` already get.
+
+        Without the ``append-*`` accumulator key, a bare ``pkg-config = foo``
+        in conf files is last-writer-wins, so per-axis pkg-config additions
+        (think: ``release.conf`` adding a runtime tracing lib, ``debug.conf``
+        adding a leak checker) get silently dropped.
+        """
+        with _temp_repo_with_ct_conf("gcc.release.extras", "gcc, release, extras") as (repo_root, conf_d):
+            with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+                fh.write("CC = gcc\nCXX = g++\nLD = g++\n")
+                fh.write("append-PKG-CONFIG = pkg_gcc_axis\n")
+            with open(os.path.join(conf_d, "release.conf"), "w") as fh:
+                fh.write("append-PKG-CONFIG = pkg_release_axis\n")
+            with open(os.path.join(conf_d, "extras.conf"), "w") as fh:
+                fh.write("append-PKG-CONFIG = pkg_extras_axis\n")
+
+            argv = ["--variant=gcc,release,extras", "--no-git-root"]
+            args = _parseargs_for_variant(repo_root, argv)
+
+            for pkg in ("pkg_gcc_axis", "pkg_release_axis", "pkg_extras_axis"):
+                assert pkg in args.pkg_config, (
+                    f"{pkg!r} missing from args.pkg_config={args.pkg_config!r}; "
+                    f"append-PKG-CONFIG did not accumulate across the hierarchy. "
+                    f"args.append_pkg_config={getattr(args, 'append_pkg_config', '<unset>')!r}"
+                )
+
+    def test_cli_append_pkg_config_combines_with_conf(self):
+        """A CLI ``--append-PKG-CONFIG=<pkg>`` token must combine with conf-file
+        ``append-PKG-CONFIG = ...`` values rather than suppressing them via
+        configargparse's ``already_on_command_line`` check. Mirrors the
+        existing ``test_cli_append_combines_with_conf_append`` regression
+        for the CXXFLAGS slot.
+        """
+        with _temp_repo_with_ct_conf("gcc.release", "gcc, release") as (repo_root, conf_d):
+            with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+                fh.write("CC = gcc\nCXX = g++\nLD = g++\n")
+                fh.write("append-PKG-CONFIG = pkg_from_gcc\n")
+            with open(os.path.join(conf_d, "release.conf"), "w") as fh:
+                fh.write("append-PKG-CONFIG = pkg_from_release\n")
+
+            argv = [
+                "--variant=gcc,release",
+                "--append-PKG-CONFIG=pkg_from_cli",
+                "--no-git-root",
+            ]
+            args = _parseargs_for_variant(repo_root, argv)
+
+            assert "pkg_from_cli" in args.pkg_config, args.pkg_config
+            for pkg in ("pkg_from_gcc", "pkg_from_release"):
+                assert pkg in args.pkg_config, (
+                    f"CLI --append-PKG-CONFIG swallowed {pkg!r} from the conf "
+                    f"hierarchy. args.pkg_config={args.pkg_config!r}, "
+                    f"args.append_pkg_config={getattr(args, 'append_pkg_config', '<unset>')!r}"
+                )
+
+    def test_prepend_pkg_config_lands_before_existing(self):
+        """``--prepend-PKG-CONFIG=foo`` must land ahead of any existing
+        ``--pkg-config`` / ``append-PKG-CONFIG`` entries in
+        ``args.pkg_config``. Order matters for the rare cases where two
+        ``.pc`` files declare the same library and `pkg-config` resolves
+        them in argument order — and the symmetry with the CXXFLAGS slot
+        (prepend = leftmost, append = rightmost) is the contract every
+        ``_add_xxpend_argument`` consumer relies on.
+        """
+        with _temp_repo_with_ct_conf("gcc", "gcc") as (repo_root, conf_d):
+            with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+                fh.write("CC = gcc\nCXX = g++\nLD = g++\n")
+                fh.write("append-PKG-CONFIG = pkg_appended\n")
+
+            argv = [
+                "--variant=gcc",
+                "--pkg-config=pkg_base",
+                "--prepend-PKG-CONFIG=pkg_prepended",
+                "--no-git-root",
+            ]
+            args = _parseargs_for_variant(repo_root, argv)
+
+            pkgs = list(args.pkg_config)
+            assert "pkg_prepended" in pkgs and "pkg_appended" in pkgs and "pkg_base" in pkgs, pkgs
+            assert pkgs.index("pkg_prepended") < pkgs.index("pkg_base"), (
+                f"prepend should land before base --pkg-config: {pkgs!r}"
+            )
+            assert pkgs.index("pkg_base") < pkgs.index("pkg_appended"), (
+                f"append should land after base --pkg-config: {pkgs!r}"
+            )
+
 
 @pytest.mark.usefixtures("parsers_reset")
 class TestVariantResolutionRespectsArgv:
