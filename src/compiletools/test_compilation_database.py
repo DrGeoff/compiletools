@@ -5,7 +5,6 @@ import os
 import re
 import shutil
 import time
-import types
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -38,6 +37,22 @@ def _temp_dir_with_config():
     with uth.TempDirContext():
         with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
             yield temp_config_name
+
+
+def _bare_creator(**args_kwargs):
+    """Bypass __init__ for tests that only need a CompilationDatabaseCreator
+    instance with ``.args`` set. Returns an uninitialized creator with
+    ``args = SimpleNamespace(**args_kwargs)``; callers that also need
+    ``.hunter`` / other attrs set them post-build.
+
+    Mirrors what ``TestCompilationDatabaseModuleFlags._make_creator`` does
+    minus the hunter stub. Distinct helper because most defensive-path
+    tests don't touch the module-flag pipeline at all and would only pay
+    the hunter-mock cost for nothing."""
+    cls = compiletools.compilation_database.CompilationDatabaseCreator
+    creator = cls.__new__(cls)
+    creator.args = SimpleNamespace(**args_kwargs)
+    return creator
 
 
 class TestCompilationDatabase:
@@ -477,10 +492,7 @@ class TestCompilationDatabase:
             cwd = os.getcwd()
             output_file = os.path.join(cwd, "compile_commands.json")
 
-            creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
-                compiletools.compilation_database.CompilationDatabaseCreator
-            )
-            creator.args = types.SimpleNamespace(verbose=0)
+            creator = _bare_creator(verbose=0)
 
             # Synthetic source paths: _write_database_impl runs realpath_sz on
             # cmd["file"] for de-duplication but does not require the files to
@@ -560,10 +572,7 @@ class TestCompilationDatabase:
             # Build a minimal stand-in for CompilationDatabaseCreator to invoke
             # the bound _update_symlink method without engaging hunter / args
             # plumbing that the surrounding test infra assembles.
-            creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
-                compiletools.compilation_database.CompilationDatabaseCreator
-            )
-            creator.args = types.SimpleNamespace(verbose=0)
+            creator = _bare_creator(verbose=0)
 
             creator._update_symlink(symlink_path, target_path)
             assert os.path.islink(symlink_path), f"First _update_symlink call should create symlink at {symlink_path}"
@@ -617,10 +626,7 @@ class TestCompilationDatabase:
             cwd = os.getcwd()
             output_file = os.path.join(cwd, "compile_commands.json")
 
-            creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
-                compiletools.compilation_database.CompilationDatabaseCreator
-            )
-            creator.args = types.SimpleNamespace(verbose=0)
+            creator = _bare_creator(verbose=0)
 
             # Synthetic source paths: _write_database_impl runs realpath_sz on
             # cmd["file"] for de-duplication but does not require the files to
@@ -718,10 +724,7 @@ class TestCompilationDatabase:
                 with open(path, "w") as fh:
                     fh.write("[]")
 
-            creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
-                compiletools.compilation_database.CompilationDatabaseCreator
-            )
-            creator.args = types.SimpleNamespace(verbose=0)
+            creator = _bare_creator(verbose=0)
 
             creator._update_symlink(symlink_path, target_a)
             assert os.path.islink(symlink_path), f"First _update_symlink call should create symlink at {symlink_path}"
@@ -1510,10 +1513,7 @@ class TestCompilationDatabaseModuleFlags:
                       module_imports=(), module_header_imports=()):
         """Build a CompilationDatabaseCreator with hunter stubbed to return a
         synthetic FileAnalysisResult shaped only enough for ``_module_kind_flags``."""
-        creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
-            compiletools.compilation_database.CompilationDatabaseCreator
-        )
-        creator.args = SimpleNamespace(CXX=cxx)
+        creator = _bare_creator(CXX=cxx)
         creator.hunter = MagicMock()
         creator.hunter._file_analysis_result = MagicMock(
             return_value=SimpleNamespace(
@@ -1601,10 +1601,7 @@ class TestCompilationDatabaseModuleFlags:
         synthetic file added after the analysis sweep), _module_kind_flags
         must degrade to [] rather than crash with AttributeError."""
 
-        creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
-            compiletools.compilation_database.CompilationDatabaseCreator
-        )
-        creator.args = SimpleNamespace(CXX="g++")
+        creator = _bare_creator(CXX="g++")
         creator.hunter = MagicMock()
         creator.hunter._file_analysis_result = MagicMock(return_value=None)
 
@@ -1615,10 +1612,7 @@ class TestCompilationDatabaseModuleFlags:
         and return [] — module-flag emission is best-effort augmentation and
         must never break compile_commands.json generation."""
 
-        creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
-            compiletools.compilation_database.CompilationDatabaseCreator
-        )
-        creator.args = SimpleNamespace(CXX="g++")
+        creator = _bare_creator(CXX="g++")
         creator.hunter = MagicMock()
         creator.hunter._file_analysis_result = MagicMock(side_effect=RuntimeError("analyzer down"))
 
@@ -1650,10 +1644,7 @@ class TestCompilationDatabaseDefensivePaths:
         treats an empty arguments[0] as an opaque command and reports the
         entire TU as unparseable."""
 
-        creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
-            compiletools.compilation_database.CompilationDatabaseCreator
-        )
-        creator.args = SimpleNamespace(
+        creator = _bare_creator(
             CXX="", CC="gcc", CPPFLAGS="", CXXFLAGS="", CFLAGS="",
             compilation_database_relative=False, verbose=0,
         )
@@ -1665,10 +1656,7 @@ class TestCompilationDatabaseDefensivePaths:
         _create_command_object must return None so the caller drops the
         entry from the CDB."""
 
-        creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
-            compiletools.compilation_database.CompilationDatabaseCreator
-        )
-        creator.args = SimpleNamespace(
+        creator = _bare_creator(
             CXX="", CC="", CPPFLAGS="", CXXFLAGS="", CFLAGS="",
             compilation_database_relative=False, verbose=0,
         )
@@ -1686,10 +1674,7 @@ class TestCompilationDatabaseDefensivePaths:
             with open(output_file, "w") as f:
                 f.write("not valid json{{")
 
-            creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
-                compiletools.compilation_database.CompilationDatabaseCreator
-            )
-            creator.args = types.SimpleNamespace(verbose=0)
+            creator = _bare_creator(verbose=0)
 
             file_a = os.path.join(cwd, "a.cpp")
             commands = [{"directory": cwd, "file": file_a, "arguments": ["c++", "-c", file_a]}]
@@ -1712,10 +1697,7 @@ class TestCompilationDatabaseDefensivePaths:
             output_file = os.path.join(cwd, "nested", "deeper", "compile_commands.json")
             assert not os.path.exists(os.path.dirname(output_file))
 
-            creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
-                compiletools.compilation_database.CompilationDatabaseCreator
-            )
-            creator.args = types.SimpleNamespace(verbose=0)
+            creator = _bare_creator(verbose=0)
 
             file_a = os.path.join(cwd, "a.cpp")
             commands = [{"directory": cwd, "file": file_a, "arguments": ["c++", "-c", file_a]}]
@@ -1743,10 +1725,7 @@ class TestCompilationDatabaseDefensivePaths:
             with open(sentinel, "w") as f:
                 f.write("keep me")
 
-            creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
-                compiletools.compilation_database.CompilationDatabaseCreator
-            )
-            creator.args = types.SimpleNamespace(verbose=0)
+            creator = _bare_creator(verbose=0)
 
             # Must not raise; must not turn the directory into a symlink.
             creator._update_symlink(symlink_path, target_path)
@@ -1769,10 +1748,7 @@ class TestCompilationDatabaseDefensivePaths:
         build heals it. Without this guard a single bad file would lock
         the user out of regenerating compile_commands.json entirely."""
 
-        creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
-            compiletools.compilation_database.CompilationDatabaseCreator
-        )
-        creator.args = SimpleNamespace(verbose=0, compilation_database_relative=False)
+        creator = _bare_creator(verbose=0, compilation_database_relative=False)
         creator.hunter = MagicMock()
         creator.hunter.huntsource = MagicMock(side_effect=RuntimeError("project on fire"))
 
