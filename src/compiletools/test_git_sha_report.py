@@ -14,28 +14,17 @@ def tmp_git_repo(tmp_path, monkeypatch):
     """Create a temporary git repository with a committed file."""
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
-    subprocess.run(
-        ["git", "config", "user.email", "test@test.com"],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-    )
-    subprocess.run(
-        ["git", "config", "user.name", "Test"],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-    )
+
+    def git(*args):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+    git("init")
+    git("config", "user.email", "test@test.com")
+    git("config", "user.name", "Test")
     # Create and commit a file
     (repo / "hello.txt").write_text("hello\n")
-    subprocess.run(["git", "add", "hello.txt"], cwd=repo, check=True, capture_output=True)
-    subprocess.run(
-        ["git", "commit", "-m", "init"],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-    )
+    git("add", "hello.txt")
+    git("commit", "-m", "init")
 
     monkeypatch.setattr("compiletools.git_sha_report.find_git_root", lambda *a, **kw: str(repo))
     monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda *a, **kw: str(repo))
