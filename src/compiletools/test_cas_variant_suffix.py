@@ -48,6 +48,21 @@ def _clear_apptools_cache():  # pyright: ignore[reportUnusedFunction]
     apptools.resetcallbacks()
 
 
+@pytest.fixture
+def conf_and_cwd(tmp_path):
+    """Set up axis-confs/extras.conf + sibling other/ cwd directory.
+
+    Returns (conf_path, other_cwd). Tests write their own conf body to
+    ``conf_path`` and pass ``other_cwd`` into the parse_fn (which
+    monkeypatch.chdir()s into it)."""
+    conf_dir = tmp_path / "axis-confs"
+    conf_dir.mkdir()
+    conf = conf_dir / "extras.conf"
+    other_cwd = tmp_path / "other"
+    other_cwd.mkdir()
+    return conf, other_cwd
+
+
 def _parse_with_variant(conf_path: str, third_cwd, monkeypatch, variant_token: str) -> argparse.Namespace:
     """Parse a single --config=<conf_path> with an explicit pinned variant.
 
@@ -102,19 +117,14 @@ PARSE_FNS = [
         ("cas-exedir", "cas_exedir"),
     ],
 )
-def test_user_supplied_cas_dir_gets_variant_appended(tmp_path, monkeypatch, key, attr, parse_fn):
+def test_user_supplied_cas_dir_gets_variant_appended(tmp_path, monkeypatch, conf_and_cwd, key, attr, parse_fn):
     """When the user supplies a bare ``cas-*dir`` path, the resolved
     value ends in ``/<variant>`` so the four CAS layers stay separated
     per variant without the user having to bake the token in by hand."""
     pool = tmp_path / "shared-pool"
     pool.mkdir()
-    conf_dir = tmp_path / "axis-confs"
-    conf_dir.mkdir()
-    conf = conf_dir / "extras.conf"
+    conf, other_cwd = conf_and_cwd
     conf.write_text(f"{key} = {pool}\n")
-
-    other_cwd = tmp_path / "other"
-    other_cwd.mkdir()
 
     args = parse_fn(str(conf), other_cwd, monkeypatch, PINNED_VARIANT)
     expected = os.path.join(str(pool), PINNED_VARIANT)
@@ -131,39 +141,29 @@ def test_user_supplied_cas_dir_gets_variant_appended(tmp_path, monkeypatch, key,
         ("cas-exedir", "cas_exedir"),
     ],
 )
-def test_idempotent_when_user_path_already_ends_in_variant(tmp_path, monkeypatch, key, attr, parse_fn):
+def test_idempotent_when_user_path_already_ends_in_variant(tmp_path, monkeypatch, conf_and_cwd, key, attr, parse_fn):
     """If the user-supplied path already ends in ``/<variant>``, do
     NOT append a second copy. Lets a user who already had a
     variant-suffixed path in their conf migrate to the auto-append
     contract with no edit needed."""
-    conf_dir = tmp_path / "axis-confs"
-    conf_dir.mkdir()
-    conf = conf_dir / "extras.conf"
+    conf, other_cwd = conf_and_cwd
     user_path = tmp_path / "shared-pool" / PINNED_VARIANT
     user_path.mkdir(parents=True)
     conf.write_text(f"{key} = {user_path}\n")
-
-    other_cwd = tmp_path / "other"
-    other_cwd.mkdir()
 
     args = parse_fn(str(conf), other_cwd, monkeypatch, PINNED_VARIANT)
     assert getattr(args, attr) == str(user_path), getattr(args, attr)
 
 
 @pytest.mark.parametrize("parse_fn", PARSE_FNS)
-def test_trailing_slash_does_not_double_slash(tmp_path, monkeypatch, parse_fn):
+def test_trailing_slash_does_not_double_slash(tmp_path, monkeypatch, conf_and_cwd, parse_fn):
     """A user value with a trailing ``/`` must produce a clean single-
     slash result. Guards against the naive ``value + '/' + variant``
     implementation."""
     pool = tmp_path / "shared-pool"
     pool.mkdir()
-    conf_dir = tmp_path / "axis-confs"
-    conf_dir.mkdir()
-    conf = conf_dir / "extras.conf"
+    conf, other_cwd = conf_and_cwd
     conf.write_text(f"cas-objdir = {pool}/\n")
-
-    other_cwd = tmp_path / "other"
-    other_cwd.mkdir()
 
     args = parse_fn(str(conf), other_cwd, monkeypatch, PINNED_VARIANT)
     expected = os.path.join(str(pool), PINNED_VARIANT)
@@ -173,19 +173,14 @@ def test_trailing_slash_does_not_double_slash(tmp_path, monkeypatch, parse_fn):
 
 @pytest.mark.parametrize("parse_fn", PARSE_FNS)
 @pytest.mark.parametrize("attr", ["cas_objdir", "cas_pchdir", "cas_pcmdir", "cas_exedir"])
-def test_default_path_is_not_double_variant_suffixed(tmp_path, monkeypatch, attr, parse_fn):
+def test_default_path_is_not_double_variant_suffixed(monkeypatch, conf_and_cwd, attr, parse_fn):
     """Regression: when no user-supplied ``cas-*dir`` value is given,
     the helper must not double-suffix the default. Defaults already
     incorporate the variant (either as ``cas-objdir/<variant>`` when
     gitroot is detected, or as ``bin/<variant>/obj`` when not), so the
     auto-append step must be a no-op for them."""
-    conf_dir = tmp_path / "axis-confs"
-    conf_dir.mkdir()
-    conf = conf_dir / "extras.conf"
+    conf, other_cwd = conf_and_cwd
     conf.write_text("# nothing here\n")
-
-    other_cwd = tmp_path / "other"
-    other_cwd.mkdir()
 
     args = parse_fn(str(conf), other_cwd, monkeypatch, PINNED_VARIANT)
     value = getattr(args, attr)
@@ -193,7 +188,7 @@ def test_default_path_is_not_double_variant_suffixed(tmp_path, monkeypatch, attr
 
 
 @pytest.mark.parametrize("parse_fn", PARSE_FNS)
-def test_partial_variant_match_does_not_suppress_append(tmp_path, monkeypatch, parse_fn):
+def test_partial_variant_match_does_not_suppress_append(tmp_path, monkeypatch, conf_and_cwd, parse_fn):
     """A user value whose final path segment merely *contains* the
     variant token but is not equal to it must still get the variant
     appended. Guards against a naive ``endswith(variant)`` check that
@@ -201,20 +196,15 @@ def test_partial_variant_match_does_not_suppress_append(tmp_path, monkeypatch, p
     directory) even though it's a distinct path."""
     pool = tmp_path / "shared-pool" / (PINNED_VARIANT + "_old")
     pool.mkdir(parents=True)
-    conf_dir = tmp_path / "axis-confs"
-    conf_dir.mkdir()
-    conf = conf_dir / "extras.conf"
+    conf, other_cwd = conf_and_cwd
     conf.write_text(f"cas-objdir = {pool}\n")
-
-    other_cwd = tmp_path / "other"
-    other_cwd.mkdir()
 
     args = parse_fn(str(conf), other_cwd, monkeypatch, PINNED_VARIANT)
     expected = os.path.join(str(pool), PINNED_VARIANT)
     assert args.cas_objdir == expected, args.cas_objdir
 
 
-def test_direct_parse_without_resolver_leaves_suffix_unapplied(tmp_path, monkeypatch):
+def test_direct_parse_without_resolver_leaves_suffix_unapplied(tmp_path, monkeypatch, conf_and_cwd):
     """Pins the load-bearing contract: ``cap.parse_args(argv)`` alone
     does NOT apply the variant suffix; ``resolve_cas_directory_arguments``
     is required.
@@ -230,13 +220,9 @@ def test_direct_parse_without_resolver_leaves_suffix_unapplied(tmp_path, monkeyp
     called whenever ``add_cas_directory_arguments`` is."""
     pool = tmp_path / "shared-pool"
     pool.mkdir()
-    conf_dir = tmp_path / "axis-confs"
-    conf_dir.mkdir()
-    conf = conf_dir / "extras.conf"
+    conf, other_cwd = conf_and_cwd
     conf.write_text(f"cas-objdir = {pool}\n")
 
-    other_cwd = tmp_path / "other"
-    other_cwd.mkdir()
     monkeypatch.chdir(str(other_cwd))
     monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
     argv = ["--config", str(conf), "--no-git-root", f"--variant={PINNED_VARIANT}"]
