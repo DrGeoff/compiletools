@@ -6,8 +6,9 @@ Continue work in /home/gericksson/compiletools-worktree/master.
 
   Current state:
   - Latest commit:
-    0d9a5ad6 test: delegate TestMakefileRealclean._make_args to module-level helper
+    8e99a784 test: extract _make_timing_backend module helper for timing-wrap tests
   - Prior related commits:
+    0d9a5ad6 test: delegate TestMakefileRealclean._make_args to module-level helper
     8fc6abe1 test: extract _args helper for SimpleNamespace ceremony in test_apptools_include_paths
     f091b466 test: extract _patch_proc_mounts_unavailable helper for 3 sites in test_filesystem_utils
     a378bb88 test: extract _bindir_objdir_argv helper for 3 sites in test_cake_diagnostics
@@ -130,6 +131,31 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     e5b18a45 test: parametrize helper cases
     7009bd6a test: simplify pytest cases
   - Latest commit touched:
+    src/compiletools/test_makefile_backend.py (-12 net, +16/-28):
+    `TestTimingWrapBSDDate` and `TestTimingWrapEmitsValidJSON` each
+    defined byte-identical `_make_args` + `_backend_with_timer` helper
+    pairs (4 methods total, 12 lines duplicated). Both built a
+    MakefileBackend with the same 3-field SimpleNamespace
+    (verbose=0, file_locking=False, makefilename="Makefile"),
+    MagicMock hunter, and `_filesystem_type=None`. Extracted as
+    module-level `_make_timing_backend()` alongside the existing
+    `_default_makefile_args` helper (Round 18 sibling). 4 call sites
+    converted (test_wrap_prefers_epochrealtime,
+    test_wrap_validates_date_output, test_bsd_date_simulation_yields_
+    well_formed_json, test_wrapped_recipe_emits_valid_json); 4
+    method definitions removed (2 per class). Class-level docstrings
+    on both classes (the BSD-date regression rationale and the
+    JSONL validity regression rationale) left intact — only the
+    intermediate `def _make_args` + `def _backend_with_timer`
+    methods between docstring and tests were removed. Helper is
+    function-level (no self) so no fixture-scope or order drift
+    is possible — each call constructs a fresh backend, exactly
+    as before. Codex /codex:adversarial-review APPROVE (verified
+    helper at lines 73-82 is functionally equivalent to removed
+    helpers at every call site; no assertions/docstrings dropped;
+    AST-parse confirmed file validity). 9 tests pass in 0.24s.
+
+  - Earlier prior commit touched:
     src/compiletools/test_makefile_backend.py (-13 net, +10/-23):
     `TestMakefileRealclean._make_args` previously duplicated the 19-field
     SimpleNamespace defaults of the module-level `_default_makefile_args`
@@ -169,7 +195,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     APPROVE (verified helper preserves 5-attribute shape including
     verbose=0; all 4 sites equivalent). 12 tests pass.
 
-  - Earlier prior commit touched:
+  - Older prior commit touched:
     src/compiletools/test_filesystem_utils.py (-9 net, +15/-24):
     extracted module-level `_patch_proc_mounts_unavailable(monkeypatch,
     exc)` helper for the recurring 8-line `real_open = builtins.open` +
@@ -424,8 +450,8 @@ Continue work in /home/gericksson/compiletools-worktree/master.
 
   - Verification for latest commit passed:
     ruff/pyright/git diff --check all green
-    pytest -q src/compiletools/test_makefile_backend.py::TestMakefileRealclean
-      2 passed in 0.17s
+    pytest -q src/compiletools/test_makefile_backend.py::TestTimingWrapBSDDate src/compiletools/test_makefile_backend.py::TestTimingWrapEmitsValidJSON
+      9 passed in 0.24s
   - Final git status was clean.
 
   Start by running:
@@ -695,11 +721,16 @@ Continue work in /home/gericksson/compiletools-worktree/master.
       only changed verbose; 5 class methods deleted, 11 callers updated.
       Follow-up `_write_makefile(backend, graph, tmp_path)`
       collapses the 3-line tmp_path/open/generate block in 4
-      TestMakeRunsTestsInBuildPhase tests. Latest follow-up:
+      TestMakeRunsTestsInBuildPhase tests. Follow-up:
       TestMakefileRealclean._make_args now delegates to module-level
       _default_makefile_args via dict-spread idiom — was a 19-field
       verbatim duplicate differing only in cas_objdir / bindir defaults;
-      -13 net lines)
+      -13 net lines. Latest follow-up: extracted module-level
+      _make_timing_backend() helper alongside _default_makefile_args —
+      TestTimingWrapBSDDate and TestTimingWrapEmitsValidJSON each had
+      byte-identical _make_args + _backend_with_timer methods [4 methods,
+      12 lines duplicated]; 4 call sites converted, 4 methods removed,
+      -12 net lines.)
     test_makefile (`_render_makefile(args, *, filesystem_type, graph)`
       module-level helper collapses the 8-line backend+graph+StringIO+
       _write_makefile incantation in 12 sites across
