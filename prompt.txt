@@ -6,8 +6,9 @@ Continue work in /home/gericksson/compiletools-worktree/master.
 
   Current state:
   - Latest commit:
-    18ff8de1 test: convert 8 tempfile sites to tmp_path in test_magicflags_unit
+    2a90972c test: extract _render_backend_to_string helper in test_backend_integration
   - Prior related commits:
+    18ff8de1 test: convert 8 tempfile sites to tmp_path in test_magicflags_unit
     94259cdc test: extend _make_pch_entry with write_manifest/bad_manifest, mirroring _make_pcm_entry
     5d1637c9 test: extend _build helper with anchor_root override in test_macrostate_hash_canonicalized
     e18947da test: extract cas + user fixtures in test_cas_publish
@@ -122,6 +123,23 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     e5b18a45 test: parametrize helper cases
     7009bd6a test: simplify pytest cases
   - Latest commit touched:
+    src/compiletools/test_backend_integration.py (-10 net, +39/-49):
+    extracted module-level `_render_backend_to_string(backend_name,
+    tmp_path) -> (content, graph)` helper that opens uth.ParserContext,
+    calls _setup_backend_for_source, allocates io.StringIO, runs
+    backend.generate(graph, output=buf), returns (buf.getvalue(), graph).
+    4 tests in TestBackendGenerateOutput (make/ninja/bazel/cmake) each
+    shed the same 5-line preamble. make/ninja still iterate
+    graph.rules_by_type("compile"); bazel/cmake use `_graph` unpacking
+    matching the file's existing `_args`/`_dirs` convention (lines 71,
+    138, 564). ParserContext scope is behavior-equivalent: it gates
+    parser/callback globals and the assertions inspect rendered string +
+    in-memory BuildGraph (neither touches argparse state). Rationale
+    comments preserved verbatim ("# Tab-indented recipes", "# Should
+    have at least one source file referenced"). Codex review PASS.
+    4 TestBackendGenerateOutput tests pass.
+
+  - Prior commit touched:
     src/compiletools/test_magicflags_unit.py (-24 net, +77/-101):
     converted 8 tempfile.{NamedTemporaryFile,TemporaryDirectory}
     sites to pytest's tmp_path fixture. 4 NamedTemporaryFile sites
@@ -138,7 +156,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     review timed out at 10min (6th consecutive); self-review
     confirmed mechanical equivalence at every site. 27 tests pass.
 
-  - Prior commit touched:
+  - Earlier prior commit touched:
     src/compiletools/test_cache_report_pch.py (-9 net, +24/-15):
     extend existing `_make_pch_entry` helper with `write_manifest=True`
     and `bad_manifest=False` keyword-only options, mirroring the
@@ -155,7 +173,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     default) — immaterial since assertions are on .size_bytes only.
     Codex review PASS. 13 tests pass.
 
-  - Earlier prior commit touched:
+  - Yet earlier prior commit touched:
     src/compiletools/test_macrostate_hash_canonicalized.py (-11 net, +10/-21):
     extend existing `_build(prefix, *, extra_cxx, anchor_root=None)`
     helper with optional `anchor_root` kwarg (default None = use prefix).
@@ -169,7 +187,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     confirmed byte-equivalence with the removed inline MacroState
     fields. 3 tests pass.
 
-  - Further prior commit touched:
+  - Further yet earlier prior commit touched:
     src/compiletools/test_cas_publish.py (-8 net, +19/-27):
     module-level `cas(tmp_path)` and `user(tmp_path)` fixtures replace
     the 2-line `cas = _make_cas_entry(tmp_path); user = tmp_path /
@@ -270,7 +288,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
 
   - Verification for latest commit passed:
     ruff/pyright/git diff --check all green
-    pytest -q src/compiletools/test_magicflags_unit.py: 27 passed in 0.47s
+    pytest -q src/compiletools/test_backend_integration.py::TestBackendGenerateOutput: 4 passed in 1.76s
   - Final git status was clean.
 
   Start by running:
@@ -599,6 +617,14 @@ Continue work in /home/gericksson/compiletools-worktree/master.
       corrupt-manifest tests collapse to one-line helper calls.
       gch_size + manifest_pad become keyword-only [all 10 existing
       callers already passed them as keywords]. -9 net lines.)
+    test_backend_integration (module-level `_render_backend_to_string(
+      backend_name, tmp_path)` helper opens uth.ParserContext, calls
+      _setup_backend_for_source, renders to io.StringIO, returns
+      (content, graph). 4 tests in TestBackendGenerateOutput
+      (make/ninja/bazel/cmake) each shed the same 5-line preamble.
+      make/ninja still iterate graph.rules_by_type("compile");
+      bazel/cmake use `_graph` matching existing `_args`/`_dirs`
+      convention. -10 net lines.)
 
   Notes for future rounds:
     Remaining tempfile.TemporaryDirectory sites:
