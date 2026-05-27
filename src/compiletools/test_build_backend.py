@@ -1411,6 +1411,15 @@ class TestTransitiveHeaderModuleImports:
             module_header_imports=(),
         )
 
+    def _result(self, *, exports=(), implements=(), imports=(), header_imports=()):
+        """Sibling of ``_empty_result`` for cases that set 1-2 fields and leave the rest empty."""
+        return SimpleNamespace(
+            module_exports=exports,
+            module_implements=implements,
+            module_imports=imports,
+            module_header_imports=header_imports,
+        )
+
     def _make_backend(self, tmp_path, *, cxx, kind, per_file_results, header_deps_for):
         args = make_backend_args(tmp_path, CXX=cxx)
         hunter = make_mock_hunter(sources=list(per_file_results.keys()))
@@ -1437,12 +1446,7 @@ class TestTransitiveHeaderModuleImports:
         wrap = "/src/wrap.h"
         per_file = {
             main: self._empty_result(),
-            wrap: SimpleNamespace(
-                module_exports=(),
-                module_implements=(),
-                module_imports=("M",),
-                module_header_imports=(),
-            ),
+            wrap: self._result(imports=("M",)),
         }
         backend = self._make_backend(
             tmp_path,
@@ -1462,12 +1466,7 @@ class TestTransitiveHeaderModuleImports:
         wrap = "/src/wrap.h"
         per_file = {
             main: self._empty_result(),
-            wrap: SimpleNamespace(
-                module_exports=(),
-                module_implements=(),
-                module_imports=("M",),
-                module_header_imports=(),
-            ),
+            wrap: self._result(imports=("M",)),
         }
         backend = self._make_backend(
             tmp_path,
@@ -1500,12 +1499,7 @@ class TestTransitiveHeaderModuleImports:
         wrap = "/src/wrap.h"
         per_file = {
             main: self._empty_result(),
-            wrap: SimpleNamespace(
-                module_exports=(),
-                module_implements=(),
-                module_imports=(),
-                module_header_imports=("<vector>",),
-            ),
+            wrap: self._result(header_imports=("<vector>",)),
         }
         backend = self._make_backend(
             tmp_path,
@@ -1533,12 +1527,7 @@ class TestTransitiveHeaderModuleImports:
         wrap = "/src/wrap.h"
         per_file = {
             main: self._empty_result(),
-            wrap: SimpleNamespace(
-                module_exports=(),
-                module_implements=(),
-                module_imports=(),
-                module_header_imports=("<vector>", '"local.h"'),
-            ),
+            wrap: self._result(header_imports=("<vector>", '"local.h"')),
         }
         backend = self._make_backend(
             tmp_path,
@@ -1574,12 +1563,7 @@ class TestTransitiveHeaderModuleImports:
         wrap = "/src/wrap.h"
         per_file = {
             main: self._empty_result(),
-            wrap: SimpleNamespace(
-                module_exports=(),
-                module_implements=(),
-                module_imports=(":basic",),
-                module_header_imports=(),
-            ),
+            wrap: self._result(imports=(":basic",)),
         }
         backend = self._make_backend(
             tmp_path,
@@ -1596,12 +1580,7 @@ class TestTransitiveHeaderModuleImports:
         wrap = "/src/wrap.h"
         per_file = {
             main: self._empty_result(),
-            wrap: SimpleNamespace(
-                module_exports=(),
-                module_implements=(),
-                module_imports=("M",),
-                module_header_imports=(),
-            ),
+            wrap: self._result(imports=("M",)),
         }
         backend = self._make_backend(
             tmp_path,
@@ -1628,12 +1607,7 @@ class TestTransitiveHeaderModuleImports:
         wrap = "/src/wrap.h"
         per_file = {
             main: self._empty_result(),
-            wrap: SimpleNamespace(
-                module_exports=(),
-                module_implements=(),
-                module_imports=("M",),
-                module_header_imports=(),
-            ),
+            wrap: self._result(imports=("M",)),
         }
         backend = self._make_backend(
             tmp_path,
@@ -1683,12 +1657,7 @@ class TestTransitiveHeaderModuleImports:
         wrap = "/src/wrap.h"
         per_file = {
             main: self._empty_result(),
-            wrap: SimpleNamespace(
-                module_exports=(),
-                module_implements=(),
-                module_imports=(":basic",),
-                module_header_imports=(),
-            ),
+            wrap: self._result(imports=(":basic",)),
         }
         backend = self._make_backend(
             tmp_path,
@@ -1722,12 +1691,7 @@ class TestTransitiveHeaderModuleImports:
         wrap = "/src/wrap.h"
         per_file = {
             main: self._empty_result(),
-            wrap: SimpleNamespace(
-                module_exports=(),
-                module_implements=(),
-                module_imports=("M",),
-                module_header_imports=(),
-            ),
+            wrap: self._result(imports=("M",)),
         }
         backend = self._make_backend(
             tmp_path,
