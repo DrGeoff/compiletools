@@ -8,6 +8,20 @@ import pytest
 import compiletools.compiler_macros as cm
 
 
+def _mock_subprocess_result(stdout: str = "", returncode: int = 0) -> MagicMock:
+    """Build a MagicMock shaped like a ``subprocess.run`` CompletedProcess.
+
+    Used by tests that patch ``subprocess.run`` and only care about
+    ``.returncode`` / ``.stdout``. Keeps the boilerplate at each site to
+    a single line so the test body stays focused on the behaviour under
+    assertion.
+    """
+    result = MagicMock()
+    result.returncode = returncode
+    result.stdout = stdout
+    return result
+
+
 class TestCompilerMacros:
     """Test the dynamic compiler macro detection functionality."""
 
@@ -22,17 +36,14 @@ class TestCompilerMacros:
 
     def test_get_compiler_macros_success(self):
         """Test successful querying of compiler macros."""
-        # Mock successful subprocess call
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = """#define __GNUC__ 11
+        stdout = """#define __GNUC__ 11
 #define __GNUC_MINOR__ 2
 #define __GNUC_PATCHLEVEL__ 0
 #define __VERSION__ "11.2.0"
 #define __x86_64__ 1
 #define __linux__ 1"""
 
-        with patch("subprocess.run", return_value=mock_result):
+        with patch("subprocess.run", return_value=_mock_subprocess_result(stdout=stdout)):
             macros = cm.get_compiler_macros("gcc", verbose=0)
             assert "__GNUC__" in macros
             assert macros["__GNUC__"] == "11"
@@ -45,20 +56,14 @@ class TestCompilerMacros:
 
     def test_get_compiler_macros_with_quotes(self):
         """Test handling of macros with quoted values."""
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = '#define __VERSION__ "gcc version 11.2.0"'
-
-        with patch("subprocess.run", return_value=mock_result):
+        stdout = '#define __VERSION__ "gcc version 11.2.0"'
+        with patch("subprocess.run", return_value=_mock_subprocess_result(stdout=stdout)):
             macros = cm.get_compiler_macros("gcc", verbose=0)
             assert macros["__VERSION__"] == "gcc version 11.2.0"
 
     def test_get_compiler_macros_failure_nonzero_return(self):
         """Test handling of non-zero return code."""
-        mock_result = MagicMock()
-        mock_result.returncode = 1
-
-        with patch("subprocess.run", return_value=mock_result):
+        with patch("subprocess.run", return_value=_mock_subprocess_result(returncode=1)):
             macros = cm.get_compiler_macros("bad-compiler", verbose=0)
             assert macros == {}
 
@@ -192,11 +197,7 @@ class TestQueryHasFunction:
     )
     def test_uses_compiler_preprocessor_result(self, stdout, expression, expected):
         """Mock compiler preprocessor output containing the query result."""
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = stdout
-
-        with patch("subprocess.run", return_value=mock_result):
+        with patch("subprocess.run", return_value=_mock_subprocess_result(stdout=stdout)):
             assert cm.query_has_function("gcc", expression) == expected
 
     def test_returns_0_for_empty_compiler(self):
@@ -215,10 +216,7 @@ class TestQueryHasFunction:
 
     def test_returns_0_on_nonzero_return_code(self):
         """Non-zero return code should return 0."""
-        mock_result = MagicMock()
-        mock_result.returncode = 1
-
-        with patch("subprocess.run", return_value=mock_result):
+        with patch("subprocess.run", return_value=_mock_subprocess_result(returncode=1)):
             assert cm.query_has_function("gcc", "__has_include(<iostream>)") == 0
 
     def test_lru_cache_avoids_repeated_calls(self):
@@ -264,11 +262,7 @@ class TestQueryHasFunction:
 
     def test_cppflags_passed_to_compiler(self):
         """CPPFLAGS should be inserted into the compiler command."""
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = "1\n"
-
-        with patch("subprocess.run", return_value=mock_result) as mock_run:
+        with patch("subprocess.run", return_value=_mock_subprocess_result(stdout="1\n")) as mock_run:
             cm.query_has_function("gcc", "__has_include(<foo.h>)", cppflags="-I/usr/local/include")
             args_used = mock_run.call_args[0][0]
             assert "-I/usr/local/include" in args_used
