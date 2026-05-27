@@ -301,39 +301,36 @@ class TestSubstituteCXXForMissing:
 
 
 class TestAddIncludePathsToFlags:
-    def test_adds_include_paths(self):
-        args = SimpleNamespace(
+    def _args(self, *, cppflags="-Wall", verbose=0):
+        """Build the SimpleNamespace shape that ``_add_include_paths_to_flags`` expects.
+
+        INCLUDE / CFLAGS / CXXFLAGS are invariant across this class's tests; only
+        CPPFLAGS (to seed an existing -I entry) and verbose (to trigger the print
+        path) ever vary. Helper hides those 3 invariants so call sites highlight
+        the per-test deviation."""
+        return SimpleNamespace(
             INCLUDE="/tmp/inc",
-            CPPFLAGS="-Wall",
+            CPPFLAGS=cppflags,
             CFLAGS="-Wall",
             CXXFLAGS="-Wall",
-            verbose=0,
+            verbose=verbose,
         )
+
+    def test_adds_include_paths(self):
+        args = self._args()
         _add_include_paths_to_flags(args)
         assert "-I /tmp/inc" in args.CPPFLAGS
         assert "-I /tmp/inc" in args.CFLAGS
         assert "-I /tmp/inc" in args.CXXFLAGS
 
     def test_no_duplicate_include_paths(self):
-        args = SimpleNamespace(
-            INCLUDE="/tmp/inc",
-            CPPFLAGS="-Wall -I /tmp/inc",
-            CFLAGS="-Wall",
-            CXXFLAGS="-Wall",
-            verbose=0,
-        )
+        args = self._args(cppflags="-Wall -I /tmp/inc")
         _add_include_paths_to_flags(args)
         # /tmp/inc already a proper -I entry in CPPFLAGS; do not add again.
         assert args.CPPFLAGS.count("/tmp/inc") == 1
 
     def test_verbose_include_print(self):
-        args = SimpleNamespace(
-            INCLUDE="/tmp/inc",
-            CPPFLAGS="-Wall",
-            CFLAGS="-Wall",
-            CXXFLAGS="-Wall",
-            verbose=6,
-        )
+        args = self._args(verbose=6)
         with patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
             _add_include_paths_to_flags(args)
         assert "include" in mock_stdout.getvalue().lower()
