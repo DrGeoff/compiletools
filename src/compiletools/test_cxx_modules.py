@@ -1456,6 +1456,53 @@ class TestFindSystemStdModuleSource:
         assert compiletools.apptools.find_system_std_module_source("/bin/false", "msvc") is None
         assert compiletools.apptools.find_system_std_module_source(None, "gcc") is None
 
+    def test_gcc_handles_ccache_wrapper(self):
+        """``CXX = ccache g++`` must resolve to the same std-module source as
+        bare ``g++``. Pre-fix the wrapper string slipped past ``shutil.which``
+        and the subprocess exec failed silently, producing ``None`` and
+        breaking ``import std;`` downstream."""
+
+        cxx = _which("g++")
+        if not cxx:
+            pytest.skip("no g++ on PATH")
+        baseline = compiletools.apptools.find_system_std_module_source(cxx, "gcc")
+        if baseline is None:
+            pytest.skip("g++ doesn't ship bits/std.cc on this host")
+        if _which("ccache") is None:
+            pytest.skip("ccache not on PATH")
+        # Use the basename so the wrapper string is the exact ``ccache g++``
+        # shape the bug report flagged.
+        wrapped = f"ccache {os.path.basename(cxx)}"
+        # Bypass the lru_cache so the prior bare-cxx call doesn't shadow this.
+        compiletools.apptools.find_system_std_module_source.cache_clear()
+        wrapped_path = compiletools.apptools.find_system_std_module_source(wrapped, "gcc")
+        assert wrapped_path == baseline, (
+            f"ccache wrapper should resolve to the same std-module source as bare g++; "
+            f"got {wrapped_path!r} vs baseline {baseline!r}"
+        )
+
+    def test_clang_handles_ccache_wrapper(self):
+        """Symmetric coverage for the clang branch of ``find_system_std_module_source``.
+        The clang branch walks up from the resolved binary path; a literal
+        ``"ccache clang++"`` string short-circuits to a nonsensical install
+        root and returns ``None`` rather than the real ``std.cppm``."""
+
+        cxx = _which("clang++")
+        if not cxx:
+            pytest.skip("no clang++ on PATH")
+        baseline = compiletools.apptools.find_system_std_module_source(cxx, "clang")
+        if baseline is None:
+            pytest.skip("clang doesn't ship libc++ std.cppm on this host")
+        if _which("ccache") is None:
+            pytest.skip("ccache not on PATH")
+        wrapped = f"ccache {os.path.basename(cxx)}"
+        compiletools.apptools.find_system_std_module_source.cache_clear()
+        wrapped_path = compiletools.apptools.find_system_std_module_source(wrapped, "clang")
+        assert wrapped_path == baseline, (
+            f"ccache wrapper should resolve to the same std-module source as bare clang++; "
+            f"got {wrapped_path!r} vs baseline {baseline!r}"
+        )
+
 
 @requires_cxx_modules
 def test_cxx_modules_split_implementation_unit(tmp_path, monkeypatch):

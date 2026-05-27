@@ -1929,7 +1929,20 @@ def find_system_std_module_source(cxx: str | None, kind: str) -> str | None:
     """
     if not cxx or kind not in ("gcc", "clang"):
         return None
-    resolved = shutil.which(cxx) or cxx
+    # Handle compiler-wrapper strings like ``ccache g++`` / ``distcc clang++``:
+    # ``shutil.which("ccache g++")`` returns None (no binary literally named
+    # ``"ccache g++"``), so falling back to the original string would feed
+    # subprocess.run an unfindable argv0 (gcc branch) or os.path.realpath an
+    # unresolvable path (clang branch) and silently return None. Mirror
+    # ``compiler_kind``'s raw-string fallback: if the bare string isn't on
+    # PATH, retry with the last whitespace-separated token (the real driver
+    # after the wrapper).
+    resolved = shutil.which(cxx)
+    if resolved is None and " " in cxx:
+        last = cxx.rsplit(None, 1)[-1]
+        resolved = shutil.which(last) or last
+    elif resolved is None:
+        resolved = cxx
     if kind == "gcc":
         # `g++ -print-search-dirs` reports `install: <path-to-bin>/../lib/gcc/<triple>/<ver>/`
         try:
