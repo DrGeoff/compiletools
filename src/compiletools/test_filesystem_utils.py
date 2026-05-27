@@ -29,6 +29,18 @@ def _clear_filesystem_type_cache():
     yield
 
 
+def _patch_proc_mounts_unavailable(monkeypatch, exc):
+    """Make ``open("/proc/mounts", ...)`` raise ``exc``; other paths pass through."""
+    real_open = builtins.open
+
+    def fake_open(path, *args, **kwargs):
+        if str(path) == "/proc/mounts":
+            raise exc
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", fake_open)
+
+
 def test_get_filesystem_type_returns_string():
     """Filesystem type should always return a non-empty string."""
     fstype = get_filesystem_type("/")
@@ -181,14 +193,7 @@ def test_atomic_output_file_exception_cleans_up(tmp_path):
 
 def test_get_filesystem_type_proc_mounts_unavailable(monkeypatch):
     """Falls back when /proc/mounts is not available."""
-    real_open = builtins.open
-
-    def fake_open(path, *args, **kwargs):
-        if str(path) == "/proc/mounts":
-            raise FileNotFoundError("no /proc/mounts")
-        return real_open(path, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "open", fake_open)
+    _patch_proc_mounts_unavailable(monkeypatch, FileNotFoundError("no /proc/mounts"))
 
     # Also mock subprocess to return something
     orig_run = subprocess.run
@@ -210,14 +215,7 @@ def test_get_filesystem_type_proc_mounts_unavailable(monkeypatch):
 
 def test_get_filesystem_type_all_fallbacks_fail(monkeypatch):
     """Returns 'unknown' when all detection methods fail."""
-    real_open = builtins.open
-
-    def fake_open(path, *args, **kwargs):
-        if str(path) == "/proc/mounts":
-            raise FileNotFoundError("no /proc/mounts")
-        return real_open(path, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "open", fake_open)
+    _patch_proc_mounts_unavailable(monkeypatch, FileNotFoundError("no /proc/mounts"))
 
     def fake_run(cmd, *args, **kwargs):
         raise OSError("no stat")
@@ -229,14 +227,7 @@ def test_get_filesystem_type_all_fallbacks_fail(monkeypatch):
 
 def test_get_filesystem_type_stat_nonzero_returncode(monkeypatch):
     """Returns 'unknown' when stat command fails with non-zero return code."""
-    real_open = builtins.open
-
-    def fake_open(path, *args, **kwargs):
-        if str(path) == "/proc/mounts":
-            raise PermissionError("denied")
-        return real_open(path, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "open", fake_open)
+    _patch_proc_mounts_unavailable(monkeypatch, PermissionError("denied"))
 
     orig_run = subprocess.run
 
