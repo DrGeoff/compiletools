@@ -19,11 +19,6 @@ def _reset_diagnostics_cache():
     diagnostics._reset_for_tests()
 
 
-def _args(*, diagnostics_dir=None, bindir=None) -> SimpleNamespace:
-    """Build the SimpleNamespace shape that ``resolve_diagnostics_dir`` consumes."""
-    return SimpleNamespace(diagnostics_dir=diagnostics_dir, bindir=bindir)
-
-
 def test_invocation_id_format():
     iid = diagnostics.invocation_id()
     assert re.match(r"^\d{8}T\d{6}-\d+$", iid), iid
@@ -46,7 +41,7 @@ def test_reset_for_tests_clears_cache():
 
 def test_resolve_diagnostics_dir_uses_explicit_dir(tmp_path):
     parent = tmp_path / "diag"
-    args = _args(diagnostics_dir=str(parent))
+    args = SimpleNamespace(diagnostics_dir=str(parent), bindir=None)
     result = diagnostics.resolve_diagnostics_dir(args)
     iid = diagnostics.invocation_id()
     assert result == os.path.join(str(parent), iid)
@@ -55,7 +50,7 @@ def test_resolve_diagnostics_dir_uses_explicit_dir(tmp_path):
 
 def test_resolve_diagnostics_dir_falls_back_to_bindir(tmp_path):
     bindir = tmp_path / "bin"
-    args = _args(bindir=str(bindir))
+    args = SimpleNamespace(diagnostics_dir=None, bindir=str(bindir))
     result = diagnostics.resolve_diagnostics_dir(args)
     iid = diagnostics.invocation_id()
     assert result == os.path.join(str(bindir), "diagnostics", iid)
@@ -63,7 +58,7 @@ def test_resolve_diagnostics_dir_falls_back_to_bindir(tmp_path):
 
 
 def test_resolve_diagnostics_dir_idempotent(tmp_path):
-    args = _args(diagnostics_dir=str(tmp_path / "diag"))
+    args = SimpleNamespace(diagnostics_dir=str(tmp_path / "diag"), bindir=None)
     first = diagnostics.resolve_diagnostics_dir(args)
     second = diagnostics.resolve_diagnostics_dir(args)
     assert first == second
@@ -71,14 +66,14 @@ def test_resolve_diagnostics_dir_idempotent(tmp_path):
 
 
 def test_resolve_diagnostics_dir_raises_when_neither_set():
-    args = _args()
+    args = SimpleNamespace(diagnostics_dir=None, bindir=None)
     with pytest.raises(RuntimeError):
         diagnostics.resolve_diagnostics_dir(args)
 
 
 def test_resolve_diagnostics_dir_empty_string_falls_back_to_bindir(tmp_path):
     bindir = tmp_path / "bin"
-    args = _args(diagnostics_dir="", bindir=str(bindir))
+    args = SimpleNamespace(diagnostics_dir="", bindir=str(bindir))
     result = diagnostics.resolve_diagnostics_dir(args)
     iid = diagnostics.invocation_id()
     assert result == os.path.join(str(bindir), "diagnostics", iid)
