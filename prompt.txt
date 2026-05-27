@@ -6,8 +6,9 @@ Continue work in /home/gericksson/compiletools-worktree/master.
 
   Current state:
   - Latest commit:
-    49b36adb test: unify _build_static_lib_sample + _build_shared_lib_sample into one helper
+    b9fc1ea6 test: extend _make_exe_entry with bad_manifest kwarg, mirroring sibling helpers
   - Prior related commits:
+    49b36adb test: unify _build_static_lib_sample + _build_shared_lib_sample into one helper
     9b39c180 test: extract _cache_stats helper for 4 cross-workspace stat closures
     2a90972c test: extract _render_backend_to_string helper in test_backend_integration
     18ff8de1 test: convert 8 tempfile sites to tmp_path in test_magicflags_unit
@@ -125,6 +126,28 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     e5b18a45 test: parametrize helper cases
     7009bd6a test: simplify pytest cases
   - Latest commit touched:
+    src/compiletools/test_cache_report_exedir.py (+6 net, +14/-8):
+    extended `_make_exe_entry` with keyword-only `bad_manifest=False`,
+    mirroring the `write_manifest`/`bad_manifest` shape already on
+    `_make_pch_entry` (test_cache_report_pch.py) and `_make_pcm_entry`
+    (test_cache_report_pcm.py). One call site
+    (test_scan_exedir_handles_corrupt_manifest) collapses from
+    "_make_exe_entry + pathlib.write_text-overwrite" to a single
+    helper call. Final on-disk manifest bytes byte-identical
+    (`{not: json`). The inline `# Overwrite the manifest with junk.`
+    comment is absorbed by the helper docstring's "writes corrupt
+    JSON instead of a valid payload" line. Net diff is +6 because
+    the docstring expansion + kwarg dispatch outweighs the 5-line
+    test collapse; the win is API symmetry across the 3-helper trio
+    (precedented by 94259cdc which made the same change to
+    _make_pch_entry mirroring _make_pcm_entry). Initial Codex (via
+    invoke-agent) timed out at 10min; switched to
+    `/codex:adversarial-review` slash command per user request — that
+    invocation returned APPROVE (verified bytes byte-identical, no
+    observable scan_exedir difference, keyword-only kwarg breaks no
+    callers). 20 tests pass.
+
+  - Prior commit touched:
     src/compiletools/test_e2e_cas_reuse_across_workspaces.py (-6 net, +16/-22):
     unified _build_static_lib_sample + _build_shared_lib_sample (95%
     identical) into one parametrized _build_lib_sample(workdir,
@@ -137,7 +160,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     in ("static", "dynamic") guard added for private-helper misuse.
     Codex review PASS. 2 modified tests pass.
 
-  - Prior commit touched:
+  - Earlier prior commit touched:
     src/compiletools/test_e2e_cas_reuse_across_workspaces.py (-1 net, +23/-24):
     extracted module-level `_cache_stats(cas_dir, suffix) ->
     {name: (st_ino, st_mtime)}` helper that absorbs 4 inner-closure
@@ -153,7 +176,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     review PASS. 4 modified tests pass (link 2.2s + static 2.3s,
     pch 1.4s + shared 1.4s).
 
-  - Earlier prior commit touched:
+  - Yet earlier prior commit touched:
     src/compiletools/test_backend_integration.py (-10 net, +39/-49):
     extracted module-level `_render_backend_to_string(backend_name,
     tmp_path) -> (content, graph)` helper that opens uth.ParserContext,
