@@ -371,15 +371,23 @@ def test_pch_artefact_reused_across_workspaces(tmp_path):
     )
 
 
-def _build_static_lib_sample(workdir, lib_source_name: str) -> None:
+def _build_lib_sample(workdir, lib_source_name: str, *, kind: str) -> None:
     """Create a 2-file sample workspace that asks ct-cake to produce a
-    static library: a header, a body that defines a single function,
-    and a short ``ct.conf.d/ct.conf`` listing the body as ``static``.
+    library (``kind="static"`` or ``"dynamic"``): a header, a body
+    that defines a single function, and a short ``ct.conf.d/ct.conf``
+    listing the body under the matching source-kind keyword.
+
+    ``kind="dynamic"`` additionally appends ``CPPFLAGS = -fPIC`` so the
+    object can be linked into a ``.so`` on platforms where PIC is not
+    the default for static-library compilation.
+
     Returns nothing; caller invokes ct-cake from ``workdir``.
     """
+    assert kind in ("static", "dynamic"), kind
     workdir.mkdir(parents=True, exist_ok=True)
     (workdir / "ct.conf.d").mkdir(exist_ok=True)
-    (workdir / "ct.conf.d" / "ct.conf").write_text(f"static = {lib_source_name}\nvariant = blank\n")
+    extra = "CPPFLAGS = -fPIC\n" if kind == "dynamic" else ""
+    (workdir / "ct.conf.d" / "ct.conf").write_text(f"{kind} = {lib_source_name}\nvariant = blank\n{extra}")
     stem = os.path.splitext(lib_source_name)[0]
     (workdir / f"{stem}.hpp").write_text(f"#pragma once\nint {stem}_value();\n")
     (workdir / lib_source_name).write_text(f'#include "{stem}.hpp"\nint {stem}_value() {{ return 42; }}\n')
@@ -392,8 +400,8 @@ def test_static_library_reused_across_workspaces(tmp_path):
     """
     ws1 = tmp_path / "ws1" / "lib"
     ws2 = tmp_path / "ws2" / "lib"
-    _build_static_lib_sample(ws1, "mylib.cpp")
-    _build_static_lib_sample(ws2, "mylib.cpp")
+    _build_lib_sample(ws1, "mylib.cpp", kind="static")
+    _build_lib_sample(ws2, "mylib.cpp", kind="static")
     shared_cas_exedir = tmp_path / "shared-cas-exedir"
 
     def _build(workdir):
@@ -417,20 +425,6 @@ def test_static_library_reused_across_workspaces(tmp_path):
     assert not swapped_inode, (
         f"second build re-archived {len(swapped_inode)} cached static lib(s) (inode swap): {sorted(swapped_inode)}"
     )
-
-
-def _build_shared_lib_sample(workdir, lib_source_name: str) -> None:
-    """Same shape as ``_build_static_lib_sample`` but configures a
-    shared library instead. Adds ``-fPIC`` to the bundled ct.conf so
-    the object can be linked into a ``.so`` on platforms where PIC is
-    not the default for static-library compilation.
-    """
-    workdir.mkdir(parents=True, exist_ok=True)
-    (workdir / "ct.conf.d").mkdir(exist_ok=True)
-    (workdir / "ct.conf.d" / "ct.conf").write_text(f"dynamic = {lib_source_name}\nvariant = blank\nCPPFLAGS = -fPIC\n")
-    stem = os.path.splitext(lib_source_name)[0]
-    (workdir / f"{stem}.hpp").write_text(f"#pragma once\nint {stem}_value();\n")
-    (workdir / lib_source_name).write_text(f'#include "{stem}.hpp"\nint {stem}_value() {{ return 42; }}\n')
 
 
 @uth.requires_functional_compiler
@@ -528,8 +522,8 @@ def test_shared_library_reused_across_workspaces(tmp_path):
     """
     ws1 = tmp_path / "ws1" / "lib"
     ws2 = tmp_path / "ws2" / "lib"
-    _build_shared_lib_sample(ws1, "mylib.cpp")
-    _build_shared_lib_sample(ws2, "mylib.cpp")
+    _build_lib_sample(ws1, "mylib.cpp", kind="dynamic")
+    _build_lib_sample(ws2, "mylib.cpp", kind="dynamic")
     shared_cas_exedir = tmp_path / "shared-cas-exedir"
 
     def _build(workdir):
