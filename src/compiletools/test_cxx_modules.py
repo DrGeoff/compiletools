@@ -965,6 +965,78 @@ def test_cxx_modules_header_unit_isystem_builds_with_gcc(tmp_path, monkeypatch):
     _run_header_unit_isystem_sample_with(cxx, tmp_path, monkeypatch)
 
 
+def _run_header_unit_pkg_config_sample_with(cxx: str, tmp_path, monkeypatch):
+    """Build the cxx_modules_header_unit_pkg_config sample and assert it
+    prints ``caught=boom``.
+
+    Sibling regression to ``_run_header_unit_isystem_sample_with``: the
+    sample's header unit is reachable only via a PKG-CONFIG-derived
+    ``-isystem`` flag (``PKG-CONFIG = extlib`` in ct.conf, where
+    ``extlib.pc`` exports ``-I<sample>/include`` which
+    ``filter_pkg_config_cflags`` converts to ``-isystem``). Pre-fix,
+    the gcc header-unit precompile pre-pass and rule emitter only
+    consulted ``args.flags.cxx`` and missed PKG-CONFIG-derived
+    ``-isystem`` flags entirely (they live in per-source magic
+    CXXFLAGS / CPPFLAGS), so the precompile command ran without the
+    include and gcc died with
+    ``cc1plus: fatal error: extlib/Exception.h: No such file or
+    directory``.
+    """
+    sample_src = uth.example_path("cxx_modules_header_unit_pkg_config")
+    assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
+    workdir = tmp_path / "cxx_modules_header_unit_pkg_config"
+    shutil.copytree(sample_src, workdir)
+    # ``ct-cake --auto`` discovers targets via the git tracked-files
+    # registry; without a local git root the worktree pytest is running
+    # from would shadow ``workdir`` and discovery would find nothing.
+    # ``git init`` is enough — no commits required.
+    subprocess.run(["git", "init", "-q"], cwd=workdir, check=True)
+    monkeypatch.chdir(workdir)
+
+    # Point pkg-config at the .pc shipped alongside the sample (uses
+    # ``${pcfiledir}`` so it resolves portably to the copied location).
+    pkg_config_path = workdir / "extlib_pc"
+    monkeypatch.setenv("PKG_CONFIG_PATH", str(pkg_config_path))
+
+    with uth.CompilerEnvContext(cxx):
+        r = subprocess.run(
+            ["ct-cake"],
+            capture_output=True,
+            text=True,
+            cwd=workdir,
+            timeout=180,
+        )
+    assert r.returncode == 0, f"ct-cake --auto (CXX={cxx}) failed:\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
+    exe = workdir / "bin" / "main"
+    assert exe.exists(), f"executable not produced (CXX={cxx}):\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
+    run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=10)
+    assert run.returncode == 0, f"{run.stdout}\n{run.stderr}"
+    assert "caught=boom" in run.stdout, f"exception message missing/wrong: {run.stdout!r}"
+
+
+@requires_gcc_header_units
+def test_cxx_modules_header_unit_pkg_config_builds_with_gcc(tmp_path, monkeypatch):
+    """A header unit reached only via ``PKG-CONFIG``-derived ``-isystem``
+    builds with gcc.
+
+    Sibling regression guard to
+    ``test_cxx_modules_header_unit_isystem_builds_with_gcc``: pre-fix
+    the gcc header-unit precompile rule only honoured ``-isystem``
+    flags that lived in ``args.flags.cxx`` (the user-supplied
+    ``append-CXXFLAGS = -isystem ...``). Flags arriving via the
+    ``PKG-CONFIG = pkg`` magic-flag expansion (which
+    ``magicflags._handle_pkg_config`` adds to per-source CPPFLAGS /
+    CXXFLAGS, with ``filter_pkg_config_cflags`` converting ``-I`` to
+    ``-isystem``) were silently dropped from the precompile command,
+    so gcc failed with
+    ``cc1plus: fatal error: extlib/Exception.h: No such file or
+    directory``.
+    """
+    cxx = compiletools.apptools.get_functional_cxx_compiler()
+    assert cxx is not None, "requires_gcc_header_units should have skipped without a working compiler"
+    _run_header_unit_pkg_config_sample_with(cxx, tmp_path, monkeypatch)
+
+
 # ---------------------------------------------------------------------------
 # Phase 6: cas-pcmdir cache hit on rebuild
 # ---------------------------------------------------------------------------

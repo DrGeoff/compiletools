@@ -1320,6 +1320,26 @@ class BuildBackend(abc.ABC):
         # first for stability.
         self._gcc_header_unit_resolved: dict[str, list[str]] = {}
         all_header_imports: set[str] = set()
+        # Union of per-source magic CPPFLAGS / CXXFLAGS system-include
+        # tokens (``-isystem`` / ``-isysroot`` / ``-iframework`` /
+        # ``-idirafter`` / ``--sysroot=``). The header-unit precompile
+        # path otherwise only walks ``args.flags.cxx``, so a header
+        # reached only through a per-source ``//#PKG-CONFIG=lib`` magic
+        # flag (which ``magicflags._handle_pkg_config`` expands to
+        # ``-isystem <pkg-include>``) would never become resolvable --
+        # gcc fails with ``fatal error: <h>: No such file or directory``.
+        # Same allowed flag families as ``args.flags.cxx`` because the
+        # ``-isystem`` immutability contract still applies (see
+        # ``_extract_system_include_path_flags``). Order-preserving
+        # dedup so the precompile probe sees a stable flag list.
+        import stringzilla as sz
+        magic_system_includes: list[str] = []
+        _seen_magic_si: set[str] = set()
+        def _add_magic_si_tokens(tokens: tuple[str, ...]) -> None:
+            for tok in tokens:
+                if tok not in _seen_magic_si:
+                    _seen_magic_si.add(tok)
+                    magic_system_includes.append(tok)
         for filename in all_compile_sources:
             r = self.hunter._file_analysis_result(filename)
             if r is None:
@@ -1330,6 +1350,23 @@ class BuildBackend(abc.ABC):
             # transitive-only consumer can resolve it. Symmetric with the
             # transitive named-module handling in _compiler_module_flags_for.
             all_header_imports.update(self._transitive_header_unit_imports(filename))
+            # Gather per-source magic system-include flags. ``magicflags``
+            # may raise on synthetic / non-existent paths in tests; the
+            # TU compile path tolerates that downstream, but here the
+            # pre-pass would crash the whole build. Fall back to skipping
+            # this source rather than aborting -- the consumer's own
+            # compile will surface a clearer error.
+            try:
+                mflags = self.hunter.magicflags(filename)
+            except Exception:
+                continue
+            magic_cpp = [str(t) for t in mflags.get(sz.Str("CPPFLAGS"), [])]
+            magic_cxx = [str(t) for t in mflags.get(sz.Str("CXXFLAGS"), [])]
+            if magic_cpp:
+                _add_magic_si_tokens(_extract_system_include_path_flags(magic_cpp))
+            if magic_cxx:
+                _add_magic_si_tokens(_extract_system_include_path_flags(magic_cxx))
+        self._header_unit_extra_system_includes: tuple[str, ...] = tuple(magic_system_includes)
         if all_header_imports:
             # Determine the per-token destination dir up front so the
             # mkdir set is exactly the dirs we'll actually write into.
@@ -1366,7 +1403,10 @@ class BuildBackend(abc.ABC):
                     # and the precompile would silently misroute
                     # through the global-mapper path -- gcc reports
                     # the import as "unknown compiled module interface".
-                    include_flags = _extract_system_include_path_flags(self.args.flags.cxx)
+                    include_flags = (
+                        _extract_system_include_path_flags(self.args.flags.cxx)
+                        + self._header_unit_extra_system_includes
+                    )
                     abs_paths = _resolve_system_header_abs_paths(
                         self.args.CXX,
                         token,
@@ -2410,11 +2450,18 @@ class BuildBackend(abc.ABC):
         cxxflags_tokens = self.args.flags.hash_relevant("cxx")
         cxxflags_has_libcxx = "-stdlib=libc++" in self.args.flags.cxx
         injects_libcxx = self._build_imports_std() and not cxxflags_has_libcxx
+        # Fold the unioned magic system-include flags into the cache key
+        # the same way the precompile rule will see them (appended to
+        # ``args.flags.cxx`` in ``_create_header_unit_precompile_rule``).
+        # Without this, two builds whose pkg-config-derived ``-isystem``
+        # paths differ would collide on the same cmd_hash. ``getattr``
+        # guards callers that may run before the pre-pass populates it.
+        extra_si = list(getattr(self, "_header_unit_extra_system_includes", ()))
         return _pcm_command_hash(
             self.args,
             source_path=token,
             transitive_content_hash="",  # implicit in compiler_identity
-            cxxflags_tokens=cxxflags_tokens,
+            cxxflags_tokens=list(cxxflags_tokens) + extra_si,
             magic_cpp_flags=[],  # header units don't carry per-file magic
             magic_cxx_flags=[],
             extra_flags=["-stdlib=libc++"] if injects_libcxx else [],
@@ -2443,12 +2490,30 @@ class BuildBackend(abc.ABC):
         We deliberately drop magic per-TU CPPFLAGS / CXXFLAGS because
         the header unit is global across the build -- no single user
         TU's magic flags can apply without risking inconsistent
-        precompiles.
+        precompiles. The one exception is **system-include search-path
+        flags** (``-isystem`` / ``-isysroot`` / ``-iframework`` /
+        ``-idirafter`` / ``--sysroot=``) collected from magic
+        CPPFLAGS / CXXFLAGS into
+        ``self._header_unit_extra_system_includes`` by the pre-pass:
+        without them, a header reached only through a per-source
+        ``//#PKG-CONFIG=lib`` magic flag (which
+        ``magicflags._handle_pkg_config`` expands to
+        ``-isystem <pkg-include>``) cannot resolve at precompile time
+        and gcc dies with ``fatal error: <h>: No such file or
+        directory``. The ``-isystem`` immutability contract still
+        holds (the user is opting that header into the
+        "doesn't-mutate-between-builds" promise; see
+        ``_extract_system_include_path_flags``), so this is a safe
+        widening, not a refactor of the global-vs-per-TU split.
         """
         kind = self._module_compiler_kind
         bare = _header_unit_arg(token)
 
-        common_cmd = compiletools.utils.split_command_cached(self.args.CXX) + list(self.args.flags.cxx)
+        common_cmd = (
+            compiletools.utils.split_command_cached(self.args.CXX)
+            + list(self.args.flags.cxx)
+            + list(getattr(self, "_header_unit_extra_system_includes", ()))
+        )
 
         artefact_dir = os.path.dirname(artefact_path)
 
@@ -2596,11 +2661,20 @@ class BuildBackend(abc.ABC):
         """
         cache_root = self._module_pcm_cache_root
         assert cache_root is not None
+        # Fold the unioned magic system-include flags into the cmd_hash
+        # the same way the precompile rule will see them (appended to
+        # ``args.flags.cxx`` in ``_create_header_unit_precompile_rule``).
+        # Without this, two builds whose pkg-config-derived ``-isystem``
+        # paths differ would collide on the same cmd_hash and import
+        # the wrong BMI -- gcc's consume-time check is flag-aware, not
+        # content-aware. ``getattr`` guards the bare-precompile call path
+        # that may run before the pre-pass populates the attribute.
+        extra_si = list(getattr(self, "_header_unit_extra_system_includes", ()))
         cmd_hash = _pcm_command_hash(
             self.args,
             source_path=token,
             transitive_content_hash="",  # implicit in compiler_identity
-            cxxflags_tokens=self.args.flags.hash_relevant("cxx"),
+            cxxflags_tokens=list(self.args.flags.hash_relevant("cxx")) + extra_si,
             magic_cpp_flags=[],
             magic_cxx_flags=[],
             extra_flags=[],

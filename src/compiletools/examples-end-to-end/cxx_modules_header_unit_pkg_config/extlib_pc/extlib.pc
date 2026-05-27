@@ -1,0 +1,10 @@
+prefix=${pcfiledir}/..
+includedir=${prefix}/include
+
+Name: extlib
+Description: Test pkg-config-resolved header library for the
+ cxx_modules_header_unit_pkg_config sample. The header it exports is
+ reached only through pkg-config's --cflags, which compiletools converts
+ to -isystem at consume time.
+Version: 1.0.0
+Cflags: -I${includedir}
