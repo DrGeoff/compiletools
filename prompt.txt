@@ -6,8 +6,9 @@ Continue work in /home/gericksson/compiletools-worktree/master.
 
   Current state:
   - Latest commit:
-    b221282d test: convert tempfile to tmp_path in test_file_analyzer TestReadFunctions
+    f05af67e test: convert temp_target fixture to tmp_path in test_ct_lock_helper
   - Prior related commits:
+    b221282d test: convert tempfile to tmp_path in test_file_analyzer TestReadFunctions
     6c552ced test: hoist self.processor into setup_method in TestExpandHasFunctions
     3a971d39 test: adopt _make_timing_backend in TestTimingLogPidNamespace
     8e99a784 test: extract _make_timing_backend module helper for timing-wrap tests
@@ -134,6 +135,35 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     e5b18a45 test: parametrize helper cases
     7009bd6a test: simplify pytest cases
   - Latest commit touched:
+    src/compiletools/test_ct_lock_helper.py (-15 net, +11/-26):
+    `temp_target` pytest fixture migrated from
+    tempfile.NamedTemporaryFile(delete=False, suffix=".o") + a
+    26-line manual cleanup loop (every lock sidecar: .lockdir,
+    .lock, .lock.excl, .lock.pid, plus a parent_dir scan for any
+    .tmp files ct-lock-helper writes alongside the target) to a
+    4-line tmp_path-backed fixture: `target = tmp_path / "target.o";
+    target.touch(); return str(target)`. pytest auto-cleans tmp_path
+    so all lock artifacts and helper scratch files disappear with
+    the per-test directory. Fixture docstring rewritten to spell out
+    the cleanup-by-tmp_path contract so a future reader doesn't
+    wonder where the lock-artifact cleanup went. `import shutil`
+    and `import tempfile` both dropped — only used in the removed
+    cleanup loop. Behaviour-preserving: target.touch() matches the
+    old NamedTemporaryFile(delete=False) empty-file precondition;
+    fixed basename 'target.o' is isolated by pytest's function-
+    scoped tmp_path so the 8 parametrize sites
+    ([lockdir/cifs/flock/fcntl] x [compile/link]) don't collide;
+    str(target) keeps subprocess paths absolute. Test-internal
+    try/finally os.unlink(source) blocks in compile tests now
+    strictly redundant (source lives under tmp_path too) but kept
+    conservative — distinct cleanup pattern, separate round.
+    Codex /codex:adversarial-review APPROVE (no behaviour-
+    preservation blocker; isolation via function-scoped tmp_path;
+    target.touch() equivalent to NamedTemporaryFile empty file;
+    helper paths absolute; kept source-unlink blocks redundant but
+    harmless). 23 tests pass in 5.72s.
+
+  - Prior commit touched:
     src/compiletools/test_file_analyzer.py (-13 net, +16/-29):
     `TestReadFunctions` migrated from tempfile.NamedTemporaryFile
     (mode="w", suffix=".c", delete=False) + setup_method/teardown_method
@@ -160,7 +190,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     deleted helpers; targeted pytest blocked only by sandbox's lack of
     writable temp dir, not by the change). 4 tests pass in 0.15s.
 
-  - Prior commit touched:
+  - Earlier prior commit touched:
     src/compiletools/test_simple_preprocessor.py (-19 net, +14/-33):
     11 of 12 tests in `TestExpandHasFunctions` constructed a verbatim
     `processor = SimplePreprocessor(self.macros, compiler_path="gcc")`
@@ -528,8 +558,8 @@ Continue work in /home/gericksson/compiletools-worktree/master.
 
   - Verification for latest commit passed:
     ruff/pyright/git diff --check all green
-    pytest -q src/compiletools/test_file_analyzer.py::TestReadFunctions
-      4 passed in 0.15s
+    pytest -q src/compiletools/test_ct_lock_helper.py
+      23 passed in 5.72s
   - Final git status was clean.
 
   Start by running:
@@ -731,6 +761,13 @@ Continue work in /home/gericksson/compiletools-worktree/master.
       cleanup scaffolding to tmp_path; create_test_file now takes
       tmp_path; all 4 tests gain tmp_path fixture; `import os` and
       `import tempfile` dropped; -13 net lines)
+    test_ct_lock_helper (temp_target fixture migrated from
+      tempfile.NamedTemporaryFile(delete=False, suffix=".o") +
+      26-line manual cleanup loop [.lockdir/.lock/.lock.excl/
+      .lock.pid + parent-dir scan for ct-lock-helper .tmp files]
+      to 4-line tmp_path-backed fixture; pytest auto-cleans
+      tmp_path so all artifacts disappear with the per-test dir;
+      `import shutil` and `import tempfile` dropped; -15 net lines)
     test_compiler_macros (9 inline cache_clear calls → class autouse fixture;
       adjacent class's setup_method also converted to autouse for style
       consistency. Follow-up: module-level
