@@ -189,6 +189,19 @@ _LINK_ENVIRONMENT_VARS = (
 )
 
 
+def _wild_b_link_argv(args) -> list[str]:
+    """Return the ``-B<absolute-search-dir>`` argv for the wild-B axis, else [].
+
+    Routed here (and appended AFTER the canonicalize_for_command pass in the
+    link-rule builders) rather than through LDFLAGS so the absolute path is
+    never rewritten to a target-relative form. The wild-B variant is already
+    in the link key via ``canonical_bindir`` — the per-user wild path stays
+    out of the cache-key payload.
+    """
+    search_dir = getattr(args, "_wild_b_search_dir", None)
+    return [f"-B{search_dir}"] if search_dir else []
+
+
 def _link_environment_snapshot() -> dict[str, str]:
     """Snapshot of link-relevant env vars at call time.
 
@@ -3245,6 +3258,14 @@ class BuildBackend(abc.ABC):
         extra_link_argv_for_cmd = compiletools.apptools.canonicalize_for_command(
             extra_link_argv, self._anchor_root, target=ffile_prefix_map_target
         )
+        # wild-B axis: append -B<absolute_dir> after the canonicalised
+        # portions so canonicalize_for_command never sees it (rewriting an
+        # absolute -B path to "./..." breaks under subdir invocation, since
+        # link rules don't run with cwd=anchor_root and gcc would silently
+        # fall through to the default linker — see _normalize_wild_linker).
+        # The wild-B variant is already in the link key via canonical_bindir,
+        # so the per-user wild path doesn't need to enter the key payload.
+        wild_b_argv = _wild_b_link_argv(self.args)
 
         if self._self_manages_exe_placement():
             # Backend already has its own CAS layer — emit the legacy
@@ -3256,6 +3277,7 @@ class BuildBackend(abc.ABC):
                 + merged_ldflags_for_cmd
                 + extra_link_argv_for_cmd
                 + ld_extra_for_cmd
+                + wild_b_argv
             )
             return [
                 BuildRule(
@@ -3317,6 +3339,7 @@ class BuildBackend(abc.ABC):
             + merged_ldflags_for_cmd
             + extra_link_argv_for_cmd
             + ld_extra_for_cmd
+            + wild_b_argv
         )
 
         link_rule = BuildRule(
@@ -3440,10 +3463,17 @@ class BuildBackend(abc.ABC):
         ld_extra_for_cmd = compiletools.apptools.canonicalize_for_command(
             ld_extra, self._anchor_root, target=ffile_prefix_map_target
         )
+        # See _create_link_rule for rationale.
+        wild_b_argv = _wild_b_link_argv(self.args)
 
         if self._self_manages_exe_placement():
             lib_cmd = (
-                ld_argv + ["-shared", "-o", lib_path] + list(object_names) + merged_ldflags_for_cmd + ld_extra_for_cmd
+                ld_argv
+                + ["-shared", "-o", lib_path]
+                + list(object_names)
+                + merged_ldflags_for_cmd
+                + ld_extra_for_cmd
+                + wild_b_argv
             )
             return [
                 BuildRule(
@@ -3473,7 +3503,12 @@ class BuildBackend(abc.ABC):
         cas_lib_bucket = os.path.dirname(cas_lib_path)
 
         lib_cmd = (
-            ld_argv + ["-shared", "-o", cas_lib_path] + list(object_names) + merged_ldflags_for_cmd + ld_extra_for_cmd
+            ld_argv
+            + ["-shared", "-o", cas_lib_path]
+            + list(object_names)
+            + merged_ldflags_for_cmd
+            + ld_extra_for_cmd
+            + wild_b_argv
         )
         lib_rule = BuildRule(
             output=cas_lib_path,

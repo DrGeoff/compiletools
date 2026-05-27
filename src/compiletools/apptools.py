@@ -1473,16 +1473,20 @@ def _normalize_wild_linker(args) -> None:
 
     The ``wild-B`` axis (a comment-only conf) selects the universal
     ``-B<dir>`` + ``ld -> wild`` symlink trick that works on ANY gcc; the
-    symlink dir is materialised by :func:`_materialize_wild_b_searchdir` and
-    injected as ``-B<dir>``.
+    symlink dir is materialised by :func:`_materialize_wild_b_searchdir`
+    and stashed on ``args._wild_b_search_dir``. The link-rule builders in
+    ``build_backend`` append ``-B<absolute_dir>`` directly to the emitted
+    link argv, bypassing LDFLAGS (and therefore ``canonicalize_for_command``
+    rewriting) — see comment in the wild-B branch below for the silent
+    fall-through hazard this avoids.
 
-    Mutates ``args.LDFLAGS`` in place. Called from ``_commonsubstitutions``
-    before ``_finalize_flag_state`` (via ``substitutions``), so
-    ``args.LDFLAGS_tokens`` / ``args.flags`` are rebuilt from the mutated
-    string and ``check_flag_string_drift`` stays satisfied. No-op when wild
-    is not selected.
-    Idempotent: after the clang rewrite the ``-fuse-ld=wild`` token is gone,
-    so a re-run (e.g. via cake's two-stage parse) makes no further change.
+    For the clang rewrite, mutates ``args.LDFLAGS`` in place. Called from
+    ``_commonsubstitutions`` before ``_finalize_flag_state`` (via
+    ``substitutions``), so ``args.LDFLAGS_tokens`` / ``args.flags`` are
+    rebuilt from the mutated string and ``check_flag_string_drift`` stays
+    satisfied. No-op when wild is not selected. Idempotent: after the clang
+    rewrite the ``-fuse-ld=wild`` token is gone, so a re-run (e.g. via
+    cake's two-stage parse) makes no further change.
     """
     ldflags = getattr(args, "LDFLAGS", "") or ""
 
@@ -1491,16 +1495,17 @@ def _normalize_wild_linker(args) -> None:
         if compiler_kind(_effective_link_driver(args)) == "clang":
             tokens = split_command_cached(ldflags)
             rewritten = ["--ld-path=wild" if t == "-fuse-ld=wild" else t for t in tokens]
-            args.LDFLAGS = " ".join(rewritten)
-            ldflags = args.LDFLAGS
+            args.LDFLAGS = shlex.join(rewritten)
 
-    # `wild-B` axis: materialise the -B search dir and inject it.
+    # `wild-B` axis: materialise the -B search dir. The -B<dir> flag itself
+    # is injected per-rule by the link-rule builders in build_backend.py —
+    # routing it through LDFLAGS would let canonicalize_for_command rewrite
+    # the absolute path to a target-relative form (e.g. "-B./.ct-wild-ld")
+    # that only resolves when the build runs from the gitroot, silently
+    # falling through to the default linker under subdir invocation while
+    # the CAS link key still claims the wild-B variant.
     if _variant_has_axis(args, "wild-B"):
-        search_dir = _materialize_wild_b_searchdir()
-        if search_dir:
-            flag = f"-B{search_dir}"
-            if flag not in split_command_cached(ldflags):
-                args.LDFLAGS = f"{ldflags} {flag}".strip() if ldflags else flag
+        args._wild_b_search_dir = _materialize_wild_b_searchdir()
 
 
 def _canonicalize_one_path_to_target(path: str, anchor_prefix: str, target: str) -> str:
@@ -3256,6 +3261,21 @@ def _check_wild_linker_usable(args) -> None:
             "  Install it with: cargo install --locked wild-linker\n"
             "  (the binary lands in ~/.cargo/bin; ensure that is on PATH),\n"
             "  or switch to a different linker axis (e.g. --variant=...,mold)."
+        )
+
+    # bazel's link rule recognises -fuse-ld= / --ld-path= but NOT -B as a
+    # linker selector (_token_picks_linker in bazel_backend.py). With
+    # wild-B and no recognised selector, bazel adds its default
+    # --linkopt=-fuse-ld=gold and silently links with gold while the
+    # variant claims wild-B. Fail loud instead.
+    if wild_b_axis and getattr(args, "backend", None) == "bazel":
+        raise RuntimeError(
+            "The wild-B axis is unsupported with --backend=bazel.\n"
+            f"  variant: {variant}\n"
+            "  bazel's link rule does not treat -B<dir> as a linker selector,\n"
+            "  so it would silently fall through to its default linker.\n"
+            "  Use --variant=...,wild instead (requires clang or gcc >= 16.1),\n"
+            "  or pick a different backend."
         )
 
     if wild_axis and not wild_b_axis:

@@ -2343,7 +2343,7 @@ def test_normalize_wild_explicit_ld_overrides_cxx_for_clang():
     assert "-fuse-ld=wild" not in args.LDFLAGS
 
 
-def test_normalize_wild_b_injects_dash_B_and_makes_symlink(tmp_path, monkeypatch):
+def test_normalize_wild_b_stashes_searchdir_and_makes_symlink(tmp_path, monkeypatch):
     fake_wild = tmp_path / "wild"
     fake_wild.write_text("#!/bin/sh\nexit 0\n")
     monkeypatch.setattr(shutil, "which", lambda name: str(fake_wild) if name == "wild" else None)
@@ -2352,10 +2352,40 @@ def test_normalize_wild_b_injects_dash_B_and_makes_symlink(tmp_path, monkeypatch
     apptools._normalize_wild_linker(args)
 
     search_dir = tmp_path / ".ct-wild-ld"
-    assert f"-B{search_dir}" in args.LDFLAGS
+    # The -B flag itself is NOT in LDFLAGS — it's stashed and emitted by
+    # the link-rule builders, bypassing canonicalize_for_command.
+    assert "-B" not in args.LDFLAGS
+    assert args._wild_b_search_dir == str(search_dir)
     ld_link = search_dir / "ld"
     assert ld_link.is_symlink()
     assert os.readlink(ld_link) == str(fake_wild)
+
+
+def test_normalize_wild_clang_rewrite_preserves_quoted_tokens():
+    # Regression: " ".join(rewritten) silently split tokens containing spaces.
+    # shlex.join round-trips them correctly.
+    args = _wild_args("clang++", '-fuse-ld=wild -Wl,-rpath,"$ORIGIN/dir with space"', "clang.wild.release")
+    apptools._normalize_wild_linker(args)
+    tokens = shlex.split(args.LDFLAGS)
+    assert "--ld-path=wild" in tokens
+    assert "-fuse-ld=wild" not in tokens
+    assert "-Wl,-rpath,$ORIGIN/dir with space" in tokens
+
+
+def test_check_wild_b_with_bazel_backend_raises(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
+    args = _wild_args("g++", "", "gcc.wild-B.release")
+    args.backend = "bazel"
+    with pytest.raises(RuntimeError, match="wild-B.*--backend=bazel"):
+        apptools._check_wild_linker_usable(args)
+
+
+def test_check_wild_b_with_make_backend_ok(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
+    monkeypatch.setattr(apptools, "_compiler_major_version", lambda c: ("gcc", 11))
+    args = _wild_args("g++", "", "gcc.wild-B.release")
+    args.backend = "make"
+    apptools._check_wild_linker_usable(args)  # no raise
 
 
 def test_materialize_wild_b_idempotent(tmp_path, monkeypatch):
