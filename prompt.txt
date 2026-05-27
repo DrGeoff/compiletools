@@ -6,8 +6,9 @@ Continue work in /home/gericksson/compiletools-worktree/master.
 
   Current state:
   - Latest commit:
-    f05af67e test: convert temp_target fixture to tmp_path in test_ct_lock_helper
+    c97911bf test: convert temp_lock_file fixture to tmp_path in test_file_locking
   - Prior related commits:
+    f05af67e test: convert temp_target fixture to tmp_path in test_ct_lock_helper
     b221282d test: convert tempfile to tmp_path in test_file_analyzer TestReadFunctions
     6c552ced test: hoist self.processor into setup_method in TestExpandHasFunctions
     3a971d39 test: adopt _make_timing_backend in TestTimingLogPidNamespace
@@ -135,6 +136,39 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     e5b18a45 test: parametrize helper cases
     7009bd6a test: simplify pytest cases
   - Latest commit touched:
+    src/compiletools/test_file_locking.py (-3 net, +13/-16):
+    `temp_lock_file` pytest fixture migrated from
+    tempfile.NamedTemporaryFile(delete=False) + 9-line manual
+    sidecar cleanup loop (try/except OSError over .lockdir, .lock,
+    .lock.excl, .lock.pid + the target itself) to a 4-line
+    tmp_path-backed fixture: `target = tmp_path / "lockfile";
+    target.touch(); return str(target)`. Each test gets a unique
+    tmp_path subdirectory (function-scoped), so the target plus
+    every lock sidecar live in an isolated namespace — no
+    cross-test pollution. `import tempfile` dropped (only used in
+    the removed body); `import shutil` retained (still referenced
+    at test_file_locking.py:222 and :251 outside the fixture).
+    Behaviour-preserving: target.touch() matches the prior
+    NamedTemporaryFile(delete=False) empty-file precondition; the
+    fixed basename "lockfile" is safe under function-scoped
+    tmp_path; the fixture returns a string path so string-concat
+    call sites (target + ".lock", target + ".lockdir") and the
+    lock backends that os.open / os.path.dirname the value are
+    unaffected. Codex /codex:adversarial-review flagged a
+    docstring-accuracy concern (pytest's default
+    tmp_path_retention_policy is "all" — tmp_path subdirs are
+    retained across the last 3 sessions, GCed at next session
+    start, NOT removed synchronously on function exit). That's
+    a wording issue, not a behaviour bug: no test in this file
+    depends on synchronous cleanup (unique-basename isolation
+    handles the only correctness concern). Fixture docstring
+    rewritten to spell out the retention semantics so a future
+    reader can opt for 'failed' or 'none' policy if reclaim
+    timing matters. Same docstring-precision opportunity exists
+    for f05af67e's test_ct_lock_helper fixture but is left for a
+    separate doc-sweep round. 31 tests pass in 1.85s.
+
+  - Prior commit touched:
     src/compiletools/test_ct_lock_helper.py (-15 net, +11/-26):
     `temp_target` pytest fixture migrated from
     tempfile.NamedTemporaryFile(delete=False, suffix=".o") + a
@@ -163,7 +197,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     helper paths absolute; kept source-unlink blocks redundant but
     harmless). 23 tests pass in 5.72s.
 
-  - Prior commit touched:
+  - Earlier prior commit touched:
     src/compiletools/test_file_analyzer.py (-13 net, +16/-29):
     `TestReadFunctions` migrated from tempfile.NamedTemporaryFile
     (mode="w", suffix=".c", delete=False) + setup_method/teardown_method
@@ -558,8 +592,8 @@ Continue work in /home/gericksson/compiletools-worktree/master.
 
   - Verification for latest commit passed:
     ruff/pyright/git diff --check all green
-    pytest -q src/compiletools/test_ct_lock_helper.py
-      23 passed in 5.72s
+    pytest -q src/compiletools/test_file_locking.py
+      31 passed in 1.85s
   - Final git status was clean.
 
   Start by running:
@@ -768,6 +802,16 @@ Continue work in /home/gericksson/compiletools-worktree/master.
       to 4-line tmp_path-backed fixture; pytest auto-cleans
       tmp_path so all artifacts disappear with the per-test dir;
       `import shutil` and `import tempfile` dropped; -15 net lines)
+    test_file_locking (temp_lock_file fixture migrated from
+      tempfile.NamedTemporaryFile(delete=False) + 9-line manual
+      cleanup loop to 4-line tmp_path-backed fixture; each test
+      gets a unique tmp_path subdirectory so target + all lock
+      sidecars [.lockdir/.lock/.lock.excl/.lock.pid] are isolated.
+      `import tempfile` dropped; `import shutil` kept [still used
+      at lines 222/251]. Docstring spells out
+      tmp_path_retention_policy default 'all' semantics after
+      Codex flagged the original wording overclaimed synchronous
+      cleanup. -3 net lines.)
     test_compiler_macros (9 inline cache_clear calls → class autouse fixture;
       adjacent class's setup_method also converted to autouse for style
       consistency. Follow-up: module-level
