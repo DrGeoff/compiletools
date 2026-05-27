@@ -6,8 +6,9 @@ Continue work in /home/gericksson/compiletools-worktree/master.
 
   Current state:
   - Latest commit:
-    9b39c180 test: extract _cache_stats helper for 4 cross-workspace stat closures
+    49b36adb test: unify _build_static_lib_sample + _build_shared_lib_sample into one helper
   - Prior related commits:
+    9b39c180 test: extract _cache_stats helper for 4 cross-workspace stat closures
     2a90972c test: extract _render_backend_to_string helper in test_backend_integration
     18ff8de1 test: convert 8 tempfile sites to tmp_path in test_magicflags_unit
     94259cdc test: extend _make_pch_entry with write_manifest/bad_manifest, mirroring _make_pcm_entry
@@ -124,6 +125,19 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     e5b18a45 test: parametrize helper cases
     7009bd6a test: simplify pytest cases
   - Latest commit touched:
+    src/compiletools/test_e2e_cas_reuse_across_workspaces.py (-6 net, +16/-22):
+    unified _build_static_lib_sample + _build_shared_lib_sample (95%
+    identical) into one parametrized _build_lib_sample(workdir,
+    lib_source_name, *, kind) helper. Only differences between
+    originals were the conf keyword ("static" vs "dynamic") and the
+    dynamic helper appending "CPPFLAGS = -fPIC\n". Conf bytes
+    verified byte-equivalent for both kinds. -fPIC rationale ("so
+    the object can be linked into a .so on platforms where PIC is
+    not the default") preserved in unified docstring. assert kind
+    in ("static", "dynamic") guard added for private-helper misuse.
+    Codex review PASS. 2 modified tests pass.
+
+  - Prior commit touched:
     src/compiletools/test_e2e_cas_reuse_across_workspaces.py (-1 net, +23/-24):
     extracted module-level `_cache_stats(cas_dir, suffix) ->
     {name: (st_ino, st_mtime)}` helper that absorbs 4 inner-closure
@@ -139,7 +153,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     review PASS. 4 modified tests pass (link 2.2s + static 2.3s,
     pch 1.4s + shared 1.4s).
 
-  - Prior commit touched:
+  - Earlier prior commit touched:
     src/compiletools/test_backend_integration.py (-10 net, +39/-49):
     extracted module-level `_render_backend_to_string(backend_name,
     tmp_path) -> (content, graph)` helper that opens uth.ParserContext,
@@ -156,7 +170,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     have at least one source file referenced"). Codex review PASS.
     4 TestBackendGenerateOutput tests pass.
 
-  - Earlier prior commit touched:
+  - Yet earlier prior commit touched:
     src/compiletools/test_magicflags_unit.py (-24 net, +77/-101):
     converted 8 tempfile.{NamedTemporaryFile,TemporaryDirectory}
     sites to pytest's tmp_path fixture. 4 NamedTemporaryFile sites
@@ -173,7 +187,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     review timed out at 10min (6th consecutive); self-review
     confirmed mechanical equivalence at every site. 27 tests pass.
 
-  - Yet earlier prior commit touched:
+  - Further earlier prior commit touched:
     src/compiletools/test_cache_report_pch.py (-9 net, +24/-15):
     extend existing `_make_pch_entry` helper with `write_manifest=True`
     and `bad_manifest=False` keyword-only options, mirroring the
@@ -190,7 +204,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     default) — immaterial since assertions are on .size_bytes only.
     Codex review PASS. 13 tests pass.
 
-  - Further earlier prior commit touched:
+  - Even further earlier prior commit touched:
     src/compiletools/test_macrostate_hash_canonicalized.py (-11 net, +10/-21):
     extend existing `_build(prefix, *, extra_cxx, anchor_root=None)`
     helper with optional `anchor_root` kwarg (default None = use prefix).
@@ -306,7 +320,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
   - Verification for latest commit passed:
     ruff/pyright/git diff --check all green
     pytest -q src/compiletools/test_e2e_cas_reuse_across_workspaces.py
-      ::test_link/static/pch/shared_*: 4 modified tests pass (~3s each)
+      ::test_static/shared_library_reused_across_workspaces: 2 passed in 3.46s
   - Final git status was clean.
 
   Start by running:
@@ -650,7 +664,12 @@ Continue work in /home/gericksson/compiletools-worktree/master.
       _cmd_hash_dirs in the PCH test stays inline — different shape,
       keys by p.parent.name. -1 net line; closures collapsed,
       call sites slightly longer but lift the closures out of
-      every test body.)
+      every test body. Follow-up: unified _build_static_lib_sample +
+      _build_shared_lib_sample [95% identical] into one
+      _build_lib_sample(workdir, lib_source_name, *, kind) helper —
+      only differences were conf keyword and an appended CPPFLAGS
+      line. Conf bytes verified byte-equivalent for both kinds.
+      -fPIC rationale preserved in unified docstring. -6 net lines.)
 
   Notes for future rounds:
     Remaining tempfile.TemporaryDirectory sites:
