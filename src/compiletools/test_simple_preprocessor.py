@@ -522,27 +522,24 @@ class TestExpandHasFunctions:
     def setup_method(self):
         self.ctx = BuildContext()
         self.macros = {sz.Str("TEST_MACRO"): sz.Str("1")}
+        # Default processor for the 11 gcc-compiler tests. test_no_compiler_
+        # evaluates_to_0 builds its own with compiler_path="" inline.
+        self.processor = SimplePreprocessor(self.macros, compiler_path="gcc")
 
     def test_basic_has_include_expands_to_1(self):
         """__has_include(<iostream>) should expand to '1' when compiler says true."""
-        processor = SimplePreprocessor(self.macros, compiler_path="gcc")
-
         with patch("compiletools.compiler_macros.query_has_function", return_value=1):
-            result = processor._expand_has_functions_sz(sz.Str("__has_include(<iostream>)"))
+            result = self.processor._expand_has_functions_sz(sz.Str("__has_include(<iostream>)"))
             assert str(result) == "1"
 
     def test_basic_has_include_expands_to_0(self):
         """__has_include(<nonexistent.h>) should expand to '0' when compiler says false."""
-        processor = SimplePreprocessor(self.macros, compiler_path="gcc")
-
         with patch("compiletools.compiler_macros.query_has_function", return_value=0):
-            result = processor._expand_has_functions_sz(sz.Str("__has_include(<nonexistent.h>)"))
+            result = self.processor._expand_has_functions_sz(sz.Str("__has_include(<nonexistent.h>)"))
             assert str(result) == "0"
 
     def test_mixed_multiple_has_include(self):
         """Both __has_include calls should be expanded in a compound expression."""
-        processor = SimplePreprocessor(self.macros, compiler_path="gcc")
-
         def mock_query(compiler, call_str, cppflags="", verbose=0):
             if "<a>" in call_str:
                 return 1
@@ -551,25 +548,21 @@ class TestExpandHasFunctions:
             return 0
 
         with patch("compiletools.compiler_macros.query_has_function", side_effect=mock_query):
-            result = processor._expand_has_functions_sz(sz.Str("__has_include(<a>) && __has_include(<b>)"))
+            result = self.processor._expand_has_functions_sz(sz.Str("__has_include(<a>) && __has_include(<b>)"))
             assert str(result) == "1 && 0"
 
     def test_quoted_header(self):
         """__has_include("local.h") should preserve the quoted argument."""
-        processor = SimplePreprocessor(self.macros, compiler_path="gcc")
-
         with patch("compiletools.compiler_macros.query_has_function", return_value=1) as mock_query:
-            result = processor._expand_has_functions_sz(sz.Str('__has_include("local.h")'))
+            result = self.processor._expand_has_functions_sz(sz.Str('__has_include("local.h")'))
             assert str(result) == "1"
             # Verify the full call was passed to the compiler
             mock_query.assert_called_once_with("gcc", '__has_include("local.h")', "", 0)
 
     def test_has_builtin(self):
         """__has_builtin(__builtin_expect) should work for non-include __has_* functions."""
-        processor = SimplePreprocessor(self.macros, compiler_path="gcc")
-
         with patch("compiletools.compiler_macros.query_has_function", return_value=1):
-            result = processor._expand_has_functions_sz(sz.Str("__has_builtin(__builtin_expect)"))
+            result = self.processor._expand_has_functions_sz(sz.Str("__has_builtin(__builtin_expect)"))
             assert str(result) == "1"
 
     def test_no_compiler_evaluates_to_0(self):
@@ -581,16 +574,12 @@ class TestExpandHasFunctions:
 
     def test_not_a_function_call_left_unchanged(self):
         """Identifiers starting with __has_ but without parens should be left unchanged."""
-        processor = SimplePreprocessor(self.macros, compiler_path="gcc")
-
-        result = processor._expand_has_functions_sz(sz.Str("__has_value"))
+        result = self.processor._expand_has_functions_sz(sz.Str("__has_value"))
         assert str(result) == "__has_value"
 
     def test_has_in_larger_identifier_left_unchanged(self):
         """__has_ as part of a larger identifier (preceded by alpha/underscore) left unchanged."""
-        processor = SimplePreprocessor(self.macros, compiler_path="gcc")
-
-        result = processor._expand_has_functions_sz(sz.Str("my__has_include(<x>)"))
+        result = self.processor._expand_has_functions_sz(sz.Str("my__has_include(<x>)"))
         # 'my' prefix means it's part of another identifier
         assert "__has_include" in str(result)
 
@@ -598,18 +587,14 @@ class TestExpandHasFunctions:
 
     def test_evaluate_expression_with_has_include_and_defined(self):
         """__has_include and defined() should both work in a single expression."""
-        processor = SimplePreprocessor(self.macros, compiler_path="gcc")
-
         with patch("compiletools.compiler_macros.query_has_function", return_value=1):
-            result = processor._evaluate_expression_sz(sz.Str("__has_include(<iostream>) && defined(TEST_MACRO)"))
+            result = self.processor._evaluate_expression_sz(sz.Str("__has_include(<iostream>) && defined(TEST_MACRO)"))
             assert result == 1
 
     def test_evaluate_expression_has_include_false(self):
         """When __has_include is false, expression should evaluate to 0."""
-        processor = SimplePreprocessor(self.macros, compiler_path="gcc")
-
         with patch("compiletools.compiler_macros.query_has_function", return_value=0):
-            result = processor._evaluate_expression_sz(sz.Str("__has_include(<nonexistent.h>)"))
+            result = self.processor._evaluate_expression_sz(sz.Str("__has_include(<nonexistent.h>)"))
             assert result == 0
 
     # Cycle 7: End-to-end through process_structured()
@@ -621,12 +606,10 @@ class TestExpandHasFunctions:
             #include <special.h>
             #endif""")
 
-        processor = SimplePreprocessor(self.macros, compiler_path="gcc")
-
         file_result = _make_file_analysis_result(text)
 
         with patch("compiletools.compiler_macros.query_has_function", return_value=1):
-            active_lines = processor.process_structured(file_result, self.ctx)
+            active_lines = self.processor.process_structured(file_result, self.ctx)
             # Line 1 (0-based) is "#include <special.h>" — should be active
             assert 1 in active_lines
 
@@ -637,12 +620,10 @@ class TestExpandHasFunctions:
             #include <special.h>
             #endif""")
 
-        processor = SimplePreprocessor(self.macros, compiler_path="gcc")
-
         file_result = _make_file_analysis_result(text)
 
         with patch("compiletools.compiler_macros.query_has_function", return_value=0):
-            active_lines = processor.process_structured(file_result, self.ctx)
+            active_lines = self.processor.process_structured(file_result, self.ctx)
             # Line 1 should NOT be active
             assert 1 not in active_lines
 
