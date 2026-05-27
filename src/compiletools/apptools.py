@@ -3634,6 +3634,22 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
         prov = getattr(self._config_file_parser, "_provenance", None) or {}
         return {key: list(entries) for key, entries in prov.items()}
 
+    def format_help(self):
+        # Hide the ENV_VAR_DISABLED sentinel from --help: configargparse
+        # would otherwise render '[env var: __CT_ENV_VAR_DISABLED__]'.
+        # The env-pickup suppression itself lives in parse_known_args
+        # (which filters the sentinel key out of env_vars).
+        restore = []
+        for a in self._actions:
+            if getattr(a, "env_var", None) == compiletools.utils.ENV_VAR_DISABLED:
+                restore.append(a)
+                a.env_var = None  # type: ignore[attr-defined]
+        try:
+            return super().format_help()
+        finally:
+            for a in restore:
+                a.env_var = compiletools.utils.ENV_VAR_DISABLED  # type: ignore[attr-defined]
+
     def _open_config_files(self, command_line_args):
         streams = super()._open_config_files(command_line_args)
         if len(streams) < 2:
@@ -3722,6 +3738,12 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
             args = list(args)
 
         clean_args, captured_cli = self._extract_cli_append_prepend(args)
+
+        # Make the ENV_VAR_DISABLED sentinel collision-proof: even if a
+        # real process exports a variable with this exact name, drop it
+        # from the view configargparse's env-pickup loop sees.
+        if compiletools.utils.ENV_VAR_DISABLED in env_vars:
+            env_vars = {k: v for k, v in env_vars.items() if k != compiletools.utils.ENV_VAR_DISABLED}
 
         namespace, unknown = super().parse_known_args(
             args=clean_args,
@@ -4068,6 +4090,12 @@ def verboseprintconfig(args):
         verbose_print_args(args)
 
 
+# Secret-carrying arg attrs: their values are replaced with a placeholder in
+# `-vv` output so credentials (auth headers, etc.) don't land in CI logs.
+_REDACTED_ARG_ATTRS = frozenset({"otel_headers"})
+_REDACTED_PLACEHOLDER = "***REDACTED***"
+
+
 def verbose_print_args(args):
     # Print the args in two columns Attr: Value
     print("\n\nFinal aggregated variables for build:")
@@ -4086,6 +4114,9 @@ def verbose_print_args(args):
     for attr, value in sorted(args.__dict__.items()):
         if value is None:
             print(fmt.format(attr, ""))
+            continue
+        if attr in _REDACTED_ARG_ATTRS and value:
+            print(fmt.format(attr, _REDACTED_PLACEHOLDER))
             continue
         strvalue = str(value)
         valuelen = len(strvalue)

@@ -246,6 +246,33 @@ class TestVerbosePrintArgs:
         output = mock_stdout.getvalue()
         assert "aborted" in output.lower()
 
+    def test_verbose_print_args_redacts_otel_headers(self):
+        """Secret-bearing attrs must not leak into -vv output (CI log leak)."""
+        args = SimpleNamespace(
+            foo="bar",
+            otel_headers="x-honeycomb-team=SECRET-TOKEN-DO-NOT-LOG",
+            baz=42,
+        )
+        with patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
+            with patch("compiletools.apptools.terminalcolumns", return_value=120):
+                verbose_print_args(args)
+        output = mock_stdout.getvalue()
+        assert "SECRET-TOKEN-DO-NOT-LOG" not in output
+        assert "REDACTED" in output
+        assert "otel_headers" in output
+        assert "bar" in output
+        assert "42" in output
+
+    def test_verbose_print_args_otel_headers_none_prints_blank(self):
+        """A None/empty otel_headers should print the normal blank row, not the placeholder."""
+        args = SimpleNamespace(otel_headers=None, foo="bar")
+        with patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
+            with patch("compiletools.apptools.terminalcolumns", return_value=120):
+                verbose_print_args(args)
+        output = mock_stdout.getvalue()
+        assert "REDACTED" not in output
+        assert "otel_headers" in output
+
 
 class TestUnsuppliedReplacement:
     def test_unsupplied_returns_default(self):
