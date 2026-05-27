@@ -76,6 +76,21 @@ def _assert_build_ok(result: subprocess.CompletedProcess, workdir) -> None:
     )
 
 
+def _cache_stats(cas_dir, suffix: str) -> dict[str, tuple[int, float]]:
+    """Stat every ``*<suffix>`` file under *cas_dir*, keyed by basename.
+
+    Returns ``{name: (st_ino, st_mtime)}`` so cross-workspace cache-reuse
+    tests can compare cached-artefact identity. Inode equality proves
+    the second build reused the file (hard-link) rather than temp+rename
+    republishing into the same slot.
+    """
+    return {
+        p.name: (p.stat().st_ino, p.stat().st_mtime)
+        for p in cas_dir.rglob(f"*{suffix}")
+        if p.is_file()
+    }
+
+
 @uth.requires_functional_compiler
 def test_object_cache_filenames_match_across_workspace_paths(tmp_path):
     """Same sample compiled in two workspace dirs produces identical
@@ -257,15 +272,12 @@ def test_link_artefact_reused_across_workspaces(tmp_path):
     def _build(workdir):
         _assert_build_ok(_run_ct_cake(workdir, f"--cas-exedir={shared_cas_exedir}"), workdir)
 
-    def _exe_stats() -> dict[str, tuple[int, float]]:
-        return {p.name: (p.stat().st_ino, p.stat().st_mtime) for p in shared_cas_exedir.rglob("*.exe") if p.is_file()}
-
     _build(ws1)
-    after_first = _exe_stats()
+    after_first = _cache_stats(shared_cas_exedir, ".exe")
     assert after_first, f"first build produced no .exe in {shared_cas_exedir}"
 
     _build(ws2)
-    after_second = _exe_stats()
+    after_second = _cache_stats(shared_cas_exedir, ".exe")
 
     only_first = set(after_first) - set(after_second)
     only_second = set(after_second) - set(after_first)
@@ -317,22 +329,19 @@ def test_pch_artefact_reused_across_workspaces(tmp_path):
     def _build(workdir):
         _assert_build_ok(_run_ct_cake(workdir, f"--cas-pchdir={shared_cas_pchdir}"), workdir)
 
-    def _gch_stats() -> dict[str, tuple[int, float]]:
-        return {p.name: (p.stat().st_ino, p.stat().st_mtime) for p in shared_cas_pchdir.rglob("*.gch") if p.is_file()}
-
     def _cmd_hash_dirs() -> set[str]:
         # Layout: cas-pchdir/[<variant>/]<cmd_hash>/<header>.gch
         # Walk to the .gch and take its parent dir's name as the cmd_hash.
         return {p.parent.name for p in shared_cas_pchdir.rglob("*.gch") if p.is_file()}
 
     _build(ws1)
-    after_first_gch = _gch_stats()
+    after_first_gch = _cache_stats(shared_cas_pchdir, ".gch")
     after_first_dirs = _cmd_hash_dirs()
     assert after_first_gch, f"first build produced no .gch in {shared_cas_pchdir}"
     assert len(after_first_dirs) == 1, f"first build produced unexpected cmd_hash count: {sorted(after_first_dirs)}"
 
     _build(ws2)
-    after_second_gch = _gch_stats()
+    after_second_gch = _cache_stats(shared_cas_pchdir, ".gch")
     after_second_dirs = _cmd_hash_dirs()
 
     # Single cmd_hash dir after both workspaces have built — the core
@@ -390,17 +399,12 @@ def test_static_library_reused_across_workspaces(tmp_path):
     def _build(workdir):
         _assert_build_ok(_run_ct_cake(workdir, f"--cas-exedir={shared_cas_exedir}"), workdir)
 
-    def _lib_stats(suffix: str) -> dict[str, tuple[int, float]]:
-        return {
-            p.name: (p.stat().st_ino, p.stat().st_mtime) for p in shared_cas_exedir.rglob(f"*{suffix}") if p.is_file()
-        }
-
     _build(ws1)
-    after_first = _lib_stats(".a")
+    after_first = _cache_stats(shared_cas_exedir, ".a")
     assert after_first, f"first build produced no .a in {shared_cas_exedir}"
 
     _build(ws2)
-    after_second = _lib_stats(".a")
+    after_second = _cache_stats(shared_cas_exedir, ".a")
 
     only_first = set(after_first) - set(after_second)
     only_second = set(after_second) - set(after_first)
@@ -531,17 +535,12 @@ def test_shared_library_reused_across_workspaces(tmp_path):
     def _build(workdir):
         _assert_build_ok(_run_ct_cake(workdir, f"--cas-exedir={shared_cas_exedir}"), workdir)
 
-    def _lib_stats(suffix: str) -> dict[str, tuple[int, float]]:
-        return {
-            p.name: (p.stat().st_ino, p.stat().st_mtime) for p in shared_cas_exedir.rglob(f"*{suffix}") if p.is_file()
-        }
-
     _build(ws1)
-    after_first = _lib_stats(".so")
+    after_first = _cache_stats(shared_cas_exedir, ".so")
     assert after_first, f"first build produced no .so in {shared_cas_exedir}"
 
     _build(ws2)
-    after_second = _lib_stats(".so")
+    after_second = _cache_stats(shared_cas_exedir, ".so")
 
     only_first = set(after_first) - set(after_second)
     only_second = set(after_second) - set(after_first)
