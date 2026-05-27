@@ -132,6 +132,13 @@ OpenTelemetry SDK itself — ``OTEL_EXPORTER_OTLP_ENDPOINT``,
 ``OTEL_RESOURCE_ATTRIBUTES``, ``OTEL_SERVICE_NAME`` — are honoured for
 any field the corresponding ``--otel-*`` flag leaves unset.
 
+.. note::
+
+    Like every ct.conf-driven knob, ``otel-endpoint`` / ``otel-headers``
+    from a project's ``ct.conf`` should be reviewed before running
+    ct-cake in repos you don't own — they steer where build metadata
+    (hostname, git SHA, file paths) is shipped.
+
 SPAN MODEL
 ==========
 
