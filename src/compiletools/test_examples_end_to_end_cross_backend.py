@@ -581,3 +581,56 @@ def test_every_example_has_a_plan():
     )
     stale = sorted(registered - discovered)
     assert not stale, "_EXAMPLE_PLANS references examples that no longer exist:\n  " + "\n  ".join(stale)
+
+
+@uth.skipif_e2e_unavailable(
+    uth.wild_available,
+    "wild linker not on PATH (install: cargo install --locked wild-linker)",
+)
+@pytest.mark.parametrize(
+    ("driver", "variant"),
+    [("clang++", "clang,wild"), ("g++", "gcc,wild")],
+)
+def test_terminal_games_links_with_wild(driver, variant, tmp_path):
+    """terminal_games (the canonical multi-module example) links and builds
+    with the wild linker, from its root, on both compilers.
+
+    Skipped entirely when wild isn't installed. The gcc leg additionally
+    skips on gcc < 16.1 (can't drive -fuse-ld=wild — that's the wild-B
+    axis's job, exercised by the apptools unit tests). The clang leg skips
+    when clang isn't installed.
+    """
+    if shutil.which(driver) is None:
+        pytest.skip(f"{driver} not on PATH")
+    if variant.startswith("gcc"):
+        identity = compiletools.apptools._compiler_major_version(driver)
+        if not identity or identity[0] != "gcc" or identity[1] < 16:
+            pytest.skip("gcc < 16.1 cannot drive -fuse-ld=wild; covered by wild-B unit tests")
+
+    with uth.shared_filesystem_tmpdir("make", tmp_path) as effective_tmp:
+        workspace = uth.copy_example_workspace(
+            pathlib.Path(uth.e2e_dir()) / "terminal_games",
+            pathlib.Path(effective_tmp) / "ws",
+        )
+        cas_root = workspace
+        argv = [
+            "ct-cake",
+            f"--variant={variant}",
+            "--backend=make",
+            f"--cas-objdir={cas_root}/cas-objdir",
+            f"--cas-pchdir={cas_root}/cas-pchdir",
+            f"--cas-pcmdir={cas_root}/cas-pcmdir",
+            f"--cas-exedir={cas_root}/cas-exedir",
+            f"--bindir={workspace}/bin",
+            "--auto",
+        ]
+        env = os.environ.copy()
+        for var in ("CXXFLAGS", "CFLAGS", "LDFLAGS", "CPPFLAGS"):
+            env.pop(var, None)
+        result = subprocess.run(argv, cwd=workspace, env=env, capture_output=True, text=True)
+        assert result.returncode == 0, (
+            f"ct-cake failed for variant={variant!r}\n"
+            f"argv: {argv}\n"
+            f"--- stdout ---\n{result.stdout}\n"
+            f"--- stderr ---\n{result.stderr}\n"
+        )

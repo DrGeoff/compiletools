@@ -95,6 +95,15 @@ def requires_functional_compiler(func):
     return wrapper
 
 
+def wild_available() -> bool:
+    """True if the `wild` linker binary is on PATH.
+
+    Used by the wild e2e test's ``skipif_e2e_unavailable`` so machines
+    without wild installed skip cleanly (install: cargo install --locked
+    wild-linker)."""
+    return shutil.which("wild") is not None
+
+
 @functools.cache
 def _probe_default_variant_std_error() -> str | None:
     """Return the std-mismatch message if the default variant's ``-std=``
