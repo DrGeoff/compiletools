@@ -71,11 +71,11 @@ def _default_makefile_args(**overrides):
 
 
 def _make_timing_backend():
-    """MakefileBackend wired for `_wrap_with_timing` tests: minimal args
+    """MakefileBackend wired for the timing-area tests: minimal args
     (verbose/file_locking/makefilename) and `_filesystem_type = None` so
-    the wrap call doesn't try to set up locking. Was duplicated as
-    `_make_args` + `_backend_with_timer` byte-for-byte across
-    TestTimingWrapBSDDate and TestTimingWrapEmitsValidJSON."""
+    `_wrap_with_timing` doesn't try to set up locking. Also serves the
+    `_timing_log_path` tests, which only read `args.makefilename` — the
+    extra `verbose` and `_filesystem_type` fields are inert there."""
     args = SimpleNamespace(verbose=0, file_locking=False, makefilename="Makefile")
     backend = MakefileBackend(args=args, hunter=MagicMock())
     backend._filesystem_type = None
@@ -952,8 +952,7 @@ class TestTimingLogPidNamespace:
     distinct files."""
 
     def test_log_path_includes_pid_and_ns(self):
-        args = SimpleNamespace(makefilename="Makefile", file_locking=False)
-        backend = MakefileBackend(args=args, hunter=MagicMock())
+        backend = _make_timing_backend()
         path = backend._timing_log_path
         pid = str(os.getpid())
         assert pid in path, f"PID not in log path: {path}"
@@ -964,10 +963,8 @@ class TestTimingLogPidNamespace:
     def test_two_backends_get_distinct_paths(self):
         """Critical: two MakefileBackend instances (e.g. two concurrent
         ct-cake --timing invocations) must compute distinct log paths."""
-        args1 = SimpleNamespace(makefilename="Makefile", file_locking=False)
-        args2 = SimpleNamespace(makefilename="Makefile", file_locking=False)
-        b1 = MakefileBackend(args=args1, hunter=MagicMock())
-        b2 = MakefileBackend(args=args2, hunter=MagicMock())
+        b1 = _make_timing_backend()
+        b2 = _make_timing_backend()
         # Force monotonic_ns to advance between calls
 
         p1 = b1._timing_log_path
@@ -978,8 +975,7 @@ class TestTimingLogPidNamespace:
     def test_log_path_is_stable_per_backend(self):
         """A single backend must reuse the same log path across calls so
         cleanup actually removes the right file."""
-        args = SimpleNamespace(makefilename="Makefile", file_locking=False)
-        backend = MakefileBackend(args=args, hunter=MagicMock())
+        backend = _make_timing_backend()
         p1 = backend._timing_log_path
         p2 = backend._timing_log_path
         assert p1 == p2
