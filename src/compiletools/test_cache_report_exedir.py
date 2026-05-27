@@ -21,20 +21,27 @@ def _make_exe_entry(
     suffix=".exe",
     size=100,
     source_realpath=None,
+    *,
+    bad_manifest=False,
 ):
     """Create a fake cas-exedir entry under ``exe_root/<linkkey[:2]>/``.
 
     Returns the path to the artefact file. Writes a ``.manifest`` sidecar
-    iff ``source_realpath`` is not None.
+    iff ``source_realpath`` is not None; ``bad_manifest=True`` writes
+    corrupt JSON instead of a valid payload. Mirrors the
+    ``write_manifest``/``bad_manifest`` shape of ``_make_pch_entry`` and
+    ``_make_pcm_entry`` in the sibling test files.
     """
     bucket = pathlib.Path(exe_root) / link_key[:2]
     bucket.mkdir(parents=True, exist_ok=True)
     artefact = bucket / f"{basename}_{link_key}{suffix}"
     artefact.write_bytes(b"x" * size)
     if source_realpath is not None:
-        (bucket / f"{basename}_{link_key}{suffix}.manifest").write_text(
-            json.dumps({"source_realpath": source_realpath})
-        )
+        manifest = bucket / f"{basename}_{link_key}{suffix}.manifest"
+        if bad_manifest:
+            manifest.write_text("{not: json")
+        else:
+            manifest.write_text(json.dumps({"source_realpath": source_realpath}))
     return artefact
 
 
@@ -128,16 +135,15 @@ def test_scan_exedir_handles_missing_manifest(tmp_path):
 
 def test_scan_exedir_handles_corrupt_manifest(tmp_path):
     link_key = "33" + "0" * 62
-    artefact = _make_exe_entry(
+    _make_exe_entry(
         tmp_path,
         basename="broken",
         link_key=link_key,
         suffix=".so",
         size=20,
-        source_realpath="/will/be/overwritten.cpp",
+        source_realpath="/ignored",
+        bad_manifest=True,
     )
-    # Overwrite the manifest with junk.
-    pathlib.Path(str(artefact) + ".manifest").write_text("{not: json")
 
     entries = cache_report.scan_exedir(str(tmp_path))
     assert len(entries) == 1
