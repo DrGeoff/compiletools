@@ -12,9 +12,15 @@ from __future__ import annotations
 from compiletools.preprocessing_cache import MacroState
 
 
-def _build(prefix: str, *, extra_cxx: str = "") -> str:
+def _build(prefix: str, *, extra_cxx: str = "", anchor_root: str | None = None) -> str:
     """Build a MacroState whose flag tokens reference paths under `prefix`,
-    optionally appending an extra CXX flag, and return its full hash."""
+    optionally appending an extra CXX flag, and return its full hash.
+
+    ``anchor_root`` defaults to ``prefix`` (the in-workspace case). Pass an
+    explicit value to decouple the include-path prefix from the anchor —
+    the test_object_hash_distinguishes_in_workspace_vs_outside case uses
+    this to model headers from a sibling repo outside the workspace anchor.
+    """
     cxx_extra = [extra_cxx] if extra_cxx else []
     cppflags_tokens = [f"-I{prefix}/lib/util", "-DAPP=app"]
     cflags_tokens = ["-O2"]
@@ -31,7 +37,7 @@ def _build(prefix: str, *, extra_cxx: str = "") -> str:
         cflags_tokens=cflags_tokens,
         cxxflags_tokens=cxxflags_tokens,
         compiler_identity="/usr/bin/g++|123456|1700000000",
-        anchor_root=prefix,
+        anchor_root=prefix if anchor_root is None else anchor_root,
     )
     return state.get_hash(include_core=True)
 
@@ -55,22 +61,5 @@ def test_object_hash_distinguishes_in_workspace_vs_outside():
     # Same logical TU but headers come from a sibling repo outside the
     # workspace anchor; cppflags/cxxflags reference /elsewhere/... and
     # the anchor stays as the workspace.
-    cppflags_tokens = ["-I/elsewhere/lib/util", "-DAPP=app"]
-    cflags_tokens = ["-O2"]
-    cxxflags_tokens = ["-I/elsewhere/lib/util", "-std=c++20"]
-    elsewhere_state = MacroState(
-        core={b"__GNUC__": b"13"},
-        variable={},
-        compiler_path="/usr/bin/g++",
-        cppflags=" ".join(cppflags_tokens),
-        cflags=" ".join(cflags_tokens),
-        cxxflags=" ".join(cxxflags_tokens),
-        cmdline_origin=frozenset(),
-        cppflags_tokens=cppflags_tokens,
-        cflags_tokens=cflags_tokens,
-        cxxflags_tokens=cxxflags_tokens,
-        compiler_identity="/usr/bin/g++|123456|1700000000",
-        anchor_root="/some/workspace",
-    )
-    elsewhere_hash = elsewhere_state.get_hash(include_core=True)
+    elsewhere_hash = _build("/elsewhere", anchor_root="/some/workspace")
     assert inside != elsewhere_hash, "Canonicalizer must distinguish in-anchor from out-of-anchor paths"
