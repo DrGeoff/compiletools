@@ -45,18 +45,20 @@ def _emulate_finally_block(args):
     return out
 
 
+def _bindir_objdir_argv(tmp_path, *extras):
+    """Return (bindir, objdir, argv) for the recurring
+    --bindir/--cas-objdir/--timing skeleton. ``*extras`` appends extra
+    argv items (e.g. ``--filename irrelevant.cpp``)."""
+    bindir = tmp_path / "bin"
+    objdir = tmp_path / "obj"
+    argv = ["--bindir", str(bindir), "--cas-objdir", str(objdir), "--timing", *extras]
+    return bindir, objdir, argv
+
+
 def test_diagnostics_dir_default_falls_back_to_bindir(tmp_path):
     """With --bindir set and no --diagnostics-dir, timing.json lands under
     <bindir>/diagnostics/<invocation-id>/."""
-    bindir = tmp_path / "bin"
-    objdir = tmp_path / "obj"
-    argv = [
-        "--bindir",
-        str(bindir),
-        "--cas-objdir",
-        str(objdir),
-        "--timing",
-    ]
+    bindir, _objdir, argv = _bindir_objdir_argv(tmp_path)
     args = _build_args(argv)
     out = _emulate_finally_block(args)
     iid = compiletools.diagnostics.invocation_id()
@@ -87,15 +89,7 @@ def test_diagnostics_dir_explicit_override(tmp_path):
 
 def test_diagnostics_not_in_objdir(tmp_path):
     """Timing JSON must not land in --cas-objdir (content-addressable cache)."""
-    bindir = tmp_path / "bin"
-    objdir = tmp_path / "obj"
-    argv = [
-        "--bindir",
-        str(bindir),
-        "--cas-objdir",
-        str(objdir),
-        "--timing",
-    ]
+    _bindir, objdir, argv = _bindir_objdir_argv(tmp_path)
     args = _build_args(argv)
     objdir.mkdir(parents=True, exist_ok=True)
     _emulate_finally_block(args)
@@ -115,17 +109,7 @@ def test_diagnostics_timing_json_written_through_process(monkeypatch, tmp_path):
     invoked; we only assert that the finally block ran and wrote timing.json
     at the resolved diagnostics location even when ``_call_backend`` raises.
     """
-    bindir = tmp_path / "bin"
-    objdir = tmp_path / "obj"
-    argv = [
-        "--bindir",
-        str(bindir),
-        "--cas-objdir",
-        str(objdir),
-        "--timing",
-        "--filename",
-        "irrelevant.cpp",
-    ]
+    bindir, _objdir, argv = _bindir_objdir_argv(tmp_path, "--filename", "irrelevant.cpp")
     args = _build_args(argv)
 
     # Short-circuit the parts of process() that would do real work. We keep
