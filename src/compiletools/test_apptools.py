@@ -263,40 +263,38 @@ class TestUnsuppliedReplacement:
 
 
 class TestSubstituteCXXForMissing:
-    def test_substitutes_cpp_and_cppflags(self):
-        args = SimpleNamespace(
+    def _args(self, *, cpp, cppflags):
+        """Build the SimpleNamespace shape that ``_substitute_CXX_for_missing`` expects.
+
+        verbose / CXX / CXXFLAGS are invariant across this class's tests; only
+        CPP and CPPFLAGS (whose sentinel values are the function-under-test's
+        whole point) ever vary at every site. LD / LDFLAGS are deliberately
+        omitted — test_no_ld_attribute_ok asserts the function handles their
+        absence, so callers that need them set the attrs explicitly post-build."""
+        return SimpleNamespace(
             verbose=0,
             CXX="g++",
             CXXFLAGS="-Wall",
-            CPP="unsupplied_implies_use_CXX",
-            CPPFLAGS="unsupplied_implies_use_CXXFLAGS",
+            CPP=cpp,
+            CPPFLAGS=cppflags,
         )
+
+    def test_substitutes_cpp_and_cppflags(self):
+        args = self._args(cpp="unsupplied_implies_use_CXX", cppflags="unsupplied_implies_use_CXXFLAGS")
         _substitute_CXX_for_missing(args)
         assert args.CPP == "g++"
         assert args.CPPFLAGS == "-Wall"
 
     def test_substitutes_ld_when_present(self):
-        args = SimpleNamespace(
-            verbose=0,
-            CXX="g++",
-            CXXFLAGS="-Wall",
-            CPP="g++",
-            CPPFLAGS="-Wall",
-            LD="unsupplied_implies_use_CXX",
-            LDFLAGS="unsupplied_implies_use_CXXFLAGS",
-        )
+        args = self._args(cpp="g++", cppflags="-Wall")
+        args.LD = "unsupplied_implies_use_CXX"
+        args.LDFLAGS = "unsupplied_implies_use_CXXFLAGS"
         _substitute_CXX_for_missing(args)
         assert args.LD == "g++"
         assert args.LDFLAGS == "-Wall"
 
     def test_no_ld_attribute_ok(self):
-        args = SimpleNamespace(
-            verbose=0,
-            CXX="g++",
-            CXXFLAGS="-Wall",
-            CPP="g++",
-            CPPFLAGS="-Wall",
-        )
+        args = self._args(cpp="g++", cppflags="-Wall")
         _substitute_CXX_for_missing(args)  # Should not raise
 
 
