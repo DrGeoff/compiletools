@@ -30,6 +30,11 @@ def _existing_include_paths(flags_str: str) -> set[str]:
     return Flags(cpp=tuple(split_command_cached(flags_str))).existing_include_paths("cpp")
 
 
+def _args(*, include: str, cpp: str = "", c: str = "", cxx: str = "") -> SimpleNamespace:
+    """Build the SimpleNamespace shape that ``_add_include_paths_to_flags`` expects."""
+    return SimpleNamespace(INCLUDE=include, CPPFLAGS=cpp, CFLAGS=c, CXXFLAGS=cxx, verbose=0)
+
+
 @pytest.mark.parametrize(
     ("flags_str", "expected"),
     [
@@ -54,13 +59,7 @@ def test_existing_include_paths(flags_str, expected):
     ],
 )
 def test_add_include_paths_skips_when_already_present(existing_flags):
-    args = SimpleNamespace(
-        INCLUDE="/usr/include",
-        CPPFLAGS=existing_flags,
-        CFLAGS=existing_flags,
-        CXXFLAGS=existing_flags,
-        verbose=0,
-    )
+    args = _args(include="/usr/include", cpp=existing_flags, c=existing_flags, cxx=existing_flags)
     _add_include_paths_to_flags(args)
     assert (existing_flags,) * 3 == (args.CPPFLAGS, args.CFLAGS, args.CXXFLAGS)
 
@@ -69,12 +68,11 @@ def test_add_include_paths_does_not_skip_when_only_in_other_path_flag():
     """Bug fix: a path that appears as another flag's value
     (-isystem, -L) is NOT the same as having an -I /path entry.
     The dedup check must not be fooled by the substring."""
-    args = SimpleNamespace(
-        INCLUDE="/usr/include",
-        CPPFLAGS="-isystem /usr/include",  # /usr/include is here as an -isystem path
-        CFLAGS="-L /usr/include",  # and as an -L path
-        CXXFLAGS="-O2",  # and absent here
-        verbose=0,
+    args = _args(
+        include="/usr/include",
+        cpp="-isystem /usr/include",  # /usr/include is here as an -isystem path
+        c="-L /usr/include",  # and as an -L path
+        cxx="-O2",  # and absent here
     )
     _add_include_paths_to_flags(args)
     assert "-I /usr/include" in args.CPPFLAGS
@@ -83,13 +81,7 @@ def test_add_include_paths_does_not_skip_when_only_in_other_path_flag():
 
 
 def test_add_include_paths_appends_new_path():
-    args = SimpleNamespace(
-        INCLUDE="/new/include",
-        CPPFLAGS="-O2",
-        CFLAGS="-O2",
-        CXXFLAGS="-O2",
-        verbose=0,
-    )
+    args = _args(include="/new/include", cpp="-O2", c="-O2", cxx="-O2")
     _add_include_paths_to_flags(args)
     assert "-I /new/include" in args.CPPFLAGS
     assert "-I /new/include" in args.CFLAGS
@@ -97,13 +89,7 @@ def test_add_include_paths_appends_new_path():
 
 
 def test_add_include_paths_handles_multiple_includes():
-    args = SimpleNamespace(
-        INCLUDE="/a /b /c",
-        CPPFLAGS="",
-        CFLAGS="",
-        CXXFLAGS="",
-        verbose=0,
-    )
+    args = _args(include="/a /b /c")
     _add_include_paths_to_flags(args)
     for slot in (args.CPPFLAGS, args.CFLAGS, args.CXXFLAGS):
         assert "-I /a" in slot
