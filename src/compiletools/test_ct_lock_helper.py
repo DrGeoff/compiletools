@@ -4,9 +4,7 @@ Tests the ct-lock-helper entry point which wraps locking.py's atomic_compile().
 """
 
 import os
-import shutil
 import subprocess
-import tempfile
 
 import pytest
 
@@ -14,30 +12,17 @@ from compiletools.ct_lock_helper import create_args_from_env
 
 
 @pytest.fixture
-def temp_target():
-    """Create temporary target file for lock testing."""
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".o") as f:
-        temp_path = f.name
-    yield temp_path
-    # Cleanup all lock artifacts
-    for ext in ["", ".lockdir", ".lock", ".lock.excl", ".lock.pid"]:
-        try:
-            path = temp_path + ext
-            if os.path.isdir(path):
-                shutil.rmtree(path)
-            elif os.path.exists(path):
-                os.unlink(path)
-        except OSError:
-            pass
-    # Clean up temp files created by ct-lock-helper
-    parent_dir = os.path.dirname(temp_path)
-    basename = os.path.basename(temp_path)
-    for f in os.listdir(parent_dir):
-        if f.startswith(basename) and ".tmp" in f:
-            try:
-                os.unlink(os.path.join(parent_dir, f))
-            except OSError:
-                pass
+def temp_target(tmp_path):
+    """Create temporary target file for lock testing.
+
+    pytest's tmp_path auto-cleans the directory after the test, which
+    transparently removes the .o, every lock sidecar (.lockdir, .lock,
+    .lock.excl, .lock.pid), and any .tmp files ct-lock-helper writes
+    alongside the target — all live in the same per-test directory.
+    """
+    target = tmp_path / "target.o"
+    target.touch()
+    return str(target)
 
 
 def _run_helper(subcmd, target, strategy, *cmd, timeout=5):
