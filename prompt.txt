@@ -6,8 +6,9 @@ Continue work in /home/gericksson/compiletools-worktree/master.
 
   Current state:
   - Latest commit:
-    5620cc4b test: extract _args helper for 3 multi-line SimpleNamespace sites in TestSubstituteCXXForMissing
+    92768388 test: extract _bare_creator helper for 10 __init__-bypass sites in test_compilation_database
   - Prior related commits:
+    5620cc4b test: extract _args helper for 3 multi-line SimpleNamespace sites in TestSubstituteCXXForMissing
     13ac08e4 test: extract _args helper for 3 multi-line SimpleNamespace sites in TestAddIncludePathsToFlags
     dbbd8bf6 test: extract _result helper for 9 multi-line SimpleNamespace sites in TestTransitiveHeaderModuleImports
     5074ee0a Revert "test: extract _args helper for SimpleNamespace ceremony in test_diagnostics"
@@ -141,6 +142,16 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     e5b18a45 test: parametrize helper cases
     7009bd6a test: simplify pytest cases
   - Latest commit touched:
+    src/compiletools/test_compilation_database.py (-24 net, +29/-53):
+    Module-level `_bare_creator(**args_kwargs)` replaces the 4-line
+    `cls.__new__(cls)` + `creator.args = SimpleNamespace(...)` ceremony
+    at 10 sites (mixed `types.SimpleNamespace` / bare `SimpleNamespace`).
+    Sites needing `.hunter` set it post-call. Class-scoped `_make_creator`
+    delegates to `_bare_creator(CXX=cxx)`. `import types` removed.
+    Hides 3 invariant `__new__` lines; 2 multi-line 6-kwarg sites also
+    compress to one call. Codex APPROVE. 17 tests pass in 0.88s.
+
+  - Prior commit touched:
     src/compiletools/test_apptools.py (-2 net, +18/-20):
     Third round under the helper-extraction rule (second consecutive in
     test_apptools.py). Added class-scoped `_args(*, cpp, cppflags) ->
@@ -153,14 +164,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     helper because test_no_ld_attribute_ok specifically tests their
     absence; test_substitutes_ld_when_present uses post-construction
     attribute assignment (order preserved: attrs set first, then function
-    call). Sentinel values 'unsupplied_implies_use_CXX' /
-    'unsupplied_implies_use_CXXFLAGS' remain explicit at every relevant
-    site via cpp=/cppflags= kwargs. '# Should not raise' inline comment
-    preserved verbatim on test_no_ld_attribute_ok. Codex
-    /codex:adversarial-review APPROVE (verified helper builds the same
-    5-field namespace, LD/LDFLAGS omission preserves absent-attribute
-    test, LD/LDFLAGS assignments still occur before the function call).
-    3 tests pass in 0.29s.
+    call). Codex /codex:adversarial-review APPROVE. 3 tests pass in 0.29s.
 
   - Prior commit touched:
     src/compiletools/test_apptools.py (-3 net, +15/-18):
@@ -678,11 +682,14 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     vestigial blank lines a prior batch tool left after `def test_`
     headers. Codex review confirmed no correctness regression.
 
-  - Verification for latest commit (5620cc4b) passed:
-    ruff check src/compiletools/test_apptools.py (clean)
+  - Verification for latest commit (92768388) passed:
+    ruff check src/compiletools/test_compilation_database.py (clean)
     git diff --check (clean)
-    pytest -q -k TestSubstituteCXXForMissing src/compiletools/test_apptools.py
-      3 passed in 0.29s
+    pytest -q -k "TestCompilationDatabaseModuleFlags or
+      TestCompilationDatabaseDefensivePaths or no_op_write or
+      content_change or atomic_write or update_symlink or huntsource"
+      src/compiletools/test_compilation_database.py
+      17 passed in 0.88s
   - Final git status was clean.
 
   Start by running:
@@ -957,7 +964,10 @@ Continue work in /home/gericksson/compiletools-worktree/master.
       TestBazelGenerate + TestCMakeGenerate + TestCppmPerSourceProperties
       collapses 25 tests' boilerplate)
     test_compilation_database (`_make_creator` helper for module-analysis
-      creator stubbing collapses 5 tests in TestCompilationDatabaseModuleFlags)
+      creator stubbing collapses 5 tests in TestCompilationDatabaseModuleFlags.
+      Follow-up: `_bare_creator(**args_kwargs)` bypasses __init__ via
+      cls.__new__(cls); 10 defensive-path sites converted, `_make_creator`
+      delegates to it, `import types` dropped. -24 net lines.)
     test_preprocessing_cache (`_CacheTestBase` autouse monkeypatch fixture
       replaces xunit patch/start/stop pattern across 4 inheriting classes)
     test_cake (`_tmpdir_with_config` ctxmgr collapses 17 sites of the
