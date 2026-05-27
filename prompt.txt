@@ -6,8 +6,9 @@ Continue work in /home/gericksson/compiletools-worktree/master.
 
   Current state:
   - Latest commit:
-    6c552ced test: hoist self.processor into setup_method in TestExpandHasFunctions
+    b221282d test: convert tempfile to tmp_path in test_file_analyzer TestReadFunctions
   - Prior related commits:
+    6c552ced test: hoist self.processor into setup_method in TestExpandHasFunctions
     3a971d39 test: adopt _make_timing_backend in TestTimingLogPidNamespace
     8e99a784 test: extract _make_timing_backend module helper for timing-wrap tests
     0d9a5ad6 test: delegate TestMakefileRealclean._make_args to module-level helper
@@ -133,6 +134,33 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     e5b18a45 test: parametrize helper cases
     7009bd6a test: simplify pytest cases
   - Latest commit touched:
+    src/compiletools/test_file_analyzer.py (-13 net, +16/-29):
+    `TestReadFunctions` migrated from tempfile.NamedTemporaryFile
+    (mode="w", suffix=".c", delete=False) + setup_method/teardown_method
+    self.test_files cleanup scaffolding to pytest's tmp_path fixture.
+    create_test_file now accepts tmp_path as first arg and writes
+    filepath = tmp_path / filename via Path.write_text; the helper
+    assert_reader_handles_full_and_limited_read threads tmp_path through.
+    All 4 tests (test_read_file_mmap, test_read_file_traditional,
+    test_read_functions_consistency, test_empty_file_handling) gain
+    tmp_path fixture parameter. `import os` and `import tempfile`
+    both dropped — only used by the removed scaffolding. Behaviour-
+    preserving: pytest gives each test a unique tmp_path so fixed
+    basenames ('mmap_test.c', 'traditional_test.c', 'consistency_test.c',
+    'empty_test.c') do not collide; Path.write_text default encoding
+    matches the prior text-mode NamedTemporaryFile write; empty-file
+    test still produces a zero-byte file. All test docstrings ("Test
+    memory-mapped file reading", "Test traditional file reading",
+    "Test that mmap and traditional reading produce identical results",
+    "Test handling of empty files") and the inline `# Read with both
+    methods`, `# Results should be identical`, `# Both methods should
+    handle empty files gracefully` comments preserved verbatim. Codex
+    /codex:adversarial-review APPROVE (no behaviour-preservation blocker;
+    assertions unchanged; removed imports/scaffolding scoped to the
+    deleted helpers; targeted pytest blocked only by sandbox's lack of
+    writable temp dir, not by the change). 4 tests pass in 0.15s.
+
+  - Prior commit touched:
     src/compiletools/test_simple_preprocessor.py (-19 net, +14/-33):
     11 of 12 tests in `TestExpandHasFunctions` constructed a verbatim
     `processor = SimplePreprocessor(self.macros, compiler_path="gcc")`
@@ -157,7 +185,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     on self.processor; rationale comments at lines 583-584, 613-614,
     627-628 still present). 14 tests pass in 0.21s.
 
-  - Prior commit touched:
+  - Earlier prior commit touched:
     src/compiletools/test_makefile_backend.py (-4 net, +8/-12):
     3 tests in `TestTimingLogPidNamespace` (Fix 4: PID+monotonic_ns
     namespacing of `.ct-make-timing.jsonl`) adopt the existing
@@ -500,8 +528,8 @@ Continue work in /home/gericksson/compiletools-worktree/master.
 
   - Verification for latest commit passed:
     ruff/pyright/git diff --check all green
-    pytest -q src/compiletools/test_simple_preprocessor.py::TestExpandHasFunctions
-      14 passed in 0.21s
+    pytest -q src/compiletools/test_file_analyzer.py::TestReadFunctions
+      4 passed in 0.15s
   - Final git status was clean.
 
   Start by running:
@@ -698,6 +726,11 @@ Continue work in /home/gericksson/compiletools-worktree/master.
       script passes + hand-fix for umask try/finally tests)
     test_multiuser_cache (FULLY tempfile-free — all 17 sites converted
       across script + 1 hand-fix for the multiprocessing.Pool test)
+    test_file_analyzer (TestReadFunctions migrated from
+      tempfile.NamedTemporaryFile + setup_method/teardown_method
+      cleanup scaffolding to tmp_path; create_test_file now takes
+      tmp_path; all 4 tests gain tmp_path fixture; `import os` and
+      `import tempfile` dropped; -13 net lines)
     test_compiler_macros (9 inline cache_clear calls → class autouse fixture;
       adjacent class's setup_method also converted to autouse for style
       consistency. Follow-up: module-level
