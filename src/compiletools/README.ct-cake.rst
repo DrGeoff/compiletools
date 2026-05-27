@@ -811,6 +811,18 @@ Common Options
     ``--diagnostics-dir``) and prints a summary table after the build.
     Analyze the results with ``ct-timing-report``.
 
+**--otel-export / --no-otel-export**
+    End-of-build OpenTelemetry (OTLP) export of the ``--timing`` span
+    tree.  Off by default.  Requires the optional ``otel`` extra
+    (``pip install 'compiletools[otel]'``) and ``--timing``.  See
+    ``ct-otel`` (1) for the full span model, collector setup, and
+    examples.  Related flags: ``--otel-endpoint``,
+    ``--otel-service-name``, ``--otel-protocol`` (``grpc``/``http``),
+    ``--otel-resource-attr`` (repeatable ``K=V``), ``--otel-headers``,
+    ``--otel-insecure``.  All values are also settable via ``ct.conf``
+    and the configargparse env-var hierarchy, plus the standard
+    ``OTEL_*`` env vars the SDK consults directly.
+
 **--diagnostics-dir PATH**
     Parent directory for per-invocation diagnostic artifacts -- the
     ``--timing`` JSON, slurm job logs from the ``slurm`` backend, and
@@ -839,6 +851,7 @@ Common Options
     across builds and developers. Default: ``{git_root}/cas-pchdir/{variant}``.
     Without this flag, PCH files fall back to legacy ``.gch`` placement in the
     object directory. Use ``ct-trim-cache --cas-pchdir-only`` to clean aged entries.
+    Spell the flag in full -- ``--cas-p`` is intentionally ambiguous with ``--cas-pcmdir``.
     Example: ``ct-cake --cas-pchdir=/shared/build/pch``
 
 **--cas-pcmdir PATH**
@@ -973,4 +986,4 @@ The non-recursive Makefile generation was informed by:
 
 SEE ALSO
 ========
-``compiletools`` (1), ``ct-timing-report`` (1), ``ct-list-variants`` (1), ``ct-config`` (1), ``ct-trim-cache`` (1), ``ct-cas-publish`` (1)
+``compiletools`` (1), ``ct-timing-report`` (1), ``ct-otel`` (1), ``ct-list-variants`` (1), ``ct-config`` (1), ``ct-trim-cache`` (1), ``ct-cas-publish`` (1)

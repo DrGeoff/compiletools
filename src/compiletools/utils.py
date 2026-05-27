@@ -12,11 +12,28 @@ from typing import Any, Union
 
 import compiletools.wrappedos
 
+# Sentinel env_var value stamped on a configargparse action to suppress
+# env-var pickup entirely (both the auto-uppercased prefix derived by
+# configargparse's ``auto_env_var_prefix`` and any explicit env var)
+# while leaving CLI + conf-file precedence intact. Used for flags whose
+# downstream consumer (e.g. an SDK with its own env-var precedence chain)
+# must remain the env-var authority. Suppression is enforced by
+# ``_ComposingArgumentParser`` in two places: (1) ``parse_known_args``
+# deletes any entry keyed by this string from the ``env_vars`` mapping
+# before delegating to configargparse, so the env-pickup loop cannot match
+# it even if a real process actually exports a variable with this name;
+# (2) ``format_help`` hides the sentinel from --help output. The sentinel
+# being a non-empty string is load-bearing for the upstream auto-prefix
+# loop: a truthy ``action.env_var`` is configargparse's signal to skip
+# auto-derivation.
+ENV_VAR_DISABLED = "__CT_ENV_VAR_DISABLED__"
+
 # Public API
 __all__ = [
     "ALL_SOURCE_EXTS",
     "CPP_SOURCE_EXTS",
     "C_SOURCE_EXTS",
+    "ENV_VAR_DISABLED",
     "HEADER_EXTS",
     "add_boolean_argument",
     "add_flag_argument",
@@ -297,6 +314,7 @@ def add_boolean_argument(
     default: bool = False,
     help: str | None = None,
     allow_value_conversion: bool = True,
+    env_var: str | None = None,
 ) -> None:
     """Add a boolean argument to an ArgumentParser instance.
 
@@ -308,11 +326,18 @@ def add_boolean_argument(
         help: Help text
         allow_value_conversion: If True, allows value conversion (e.g., --flag=yes),
                                if False, treats as simple flag (--flag or --no-flag only)
+        env_var: Override the configargparse-auto-derived env var on the
+            positive ``--{name}`` action (suppresses the auto-uppercased
+            form like ``FLAG_NAME`` in favour of the given name).
     """
     dest = dest or name
     group = parser.add_mutually_exclusive_group()
     suffix = f"Use --no-{name} to turn the feature off."
     bool_help = f"{help} {suffix}" if help else suffix
+
+    extra: dict = {}
+    if env_var is not None:
+        extra["env_var"] = env_var
 
     if allow_value_conversion:
         group.add_argument(
@@ -324,22 +349,28 @@ def add_boolean_argument(
             const=True,
             type=to_bool,
             help=bool_help,
+            **extra,
         )
     else:
-        group.add_argument(f"--{name}", dest=dest, default=default, action="store_true", help=bool_help)
+        group.add_argument(f"--{name}", dest=dest, default=default, action="store_true", help=bool_help, **extra)
 
     group.add_argument(f"--no-{name}", dest=dest, action="store_false")
 
 
 def add_flag_argument(
-    parser: argparse.ArgumentParser, name: str, dest: str | None = None, default: bool = False, help: str | None = None
+    parser: argparse.ArgumentParser,
+    name: str,
+    dest: str | None = None,
+    default: bool = False,
+    help: str | None = None,
+    env_var: str | None = None,
 ) -> None:
     """Add a flag argument to an ArgumentParser instance.
 
     This is a convenience wrapper around add_boolean_argument with
     allow_value_conversion=False for simple flag behavior.
     """
-    add_boolean_argument(parser, name, dest, default, help, allow_value_conversion=False)
+    add_boolean_argument(parser, name, dest, default, help, allow_value_conversion=False, env_var=env_var)
 
 
 def remove_mount(absolutepath: Union[str, Path]) -> str:

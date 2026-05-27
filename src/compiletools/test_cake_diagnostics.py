@@ -180,3 +180,191 @@ def test_diagnostics_dir_config_file(tmp_path):
     ]
     args = _build_args(argv)
     assert args.diagnostics_dir == str(conf_dir)
+
+
+def test_otel_export_failure_does_not_fail_build(monkeypatch, tmp_path, capsys):
+    """README.ct-otel.rst promise: 'a failed export does not fail the build'.
+
+    A RuntimeError from export_buildtimer (e.g. the SDK-missing hint, or any
+    runtime collector failure) must be swallowed into a stderr warning so the
+    surrounding finally block still completes and the caller of process()
+    never sees the exception.
+    """
+    bindir = tmp_path / "bin"
+    objdir = tmp_path / "obj"
+    argv = [
+        "--bindir",
+        str(bindir),
+        "--cas-objdir",
+        str(objdir),
+        "--timing",
+        "--otel-export",
+        "--filename",
+        "irrelevant.cpp",
+    ]
+    args = _build_args(argv)
+    assert args.otel_export is True
+
+    def _stub_createctobjs(self):
+        self.hunter = object()
+
+    monkeypatch.setattr(compiletools.cake.Cake, "_createctobjs", _stub_createctobjs)
+    monkeypatch.setattr(compiletools.cake.Cake, "_call_backend", lambda self: None)
+
+    import compiletools.otel_exporter as oe
+
+    def _boom(timer, args):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(oe, "export_buildtimer", _boom)
+
+    cake = compiletools.cake.Cake(args)
+    cake.process()
+
+    captured = capsys.readouterr()
+    assert "OTLP export failed: boom" in captured.err
+
+
+def test_otel_export_without_timing_warns(monkeypatch, tmp_path, capsys):
+    """--otel-export with no --timing must not be silent — the wire-in is
+    gated on timer.enabled, so without --timing nothing would be exported.
+    The finally block emits a single stderr warning so the misconfiguration
+    is visible."""
+    bindir = tmp_path / "bin"
+    objdir = tmp_path / "obj"
+    argv = [
+        "--bindir",
+        str(bindir),
+        "--cas-objdir",
+        str(objdir),
+        "--otel-export",
+        "--no-timing",
+        "--filename",
+        "irrelevant.cpp",
+    ]
+    args = _build_args(argv)
+    assert args.otel_export is True
+    assert args.timing is False
+
+    def _stub_createctobjs(self):
+        self.hunter = object()
+
+    monkeypatch.setattr(compiletools.cake.Cake, "_createctobjs", _stub_createctobjs)
+    monkeypatch.setattr(compiletools.cake.Cake, "_call_backend", lambda self: None)
+
+    cake = compiletools.cake.Cake(args)
+    cake.process()
+
+    captured = capsys.readouterr()
+    assert "--otel-export requested but --timing is not enabled" in captured.err
+
+
+def test_otel_export_with_timing_does_not_warn(monkeypatch, tmp_path, capsys):
+    """The 'no spans to export' warning must NOT fire when --timing is set."""
+    bindir = tmp_path / "bin"
+    objdir = tmp_path / "obj"
+    argv = [
+        "--bindir",
+        str(bindir),
+        "--cas-objdir",
+        str(objdir),
+        "--timing",
+        "--otel-export",
+        "--filename",
+        "irrelevant.cpp",
+    ]
+    args = _build_args(argv)
+
+    def _stub_createctobjs(self):
+        self.hunter = object()
+
+    monkeypatch.setattr(compiletools.cake.Cake, "_createctobjs", _stub_createctobjs)
+    monkeypatch.setattr(compiletools.cake.Cake, "_call_backend", lambda self: None)
+
+    import compiletools.otel_exporter as oe
+
+    monkeypatch.setattr(oe, "export_buildtimer", lambda timer, args: None)
+
+    cake = compiletools.cake.Cake(args)
+    cake.process()
+
+    captured = capsys.readouterr()
+    assert "no spans to export" not in captured.err
+
+
+class TestOtelSdkEnvVarsDoNotLeakToArgs:
+    """Three OTel flags must defer to the SDK as the env-var authority:
+    configargparse must NOT promote OTEL_ENDPOINT (auto-uppercased),
+    OTEL_EXPORTER_OTLP_ENDPOINT (SDK standard), or their trace-specific
+    counterparts into args.otel_endpoint / otel_headers / otel_insecure.
+    Otherwise we'd shadow the SDK's own precedence chain (which honours
+    OTEL_EXPORTER_OTLP_TRACES_* over the generic forms).
+    """
+
+    def _parse(self, argv):
+        cap = compiletools.apptools.create_parser("test otel env", argv=argv)
+        compiletools.cake.Cake.add_arguments(cap)
+        ns, _ = cap.parse_known_args(argv)
+        return ns
+
+    def test_otel_endpoint_env_does_not_leak_to_args(self, monkeypatch):
+        monkeypatch.setenv("OTEL_ENDPOINT", "foo")
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "bar")
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "baz")
+        ns = self._parse([])
+        assert ns.otel_endpoint is None
+
+    def test_otel_headers_env_does_not_leak_to_args(self, monkeypatch):
+        monkeypatch.setenv("OTEL_HEADERS", "x=y")
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_HEADERS", "a=b")
+        ns = self._parse([])
+        assert ns.otel_headers is None
+
+    def test_otel_insecure_env_does_not_leak_to_args(self, monkeypatch):
+        monkeypatch.setenv("OTEL_INSECURE", "true")
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_INSECURE", "true")
+        ns = self._parse([])
+        assert ns.otel_insecure is None
+
+    def test_otel_service_name_env_does_not_leak_to_args(self, monkeypatch):
+        monkeypatch.setenv("OTEL_SERVICE_NAME", "from-env")
+        ns = self._parse([])
+        assert ns.otel_service_name is None
+
+    def test_otel_resource_attr_env_does_not_leak_to_args(self, monkeypatch):
+        monkeypatch.setenv("OTEL_RESOURCE_ATTR", "team=foo")
+        ns = self._parse([])
+        assert ns.otel_resource_attr == []
+
+    def test_otel_cli_still_works(self):
+        ns = self._parse(["--otel-endpoint=http://x", "--otel-headers=h=v", "--otel-insecure"])
+        assert ns.otel_endpoint == "http://x"
+        assert ns.otel_headers == "h=v"
+        assert ns.otel_insecure is True
+
+    def test_otel_insecure_tri_state_cli(self):
+        # Absent: None so the SDK can infer from endpoint URL scheme.
+        assert self._parse([]).otel_insecure is None
+        assert self._parse(["--otel-insecure"]).otel_insecure is True
+        assert self._parse(["--no-otel-insecure"]).otel_insecure is False
+
+    def test_disabled_sentinel_hidden_from_help(self):
+        from compiletools.utils import ENV_VAR_DISABLED
+
+        cap = compiletools.apptools.create_parser("test otel env", argv=[])
+        compiletools.cake.Cake.add_arguments(cap)
+        help_text = cap.format_help()
+        assert ENV_VAR_DISABLED not in help_text
+
+    def test_env_var_disabled_truly_disabled_even_if_sentinel_in_env(self, monkeypatch):
+        # Collision-proof: even if a real process exports the sentinel
+        # name itself, configargparse's env-pickup loop must not see it.
+        from compiletools.utils import ENV_VAR_DISABLED
+
+        monkeypatch.setenv(ENV_VAR_DISABLED, "PICKED_UP")
+        ns = self._parse([])
+        assert ns.otel_endpoint is None
+        assert ns.otel_headers is None
+        assert ns.otel_insecure is None
+        assert ns.otel_service_name is None
+        assert ns.otel_resource_attr == []
