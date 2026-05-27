@@ -25,11 +25,20 @@ def _make_cas_entry(tmp_path, name="payload"):
     return p
 
 
-class TestPublishHardlinkPath:
-    def test_publish_creates_hardlink_at_user_path(self, tmp_path):
-        cas = _make_cas_entry(tmp_path)
-        user = tmp_path / "bin" / "main"
+@pytest.fixture
+def cas(tmp_path):
+    """Default CAS entry shared by tests that don't need a custom name."""
+    return _make_cas_entry(tmp_path)
 
+
+@pytest.fixture
+def user(tmp_path):
+    """Default user-visible publish target shared by most tests."""
+    return tmp_path / "bin" / "main"
+
+
+class TestPublishHardlinkPath:
+    def test_publish_creates_hardlink_at_user_path(self, cas, user):
         publish(str(cas), str(user))
 
         assert user.exists()
@@ -37,10 +46,7 @@ class TestPublishHardlinkPath:
         # Same inode → hardlink (not symlink fallback).
         assert user.stat().st_ino == cas.stat().st_ino
 
-    def test_publish_is_idempotent(self, tmp_path):
-        cas = _make_cas_entry(tmp_path)
-        user = tmp_path / "bin" / "main"
-
+    def test_publish_is_idempotent(self, cas, user):
         publish(str(cas), str(user))
         publish(str(cas), str(user))  # second time must succeed
 
@@ -92,11 +98,8 @@ class TestPublishAtomicityVsConcurrency:
     reason="platform lacks os.link (e.g. Termux/Android); the EXDEV branch can't be exercised",
 )
 class TestPublishExdevFallback:
-    def test_exdev_falls_back_to_symlink(self, tmp_path, monkeypatch):
+    def test_exdev_falls_back_to_symlink(self, cas, user, monkeypatch):
         """I2: cross-filesystem EXDEV from os.link must fall back to symlink."""
-        cas = _make_cas_entry(tmp_path)
-        user = tmp_path / "bin" / "main"
-
         original_link = os.link
 
         def fake_link(src, dst, *, src_dir_fd=None, dst_dir_fd=None, follow_symlinks=True):
@@ -111,12 +114,10 @@ class TestPublishExdevFallback:
         # Cleanup so monkeypatch tear-down doesn't fight the test.
         monkeypatch.setattr(os, "link", original_link)
 
-    def test_non_exdev_errors_propagate(self, tmp_path, monkeypatch):
+    def test_non_exdev_errors_propagate(self, cas, user, monkeypatch):
         """I2: a non-EXDEV OSError (ENOSPC / EPERM / EACCES / EROFS) MUST
         surface — silent symlink degradation here was the bug.
         """
-        cas = _make_cas_entry(tmp_path)
-        user = tmp_path / "bin" / "main"
 
         def fake_link(src, dst, *, src_dir_fd=None, dst_dir_fd=None, follow_symlinks=True):
             raise OSError(errno.ENOSPC, "No space left on device")
@@ -128,13 +129,10 @@ class TestPublishExdevFallback:
 
 
 class TestSidecarManifest:
-    def test_manifest_written_with_source_realpath(self, tmp_path):
+    def test_manifest_written_with_source_realpath(self, cas, user):
         """C4 sidecar: trim_exedir reads <cas>.manifest to bucket entries
         by source identity instead of by basename.
         """
-        cas = _make_cas_entry(tmp_path)
-        user = tmp_path / "bin" / "main"
-
         publish(str(cas), str(user), source_realpath="/repo/tests/main.cpp")
 
         manifest_path = str(cas) + ".manifest"
@@ -143,21 +141,15 @@ class TestSidecarManifest:
             data = json.load(f)
         assert data == {"source_realpath": "/repo/tests/main.cpp"}
 
-    def test_no_manifest_when_source_realpath_absent(self, tmp_path):
-        cas = _make_cas_entry(tmp_path)
-        user = tmp_path / "bin" / "main"
-
+    def test_no_manifest_when_source_realpath_absent(self, cas, user):
         publish(str(cas), str(user))
 
         assert not os.path.exists(str(cas) + ".manifest")
 
-    def test_manifest_failure_is_non_fatal(self, tmp_path, monkeypatch):
+    def test_manifest_failure_is_non_fatal(self, cas, user, monkeypatch):
         """A read-only cas-dir must not turn the publish step itself
         into a failure — sidecar is best-effort.
         """
-        cas = _make_cas_entry(tmp_path)
-        user = tmp_path / "bin" / "main"
-
         original_open = open
 
         def hostile_open(path, *args, **kwargs):
