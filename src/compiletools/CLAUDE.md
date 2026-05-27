@@ -101,9 +101,37 @@ After `apptools.parseargs` returns, `args.flags` is a frozen `Flags` dataclass. 
 
 **Mutation invariant.** `args.{CPPFLAGS,CFLAGS,CXXFLAGS,LDFLAGS}` raw strings, `args.{*}_tokens` lists, and `args.flags` are populated once at the end of `parseargs` and must not be mutated afterwards — `args.flags` would silently drift from the raw strings. All known mutation sites (`substitutions`, `_add_include_paths_to_flags`, project version macros, pkg-config, CPP/CXX unification) run BEFORE that point. `apptools.check_flag_string_drift(args)` compares the current raw flag strings against the snapshot recorded at parseargs end (`args._flag_string_snapshot`) and raises `RuntimeError` naming the offending slot if anything has changed.
 
+## Wild linker: the one compiler-rewritten linker axis
+
+Linker axis confs are otherwise purely declarative (`gold.conf` =
+`-fuse-ld=gold`, etc.), but wild has two documented exceptions in
+`apptools`:
+
+- **`wild` axis** — `wild.conf` emits the canonical token `-fuse-ld=wild`
+  (what gcc ≥ 16.1 wants). `_normalize_wild_linker` (run in
+  `_commonsubstitutions`, before the `Flags` freeze) rewrites it to
+  `--ld-path=wild` when the effective link driver (`_effective_link_driver`:
+  `args.LD` else `args.CXX`) is clang — clang rejects `-fuse-ld=wild`
+  ("invalid linker name") without an `ld.wild` symlink, and wild's installer
+  doesn't make one. The bare name `wild` (not an abs path) keeps per-user
+  paths out of the link key.
+- **`wild-B` axis** — a comment-only conf (like `ld.conf`). Selection is
+  detected via the variant token (`_variant_has_axis`), and
+  `_materialize_wild_b_searchdir` creates `<gitroot>/.ct-wild-ld/ld → wild`
+  and injects `-B<dir>`. Gitroot-anchored so `canonicalize_for_cache_key`
+  neutralises it in the link key. Works on any gcc (no `-fuse-ld=` support
+  needed).
+
+`_check_wild_linker_usable` (next to `_check_resolved_compiler_available`)
+fails fast: wild missing → install hint; `wild` axis + gcc < 16 → use clang /
+upgrade / `wild-B`. The bazel backend recognises `--ld-path=` (so the clang
+rewrite doesn't get clobbered by its `-fuse-ld=gold` default); **`wild-B`
+under bazel is unsupported** — its `-B` selection signal isn't a recognised
+linker flag there.
+
 ## Startup guards
 
-Two startup-time guards in `apptools` catch common misconfigurations early: (a) `_check_resolved_compiler_available` — toolchain axis pinned a compiler that isn't on PATH; (b) `_check_compiler_supports_requested_standard` — `-std=c++NN` exceeds the resolved compiler's major version per `_STD_MIN_COMPILER_VERSION`. Both name the variant chain in the diagnostic so the user knows which axis to swap.
+Three startup-time guards in `apptools` catch common misconfigurations early: (a) `_check_resolved_compiler_available` — toolchain axis pinned a compiler that isn't on PATH; (b) `_check_wild_linker_usable` — the wild linker is selected (`-fuse-ld=wild` / `--ld-path=wild`, or the `wild-B` axis) but the `wild` binary is missing, or the `wild` axis is paired with gcc < 16 (which can't drive `-fuse-ld=wild`); (c) `_check_compiler_supports_requested_standard` — `-std=c++NN` exceeds the resolved compiler's major version per `_STD_MIN_COMPILER_VERSION`. All name the variant chain in the diagnostic so the user knows which axis to swap.
 
 ## `wrappedos` preference and the documented skip cases
 

@@ -77,7 +77,7 @@ Every `ct-*` entry point uses `apptools.create_parser` + `add_base_arguments` (g
 
 ### Configuration files
 - `ct.conf.d/ct.conf` — default variant, canonical order, exe/test markers, locking
-- `ct.conf.d/{axis}.conf` — toolchain (`gcc.conf`, `clang.conf`), linker (`ld/gold/mold/wild.conf`), optimization (`debug/release.conf`), instrumentation (`asan/ubsan/tsan/coverage/lto.conf`)
+- `ct.conf.d/{axis}.conf` — toolchain (`gcc.conf`, `clang.conf`), linker (`ld/gold/mold/wild/wild-B.conf`), optimization (`debug/release.conf`), instrumentation (`asan/ubsan/tsan/coverage/lto.conf`)
 - `ct.conf.d/{variant}.conf` — composite overrides (e.g. `gcc.debug.conf`)
 - Priority: bundled < system (`/etc/xdg/ct`) < venv < user (`~/.config/ct`) < project (`{gitroot}/ct.conf.d/`) < cwd < env < CLI
 

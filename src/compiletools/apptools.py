@@ -3260,6 +3260,8 @@ def _check_wild_linker_usable(args) -> None:
 
     if wild_axis and not wild_b_axis:
         cxx = _effective_link_driver(args)
+        # None when no link driver resolved (no LD and no CXX) or the driver
+        # isn't a recognised gcc/clang — the version gate is skipped in that case.
         identity = _compiler_major_version(cxx) if cxx else None
         if identity is not None:
             family, major = identity
@@ -3921,15 +3923,18 @@ def parseargs(cap, argv, verbose=None, *, context):
 
     # After substitutions canonicalise args.variant and finalise the raw
     # compile flags, validate that the resolved compiler is actually
-    # usable for what the variant requested. Two checks:
+    # usable for what the variant requested. Three checks:
     #   1. Binary on PATH? — catches "user picked --variant=gcc.* but
     #      gcc isn't installed" (would otherwise be a generic compile
     #      failure with no pointer at the variant chain).
-    #   2. Compiler version supports the requested -std=c++NN? — catches
+    #   2. Wild linker usable? — catches a missing `wild` binary or the
+    #      `wild` axis paired with gcc < 16 (which can't drive
+    #      -fuse-ld=wild), before the link fails opaquely.
+    #   3. Compiler version supports the requested -std=c++NN? — catches
     #      "user picked cxx26 on a system with gcc 11" (would otherwise
     #      be an opaque "unrecognized command line option '-std=c++26'"
     #      from the compiler).
-    # Both checks emit a clear diagnostic naming the variant and
+    # All three checks emit a clear diagnostic naming the variant and
     # suggesting either a different variant or a toolchain upgrade.
     _check_resolved_compiler_available(args)
     _check_wild_linker_usable(args)
