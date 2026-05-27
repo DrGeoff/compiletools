@@ -6,8 +6,9 @@ Continue work in /home/gericksson/compiletools-worktree/master.
 
   Current state:
   - Latest commit:
-    f091b466 test: extract _patch_proc_mounts_unavailable helper for 3 sites in test_filesystem_utils
+    8fc6abe1 test: extract _args helper for SimpleNamespace ceremony in test_apptools_include_paths
   - Prior related commits:
+    f091b466 test: extract _patch_proc_mounts_unavailable helper for 3 sites in test_filesystem_utils
     a378bb88 test: extract _bindir_objdir_argv helper for 3 sites in test_cake_diagnostics
     b9fc1ea6 test: extend _make_exe_entry with bad_manifest kwarg, mirroring sibling helpers
     49b36adb test: unify _build_static_lib_sample + _build_shared_lib_sample into one helper
@@ -128,6 +129,26 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     e5b18a45 test: parametrize helper cases
     7009bd6a test: simplify pytest cases
   - Latest commit touched:
+    src/compiletools/test_apptools_include_paths.py (-14 net, +13/-27):
+    extracted module-level `_args(*, include, cpp="", c="", cxx="") ->
+    SimpleNamespace` helper for the recurring 5-attribute SimpleNamespace
+    ceremony that `_add_include_paths_to_flags` consumes (INCLUDE,
+    CPPFLAGS, CFLAGS, CXXFLAGS, verbose=0). 4 sites converted:
+    test_add_include_paths_skips_when_already_present,
+    test_add_include_paths_does_not_skip_when_only_in_other_path_flag,
+    test_add_include_paths_appends_new_path,
+    test_add_include_paths_handles_multiple_includes. Keyword-only
+    params with empty-string defaults so the all-empty-flags
+    handles_multiple_includes site shrinks to one line. verbose=0
+    (constant across every site) is folded into the helper rather
+    than repeated. Inline rationale comments on the does_not_skip
+    test ("-isystem", "-L", "-O2") preserved on the new c=/cpp=/cxx=
+    lines. test_existing_include_paths (parametrize-only, no
+    SimpleNamespace) untouched. Codex /codex:adversarial-review
+    APPROVE (verified helper preserves 5-attribute shape including
+    verbose=0; all 4 sites equivalent). 12 tests pass.
+
+  - Prior commit touched:
     src/compiletools/test_filesystem_utils.py (-9 net, +15/-24):
     extracted module-level `_patch_proc_mounts_unavailable(monkeypatch,
     exc)` helper for the recurring 8-line `real_open = builtins.open` +
@@ -146,7 +167,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     244 unchanged; autouse cache reset at 25-29 unchanged). 69 tests
     pass.
 
-  - Prior commit touched:
+  - Earlier prior commit touched:
     src/compiletools/test_cake_diagnostics.py (-16 net, +13/-29):
     extracted module-level `_bindir_objdir_argv(tmp_path, *extras) ->
     (bindir, objdir, argv)` helper for the recurring
@@ -165,7 +186,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     (verified equivalence at all 3 sites, no assertions/comments
     dropped). 6 tests pass.
 
-  - Earlier prior commit touched:
+  - Older prior commit touched:
     src/compiletools/test_cache_report_exedir.py (+6 net, +14/-8):
     extended `_make_exe_entry` with keyword-only `bad_manifest=False`,
     mirroring the `write_manifest`/`bad_manifest` shape already on
@@ -187,7 +208,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     observable scan_exedir difference, keyword-only kwarg breaks no
     callers). 20 tests pass.
 
-  - Older prior commit touched:
+  - Yet older prior commit touched:
     src/compiletools/test_e2e_cas_reuse_across_workspaces.py (-6 net, +16/-22):
     unified _build_static_lib_sample + _build_shared_lib_sample (95%
     identical) into one parametrized _build_lib_sample(workdir,
@@ -382,8 +403,8 @@ Continue work in /home/gericksson/compiletools-worktree/master.
 
   - Verification for latest commit passed:
     ruff/pyright/git diff --check all green
-    pytest -q src/compiletools/test_filesystem_utils.py
-      69 passed in 0.22s
+    pytest -q src/compiletools/test_apptools_include_paths.py
+      12 passed in 25.10s
   - Final git status was clean.
 
   Start by running:
