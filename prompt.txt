@@ -6,8 +6,9 @@ Continue work in /home/gericksson/compiletools-worktree/master.
 
   Current state:
   - Latest commit:
-    13ac08e4 test: extract _args helper for 3 multi-line SimpleNamespace sites in TestAddIncludePathsToFlags
+    5620cc4b test: extract _args helper for 3 multi-line SimpleNamespace sites in TestSubstituteCXXForMissing
   - Prior related commits:
+    13ac08e4 test: extract _args helper for 3 multi-line SimpleNamespace sites in TestAddIncludePathsToFlags
     dbbd8bf6 test: extract _result helper for 9 multi-line SimpleNamespace sites in TestTransitiveHeaderModuleImports
     5074ee0a Revert "test: extract _args helper for SimpleNamespace ceremony in test_diagnostics"
     76f02faa test: extract _args helper for SimpleNamespace ceremony in test_diagnostics  [REVERTED by 5074ee0a — false economy]
@@ -140,6 +141,28 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     e5b18a45 test: parametrize helper cases
     7009bd6a test: simplify pytest cases
   - Latest commit touched:
+    src/compiletools/test_apptools.py (-2 net, +18/-20):
+    Third round under the helper-extraction rule (second consecutive in
+    test_apptools.py). Added class-scoped `_args(*, cpp, cppflags) ->
+    SimpleNamespace` helper to TestSubstituteCXXForMissing. The 3 sites
+    that previously inlined 7- and 9-line SimpleNamespace ceremonies
+    (verbose=0, CXX="g++", CXXFLAGS="-Wall", CPP=..., CPPFLAGS=...,
+    optionally LD=.../LDFLAGS=...) collapse to one-line `self._args(...)`
+    calls. 3 invariant kwargs hidden (verbose, CXX, CXXFLAGS) plus 7-9
+    line → 1-line compression. LD / LDFLAGS deliberately omitted from the
+    helper because test_no_ld_attribute_ok specifically tests their
+    absence; test_substitutes_ld_when_present uses post-construction
+    attribute assignment (order preserved: attrs set first, then function
+    call). Sentinel values 'unsupplied_implies_use_CXX' /
+    'unsupplied_implies_use_CXXFLAGS' remain explicit at every relevant
+    site via cpp=/cppflags= kwargs. '# Should not raise' inline comment
+    preserved verbatim on test_no_ld_attribute_ok. Codex
+    /codex:adversarial-review APPROVE (verified helper builds the same
+    5-field namespace, LD/LDFLAGS omission preserves absent-attribute
+    test, LD/LDFLAGS assignments still occur before the function call).
+    3 tests pass in 0.29s.
+
+  - Prior commit touched:
     src/compiletools/test_apptools.py (-3 net, +15/-18):
     Second round under the new helper-extraction rule. Added a
     class-scoped `_args(*, cppflags="-Wall", verbose=0) -> SimpleNamespace`
@@ -655,10 +678,10 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     vestigial blank lines a prior batch tool left after `def test_`
     headers. Codex review confirmed no correctness regression.
 
-  - Verification for latest commit (13ac08e4) passed:
+  - Verification for latest commit (5620cc4b) passed:
     ruff check src/compiletools/test_apptools.py (clean)
     git diff --check (clean)
-    pytest -q -k TestAddIncludePathsToFlags src/compiletools/test_apptools.py
+    pytest -q -k TestSubstituteCXXForMissing src/compiletools/test_apptools.py
       3 passed in 0.29s
   - Final git status was clean.
 
@@ -782,11 +805,13 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     test_ct_lock_helper
     test_file_analyzer
     test_cxx_modules
-    test_apptools (TestAddIncludePathsToFlags follow-up: class-scoped `_args`
-      helper hides 3 invariant kwargs (INCLUDE/CFLAGS/CXXFLAGS) across 3
-      sites; 7-line→1-line compression. TestExtractCommandLineMacros is
-      EXHAUSTED — Round 26 helper extraction was rejected by user pushback
-      and the family's invariants are too thin to retry)
+    test_apptools (TestAddIncludePathsToFlags + TestSubstituteCXXForMissing
+      follow-ups: each got its own class-scoped `_args` helper hiding 3
+      invariant kwargs across 3 sites; 7-9 line→1 line compression each.
+      TestExtractCommandLineMacros is EXHAUSTED — Round 26 helper
+      extraction was rejected by user pushback and the family's invariants
+      are too thin to retry. TestExtractSystemIncludePaths sites are
+      single-line, mostly 2-attribute, NOT candidates under the new rule)
     test_build_backend (`_result` sibling helper for `_empty_result` collapses
       9 multi-line 6-line SimpleNamespace(module_*=...) sites in
       TestTransitiveHeaderModuleImports to one-line `self._result(...)`
