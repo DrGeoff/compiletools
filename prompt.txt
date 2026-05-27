@@ -6,8 +6,9 @@ Continue work in /home/gericksson/compiletools-worktree/master.
 
   Current state:
   - Latest commit:
-    8e99a784 test: extract _make_timing_backend module helper for timing-wrap tests
+    3a971d39 test: adopt _make_timing_backend in TestTimingLogPidNamespace
   - Prior related commits:
+    8e99a784 test: extract _make_timing_backend module helper for timing-wrap tests
     0d9a5ad6 test: delegate TestMakefileRealclean._make_args to module-level helper
     8fc6abe1 test: extract _args helper for SimpleNamespace ceremony in test_apptools_include_paths
     f091b466 test: extract _patch_proc_mounts_unavailable helper for 3 sites in test_filesystem_utils
@@ -131,6 +132,29 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     e5b18a45 test: parametrize helper cases
     7009bd6a test: simplify pytest cases
   - Latest commit touched:
+    src/compiletools/test_makefile_backend.py (-4 net, +8/-12):
+    3 tests in `TestTimingLogPidNamespace` (Fix 4: PID+monotonic_ns
+    namespacing of `.ct-make-timing.jsonl`) adopt the existing
+    `_make_timing_backend()` helper (Round 19), eliminating 4 inline
+    `SimpleNamespace(makefilename="Makefile", file_locking=False)` +
+    `MakefileBackend(args=args, hunter=MagicMock())` constructions
+    (test_two_backends_get_distinct_paths built two). Behaviour-
+    preserving because `_timing_log_path` only reads
+    `args.makefilename` (makefile_backend.py:127-137); the helper's
+    extra `verbose=0` and `backend._filesystem_type=None` settings
+    are inert for these tests. Helper's docstring widened to
+    document the dual usage (`_wrap_with_timing` tests AND
+    `_timing_log_path` tests). All class/test docstrings, assert
+    messages (PID-in-path, distinct-paths-required, stability),
+    and the `time.sleep(0)` / `# Force monotonic_ns` /
+    `# Filename should match` comments preserved verbatim. Codex
+    /codex:adversarial-review APPROVE (verified `_timing_log_path`
+    reads only makefilename; helper constructs fresh args/backend/
+    MagicMock per call so no shared-state drift; standalone Python
+    instantiation check verified path shape equivalence). 12 tests
+    across all 3 timing-area classes pass in 0.18s.
+
+  - Prior commit touched:
     src/compiletools/test_makefile_backend.py (-12 net, +16/-28):
     `TestTimingWrapBSDDate` and `TestTimingWrapEmitsValidJSON` each
     defined byte-identical `_make_args` + `_backend_with_timer` helper
@@ -450,8 +474,8 @@ Continue work in /home/gericksson/compiletools-worktree/master.
 
   - Verification for latest commit passed:
     ruff/pyright/git diff --check all green
-    pytest -q src/compiletools/test_makefile_backend.py::TestTimingWrapBSDDate src/compiletools/test_makefile_backend.py::TestTimingWrapEmitsValidJSON
-      9 passed in 0.24s
+    pytest -q src/compiletools/test_makefile_backend.py::TestTimingWrapBSDDate src/compiletools/test_makefile_backend.py::TestTimingWrapEmitsValidJSON src/compiletools/test_makefile_backend.py::TestTimingLogPidNamespace
+      12 passed in 0.18s
   - Final git status was clean.
 
   Start by running:
@@ -725,12 +749,18 @@ Continue work in /home/gericksson/compiletools-worktree/master.
       TestMakefileRealclean._make_args now delegates to module-level
       _default_makefile_args via dict-spread idiom — was a 19-field
       verbatim duplicate differing only in cas_objdir / bindir defaults;
-      -13 net lines. Latest follow-up: extracted module-level
+      -13 net lines. Follow-up: extracted module-level
       _make_timing_backend() helper alongside _default_makefile_args —
       TestTimingWrapBSDDate and TestTimingWrapEmitsValidJSON each had
       byte-identical _make_args + _backend_with_timer methods [4 methods,
       12 lines duplicated]; 4 call sites converted, 4 methods removed,
-      -12 net lines.)
+      -12 net lines. Latest follow-up: 3 tests in TestTimingLogPidNamespace
+      (Fix 4 PID+monotonic_ns) adopt _make_timing_backend, eliminating
+      4 inline SimpleNamespace+MakefileBackend constructions; helper
+      docstring widened to document dual usage. Behaviour-preserving
+      because _timing_log_path only reads args.makefilename — the
+      helper's extra verbose=0 and _filesystem_type=None are inert.
+      -4 net lines.)
     test_makefile (`_render_makefile(args, *, filesystem_type, graph)`
       module-level helper collapses the 8-line backend+graph+StringIO+
       _write_makefile incantation in 12 sites across
