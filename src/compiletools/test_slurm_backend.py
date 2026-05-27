@@ -82,6 +82,14 @@ def _mock_scancel():
 # ---------------------------------------------------------------------------
 
 
+def _bare_slurm_backend(**args_kwargs):
+    """Bypass __init__ for tests that only need a SlurmBackend instance with
+    ``.args`` set. Mirrors ``_bare_creator`` in test_compilation_database."""
+    b = SlurmBackend.__new__(SlurmBackend)
+    b.args = SimpleNamespace(**args_kwargs)
+    return b
+
+
 @contextlib.contextmanager
 def SlurmBackendTestContext(graph, **arg_overrides):
     """Context manager yielding (backend, _tmpdir) with a SlurmBackend wired to *graph*."""
@@ -474,9 +482,8 @@ class TestJobFailures:
         """
         rule = make_compile_rule(output=str(tmp_path / "foo.o"))
 
-        b = SlurmBackend.__new__(SlurmBackend)
         # poll_interval=1800 → max_polls = max(1, int(1800/1800)) = 1: times out after 1 poll
-        b.args = SimpleNamespace(slurm_poll_interval=1800.0)
+        b = _bare_slurm_backend(slurm_poll_interval=1800.0)
         index_map = {"77": [rule]}
 
         with (
@@ -494,8 +501,7 @@ class TestJobFailures:
         rule = make_compile_rule(output=str(tmp_path / "ghost.o"))
         # File is intentionally NOT created
 
-        b = SlurmBackend.__new__(SlurmBackend)
-        b.args = SimpleNamespace(slurm_poll_interval=0.0)
+        b = _bare_slurm_backend(slurm_poll_interval=0.0)
 
         # Force the polling loop to terminate immediately
         with (
@@ -511,8 +517,7 @@ class TestJobFailures:
         open(out, "w").close()
         rule = make_compile_rule(output=out)
 
-        b = SlurmBackend.__new__(SlurmBackend)
-        b.args = SimpleNamespace(slurm_poll_interval=0.0)
+        b = _bare_slurm_backend(slurm_poll_interval=0.0)
         # Should return without sleeping or raising
         b._wait_for_output_files([rule], timeout=30.0)
 
@@ -613,7 +618,7 @@ class TestJobFailures:
 
 class TestQueryStates:
     def _make_backend(self, tmp_path):
-        args = SimpleNamespace(
+        return _bare_slurm_backend(
             cas_objdir=str(tmp_path),
             slurm_partition=None,
             slurm_time="00:30:00",
@@ -623,9 +628,6 @@ class TestQueryStates:
             slurm_max_array=1000,
             slurm_poll_interval=0.0,
         )
-        b = SlurmBackend.__new__(SlurmBackend)
-        b.args = args
-        return b
 
     def test_parses_completed(self, tmp_path):
         b = self._make_backend(tmp_path)
@@ -859,7 +861,7 @@ class TestLocalLink:
         assert mock_run_local.call_args[0][0] is test_rule
 
     def test_generate_before_execute_required(self):
-        args = SimpleNamespace(
+        backend = _bare_slurm_backend(
             cas_objdir="/tmp",
             slurm_partition=None,
             slurm_time="00:30:00",
@@ -869,8 +871,6 @@ class TestLocalLink:
             slurm_max_array=1000,
             slurm_poll_interval=0.0,
         )
-        backend = SlurmBackend.__new__(SlurmBackend)
-        backend.args = args
         backend._graph = None
 
         with pytest.raises(RuntimeError, match="generate\\(\\) must be called"):
@@ -902,9 +902,7 @@ class TestMemoryEstimation:
     """
 
     def _make_backend(self, slurm_mem="32G", tiers=None):
-        b = SlurmBackend.__new__(SlurmBackend)
-        b.args = SimpleNamespace(slurm_mem=slurm_mem, slurm_mem_tiers=tiers)
-        return b
+        return _bare_slurm_backend(slurm_mem=slurm_mem, slurm_mem_tiers=tiers)
 
     def test_zero_weight_gets_1G(self):
         rule = make_compile_rule()
@@ -1341,8 +1339,7 @@ class TestSlurmMaxWait:
     def test_wait_for_arrays_respects_configured_cap(self, tmp_path):
         """A short cap with a never-terminating sacct mock raises Timed out."""
         rule = make_compile_rule(output=str(tmp_path / "foo.o"))
-        b = SlurmBackend.__new__(SlurmBackend)
-        b.args = SimpleNamespace(
+        b = _bare_slurm_backend(
             slurm_poll_interval=0.0,
             slurm_sacct_failure_threshold=10,
             slurm_max_wait=0.05,
@@ -1359,9 +1356,8 @@ class TestSlurmMaxWait:
     def test_wait_for_arrays_default_cap_is_two_hours(self, tmp_path):
         """When --slurm-max-wait is not in args, default of 7200s applies."""
         rule = make_compile_rule(output=str(tmp_path / "foo.o"))
-        b = SlurmBackend.__new__(SlurmBackend)
         # Intentionally omit slurm_max_wait so getattr() default fires.
-        b.args = SimpleNamespace(slurm_poll_interval=2.0, slurm_sacct_failure_threshold=10)
+        b = _bare_slurm_backend(slurm_poll_interval=2.0, slurm_sacct_failure_threshold=10)
         index_map = {"77": [rule]}
 
         # Make COMPLETED on first poll so we don't actually loop.
@@ -1532,8 +1528,7 @@ class TestScancelOnFailure:
 
 class TestSacctTransientFailures:
     def test_query_states_returns_empty_on_called_process_error(self, tmp_path):
-        b = SlurmBackend.__new__(SlurmBackend)
-        b.args = SimpleNamespace(cas_objdir=str(tmp_path))
+        b = _bare_slurm_backend(cas_objdir=str(tmp_path))
         with patch(
             "subprocess.check_output",
             side_effect=subprocess.CalledProcessError(1, ["sacct"], stderr="slurmdbd down"),
@@ -1541,16 +1536,14 @@ class TestSacctTransientFailures:
             assert b._query_array_task_states("123") == {}
 
     def test_query_states_returns_empty_on_sacct_missing(self, tmp_path):
-        b = SlurmBackend.__new__(SlurmBackend)
-        b.args = SimpleNamespace(cas_objdir=str(tmp_path))
+        b = _bare_slurm_backend(cas_objdir=str(tmp_path))
         with patch("subprocess.check_output", side_effect=FileNotFoundError("sacct")):
             assert b._query_array_task_states("123") == {}
 
     def test_wait_for_arrays_recovers_after_one_sacct_failure(self, tmp_path):
         """Single sacct exec failure does not crash — polling continues."""
         rule = make_compile_rule(output=str(tmp_path / "foo.o"))
-        b = SlurmBackend.__new__(SlurmBackend)
-        b.args = SimpleNamespace(slurm_poll_interval=0.0, slurm_sacct_failure_threshold=10)
+        b = _bare_slurm_backend(slurm_poll_interval=0.0, slurm_sacct_failure_threshold=10)
         index_map = {"77": [rule]}
 
         with (
@@ -1572,8 +1565,7 @@ class TestSacctTransientFailures:
         array can legitimately have no rows yet.
         """
         rule = make_compile_rule(output=str(tmp_path / "foo.o"))
-        b = SlurmBackend.__new__(SlurmBackend)
-        b.args = SimpleNamespace(slurm_poll_interval=0.0, slurm_sacct_failure_threshold=3)
+        b = _bare_slurm_backend(slurm_poll_interval=0.0, slurm_sacct_failure_threshold=3)
         index_map = {"77": [rule]}
 
         with (
@@ -1590,8 +1582,7 @@ class TestSacctTransientFailures:
         must not count as a failure or the build aborts during slurmdbd outages.
         """
         rule = make_compile_rule(output=str(tmp_path / "foo.o"))
-        b = SlurmBackend.__new__(SlurmBackend)
-        b.args = SimpleNamespace(
+        b = _bare_slurm_backend(
             slurm_poll_interval=0.0,
             slurm_sacct_failure_threshold=2,
             slurm_max_wait=7200.0,
@@ -1617,8 +1608,7 @@ class TestSacctTransientFailures:
     def test_wait_for_arrays_backs_off_on_consecutive_failures(self, tmp_path):
         """Consecutive sacct exec failures back off the sleep interval (capped)."""
         rule = make_compile_rule(output=str(tmp_path / "foo.o"))
-        b = SlurmBackend.__new__(SlurmBackend)
-        b.args = SimpleNamespace(
+        b = _bare_slurm_backend(
             slurm_poll_interval=2.0,
             slurm_sacct_failure_threshold=100,
             slurm_max_wait=7200.0,
@@ -2016,8 +2006,7 @@ class TestTimingPopulatesStartEnd:
 
     def test_collect_timing_includes_start_end(self, tmp_path):
         rule = make_compile_rule(output=str(tmp_path / "foo.o"))
-        b = SlurmBackend.__new__(SlurmBackend)
-        b.args = SimpleNamespace()
+        b = _bare_slurm_backend()
         mock_timer = MagicMock()
         # _collect_timing reads timer._wall_to_monotonic_offset to shift
         # sacct's wall-clock timestamps into the monotonic clock domain;
