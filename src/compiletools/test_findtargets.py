@@ -62,6 +62,7 @@ class TestFindTargetsModule:
             "cppflags_macros/nested_macros_test.cpp",
             "cxx_modules/main.cpp",
             "cxx_modules_header_units/main.cpp",
+            "cxx_modules_header_unit_isystem/main.cpp",
             "cxx_modules_import_std/main.cpp",
             "cxx_modules_partitions/main.cpp",
             "cxx_modules_split/main.cpp",

@@ -205,6 +205,17 @@ _EXAMPLE_PLANS: dict[str, ExamplePlan] = {
     "cxx_modules_import_std": ExamplePlan(skip_for_backends=_CXX_MODULES_NAMED_BACKENDS_BLOCKED),
     # Header units: full cross-backend coverage thanks to upstream fix.
     "cxx_modules_header_units": _VANILLA,
+    # Header unit reached only through a project-supplied -isystem path.
+    # Regression guard for ``_resolve_system_header_abs_paths`` honouring
+    # user include flags during gcc's cas-pcmdir mapper resolution; the
+    # sample's ``${CONF_DIR}``-anchored ``-isystem`` is what real
+    # projects (the user's reproducer) write. bazel and cmake sandbox
+    # builds against the workspace and reject absolute ``-isystem``
+    # paths pointing outside it; same hermeticity restriction already
+    # documented for bazel PCH staging.
+    "cxx_modules_header_unit_isystem": ExamplePlan(
+        skip_for_backends=frozenset({"bazel", "cmake"}),
+    ),
     # Transitive header unit: a consumer (main.cpp) whose ONLY module
     # interaction is a header unit (`import <vector>;`) reached through a
     # #include'd wrapper header (vecutil.h), never imported directly. The

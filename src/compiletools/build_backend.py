@@ -1352,7 +1352,27 @@ class BuildBackend(abc.ABC):
                         (t for t in self.args.flags.cxx if str(t).startswith("-std=")),
                         "-std=c++20",
                     )
-                    abs_paths = _resolve_system_header_abs_paths(self.args.CXX, token, std_flag=str(std_flag))
+                    # Pass the user's system-include flags so headers
+                    # routed via ``-isystem`` / ``-isysroot`` /
+                    # ``-iframework`` / ``-idirafter`` / ``--sysroot=``
+                    # actually resolve. ``-I`` / ``-iquote`` are
+                    # intentionally excluded -- see the immutability
+                    # contract in :func:`_extract_system_include_path_flags`
+                    # and ``src/compiletools/CLAUDE.md`` ("header-unit
+                    # -isystem immutability contract"). Without any
+                    # include flags at all, headers reached only
+                    # through a project-supplied ``-isystem`` path
+                    # would leave ``_gcc_header_unit_resolved`` empty
+                    # and the precompile would silently misroute
+                    # through the global-mapper path -- gcc reports
+                    # the import as "unknown compiled module interface".
+                    include_flags = _extract_system_include_path_flags(self.args.flags.cxx)
+                    abs_paths = _resolve_system_header_abs_paths(
+                        self.args.CXX,
+                        token,
+                        std_flag=str(std_flag),
+                        include_flags=include_flags,
+                    )
                     if abs_paths:
                         self._gcc_header_unit_resolved[token] = abs_paths
             for d in sorted(hu_mkdirs):
@@ -3520,8 +3540,123 @@ class BuildBackend(abc.ABC):
         return [lib_rule, self._build_publish_rule(cas_lib_path, lib_path, source_realpath=sourcefilename)]
 
 
+# Detached system-include flag families: each occupies two tokens
+# (``-isystem`` ``path``). Attached forms (``-isystempath``) are detected
+# by prefix match and travel as a single token.
+#
+# Deliberately excludes ``-I`` and ``-iquote`` (project search paths):
+# the header-unit cache key uses a single command_hash with no content
+# fold-in, so anything reachable through these flags would silently
+# stale-cache on edit. The contract is "header units must be routed
+# through a system-include flag" -- documented in src/compiletools/CLAUDE.md
+# under "header-unit -isystem immutability contract".
+#
+# The list is ordered longest-prefix-first so ``-isystem`` isn't
+# misclassified as a shorter prefix during attached-form matching.
+# Each entry is verified non-prefix of every other.
+_SYSTEM_INCLUDE_FLAG_FAMILIES: tuple[str, ...] = (
+    "-iframework",
+    "-idirafter",
+    "--sysroot",
+    "-isysroot",
+    "-isystem",
+)
+
+# Reserved for future families that *only* support an attached form
+# (no detached two-token spelling). Currently empty:
+#
+# * ``--sysroot=/path`` is handled by the attached-prefix loop over
+#   :data:`_SYSTEM_INCLUDE_FLAG_FAMILIES` matching the ``--sysroot``
+#   base spelling, since the prefix loop accepts any token longer than
+#   the bare flag. ``--sysroot /path`` (detached) is handled by the
+#   same families tuple via exact-equality match.
+#
+# Kept as a named tuple so future additions land in one place rather
+# than threading through a new flag axis.
+_SYSTEM_INCLUDE_ATTACHED_ONLY_PREFIXES: tuple[str, ...] = ()
+
+
+def _extract_system_include_path_flags(tokens: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+    """Return the subset of *tokens* that points at a system-include search path.
+
+    Keeps the families in :data:`_SYSTEM_INCLUDE_FLAG_FAMILIES`
+    (``-isystem`` / ``-iframework`` / ``-idirafter`` / ``-isysroot``) in
+    both detached and attached forms, plus attached-only forms in
+    :data:`_SYSTEM_INCLUDE_ATTACHED_ONLY_PREFIXES` (``--sysroot=``).
+    Everything else -- including project search paths ``-I`` and
+    ``-iquote`` -- is dropped. Order is preserved so the compiler's
+    search precedence is unchanged.
+
+    **The -isystem immutability contract.** The header-unit cache key
+    (``_pcm_command_hash``) folds in the compiler identity and the
+    user's CXXFLAGS but does NOT fold in the resolved header's content
+    hash. That is sound for system headers (compiler-shipped or
+    user-routed through ``-isystem``) by convention: the user is
+    declaring "these inputs do not mutate between builds". A header
+    reached via ``-I`` would break this invariant -- editing it would
+    leave the cached ``.gcm`` stale, and gcc's consume-time BMI check
+    is flag-aware, not content-aware. Restricting resolution to
+    system-include families makes the contract enforceable: a header
+    that isn't on a system-include path simply can't become a header
+    unit, and ``import <h>;`` against an ``-I``-only header fails the
+    same way as a non-existent header.
+
+    Malformed detached flags are silently dropped: a bare trailing
+    ``-isystem`` (no path), or a detached flag whose ``next`` token
+    starts with ``-`` (the flag stream skipped its path), are both
+    treated as no-ops rather than raising. Production callers feed
+    flag tuples that have already been through ``apptools.parseargs``
+    so this is a defensive guard, not the common path.
+
+    The probe in :func:`_resolve_system_header_abs_paths` runs the
+    compiler in a minimal context; without these flags it cannot resolve
+    headers that live behind project-supplied ``-isystem`` paths
+    (e.g. ``-isystem ${CONF_DIR}/extlib/include``).
+    """
+    out: list[str] = []
+    i = 0
+    n = len(tokens)
+    while i < n:
+        t = tokens[i]
+        if t in _SYSTEM_INCLUDE_FLAG_FAMILIES:
+            # Detached form: emit flag + path. Drop the bare flag if the
+            # path is missing OR if it looks like another flag (the
+            # value should be a path, not ``-Wall``).
+            if i + 1 < n and not tokens[i + 1].startswith("-"):
+                out.append(t)
+                out.append(tokens[i + 1])
+                i += 2
+                continue
+            i += 1
+            continue
+        # Attached form: -Ipath / -isystempath / etc. Longest-prefix-first
+        # via the ordered tuple ensures ``-isystem/p`` doesn't get sliced
+        # as ``-I`` + ``system/p``.
+        matched = False
+        for prefix in _SYSTEM_INCLUDE_FLAG_FAMILIES:
+            if t.startswith(prefix) and len(t) > len(prefix):
+                out.append(t)
+                matched = True
+                break
+        if matched:
+            i += 1
+            continue
+        # Attached-only prefixes: ``--sysroot=/path``.
+        for prefix in _SYSTEM_INCLUDE_ATTACHED_ONLY_PREFIXES:
+            if t.startswith(prefix) and len(t) > len(prefix):
+                out.append(t)
+                break
+        i += 1
+    return tuple(out)
+
+
 @functools.lru_cache(maxsize=512)
-def _resolve_system_header_abs_paths(cxx: str, token: str, std_flag: str = "-std=c++20") -> list[str]:
+def _resolve_system_header_abs_paths(
+    cxx: str,
+    token: str,
+    std_flag: str = "-std=c++20",
+    include_flags: tuple[str, ...] = (),
+) -> list[str]:
     """Resolve a header-unit token to every path the compiler may key it by.
 
     Used by the gcc cas-pcmdir mapper. gcc keys header-unit lookups by
@@ -3546,6 +3681,18 @@ def _resolve_system_header_abs_paths(cxx: str, token: str, std_flag: str = "-std
     the lookup hits regardless of how the consumer's flag set ended up
     canonicalizing.
 
+    ``include_flags`` carries the user's system-include flags --
+    ``-isystem`` / ``-isysroot`` / ``-iframework`` / ``-idirafter`` /
+    ``--sysroot=`` -- as distilled by
+    :func:`_extract_system_include_path_flags`. ``-I`` / ``-iquote``
+    are intentionally excluded; see that helper's docstring for the
+    immutability contract. Without these flags, a header reachable
+    only through a project-supplied ``-isystem`` path (typical for
+    pkg-config'd third-party libraries) fails the probe -- the mapper
+    then has no entry for the canonical resolved path, and the gcc
+    precompile silently misroutes through the global mapper and
+    reports the import as ``unknown compiled module interface``.
+
     Returns a list with the canonical path first (for stability) and
     any additional non-canonical spelling. Duplicates collapsed.
     Empty list when the compiler probe fails -- callers must handle
@@ -3560,7 +3707,7 @@ def _resolve_system_header_abs_paths(cxx: str, token: str, std_flag: str = "-std
     def _probe(extra_flags: list[str]) -> str | None:
         try:
             r = subprocess.run(
-                [cxx, std_flag, *extra_flags, "-M", "-x", "c++", "-"],
+                [cxx, std_flag, *include_flags, *extra_flags, "-M", "-x", "c++", "-"],
                 input=snippet,
                 capture_output=True,
                 text=True,
@@ -3595,13 +3742,18 @@ def _resolve_system_header_abs_paths(cxx: str, token: str, std_flag: str = "-std
     return paths
 
 
-def _resolve_system_header_abs_path(cxx: str, token: str, std_flag: str = "-std=c++20") -> str | None:
+def _resolve_system_header_abs_path(
+    cxx: str,
+    token: str,
+    std_flag: str = "-std=c++20",
+    include_flags: tuple[str, ...] = (),
+) -> str | None:
     """Backward-compatible single-path wrapper around
     ``_resolve_system_header_abs_paths``. Returns the canonical
     spelling when both probes succeed, the only spelling when only one
     does, ``None`` when both fail.
     """
-    paths = _resolve_system_header_abs_paths(cxx, token, std_flag=std_flag)
+    paths = _resolve_system_header_abs_paths(cxx, token, std_flag=std_flag, include_flags=include_flags)
     return paths[0] if paths else None
 
 

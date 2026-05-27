@@ -12,7 +12,7 @@ from compiletools import examples_registry as er
 @pytest.mark.parametrize(
     ("registry", "expected_size"),
     [
-        pytest.param(er.EXAMPLES_E2E, 39, id="examples-end-to-end"),
+        pytest.param(er.EXAMPLES_E2E, 40, id="examples-end-to-end"),
         pytest.param(er.EXAMPLES_FEATURES, 26, id="examples-features"),
     ],
 )
