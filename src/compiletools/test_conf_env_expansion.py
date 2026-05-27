@@ -61,6 +61,21 @@ def _clear_apptools_cache(monkeypatch, _functional_cxx):  # pyright: ignore[repo
     apptools.resetcallbacks()
 
 
+@pytest.fixture
+def conf_and_cwd(tmp_path):
+    """Set up axis-confs/extras.conf + sibling other/ cwd directory.
+
+    Returns (conf_path, other_cwd). Tests write their own conf body to
+    ``conf_path`` and pass ``other_cwd`` into ``_parse_conf`` (which
+    monkeypatch.chdir()s into it)."""
+    conf_dir = tmp_path / "axis-confs"
+    conf_dir.mkdir()
+    conf = conf_dir / "extras.conf"
+    other_cwd = tmp_path / "other"
+    other_cwd.mkdir()
+    return conf, other_cwd
+
+
 def _parse_conf(conf_path: str, third_cwd, monkeypatch) -> argparse.Namespace:
     """Parse a single --config=<conf_path> from third_cwd.
 
@@ -83,59 +98,44 @@ def _parse_conf(conf_path: str, third_cwd, monkeypatch) -> argparse.Namespace:
         return apptools.parseargs(cap, argv, context=BuildContext())
 
 
-def test_dollar_HOME_expands_in_conf_value(tmp_path, monkeypatch):
+def test_dollar_HOME_expands_in_conf_value(monkeypatch, conf_and_cwd):
     """`cas-objdir = $HOME/x` must resolve to os.environ["HOME"] + "/x"
     on args.cas_objdir. The ``/<variant>`` suffix is auto-appended by
     the cas-dir variant-suffix helper, so we assert the prefix and
     suffix independently."""
     monkeypatch.setenv("HOME", "/test/home")
-    conf_dir = tmp_path / "axis-confs"
-    conf_dir.mkdir()
-    conf = conf_dir / "extras.conf"
+    conf, other_cwd = conf_and_cwd
     conf.write_text("cas-objdir = $HOME/x\n")
-
-    other_cwd = tmp_path / "other"
-    other_cwd.mkdir()
 
     args = _parse_conf(str(conf), other_cwd, monkeypatch)
     assert args.cas_objdir == os.path.join("/test/home/x", args.variant), args.cas_objdir
 
 
-def test_tilde_expands_in_conf_value(tmp_path, monkeypatch):
+def test_tilde_expands_in_conf_value(monkeypatch, conf_and_cwd):
     """`cas-objdir = ~/x` must resolve via os.path.expanduser. The
     ``/<variant>`` suffix is auto-appended by the cas-dir
     variant-suffix helper."""
     monkeypatch.setenv("HOME", "/test/home")
-    conf_dir = tmp_path / "axis-confs"
-    conf_dir.mkdir()
-    conf = conf_dir / "extras.conf"
+    conf, other_cwd = conf_and_cwd
     conf.write_text("cas-objdir = ~/x\n")
-
-    other_cwd = tmp_path / "other"
-    other_cwd.mkdir()
 
     args = _parse_conf(str(conf), other_cwd, monkeypatch)
     assert args.cas_objdir == os.path.join("/test/home/x", args.variant), args.cas_objdir
 
 
-def test_brace_form_HOME_expands(tmp_path, monkeypatch):
+def test_brace_form_HOME_expands(monkeypatch, conf_and_cwd):
     """${HOME} brace form must expand the same as $HOME. The
     ``/<variant>`` suffix is auto-appended by the cas-dir
     variant-suffix helper."""
     monkeypatch.setenv("HOME", "/test/home")
-    conf_dir = tmp_path / "axis-confs"
-    conf_dir.mkdir()
-    conf = conf_dir / "extras.conf"
+    conf, other_cwd = conf_and_cwd
     conf.write_text("cas-objdir = ${HOME}/x\n")
-
-    other_cwd = tmp_path / "other"
-    other_cwd.mkdir()
 
     args = _parse_conf(str(conf), other_cwd, monkeypatch)
     assert args.cas_objdir == os.path.join("/test/home/x", args.variant), args.cas_objdir
 
 
-def test_conf_dir_expanded_before_env(tmp_path, monkeypatch):
+def test_conf_dir_expanded_before_env(monkeypatch, conf_and_cwd):
     """${CONF_DIR} must expand before $HOME so a value like
     `${CONF_DIR}/$HOME/x` produces /<confdir>/<expanded-home>/x.
 
@@ -150,49 +150,34 @@ def test_conf_dir_expanded_before_env(tmp_path, monkeypatch):
     directory as a prefix), not that any particular slash-normalisation
     rule is applied."""
     monkeypatch.setenv("HOME", "test/home")
-    conf_dir = tmp_path / "axis-confs"
-    conf_dir.mkdir()
-    conf = conf_dir / "extras.conf"
+    conf, other_cwd = conf_and_cwd
     conf.write_text("append-CXXFLAGS = -I${CONF_DIR}/$HOME/inc\n")
-
-    other_cwd = tmp_path / "other"
-    other_cwd.mkdir()
 
     args = _parse_conf(str(conf), other_cwd, monkeypatch)
     flat = " ".join(args.append_cxxflags) if isinstance(args.append_cxxflags, list) else str(args.append_cxxflags)
-    expected = f"-I{conf_dir}/test/home/inc"
+    expected = f"-I{conf.parent}/test/home/inc"
     assert expected in flat, f"expected {expected!r} in {flat!r}"
 
 
-def test_undefined_env_var_stays_literal(tmp_path, monkeypatch):
+def test_undefined_env_var_stays_literal(monkeypatch, conf_and_cwd):
     """A reference to a variable not in os.environ stays literal —
     matches os.path.expandvars semantics and preserves today's behaviour
     for genuinely undefined vars."""
     monkeypatch.delenv("DEFINITELY_UNSET_xyz_42", raising=False)
-    conf_dir = tmp_path / "axis-confs"
-    conf_dir.mkdir()
-    conf = conf_dir / "extras.conf"
+    conf, other_cwd = conf_and_cwd
     conf.write_text("cas-objdir = $DEFINITELY_UNSET_xyz_42/x\n")
-
-    other_cwd = tmp_path / "other"
-    other_cwd.mkdir()
 
     args = _parse_conf(str(conf), other_cwd, monkeypatch)
     assert args.cas_objdir == os.path.join("$DEFINITELY_UNSET_xyz_42/x", args.variant), args.cas_objdir
 
 
-def test_list_value_expands_each_element(tmp_path, monkeypatch):
+def test_list_value_expands_each_element(monkeypatch, conf_and_cwd):
     """Accumulated list values (append-CXXFLAGS) expand each element
     independently. Locks in the recursion in _expand_env_and_user
     (mirrors how _expand_conf_dir handles lists)."""
     monkeypatch.setenv("HOME", "/test/home")
-    conf_dir = tmp_path / "axis-confs"
-    conf_dir.mkdir()
-    conf = conf_dir / "extras.conf"
+    conf, other_cwd = conf_and_cwd
     conf.write_text("append-CXXFLAGS = -I$HOME/a\nappend-CXXFLAGS = -I$HOME/b\n")
-
-    other_cwd = tmp_path / "other"
-    other_cwd.mkdir()
 
     args = _parse_conf(str(conf), other_cwd, monkeypatch)
     values = args.append_cxxflags if isinstance(args.append_cxxflags, list) else [args.append_cxxflags]
@@ -202,25 +187,20 @@ def test_list_value_expands_each_element(tmp_path, monkeypatch):
     assert "$HOME" not in flat, flat
 
 
-def test_bare_relative_not_touched_by_env_expansion(tmp_path, monkeypatch):
+def test_bare_relative_not_touched_by_env_expansion(monkeypatch, conf_and_cwd):
     """A bare relative path that contains no $ or ~ must pass through
     verbatim — the env-expansion helper does not auto-anchor against
     conf-dir or cwd. Symmetric to
     test_bare_relative_paths_are_not_auto_anchored in
     test_conf_dir_placeholder.py."""
-    conf_dir = tmp_path / "axis-confs"
-    conf_dir.mkdir()
-    conf = conf_dir / "extras.conf"
+    conf, other_cwd = conf_and_cwd
     conf.write_text("cas-objdir = relative/subdir/x\n")
-
-    other_cwd = tmp_path / "other"
-    other_cwd.mkdir()
 
     args = _parse_conf(str(conf), other_cwd, monkeypatch)
     assert args.cas_objdir == os.path.join("relative/subdir/x", args.variant), args.cas_objdir
 
 
-def test_dollar_escape_protects_literal_dollar(tmp_path, monkeypatch):
+def test_dollar_escape_protects_literal_dollar(monkeypatch, conf_and_cwd):
     """`$$HOME` in a conf value must produce literal `$HOME` in the
     output — HOME is not expanded.
 
@@ -228,13 +208,8 @@ def test_dollar_escape_protects_literal_dollar(tmp_path, monkeypatch):
     natively, so the helper must protect $$ before calling expandvars
     and restore after."""
     monkeypatch.setenv("HOME", "/test/home")
-    conf_dir = tmp_path / "axis-confs"
-    conf_dir.mkdir()
-    conf = conf_dir / "extras.conf"
+    conf, other_cwd = conf_and_cwd
     conf.write_text("append-CXXFLAGS = -DDOLLAR=$$HOME\n")
-
-    other_cwd = tmp_path / "other"
-    other_cwd.mkdir()
 
     args = _parse_conf(str(conf), other_cwd, monkeypatch)
     values = args.append_cxxflags if isinstance(args.append_cxxflags, list) else [args.append_cxxflags]
@@ -243,17 +218,12 @@ def test_dollar_escape_protects_literal_dollar(tmp_path, monkeypatch):
     assert "/test/home" not in flat, flat
 
 
-def test_dollar_escape_multiple_in_one_value(tmp_path, monkeypatch):
+def test_dollar_escape_multiple_in_one_value(monkeypatch, conf_and_cwd):
     """Multiple `$$` tokens in one value must all restore to literal `$`,
     independent of any real $VAR expansion in the same value."""
     monkeypatch.setenv("HOME", "/test/home")
-    conf_dir = tmp_path / "axis-confs"
-    conf_dir.mkdir()
-    conf = conf_dir / "extras.conf"
+    conf, other_cwd = conf_and_cwd
     conf.write_text("append-CXXFLAGS = -DA=$$ -DB=$$HOME -DC=$HOME\n")
-
-    other_cwd = tmp_path / "other"
-    other_cwd.mkdir()
 
     args = _parse_conf(str(conf), other_cwd, monkeypatch)
     values = args.append_cxxflags if isinstance(args.append_cxxflags, list) else [args.append_cxxflags]
@@ -283,20 +253,15 @@ def _provenance_for(args: argparse.Namespace) -> dict:
     return getter()
 
 
-def test_provenance_tuple_includes_pre_expansion_literal(tmp_path, monkeypatch):
+def test_provenance_tuple_includes_pre_expansion_literal(monkeypatch, conf_and_cwd):
     """Each provenance entry is a 4-tuple
     (expanded_value, source_file, lineno, pre_expansion_literal). When
     expansion happened, literal != expanded; when nothing was expanded,
     literal == expanded. This lets -vv diagnostics show 'why did $HOME
     resolve to /tmp on the CI host'."""
     monkeypatch.setenv("HOME", "/test/home")
-    conf_dir = tmp_path / "axis-confs"
-    conf_dir.mkdir()
-    conf = conf_dir / "extras.conf"
+    conf, other_cwd = conf_and_cwd
     conf.write_text("cas-objdir = $HOME/x\n")
-
-    other_cwd = tmp_path / "other"
-    other_cwd.mkdir()
     args = _parse_conf(str(conf), other_cwd, monkeypatch)
 
     prov = _provenance_for(args)
@@ -311,17 +276,12 @@ def test_provenance_tuple_includes_pre_expansion_literal(tmp_path, monkeypatch):
     assert isinstance(lineno, int) and lineno >= 1
 
 
-def test_provenance_literal_equals_expanded_when_no_expansion(tmp_path, monkeypatch):
+def test_provenance_literal_equals_expanded_when_no_expansion(monkeypatch, conf_and_cwd):
     """When the conf value has no $ or ~ to expand, the 4th tuple
     element equals the 1st — same string. Lets a consumer cheaply test
     'did expansion happen here' via expanded != literal."""
-    conf_dir = tmp_path / "axis-confs"
-    conf_dir.mkdir()
-    conf = conf_dir / "extras.conf"
+    conf, other_cwd = conf_and_cwd
     conf.write_text("cas-objdir = /absolute/no/expansion\n")
-
-    other_cwd = tmp_path / "other"
-    other_cwd.mkdir()
     args = _parse_conf(str(conf), other_cwd, monkeypatch)
 
     prov = _provenance_for(args)
@@ -334,17 +294,12 @@ def test_provenance_literal_equals_expanded_when_no_expansion(tmp_path, monkeypa
     assert literal == expanded, (literal, expanded)
 
 
-def test_provenance_literal_for_list_value(tmp_path, monkeypatch):
+def test_provenance_literal_for_list_value(monkeypatch, conf_and_cwd):
     """For an accumulated list (append-CXXFLAGS), each element has its
     own 4-tuple with its own pre-expansion literal."""
     monkeypatch.setenv("HOME", "/test/home")
-    conf_dir = tmp_path / "axis-confs"
-    conf_dir.mkdir()
-    conf = conf_dir / "extras.conf"
+    conf, other_cwd = conf_and_cwd
     conf.write_text("append-CXXFLAGS = -I$HOME/a\nappend-CXXFLAGS = -I/bare/b\n")
-
-    other_cwd = tmp_path / "other"
-    other_cwd.mkdir()
     args = _parse_conf(str(conf), other_cwd, monkeypatch)
 
     prov = _provenance_for(args)
