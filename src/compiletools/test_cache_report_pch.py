@@ -12,20 +12,35 @@ from compiletools import cache_report
 # ---------------------------------------------------------------------------
 
 
-def _make_pch_entry(pch_root, cmd_hash, header_realpath, gch_size=50, manifest_pad=0):
-    """Create a fake PCH cmd_hash directory with a .gch and a manifest.
+def _make_pch_entry(
+    pch_root,
+    cmd_hash,
+    header_realpath,
+    *,
+    gch_size=50,
+    manifest_pad=0,
+    write_manifest=True,
+    bad_manifest=False,
+):
+    """Create a fake PCH cmd_hash directory with a .gch and (optionally) a manifest.
 
     ``manifest_pad`` adds ``b' '*manifest_pad`` whitespace to the JSON to
     make the on-disk manifest size predictable for tests that assert on
-    total bytes inside a cmd_hash dir.
+    total bytes inside a cmd_hash dir. ``write_manifest=False`` skips the
+    manifest entirely (orphan); ``bad_manifest=True`` writes corrupt JSON.
+    Mirrors ``_make_pcm_entry`` in test_cache_report_pcm.py.
     """
     d = pathlib.Path(pch_root) / cmd_hash
     d.mkdir(exist_ok=True)
     (d / "header.gch").write_bytes(b"x" * gch_size)
-    payload = json.dumps({"header_realpath": header_realpath})
-    if manifest_pad > 0:
-        payload = payload + (" " * manifest_pad)
-    (d / "manifest.json").write_text(payload)
+    if write_manifest:
+        if bad_manifest:
+            (d / "manifest.json").write_text("{not: valid: json")
+        else:
+            payload = json.dumps({"header_realpath": header_realpath})
+            if manifest_pad > 0:
+                payload = payload + (" " * manifest_pad)
+            (d / "manifest.json").write_text(payload)
     return d
 
 
@@ -73,10 +88,7 @@ def test_scan_pchdir_skips_non_cmd_hash_entries(tmp_path):
 
 def test_scan_pchdir_handles_missing_manifest(tmp_path):
     cmd_hash = "0123456789abcdef"
-    d = pathlib.Path(tmp_path) / cmd_hash
-    d.mkdir()
-    (d / "header.gch").write_bytes(b"y" * 30)
-    # NO manifest.json.
+    _make_pch_entry(tmp_path, cmd_hash, "ignored", gch_size=30, write_manifest=False)
 
     entries = cache_report.scan_pchdir(str(tmp_path))
     assert len(entries) == 1
@@ -90,10 +102,7 @@ def test_scan_pchdir_handles_missing_manifest(tmp_path):
 
 def test_scan_pchdir_handles_corrupt_manifest(tmp_path):
     cmd_hash = "fedcba9876543210"
-    d = pathlib.Path(tmp_path) / cmd_hash
-    d.mkdir()
-    (d / "header.gch").write_bytes(b"z" * 40)
-    (d / "manifest.json").write_text("{not: valid: json")
+    d = _make_pch_entry(tmp_path, cmd_hash, "ignored", gch_size=40, bad_manifest=True)
 
     entries = cache_report.scan_pchdir(str(tmp_path))
     assert len(entries) == 1
