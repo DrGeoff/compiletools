@@ -1,7 +1,5 @@
 """Tests for file_analyzer module."""
 
-import os
-import tempfile
 from types import SimpleNamespace
 
 import configargparse
@@ -60,27 +58,14 @@ class TestFileAnalysisResult:
 class TestReadFunctions:
     """Test different file reading functions."""
 
-    def setup_method(self):
-        """Set up test fixtures."""
-        self.test_files = {}
-
-    def teardown_method(self):
-        """Clean up test files."""
-        for filepath in self.test_files.values():
-            try:
-                os.unlink(filepath)
-            except OSError:
-                pass
-
-    def create_test_file(self, filename, content):
+    def create_test_file(self, tmp_path, filename, content):
         """Helper to create temporary test files."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".c", delete=False) as f:
-            f.write(content)
-        self.test_files[filename] = f.name
-        return f.name
+        filepath = tmp_path / filename
+        filepath.write_text(content)
+        return str(filepath)
 
-    def assert_reader_handles_full_and_limited_read(self, reader, filename, content, limit):
-        filepath = self.create_test_file(filename, content)
+    def assert_reader_handles_full_and_limited_read(self, tmp_path, reader, filename, content, limit):
+        filepath = self.create_test_file(tmp_path, filename, content)
 
         text, bytes_analyzed, was_truncated = reader(filepath, 0)
         assert text == content
@@ -92,20 +77,22 @@ class TestReadFunctions:
         assert bytes_limited <= limit
         assert was_truncated_limited is True
 
-    def test_read_file_mmap(self):
+    def test_read_file_mmap(self, tmp_path):
         """Test memory-mapped file reading."""
-        self.assert_reader_handles_full_and_limited_read(read_file_mmap, "mmap_test.c", "Hello\nWorld\nTest", 5)
-
-    def test_read_file_traditional(self):
-        """Test traditional file reading."""
         self.assert_reader_handles_full_and_limited_read(
-            read_file_traditional, "traditional_test.c", "Traditional\nFile\nReading", 8
+            tmp_path, read_file_mmap, "mmap_test.c", "Hello\nWorld\nTest", 5
         )
 
-    def test_read_functions_consistency(self):
+    def test_read_file_traditional(self, tmp_path):
+        """Test traditional file reading."""
+        self.assert_reader_handles_full_and_limited_read(
+            tmp_path, read_file_traditional, "traditional_test.c", "Traditional\nFile\nReading", 8
+        )
+
+    def test_read_functions_consistency(self, tmp_path):
         """Test that mmap and traditional reading produce identical results."""
         content = "Consistency\nTest\nFile\nWith\nMultiple\nLines"
-        filepath = self.create_test_file("consistency_test.c", content)
+        filepath = self.create_test_file(tmp_path, "consistency_test.c", content)
 
         # Read with both methods
         mmap_text, mmap_bytes, mmap_truncated = read_file_mmap(filepath, 0)
@@ -116,9 +103,9 @@ class TestReadFunctions:
         assert mmap_bytes == trad_bytes
         assert mmap_truncated == trad_truncated
 
-    def test_empty_file_handling(self):
+    def test_empty_file_handling(self, tmp_path):
         """Test handling of empty files."""
-        filepath = self.create_test_file("empty_test.c", "")
+        filepath = self.create_test_file(tmp_path, "empty_test.c", "")
 
         # Both methods should handle empty files gracefully
         mmap_text, mmap_bytes, mmap_truncated = read_file_mmap(filepath, 0)
