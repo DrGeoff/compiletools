@@ -7,7 +7,13 @@ import types
 
 import pytest
 
-pytest.importorskip("opentelemetry")
+# importorskip the SDK, not the bare ``opentelemetry`` namespace package:
+# ``opentelemetry-api`` (a common transitive dependency) satisfies the PEP 420
+# namespace import on its own, so ``importorskip("opentelemetry")`` would pass
+# in an api-only environment and then the module-level ``opentelemetry.sdk``
+# import below would raise ModuleNotFoundError -- a collection error that
+# interrupts the whole pytest run rather than skipping just this module.
+pytest.importorskip("opentelemetry.sdk")
 
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
@@ -227,6 +233,8 @@ class TestExportRoundTrip:
         # find the compile.src/foo.cpp event's monotonic start, in the same
         # synthetic tree we built
         compile_event = next(ev for phase in timer._root.children for ev in phase.children if ev.target == "obj/foo.o")
+        # The synthetic tree always sets end_s; narrow the Optional for pyright.
+        assert compile_event.end_s is not None
         expected_start_ns = int((compile_event.start_s - offset) * 1e9)
         expected_end_ns = int((compile_event.end_s - offset) * 1e9)
 

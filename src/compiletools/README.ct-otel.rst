@@ -7,7 +7,7 @@ Export ct-cake build timing as OpenTelemetry (OTLP) traces
 ------------------------------------------------------------
 
 :Author: drgeoffathome@gmail.com
-:Date:   2026-05-26
+:Date:   2026-05-27
 :Version: 10.0.9
 :Manual section: 1
 :Manual group: developers
@@ -32,10 +32,13 @@ OTel-aware backend (Tempo, Jaeger, Honeycomb, an internal OTel
 collector, a ClickHouse pipeline, ...) can ingest.
 
 The exporter is a pure end-of-build batch step.  No spans are emitted
-during the build itself.  Each OTLP request is bounded by a 5-second
-per-request timeout, so a slow or unreachable collector adds at most a
-handful of seconds (one bounded request per retry) to end-of-build, and
-a failed export does not fail the build.
+during the build itself.  Each OTLP request carries a 5-second
+per-request timeout, but the OpenTelemetry SDK does not propagate that
+bound to the underlying network call, and the exporter retries with
+backoff — so against a slow or unreachable collector the end-of-build
+flush can take longer than the nominal 5-second budget (ct-cake prints
+a stderr warning when it does).  Either way, a failed or timed-out
+export does not fail the build.
 
 The OpenTelemetry SDK is an optional dependency.  Default installs of
 compiletools do not pull it in, and ``--otel-export`` is off by
@@ -149,16 +152,31 @@ BuildTimer's monotonic timeline via the wall-to-monotonic offset
 captured at ``BuildTimer.__init__``, so the resulting trace aligns
 with the rest of an observability stack.
 
-================ ============================== =====================================================================================================
-Level            Span name                       Notable attributes
-================ ============================== =====================================================================================================
-Root             ``compiletools.build``         Resource: ``service.name``, ``service.namespace=compiletools``, ``host.name``,
-                                                ``git.commit.sha``, ``ct.variant``, ``ct.backend``, ``ct.invocation_id``
-Phase            ``phase.<name>``               No span attrs (phase carries its name in the span name)
-Rule (compile)   ``compile.<basename>``         ``ct.rule_type=compile``, ``ct.target``, ``ct.source``
-Rule (link)      ``link.<basename>``            ``ct.rule_type=link``, ``ct.target`` (``ct.source`` omitted for link rules)
-Rule (other)     ``<rule_type>.<basename>``     ``ct.rule_type``, ``ct.target``, and ``ct.source`` when present
-================ ============================== =====================================================================================================
+================ ================================ =====================================================================================================
+Level            Span name                        Notable attributes
+================ ================================ =====================================================================================================
+Root             ``compiletools.build``           Resource: ``service.name``, ``service.namespace=compiletools``, ``host.name``,
+                                                  ``git.commit.sha``, ``ct.variant``, ``ct.backend``, ``ct.invocation_id``
+Phase            ``phase.<name>``                 No span attrs (phase carries its name in the span name)
+Rule (compile)   ``compile.<dir>/<basename>``     ``ct.rule_type=compile``, ``ct.target``, ``ct.source``
+Rule (link)      ``link.<dir>/<basename>``        ``ct.rule_type=link``, ``ct.target`` (``ct.source`` omitted for link rules)
+Rule (other)     ``<rule_type>.<dir>/<basename>`` ``ct.rule_type``, ``ct.target``, and ``ct.source`` when present
+================ ================================ =====================================================================================================
+
+Rule span names are qualified by the basename of the parent directory
+of the rule's source (or its target, for rules without a source) —
+``compile.src/foo.cpp`` rather than ``compile.foo.cpp`` — so two
+translation units sharing a filename (``src/util.cpp`` vs
+``tests/util.cpp``) stay distinct in the trace UI.  The unqualified
+``<rule_type>.<basename>`` form appears only when the source or target
+has no directory component.  ``ct.target`` / ``ct.source`` remain the
+canonical, fully-qualified query keys.
+
+Rule events that never recorded a real start time (an internal
+``start_s == 0.0`` sentinel — e.g. a Slurm job whose ``sacct``
+timestamps could not be parsed) are omitted from the trace so a
+spurious 1970 span cannot drag the timeline to the epoch; their elapsed
+time is still present in ``timing.json``.
 
 ``ct.invocation_id`` is the basename of the per-invocation diagnostics
 directory (``--diagnostics-dir``'s ``<invocation-id>`` segment), so a
@@ -297,7 +315,7 @@ Span timestamps look implausible (e.g. 1970)
 
 SEE ALSO
 ========
-``ct-cake`` (1), ``ct-timing-report`` (1), ``compiletools`` (1)
+``ct-cake`` (1), ``ct-timing-report`` (1), ``ct-config`` (1), ``compiletools`` (1)
 
 The OpenTelemetry specification: https://opentelemetry.io/docs/specs/otel/
 

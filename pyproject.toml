@@ -51,6 +51,10 @@ dev = [
     "pytest-cov>=6.0",
     "textual>=0.40.0",
     "tomli; python_version < '3.11'",
+    # Pull in the OTel SDK so the otel_exporter tests run (and pyright
+    # resolves their imports) in the standard dev/CI environment rather than
+    # skipping. The feature itself stays an opt-in extra for end users.
+    "compiletools[otel]",
 ]
 release = [
     "twine>=5.0.0",
