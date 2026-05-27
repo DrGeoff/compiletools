@@ -6,8 +6,9 @@ Continue work in /home/gericksson/compiletools-worktree/master.
 
   Current state:
   - Latest commit:
-    5074ee0a Revert "test: extract _args helper for SimpleNamespace ceremony in test_diagnostics"
+    dbbd8bf6 test: extract _result helper for 9 multi-line SimpleNamespace sites in TestTransitiveHeaderModuleImports
   - Prior related commits:
+    5074ee0a Revert "test: extract _args helper for SimpleNamespace ceremony in test_diagnostics"
     76f02faa test: extract _args helper for SimpleNamespace ceremony in test_diagnostics  [REVERTED by 5074ee0a — false economy]
     c97911bf test: convert temp_lock_file fixture to tmp_path in test_file_locking
     f05af67e test: convert temp_target fixture to tmp_path in test_ct_lock_helper
@@ -137,7 +138,34 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     324542ea test: parametrize utility test cases
     e5b18a45 test: parametrize helper cases
     7009bd6a test: simplify pytest cases
-  - Latest commit (5074ee0a) was a revert of 76f02faa:
+  - Latest commit touched:
+    src/compiletools/test_build_backend.py (-36 net, +18/-54):
+    First round under the new helper-extraction rule. Added
+    `_result(*, exports=(), implements=(), imports=(), header_imports=())
+    -> SimpleNamespace` next to the existing `_empty_result()` helper in
+    TestTransitiveHeaderModuleImports. 9 sites that previously inlined a
+    6-line SimpleNamespace(module_exports=(), module_implements=(),
+    module_imports=(...), module_header_imports=(...)) ceremony — each
+    varying only 1-2 fields, the rest empty — collapse to one-line
+    `self._result(...)` calls. Multi-line → one-line compression, so
+    passes the rule on both arms (5-line reduction per site
+    AND ≥3 invariant kwargs hidden). Helper kwargs drop the `module_`
+    prefix (`imports=` vs `module_imports=`) for terser call sites;
+    constructed SimpleNamespace attributes preserve the full names that
+    production code in build_backend.py reads. `_empty_result` left
+    untouched as the all-empty convenience used by ~5 other sites.
+    Rationale comments preserved verbatim at the clang header-unit
+    transitive case (lines 1490-1497), the transitive helper test
+    (1522-1525), and the bare-partition-in-header tests (1558-1561).
+    Codex /codex:adversarial-review APPROVE (verified module_*
+    attributes preserved; 9 conversions map kwargs correctly to the
+    fields production reads; rationale comments still present). Noted
+    pre-existing inner `_result(path)` closure inside `_make_backend`
+    doesn't collide with `self._result` (Python scope — local name)
+    but is "a bit confusing"; left as-is. 11 TestTransitiveHeaderModuleImports
+    tests pass in 0.46s.
+
+  - Prior commit (5074ee0a) was a revert of 76f02faa:
     The Round 25 _args helper extraction in test_diagnostics was reverted
     after user pushback ("creating a one line function to replace one line
     of code seems to be like a false economy"). The 2-attribute
@@ -607,10 +635,11 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     vestigial blank lines a prior batch tool left after `def test_`
     headers. Codex review confirmed no correctness regression.
 
-  - Verification for latest commit (5074ee0a revert) passed:
-    git revert --no-edit 76f02faa (auto-clean revert, no conflicts)
-    pytest -q src/compiletools/test_diagnostics.py
-      8 passed in 1.23s
+  - Verification for latest commit (dbbd8bf6) passed:
+    ruff check src/compiletools/test_build_backend.py (clean)
+    git diff --check (clean)
+    pytest -q -k TestTransitiveHeaderModuleImports src/compiletools/test_build_backend.py
+      11 passed in 0.46s
   - Final git status was clean.
 
   Start by running:
@@ -734,7 +763,11 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     test_file_analyzer
     test_cxx_modules
     test_apptools
-    test_build_backend
+    test_build_backend (`_result` sibling helper for `_empty_result` collapses
+      9 multi-line 6-line SimpleNamespace(module_*=...) sites in
+      TestTransitiveHeaderModuleImports to one-line `self._result(...)`
+      calls; first round under new helper-extraction rule — passes both
+      arms (multi-line→one-line AND ≥3 invariant kwargs hidden))
     test_namer / test_cake / test_compilation_database
     test_multiuser_cache / test_bazel_backend
     test_apptools_cache_helpers / test_magicflags / test_locking
