@@ -965,6 +965,78 @@ def test_cxx_modules_header_unit_isystem_builds_with_gcc(tmp_path, monkeypatch):
     _run_header_unit_isystem_sample_with(cxx, tmp_path, monkeypatch)
 
 
+def _run_header_unit_pkg_config_sample_with(cxx: str, tmp_path, monkeypatch):
+    """Build the cxx_modules_header_unit_pkg_config sample and assert it
+    prints ``caught=boom``.
+
+    Sibling regression to ``_run_header_unit_isystem_sample_with``: the
+    sample's header unit is reachable only via a PKG-CONFIG-derived
+    ``-isystem`` flag (``PKG-CONFIG = extlib`` in ct.conf, where
+    ``extlib.pc`` exports ``-I<sample>/include`` which
+    ``filter_pkg_config_cflags`` converts to ``-isystem``). Pre-fix,
+    the gcc header-unit precompile pre-pass and rule emitter only
+    consulted ``args.flags.cxx`` and missed PKG-CONFIG-derived
+    ``-isystem`` flags entirely (they live in per-source magic
+    CXXFLAGS / CPPFLAGS), so the precompile command ran without the
+    include and gcc died with
+    ``cc1plus: fatal error: extlib/Exception.h: No such file or
+    directory``.
+    """
+    sample_src = uth.example_path("cxx_modules_header_unit_pkg_config")
+    assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
+    workdir = tmp_path / "cxx_modules_header_unit_pkg_config"
+    shutil.copytree(sample_src, workdir)
+    # ``ct-cake --auto`` discovers targets via the git tracked-files
+    # registry; without a local git root the worktree pytest is running
+    # from would shadow ``workdir`` and discovery would find nothing.
+    # ``git init`` is enough — no commits required.
+    subprocess.run(["git", "init", "-q"], cwd=workdir, check=True)
+    monkeypatch.chdir(workdir)
+
+    # Point pkg-config at the .pc shipped alongside the sample (uses
+    # ``${pcfiledir}`` so it resolves portably to the copied location).
+    pkg_config_path = workdir / "extlib_pc"
+    monkeypatch.setenv("PKG_CONFIG_PATH", str(pkg_config_path))
+
+    with uth.CompilerEnvContext(cxx):
+        r = subprocess.run(
+            ["ct-cake"],
+            capture_output=True,
+            text=True,
+            cwd=workdir,
+            timeout=180,
+        )
+    assert r.returncode == 0, f"ct-cake --auto (CXX={cxx}) failed:\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
+    exe = workdir / "bin" / "main"
+    assert exe.exists(), f"executable not produced (CXX={cxx}):\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
+    run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=10)
+    assert run.returncode == 0, f"{run.stdout}\n{run.stderr}"
+    assert "caught=boom" in run.stdout, f"exception message missing/wrong: {run.stdout!r}"
+
+
+@requires_gcc_header_units
+def test_cxx_modules_header_unit_pkg_config_builds_with_gcc(tmp_path, monkeypatch):
+    """A header unit reached only via ``PKG-CONFIG``-derived ``-isystem``
+    builds with gcc.
+
+    Sibling regression guard to
+    ``test_cxx_modules_header_unit_isystem_builds_with_gcc``: pre-fix
+    the gcc header-unit precompile rule only honoured ``-isystem``
+    flags that lived in ``args.flags.cxx`` (the user-supplied
+    ``append-CXXFLAGS = -isystem ...``). Flags arriving via the
+    ``PKG-CONFIG = pkg`` magic-flag expansion (which
+    ``magicflags._handle_pkg_config`` adds to per-source CPPFLAGS /
+    CXXFLAGS, with ``filter_pkg_config_cflags`` converting ``-I`` to
+    ``-isystem``) were silently dropped from the precompile command,
+    so gcc failed with
+    ``cc1plus: fatal error: extlib/Exception.h: No such file or
+    directory``.
+    """
+    cxx = compiletools.apptools.get_functional_cxx_compiler()
+    assert cxx is not None, "requires_gcc_header_units should have skipped without a working compiler"
+    _run_header_unit_pkg_config_sample_with(cxx, tmp_path, monkeypatch)
+
+
 # ---------------------------------------------------------------------------
 # Phase 6: cas-pcmdir cache hit on rebuild
 # ---------------------------------------------------------------------------
@@ -1383,6 +1455,53 @@ class TestFindSystemStdModuleSource:
     def test_returns_none_for_unknown_kind(self):
         assert compiletools.apptools.find_system_std_module_source("/bin/false", "msvc") is None
         assert compiletools.apptools.find_system_std_module_source(None, "gcc") is None
+
+    def test_gcc_handles_ccache_wrapper(self):
+        """``CXX = ccache g++`` must resolve to the same std-module source as
+        bare ``g++``. Pre-fix the wrapper string slipped past ``shutil.which``
+        and the subprocess exec failed silently, producing ``None`` and
+        breaking ``import std;`` downstream."""
+
+        cxx = _which("g++")
+        if not cxx:
+            pytest.skip("no g++ on PATH")
+        baseline = compiletools.apptools.find_system_std_module_source(cxx, "gcc")
+        if baseline is None:
+            pytest.skip("g++ doesn't ship bits/std.cc on this host")
+        if _which("ccache") is None:
+            pytest.skip("ccache not on PATH")
+        # Use the basename so the wrapper string is the exact ``ccache g++``
+        # shape the bug report flagged.
+        wrapped = f"ccache {os.path.basename(cxx)}"
+        # Bypass the lru_cache so the prior bare-cxx call doesn't shadow this.
+        compiletools.apptools.find_system_std_module_source.cache_clear()
+        wrapped_path = compiletools.apptools.find_system_std_module_source(wrapped, "gcc")
+        assert wrapped_path == baseline, (
+            f"ccache wrapper should resolve to the same std-module source as bare g++; "
+            f"got {wrapped_path!r} vs baseline {baseline!r}"
+        )
+
+    def test_clang_handles_ccache_wrapper(self):
+        """Symmetric coverage for the clang branch of ``find_system_std_module_source``.
+        The clang branch walks up from the resolved binary path; a literal
+        ``"ccache clang++"`` string short-circuits to a nonsensical install
+        root and returns ``None`` rather than the real ``std.cppm``."""
+
+        cxx = _which("clang++")
+        if not cxx:
+            pytest.skip("no clang++ on PATH")
+        baseline = compiletools.apptools.find_system_std_module_source(cxx, "clang")
+        if baseline is None:
+            pytest.skip("clang doesn't ship libc++ std.cppm on this host")
+        if _which("ccache") is None:
+            pytest.skip("ccache not on PATH")
+        wrapped = f"ccache {os.path.basename(cxx)}"
+        compiletools.apptools.find_system_std_module_source.cache_clear()
+        wrapped_path = compiletools.apptools.find_system_std_module_source(wrapped, "clang")
+        assert wrapped_path == baseline, (
+            f"ccache wrapper should resolve to the same std-module source as bare clang++; "
+            f"got {wrapped_path!r} vs baseline {baseline!r}"
+        )
 
 
 @requires_cxx_modules
