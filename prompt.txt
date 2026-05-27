@@ -6,8 +6,9 @@ Continue work in /home/gericksson/compiletools-worktree/master.
 
   Current state:
   - Latest commit:
-    3a971d39 test: adopt _make_timing_backend in TestTimingLogPidNamespace
+    6c552ced test: hoist self.processor into setup_method in TestExpandHasFunctions
   - Prior related commits:
+    3a971d39 test: adopt _make_timing_backend in TestTimingLogPidNamespace
     8e99a784 test: extract _make_timing_backend module helper for timing-wrap tests
     0d9a5ad6 test: delegate TestMakefileRealclean._make_args to module-level helper
     8fc6abe1 test: extract _args helper for SimpleNamespace ceremony in test_apptools_include_paths
@@ -132,6 +133,31 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     e5b18a45 test: parametrize helper cases
     7009bd6a test: simplify pytest cases
   - Latest commit touched:
+    src/compiletools/test_simple_preprocessor.py (-19 net, +14/-33):
+    11 of 12 tests in `TestExpandHasFunctions` constructed a verbatim
+    `processor = SimplePreprocessor(self.macros, compiler_path="gcc")`
+    local. Moved to setup_method as `self.processor` (a per-test fresh
+    instance under pytest xunit semantics — confirmed no shared-state
+    risk). The 12th test (`test_no_compiler_evaluates_to_0`) needs
+    `compiler_path=""` and keeps its inline construction; setup_method
+    comment now notes this carve-out. SimplePreprocessor's constructor
+    is pure (no compiler probes, just attribute storage), so the new
+    self.processor allocation in the inline-override test is inert.
+    All test docstrings (basic_has_include true/false, mixed_multiple,
+    quoted_header, has_builtin, no_compiler, not_a_function,
+    has_in_larger_identifier, evaluate_expression both polarities,
+    process_structured both polarities, get_or_compute_preprocessing
+    both polarities) preserved verbatim. The inline `# Line 1 (0-based)
+    is "#include <special.h>" — should be active`, `# Line 1 should
+    NOT be active`, `# Verify the full call was passed to the compiler`,
+    `# 'my' prefix means it's part of another identifier`, and
+    mock_query.assert_called_once_with assertion preserved. Codex
+    /codex:adversarial-review APPROVE (verified per-test setup, no
+    introspection on local name 'processor', no attribute mutations
+    on self.processor; rationale comments at lines 583-584, 613-614,
+    627-628 still present). 14 tests pass in 0.21s.
+
+  - Prior commit touched:
     src/compiletools/test_makefile_backend.py (-4 net, +8/-12):
     3 tests in `TestTimingLogPidNamespace` (Fix 4: PID+monotonic_ns
     namespacing of `.ct-make-timing.jsonl`) adopt the existing
@@ -154,7 +180,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     instantiation check verified path shape equivalence). 12 tests
     across all 3 timing-area classes pass in 0.18s.
 
-  - Prior commit touched:
+  - Earlier prior commit touched:
     src/compiletools/test_makefile_backend.py (-12 net, +16/-28):
     `TestTimingWrapBSDDate` and `TestTimingWrapEmitsValidJSON` each
     defined byte-identical `_make_args` + `_backend_with_timer` helper
@@ -474,8 +500,8 @@ Continue work in /home/gericksson/compiletools-worktree/master.
 
   - Verification for latest commit passed:
     ruff/pyright/git diff --check all green
-    pytest -q src/compiletools/test_makefile_backend.py::TestTimingWrapBSDDate src/compiletools/test_makefile_backend.py::TestTimingWrapEmitsValidJSON src/compiletools/test_makefile_backend.py::TestTimingLogPidNamespace
-      12 passed in 0.18s
+    pytest -q src/compiletools/test_simple_preprocessor.py::TestExpandHasFunctions
+      14 passed in 0.21s
   - Final git status was clean.
 
   Start by running:
@@ -639,7 +665,12 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     test_compilation_database (module-level autouse fixture replaces 4
       per-class setup_method pairs; pre-yield-only — no teardown added)
     test_simple_preprocessor (autouse monkeypatch.setattr replaces
-      unittest.mock.patch/start/stop boilerplate across 3 classes)
+      unittest.mock.patch/start/stop boilerplate across 3 classes;
+      follow-up: 11 of 12 TestExpandHasFunctions tests hoist their
+      verbatim `SimplePreprocessor(self.macros, compiler_path="gcc")`
+      construction into setup_method as self.processor — the 12th
+      test [test_no_compiler_evaluates_to_0] keeps inline because it
+      needs compiler_path=""; -19 net lines)
     test_file_analyzer_integration (private `_FileAnalyzerIntegrationBase`
       intermediate class lifts duplicate setup_method + create_test_file
       from 3 concrete classes)
