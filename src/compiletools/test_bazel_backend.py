@@ -963,6 +963,20 @@ class TestBazelLinkerDefault:
         backend = _make_bazelrc_backend(ldflags="-Wl,-fuse-ld=mold,--no-as-needed")
         assert backend._user_set_fuse_ld() is True
 
+    def test_gold_skipped_when_ldflags_sets_ld_path(self):
+        # clang,wild is rewritten to --ld-path=wild; bazel must treat that as
+        # a user linker choice and NOT add its -fuse-ld=gold default.
+        content = _bazelrc_content(_make_bazelrc_backend(ldflags="-Wall --ld-path=wild"))
+        assert "-fuse-ld=" not in content, content
+
+    def test_user_set_linker_via_ld_path(self):
+        backend = _make_bazelrc_backend(ldflags="--ld-path=wild")
+        assert backend._user_set_fuse_ld() is True
+
+    def test_user_set_linker_via_wl_ld_path(self):
+        backend = _make_bazelrc_backend(ldflags="-Wl,--ld-path=wild")
+        assert backend._user_set_fuse_ld() is True
+
 
 class TestBazelJvmStackSize:
     """`--bazel-jvm-stack-size` drives the JVM -Xss host_jvm_args; empty disables."""
@@ -1129,7 +1143,6 @@ class TestBazelPrepareExternalSources:
 
             assert (base_dir / "ext" / "ext_source.cpp").exists()
         finally:
-
             if outside.exists():
                 shutil.rmtree(outside)
 
@@ -1141,7 +1154,6 @@ class TestBazelAllOutputsCurrent:
     post-build copy from bazel-bin/) always runs."""
 
     def test_always_returns_false_even_when_outputs_exist(self, tmp_path):
-
         args = MagicMock()
         hunter = MagicMock()
         backend = BazelBackend(args=args, hunter=hunter)

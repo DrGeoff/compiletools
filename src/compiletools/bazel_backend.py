@@ -1331,15 +1331,20 @@ class BazelBackend(BuildBackend):
 
     @staticmethod
     def _token_picks_linker(tok: str) -> bool:
-        """Return True if *tok* is a linker-selection flag like -fuse-ld=gold.
+        """Return True if *tok* is a linker-selection flag.
 
-        Recognises the bare ``-fuse-ld=…`` form and the ``-Wl,-fuse-ld=…``
-        passthrough (possibly with comma-separated peers like
-        ``-Wl,-fuse-ld=gold,--no-as-needed``).
+        Recognises:
+          * ``-fuse-ld=…`` (bare) and ``-Wl,-fuse-ld=…`` (passthrough, possibly
+            with comma-separated peers like ``-Wl,-fuse-ld=gold,--no-as-needed``);
+          * ``--ld-path=…`` (bare) and ``-Wl,--ld-path=…`` — clang's portable
+            linker selector, which compiletools emits for the wild linker on
+            clang (``-fuse-ld=wild`` is rewritten to ``--ld-path=wild``).
         """
-        if tok.startswith("-fuse-ld="):
+        if tok.startswith("-fuse-ld=") or tok.startswith("--ld-path="):
             return True
-        if tok.startswith("-Wl,") and any(p.startswith("-fuse-ld=") for p in tok[4:].split(",")):
+        if tok.startswith("-Wl,") and any(
+            p.startswith("-fuse-ld=") or p.startswith("--ld-path=") for p in tok[4:].split(",")
+        ):
             return True
         return False
 
