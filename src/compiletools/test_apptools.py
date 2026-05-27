@@ -730,7 +730,6 @@ class TestProjectVersionAndNameOptIn:
         return args
 
     def test_no_injection_when_neither_flag_set_version(self):
-
         args = self._make_args()
         _set_project_version(args)
         assert "-DCT_PROJECT_VERSION" not in args.CPPFLAGS
@@ -738,7 +737,6 @@ class TestProjectVersionAndNameOptIn:
         assert "-DCT_PROJECT_VERSION" not in args.CXXFLAGS
 
     def test_no_injection_when_neither_flag_set_name(self):
-
         args = self._make_args()
         _set_project_name(args)
         assert "-DCT_PROJECT_NAME" not in args.CPPFLAGS
@@ -746,7 +744,6 @@ class TestProjectVersionAndNameOptIn:
         assert "-DCT_PROJECT_NAME" not in args.CXXFLAGS
 
     def test_explicit_version_injects(self):
-
         args = self._make_args(**{"project-version": "1.2.3"})
         _set_project_version(args)
         assert "-DCT_PROJECT_VERSION='\"1.2.3\"'" in args.CPPFLAGS
@@ -754,7 +751,6 @@ class TestProjectVersionAndNameOptIn:
         assert "-DCT_PROJECT_VERSION='\"1.2.3\"'" in args.CXXFLAGS
 
     def test_explicit_name_injects(self):
-
         args = self._make_args(**{"project-name": "myapp"})
         _set_project_name(args)
         assert "-DCT_PROJECT_NAME='\"myapp\"'" in args.CPPFLAGS
@@ -762,27 +758,23 @@ class TestProjectVersionAndNameOptIn:
         assert "-DCT_PROJECT_NAME='\"myapp\"'" in args.CXXFLAGS
 
     def test_version_cmd_alone_injects(self):
-
         args = self._make_args(**{"project-version-cmd": "echo from-cmd-1.0"})
         _set_project_version(args)
         # First whitespace token of stdout is taken
         assert "-DCT_PROJECT_VERSION='\"from-cmd-1.0\"'" in args.CPPFLAGS
 
     def test_name_cmd_alone_injects(self):
-
         args = self._make_args(**{"project-name-cmd": "echo cmd-named-app"})
         _set_project_name(args)
         assert "-DCT_PROJECT_NAME='\"cmd-named-app\"'" in args.CPPFLAGS
 
     def test_explicit_version_takes_precedence_over_cmd(self):
-
         args = self._make_args(**{"project-version": "explicit-1.0", "project-version-cmd": "echo from-cmd"})
         _set_project_version(args)
         assert "-DCT_PROJECT_VERSION='\"explicit-1.0\"'" in args.CPPFLAGS
         assert "from-cmd" not in args.CPPFLAGS
 
     def test_idempotent_when_macro_already_present(self):
-
         args = self._make_args(**{"project-name": "newvalue"})
         args.CPPFLAGS = '-DCT_PROJECT_NAME="oldvalue"'
         _set_project_name(args)
@@ -958,16 +950,13 @@ class TestCompilerDefaultCxxStd:
     consumer compiles inside bazel's sandbox."""
 
     def test_returns_none_for_empty_input(self):
-
         assert compiler_default_cxx_std(None) is None
         assert compiler_default_cxx_std("") is None
 
     def test_returns_none_for_nonexistent_compiler(self):
-
         assert compiler_default_cxx_std("nonexistent_compiler_xyz_999") is None
 
     def test_returns_none_when_compiler_exits_nonzero(self):
-
         clear_cache()
         with patch(
             "subprocess.run",
@@ -977,7 +966,6 @@ class TestCompilerDefaultCxxStd:
         clear_cache()
 
     def test_returns_none_when_macro_missing(self):
-
         clear_cache()
         # Compiler ran but its -dM output didn't include __cplusplus
         # (would happen with a bogus -x mode, or a compiler that
@@ -1149,9 +1137,7 @@ class TestSetupPkgConfigOverrides:
         assert "(auto-discovered: gitroot)" in captured.out
         assert "(auto-discovered: cwd)" not in captured.out
 
-    def test_setup_pkg_config_overrides_emits_provenance_at_verbose_4(
-        self, monkeypatch, tmp_path, capsys
-    ):
+    def test_setup_pkg_config_overrides_emits_provenance_at_verbose_4(self, monkeypatch, tmp_path, capsys):
         """A prepend-PKG-CONFIG-PATH set in a conf file produces an
         attribution line of the form ``(from <abs_conf_path>:<lineno>)``
         at verbose>=4. Confirms the conf-file provenance side channel
@@ -1192,18 +1178,15 @@ class TestSetupPkgConfigOverrides:
         assert "Prepended pkg-config path:" in captured.out
         assert str(target_dir) in captured.out
         assert f"from {conf_file}:1" in captured.out, (
-            f"Expected attribution 'from {conf_file}:1' in stdout, "
-            f"got:\n{captured.out!r}"
+            f"Expected attribution 'from {conf_file}:1' in stdout, got:\n{captured.out!r}"
         )
         assert "literal: ${CONF_DIR}/pkgconfig-foo" in captured.out, (
-            f"Expected 'literal: ${{CONF_DIR}}/pkgconfig-foo' in stdout, "
-            f"got:\n{captured.out!r}"
+            f"Expected 'literal: ${{CONF_DIR}}/pkgconfig-foo' in stdout, got:\n{captured.out!r}"
         )
         # Sanity: ensure args propagated the prepend value.
-        assert any(
-            os.path.normpath(p) == str(target_dir)
-            for p in (args.prepend_pkg_config_path or [])
-        ), f"prepend value didn't reach args: {args.prepend_pkg_config_path!r}"
+        assert any(os.path.normpath(p) == str(target_dir) for p in (args.prepend_pkg_config_path or [])), (
+            f"prepend value didn't reach args: {args.prepend_pkg_config_path!r}"
+        )
 
     def test_pkg_config_provenance_label_returns_from_cli_for_no_match(self):
         """When the path isn't in the provenance dict, the label degrades to
@@ -1224,10 +1207,7 @@ class TestSetupPkgConfigOverrides:
 
         # Provenance contains a match — labels the conf-file:line.
         prov = {"prepend-PKG-CONFIG-PATH": [("/abs/path", "/conf/a.conf", 7)]}
-        assert (
-            _pkg_config_provenance_label("/abs/path", "prepend", prov)
-            == "(from /conf/a.conf:7)"
-        )
+        assert _pkg_config_provenance_label("/abs/path", "prepend", prov) == "(from /conf/a.conf:7)"
 
     def test_cwd_pkgconfig_takes_priority_over_gitroot(self, monkeypatch, tmp_path):
         """cwd/ct.conf.d/pkgconfig/ is prepended before gitroot/ct.conf.d/pkgconfig/."""
@@ -1428,9 +1408,7 @@ class TestSetupPkgConfigOverrides:
         dirs = os.environ["PKG_CONFIG_PATH"].split(os.pathsep)
         assert dirs == ["/cli/second", "/cli/first"]
 
-    def test_two_layered_conf_files_axis_wins_through_parseargs(
-        self, monkeypatch, tmp_path, capsys
-    ):
+    def test_two_layered_conf_files_axis_wins_through_parseargs(self, monkeypatch, tmp_path, capsys):
         """End-to-end repro: project ``ct.conf`` and a higher-priority
         axis conf each set ``prepend-PKG-CONFIG-PATH``. After running
         through the real ``parseargs`` pipeline (configargparse +
@@ -1448,8 +1426,7 @@ class TestSetupPkgConfigOverrides:
         base_pkgconfig = conf_dir / "pkgconfig-base"
         base_pkgconfig.mkdir()
         (tmp_path / "ct.conf").write_text(
-            "variant = axisX\n"
-            "prepend-PKG-CONFIG-PATH = ${CONF_DIR}/ct.conf.d/pkgconfig-base\n"
+            "variant = axisX\nprepend-PKG-CONFIG-PATH = ${CONF_DIR}/ct.conf.d/pkgconfig-base\n"
         )
         # Axis conf is higher priority — its prepend must win.
         axis_conf = conf_dir / "axisX.conf"
@@ -1479,12 +1456,8 @@ class TestSetupPkgConfigOverrides:
         # The accumulator carries both prepends, in conf-hierarchy
         # order (project ct.conf first, axis conf second).
         prepends = [os.path.normpath(p) for p in (args.prepend_pkg_config_path or [])]
-        assert str(base_pkgconfig) in prepends, (
-            f"project ct.conf's prepend didn't reach args: {prepends!r}"
-        )
-        assert str(axis_pkgconfig) in prepends, (
-            f"axis conf's prepend didn't reach args: {prepends!r}"
-        )
+        assert str(base_pkgconfig) in prepends, f"project ct.conf's prepend didn't reach args: {prepends!r}"
+        assert str(axis_pkgconfig) in prepends, f"axis conf's prepend didn't reach args: {prepends!r}"
 
         dirs = os.environ["PKG_CONFIG_PATH"].split(os.pathsep)
         axis_idx = dirs.index(str(axis_pkgconfig))
@@ -1971,9 +1944,7 @@ class TestResolvedCompilerAvailable:
         # Mirror case: when the wrapper itself isn't on PATH, the validator
         # must still surface the failure (don't accidentally pass by ignoring
         # the resolved value).
-        args = _resolved_compiler_args(
-            "this-wrapper-does-not-exist-7f3a g++", variant="ccache-gcc.debug"
-        )
+        args = _resolved_compiler_args("this-wrapper-does-not-exist-7f3a g++", variant="ccache-gcc.debug")
         with pytest.raises(RuntimeError) as excinfo:
             apptools._check_resolved_compiler_available(args)
         msg = str(excinfo.value)
@@ -2009,9 +1980,7 @@ class TestCompilerSupportsRequestedStandard:
 
     def test_unknown_driver_skips_silently(self, monkeypatch):
         monkeypatch.setattr(apptools, "_compiler_major_version", lambda path: None)
-        args = _std_check_args(
-            cc="some-cross-compiler", cxx="some-cross-compiler", cflags="", cxxflags="-std=c++26"
-        )
+        args = _std_check_args(cc="some-cross-compiler", cxx="some-cross-compiler", cflags="", cxxflags="-std=c++26")
         # Unknown driver → skip silently rather than false-positive.
         apptools._check_compiler_supports_requested_standard(args)
 
@@ -2037,7 +2006,6 @@ class TestCompilerSupportsRequestedStandard:
         # as a portable stand-in for the ccache wrapper so the test runs
         # everywhere — `env --version` prints recognisable output, but
         # `env <gcc>` will forward --version to the real compiler.
-
 
         real_cxx = shutil.which("g++") or shutil.which("clang++")
         if not real_cxx:
@@ -2101,7 +2069,6 @@ class TestHasPrefixMapFlag:
     """
 
     def test_detects_all_four_aliases(self):
-
         for prefix in (
             "-ffile-prefix-map",
             "-fdebug-prefix-map",
@@ -2112,7 +2079,6 @@ class TestHasPrefixMapFlag:
             assert _has_prefix_map_flag(f"{prefix}=/foo=.")
 
     def test_negative_cases(self):
-
         assert not _has_prefix_map_flag("-O2 -g -Wall")
         assert not _has_prefix_map_flag("")
         # Lookalike: -fno-omit-frame-pointer shares the -f prefix but
@@ -2160,7 +2126,6 @@ class TestInjectFfilePrefixMap:
     """
 
     def _make_args(self, **overrides):
-
         defaults = dict(
             ffile_prefix_map_target=".",
             CXXFLAGS="-O2 -g",
@@ -2171,7 +2136,6 @@ class TestInjectFfilePrefixMap:
         return SimpleNamespace(**defaults)
 
     def test_appends_when_absent(self, monkeypatch):
-
         monkeypatch.setattr(apptools.compiletools.git_utils, "find_git_root", lambda: "/home/alice/proj")
         args = self._make_args()
         apptools._inject_ffile_prefix_map(args)
@@ -2201,7 +2165,6 @@ class TestInjectFfilePrefixMap:
         assert args.CFLAGS == "-O2"
 
     def test_honors_custom_target(self, monkeypatch):
-
         monkeypatch.setattr(apptools.compiletools.git_utils, "find_git_root", lambda: "/home/alice/proj")
         args = self._make_args(ffile_prefix_map_target="/__ct__/", CFLAGS="")
         apptools._inject_ffile_prefix_map(args)
@@ -2288,10 +2251,7 @@ class TestConfFileEncodingTolerance:
         monkeypatch.setattr(builtins, "open", open_with_ascii_default)
         return real_open
 
-    def test_parse_conf_file_cached_tolerates_emdash_in_comment(
-        self, ascii_default_open, tmp_path
-    ):
-
+    def test_parse_conf_file_cached_tolerates_emdash_in_comment(self, ascii_default_open, tmp_path):
         conf = tmp_path / "ct.conf"
         with ascii_default_open(str(conf), "w", encoding="utf-8") as f:
             f.write("# Comment with em-dash — like this\n")
@@ -2304,10 +2264,7 @@ class TestConfFileEncodingTolerance:
             cu.clear_cache()
         assert dict(items).get("variant") == "gcc.debug"
 
-    def test_check_legacy_variant_keys_tolerates_emdash_in_comment(
-        self, ascii_default_open, tmp_path
-    ):
-
+    def test_check_legacy_variant_keys_tolerates_emdash_in_comment(self, ascii_default_open, tmp_path):
         conf = tmp_path / "ct.conf"
         with ascii_default_open(str(conf), "w", encoding="utf-8") as f:
             f.write("# Author note — reminds us why this exists\n")
@@ -2318,10 +2275,7 @@ class TestConfFileEncodingTolerance:
         # key, which this conf does not contain.
         _check_legacy_variant_config_keys([str(conf)])
 
-    def test_check_legacy_cas_keys_tolerates_emdash_in_comment(
-        self, ascii_default_open, tmp_path
-    ):
-
+    def test_check_legacy_cas_keys_tolerates_emdash_in_comment(self, ascii_default_open, tmp_path):
         conf = tmp_path / "ct.conf"
         with ascii_default_open(str(conf), "w", encoding="utf-8") as f:
             f.write("# Why we picked this dir — see README\n")
@@ -2331,9 +2285,7 @@ class TestConfFileEncodingTolerance:
         # RuntimeError when it finds legacy `objdir`/`pchdir` keys.
         _check_legacy_cas_config_keys([str(conf)])
 
-    def test_composing_parser_opens_emdash_conf_via_configargparse(
-        self, ascii_default_open, tmp_path
-    ):
+    def test_composing_parser_opens_emdash_conf_via_configargparse(self, ascii_default_open, tmp_path):
         """End-to-end: ``_ComposingArgumentParser`` resolves a conf file
         with an em-dash comment via configargparse's own file-open path.
         This is the path ct-cake actually traverses on every invocation.
@@ -2352,3 +2304,44 @@ class TestConfFileEncodingTolerance:
         parser.add_argument("--variant", default="")
         args, _ = parser.parse_known_args([])
         assert args.variant == "gcc.debug"
+
+
+def _wild_args(cxx, ldflags, variant="gcc.wild.release"):
+    """Minimal namespace for unit-testing the wild normalization helpers."""
+    return SimpleNamespace(CXX=cxx, LDFLAGS=ldflags, variant=variant)
+
+
+def test_normalize_wild_clang_rewrites_to_ld_path():
+    args = _wild_args("clang++", "-fuse-ld=wild", "clang.wild.release")
+    apptools._normalize_wild_linker(args)
+    assert "--ld-path=wild" in args.LDFLAGS
+    assert "-fuse-ld=wild" not in args.LDFLAGS
+
+
+def test_normalize_wild_gcc_passthrough():
+    args = _wild_args("g++", "-fuse-ld=wild", "gcc.wild.release")
+    apptools._normalize_wild_linker(args)
+    assert args.LDFLAGS == "-fuse-ld=wild"
+
+
+def test_normalize_wild_unknown_compiler_passthrough():
+    args = _wild_args("weirdcc", "-fuse-ld=wild", "weird.wild.release")
+    apptools._normalize_wild_linker(args)
+    assert args.LDFLAGS == "-fuse-ld=wild"
+
+
+def test_normalize_wild_noop_when_not_selected():
+    args = _wild_args("clang++", "-O2 -lm", "clang.release")
+    apptools._normalize_wild_linker(args)
+    assert args.LDFLAGS == "-O2 -lm"
+
+
+def test_normalize_wild_explicit_ld_overrides_cxx_for_clang():
+    # _effective_link_driver prefers args.LD: a clang LD with a gcc CXX
+    # still triggers the clang rewrite (LDFLAGS is consumed by the link
+    # driver, which is LD here).
+    args = _wild_args("g++", "-fuse-ld=wild", "gcc.wild.release")
+    args.LD = "clang++"
+    apptools._normalize_wild_linker(args)
+    assert "--ld-path=wild" in args.LDFLAGS
+    assert "-fuse-ld=wild" not in args.LDFLAGS

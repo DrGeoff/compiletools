@@ -1378,6 +1378,82 @@ def _inject_ffile_prefix_map(args) -> None:
         setattr(args, attr, f"{existing} {flag}".strip() if existing else flag)
 
 
+def _effective_link_driver(args) -> str | None:
+    """Return the compiler driver that actually performs the link.
+
+    The link runs through ``args.LD`` (gcc.conf/clang.conf set ``LD`` to
+    g++/clang++), falling back to ``args.CXX`` when LD is unset or still
+    the "use CXX" sentinel. The wild linker selector (``-fuse-ld=wild`` /
+    ``--ld-path=wild``) is consumed by THIS driver, so it is what
+    ``compiler_kind`` must classify.
+    """
+    ld = getattr(args, "LD", None)
+    if ld and ld not in (_UNSUPPLIED_USE_CXX, _UNSUPPLIED_USE_CXXFLAGS):
+        return ld
+    return getattr(args, "CXX", None)
+
+
+def _variant_has_axis(args, axis_name: str) -> bool:
+    """True if *axis_name* is one of the variant's selected axis tokens.
+
+    Splits ``args.variant`` on the variant separator (``[\\s,.]+``) so it
+    works whether the variant string is in user order or canonicalised.
+    Hyphenated tokens (``wild-B``, ``gold-nommap``) survive the split
+    because ``-`` is not a separator.
+    """
+    variant = getattr(args, "variant", "") or ""
+    return axis_name in compiletools.configutils.split_variant(variant)
+
+
+def _materialize_wild_b_searchdir(args) -> str | None:
+    """Stub — replaced with the real implementation in Task 3."""
+    return None
+
+
+def _normalize_wild_linker(args) -> None:
+    """Rewrite the wild linker selection to the form the link driver accepts,
+    and wire up the ``wild-B`` ``-B``/symlink fallback.
+
+    ``wild.conf`` emits the canonical, user-facing token ``-fuse-ld=wild`` —
+    exactly what gcc >= 16.1 wants, but clang rejects it ("invalid linker
+    name in argument '-fuse-ld=wild'") unless an ``ld.wild`` symlink is on
+    PATH, which wild's installer does NOT create. clang's portable
+    invocation is ``--ld-path=wild``, so for a clang link driver we rewrite
+    the token (bare name, PATH-resolved, to keep per-user absolute paths out
+    of the link key).
+
+    The ``wild-B`` axis (a comment-only conf) selects the universal
+    ``-B<dir>`` + ``ld -> wild`` symlink trick that works on ANY gcc; the
+    symlink dir is materialised by :func:`_materialize_wild_b_searchdir` and
+    injected as ``-B<dir>``.
+
+    Mutates ``args.LDFLAGS`` in place. Called from ``_commonsubstitutions``
+    before ``_finalize_flag_state`` (via ``substitutions``), so
+    ``args.LDFLAGS_tokens`` / ``args.flags`` are rebuilt from the mutated
+    string and ``check_flag_string_drift`` stays satisfied. No-op when wild
+    is not selected.
+    Idempotent: after the clang rewrite the ``-fuse-ld=wild`` token is gone,
+    so a re-run (e.g. via cake's two-stage parse) makes no further change.
+    """
+    ldflags = getattr(args, "LDFLAGS", "") or ""
+
+    # `wild` axis: clang needs --ld-path=wild in place of -fuse-ld=wild.
+    if "-fuse-ld=wild" in split_command_cached(ldflags):
+        if compiler_kind(_effective_link_driver(args)) == "clang":
+            tokens = split_command_cached(ldflags)
+            rewritten = ["--ld-path=wild" if t == "-fuse-ld=wild" else t for t in tokens]
+            args.LDFLAGS = " ".join(rewritten)
+            ldflags = args.LDFLAGS
+
+    # `wild-B` axis: materialise the -B search dir and inject it.
+    if _variant_has_axis(args, "wild-B"):
+        search_dir = _materialize_wild_b_searchdir(args)
+        if search_dir:
+            flag = f"-B{search_dir}"
+            if flag not in split_command_cached(ldflags):
+                args.LDFLAGS = f"{ldflags} {flag}".strip() if ldflags else flag
+
+
 def _canonicalize_one_path_to_target(path: str, anchor_prefix: str, target: str) -> str:
     """Replace anchor_prefix with `target` if `path` is anchor-rooted.
 
@@ -2867,6 +2943,13 @@ def _commonsubstitutions(args):
     # subsequent _finalize_flag_state call (via substitutions(args) in the
     # caller) rebuilds args.flags from the now-injected raw strings.
     _inject_ffile_prefix_map(args)
+
+    # Rewrite the wild linker selection to the form the resolved link driver
+    # accepts (clang: -fuse-ld=wild -> --ld-path=wild) and wire the wild-B
+    # -B/symlink fallback. Runs here so the subsequent _finalize_flag_state
+    # (via substitutions) rebuilds args.LDFLAGS_tokens / args.flags from the
+    # mutated string. See _normalize_wild_linker.
+    _normalize_wild_linker(args)
 
 
 # List to store the callback functions for parse args
