@@ -6,8 +6,9 @@ Continue work in /home/gericksson/compiletools-worktree/master.
 
   Current state:
   - Latest commit:
-    76f02faa test: extract _args helper for SimpleNamespace ceremony in test_diagnostics
+    5074ee0a Revert "test: extract _args helper for SimpleNamespace ceremony in test_diagnostics"
   - Prior related commits:
+    76f02faa test: extract _args helper for SimpleNamespace ceremony in test_diagnostics  [REVERTED by 5074ee0a — false economy]
     c97911bf test: convert temp_lock_file fixture to tmp_path in test_file_locking
     f05af67e test: convert temp_target fixture to tmp_path in test_ct_lock_helper
     b221282d test: convert tempfile to tmp_path in test_file_analyzer TestReadFunctions
@@ -136,25 +137,20 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     324542ea test: parametrize utility test cases
     e5b18a45 test: parametrize helper cases
     7009bd6a test: simplify pytest cases
-  - Latest commit touched:
-    src/compiletools/test_diagnostics.py (+5 net, +10/-5):
-    module-level `_args(*, diagnostics_dir=None, bindir=None) ->
-    SimpleNamespace` helper replaces the recurring 2-attribute
-    SimpleNamespace ceremony in 5 sites:
-    test_resolve_diagnostics_dir_uses_explicit_dir,
-    test_resolve_diagnostics_dir_falls_back_to_bindir,
-    test_resolve_diagnostics_dir_idempotent,
-    test_resolve_diagnostics_dir_raises_when_neither_set (collapses to
-    `_args()`), test_resolve_diagnostics_dir_empty_string_falls_back_to_bindir
-    (keeps both kwargs explicit because diagnostics_dir="" must remain
-    distinct from helper's None default — empty-string-vs-None is the
-    bug-fix path being exercised). Pattern mirrors commit 8fc6abe1
-    (test_apptools_include_paths). Autouse _reset_diagnostics_cache
-    fixture untouched. Codex /codex:adversarial-review APPROVE (verified
-    helper preserves the exact SimpleNamespace shape including the
-    explicit empty-string diagnostics_dir at the empty-string site; all
-    5 converted tests retain their assertions and setup behaviour). 8
-    tests pass in 1.19s.
+  - Latest commit (5074ee0a) was a revert of 76f02faa:
+    The Round 25 _args helper extraction in test_diagnostics was reverted
+    after user pushback ("creating a one line function to replace one line
+    of code seems to be like a false economy"). The 2-attribute
+    SimpleNamespace at the 5 converted sites had ZERO invariant kwargs —
+    both diagnostics_dir and bindir vary per site — so the helper added
+    indirection without compression. test_diagnostics.py is back at the
+    pre-76f02faa state; 8 tests still pass in ~1.2s.
+
+    User-confirmed rule going forward (see Important constraints below):
+    one-line-for-one-line helper extraction is permitted ONLY when the
+    extracted helper hides ≥3 invariant kwargs (boilerplate that doesn't
+    vary between sites). Multi-line → one-line compressions remain fine
+    regardless of invariant count.
 
   - Prior commit touched:
     src/compiletools/test_file_locking.py (-3 net, +13/-16):
@@ -611,10 +607,10 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     vestigial blank lines a prior batch tool left after `def test_`
     headers. Codex review confirmed no correctness regression.
 
-  - Verification for latest commit passed:
-    ruff/pyright/git diff --check all green
+  - Verification for latest commit (5074ee0a revert) passed:
+    git revert --no-edit 76f02faa (auto-clean revert, no conflicts)
     pytest -q src/compiletools/test_diagnostics.py
-      8 passed in 1.19s
+      8 passed in 1.23s
   - Final git status was clean.
 
   Start by running:
@@ -833,15 +829,13 @@ Continue work in /home/gericksson/compiletools-worktree/master.
       tmp_path_retention_policy default 'all' semantics after
       Codex flagged the original wording overclaimed synchronous
       cleanup. -3 net lines.)
-    test_diagnostics (module-level `_args(*, diagnostics_dir=None,
-      bindir=None) -> SimpleNamespace` helper for the recurring
-      2-attribute SimpleNamespace ceremony in 5 sites of
-      test_resolve_diagnostics_dir_*. Keyword-only None defaults
-      drop redundant `=None` boilerplate at 4 sites; the empty-string
-      test keeps both kwargs explicit because diagnostics_dir=""
-      [bug-fix path] must remain distinct from None. Pattern
-      mirrors 8fc6abe1's test_apptools_include_paths helper. +5
-      net lines.)
+    test_diagnostics (tried _args helper extraction in 76f02faa,
+      REVERTED in 5074ee0a — false economy: the 2-attribute
+      SimpleNamespace had 0 invariant kwargs [both diagnostics_dir
+      and bindir vary per site], so the helper added indirection
+      without compression. Do NOT re-attempt this pattern here. The
+      file's tests are pure-unit and may host other patterns in
+      future, but the SimpleNamespace ceremony is settled.)
     test_compiler_macros (9 inline cache_clear calls → class autouse fixture;
       adjacent class's setup_method also converted to autouse for style
       consistency. Follow-up: module-level
@@ -1058,6 +1052,13 @@ Continue work in /home/gericksson/compiletools-worktree/master.
   - Stage and commit only intentional changes.
   - Preserve rationale comments/docstrings, especially for regression cases and parsing-boundary cases.
   - Use explicit readable pytest param IDs if adding parametrization.
+  - **Helper-extraction rule (user-confirmed 2026-05-26 after 76f02faa
+    revert):** one-line-for-one-line extractions are FALSE ECONOMY unless
+    the helper hides ≥3 invariant kwargs (boilerplate the test doesn't
+    vary). Multi-line-block → one-line-call compressions remain
+    unambiguously fine. When in doubt, leave the SimpleNamespace inline
+    — explicit invariants at the call site document "this test
+    deliberately doesn't vary X." Indirection has a real reader cost.
 
   Before claiming completion:
     ruff check <touched test files>
