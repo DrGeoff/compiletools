@@ -6,8 +6,9 @@ Continue work in /home/gericksson/compiletools-worktree/master.
 
   Current state:
   - Latest commit:
-    2a90972c test: extract _render_backend_to_string helper in test_backend_integration
+    9b39c180 test: extract _cache_stats helper for 4 cross-workspace stat closures
   - Prior related commits:
+    2a90972c test: extract _render_backend_to_string helper in test_backend_integration
     18ff8de1 test: convert 8 tempfile sites to tmp_path in test_magicflags_unit
     94259cdc test: extend _make_pch_entry with write_manifest/bad_manifest, mirroring _make_pcm_entry
     5d1637c9 test: extend _build helper with anchor_root override in test_macrostate_hash_canonicalized
@@ -123,6 +124,22 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     e5b18a45 test: parametrize helper cases
     7009bd6a test: simplify pytest cases
   - Latest commit touched:
+    src/compiletools/test_e2e_cas_reuse_across_workspaces.py (-1 net, +23/-24):
+    extracted module-level `_cache_stats(cas_dir, suffix) ->
+    {name: (st_ino, st_mtime)}` helper that absorbs 4 inner-closure
+    definitions (_exe_stats, _gch_stats, two _lib_stats) across the
+    link/pch/static-lib/shared-lib cross-workspace reuse tests. The
+    closures all mapped basename → (st_ino, st_mtime) via
+    Path.rglob; lib_stats was already suffix-parametrized, exe/gch
+    closures hardcoded "*.exe"/"*.gch" — all converge on the
+    parametrized helper. _cmd_hash_dirs in the PCH test stays
+    inline because it keys by p.parent.name (cmd_hash directory),
+    not p.name (basename) — different shape. All inode/mtime
+    rationale comments preserved at every assert site. Codex
+    review PASS. 4 modified tests pass (link 2.2s + static 2.3s,
+    pch 1.4s + shared 1.4s).
+
+  - Prior commit touched:
     src/compiletools/test_backend_integration.py (-10 net, +39/-49):
     extracted module-level `_render_backend_to_string(backend_name,
     tmp_path) -> (content, graph)` helper that opens uth.ParserContext,
@@ -139,7 +156,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     have at least one source file referenced"). Codex review PASS.
     4 TestBackendGenerateOutput tests pass.
 
-  - Prior commit touched:
+  - Earlier prior commit touched:
     src/compiletools/test_magicflags_unit.py (-24 net, +77/-101):
     converted 8 tempfile.{NamedTemporaryFile,TemporaryDirectory}
     sites to pytest's tmp_path fixture. 4 NamedTemporaryFile sites
@@ -156,7 +173,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     review timed out at 10min (6th consecutive); self-review
     confirmed mechanical equivalence at every site. 27 tests pass.
 
-  - Earlier prior commit touched:
+  - Yet earlier prior commit touched:
     src/compiletools/test_cache_report_pch.py (-9 net, +24/-15):
     extend existing `_make_pch_entry` helper with `write_manifest=True`
     and `bad_manifest=False` keyword-only options, mirroring the
@@ -173,7 +190,7 @@ Continue work in /home/gericksson/compiletools-worktree/master.
     default) — immaterial since assertions are on .size_bytes only.
     Codex review PASS. 13 tests pass.
 
-  - Yet earlier prior commit touched:
+  - Further earlier prior commit touched:
     src/compiletools/test_macrostate_hash_canonicalized.py (-11 net, +10/-21):
     extend existing `_build(prefix, *, extra_cxx, anchor_root=None)`
     helper with optional `anchor_root` kwarg (default None = use prefix).
@@ -288,7 +305,8 @@ Continue work in /home/gericksson/compiletools-worktree/master.
 
   - Verification for latest commit passed:
     ruff/pyright/git diff --check all green
-    pytest -q src/compiletools/test_backend_integration.py::TestBackendGenerateOutput: 4 passed in 1.76s
+    pytest -q src/compiletools/test_e2e_cas_reuse_across_workspaces.py
+      ::test_link/static/pch/shared_*: 4 modified tests pass (~3s each)
   - Final git status was clean.
 
   Start by running:
@@ -625,6 +643,14 @@ Continue work in /home/gericksson/compiletools-worktree/master.
       make/ninja still iterate graph.rules_by_type("compile");
       bazel/cmake use `_graph` matching existing `_args`/`_dirs`
       convention. -10 net lines.)
+    test_e2e_cas_reuse_across_workspaces (module-level
+      `_cache_stats(cas_dir, suffix) -> {name: (st_ino, st_mtime)}`
+      helper absorbs 4 inner-closure definitions across the
+      link/pch/static-lib/shared-lib cross-workspace reuse tests.
+      _cmd_hash_dirs in the PCH test stays inline — different shape,
+      keys by p.parent.name. -1 net line; closures collapsed,
+      call sites slightly longer but lift the closures out of
+      every test body.)
 
   Notes for future rounds:
     Remaining tempfile.TemporaryDirectory sites:
