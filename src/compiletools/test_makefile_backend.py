@@ -70,6 +70,18 @@ def _default_makefile_args(**overrides):
     return SimpleNamespace(**defaults)
 
 
+def _make_timing_backend():
+    """MakefileBackend wired for `_wrap_with_timing` tests: minimal args
+    (verbose/file_locking/makefilename) and `_filesystem_type = None` so
+    the wrap call doesn't try to set up locking. Was duplicated as
+    `_make_args` + `_backend_with_timer` byte-for-byte across
+    TestTimingWrapBSDDate and TestTimingWrapEmitsValidJSON."""
+    args = SimpleNamespace(verbose=0, file_locking=False, makefilename="Makefile")
+    backend = MakefileBackend(args=args, hunter=MagicMock())
+    backend._filesystem_type = None
+    return backend
+
+
 class TestMakefileBackendRegistered:
     def test_registered_as_make(self):
         cls = get_backend_class("make")
@@ -802,26 +814,14 @@ class TestTimingWrapBSDDate:
       3. Emit ``0`` if both fail (so the JSONL line stays well-formed).
     """
 
-    def _make_args(self):
-        return SimpleNamespace(
-            verbose=0,
-            file_locking=False,
-            makefilename="Makefile",
-        )
-
-    def _backend_with_timer(self):
-        backend = MakefileBackend(args=self._make_args(), hunter=MagicMock())
-        backend._filesystem_type = None
-        return backend
-
     def test_wrap_prefers_epochrealtime(self):
-        backend = self._backend_with_timer()
+        backend = _make_timing_backend()
         wrapped = backend._wrap_with_timing("g++ -c foo.cpp", "foo.o")
         # Must reference $EPOCHREALTIME for portability
         assert "EPOCHREALTIME" in wrapped
 
     def test_wrap_validates_date_output(self):
-        backend = self._backend_with_timer()
+        backend = _make_timing_backend()
         wrapped = backend._wrap_with_timing("g++ -c foo.cpp", "foo.o")
         # Must include a numeric-validation guard so that BSD date's
         # literal "1745247600N" output is rejected (parsed as 0 instead).
@@ -834,7 +834,7 @@ class TestTimingWrapBSDDate:
         if not os.path.exists("/bin/bash"):
             pytest.skip("requires /bin/bash")
 
-        backend = self._backend_with_timer()
+        backend = _make_timing_backend()
         wrapped = backend._wrap_with_timing("true", "foo.o")
         # The Makefile recipe form has $$ for $; convert back to single $
         # because we'll feed it directly to bash.
@@ -902,18 +902,6 @@ class TestTimingWrapEmitsValidJSON:
     entries.
     """
 
-    def _make_args(self):
-        return SimpleNamespace(
-            verbose=0,
-            file_locking=False,
-            makefilename="Makefile",
-        )
-
-    def _backend_with_timer(self):
-        backend = MakefileBackend(args=self._make_args(), hunter=MagicMock())
-        backend._filesystem_type = None
-        return backend
-
     @pytest.mark.parametrize(
         "target",
         [
@@ -929,7 +917,7 @@ class TestTimingWrapEmitsValidJSON:
         if not os.path.exists("/bin/bash"):
             pytest.skip("requires /bin/bash")
 
-        backend = self._backend_with_timer()
+        backend = _make_timing_backend()
         wrapped = backend._wrap_with_timing("true", target)
         # Convert Make's $$ back to a single $ so we can run via bash.
         shell_recipe = wrapped.replace("$$", "$").lstrip("@+")
