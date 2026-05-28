@@ -36,10 +36,16 @@ _EXEMPT: frozenset[str] = frozenset({"cache_report.py"})
 
 
 def _production_python_files():
+    """Yield every non-test ``.py`` under ``src/compiletools/``, recursively.
+
+    Recursion matters: ``otel/`` (and any future subpackage) must be in
+    scope so that, e.g., a new ``compiletools/otel/metrics.py`` that
+    calls ``add_otel_export_arguments`` is held to the validator pairing."""
     src_dir = os.path.dirname(__file__)
-    for fname in os.listdir(src_dir):
-        if fname.endswith(".py") and not fname.startswith("test_"):
-            yield os.path.join(src_dir, fname)
+    for dirpath, _, filenames in os.walk(src_dir):
+        for fname in filenames:
+            if fname.endswith(".py") and not fname.startswith("test_"):
+                yield os.path.join(dirpath, fname)
 
 
 def test_every_otel_registrar_caller_also_validates():
@@ -47,6 +53,7 @@ def test_every_otel_registrar_caller_also_validates():
     ``add_otel_export_arguments`` must also call
     ``validate_otel_timing_pair`` in the same file."""
     failures = []
+    src_dir = os.path.dirname(__file__)
     for path in _production_python_files():
         basename = os.path.basename(path)
         if basename in _DEFINITION_FILES or basename in _EXEMPT:
@@ -58,7 +65,8 @@ def test_every_otel_registrar_caller_also_validates():
             continue
         if not _VALIDATOR_RE.search(text):
             line = text[: registrar_match.start()].count("\n") + 1
-            failures.append(f"{basename}:{line}")
+            rel = os.path.relpath(path, src_dir)
+            failures.append(f"{rel}:{line}")
     assert not failures, (
         "Files that call add_otel_export_arguments but not "
         "validate_otel_timing_pair:\n"
@@ -69,7 +77,11 @@ def test_every_otel_registrar_caller_also_validates():
 
 
 def test_exempt_entries_refer_to_real_files():
-    """Typo guard for ``_EXEMPT``."""
-    src_dir = os.path.dirname(__file__)
-    missing = [name for name in _EXEMPT if not os.path.exists(os.path.join(src_dir, name))]
-    assert not missing, f"_EXEMPT references non-existent files: {missing}"
+    """Typo guard for ``_EXEMPT`` and ``_DEFINITION_FILES``.
+
+    Matches by basename anywhere under ``src/compiletools/`` so the
+    entries stay readable as bare filenames even though the scanner
+    now recurses into subpackages."""
+    known = {os.path.basename(p) for p in _production_python_files()}
+    missing = [name for name in (_EXEMPT | _DEFINITION_FILES) if name not in known]
+    assert not missing, f"_EXEMPT/_DEFINITION_FILES references non-existent files: {missing}"
