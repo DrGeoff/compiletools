@@ -39,6 +39,7 @@ dev = [
     "bump-my-version>=0.26.0",
     "pytest>=8.0",
     "pytest-xdist>=3.5",
+    "pytest-forked>=1.6",
     "ruff>=0.14.0",
     "pyright>=1.1",
     # ``prek`` is the Rust drop-in replacement for ``pre-commit``: same

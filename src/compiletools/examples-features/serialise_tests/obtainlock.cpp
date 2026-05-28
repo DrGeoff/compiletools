@@ -9,7 +9,7 @@
 
 void obtainlock()
 {
-    int fd = open(filename, O_RDWR);
+    int fd = open(serialise_test_filename().c_str(), O_RDWR);
     if (fd == -1) {
         throw std::runtime_error("Error: Could not open the file");
     }

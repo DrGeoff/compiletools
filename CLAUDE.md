@@ -13,7 +13,7 @@ Each git worktree under `compiletools/` needs its own venv (`uv pip install -e "
 ## Build / Test Commands
 
 ```bash
-uv pip install -e ".[dev]"     # dev deps: ruff, pyright, prek, pytest-xdist
+uv pip install -e ".[dev]"     # dev deps: ruff, pyright, prek, pytest-xdist, pytest-forked
 prek install                   # one-time per checkout
 pytest -n auto                 # full parallel run (~3.5 min)
 ruff check src/compiletools/   # lint

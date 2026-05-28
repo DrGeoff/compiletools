@@ -32,6 +32,7 @@ import subprocess
 
 import pytest
 
+import compiletools.apptools
 import compiletools.testhelper as uth
 from compiletools.examples_registry import example_path
 
@@ -85,6 +86,16 @@ def test_consumer_compile_actually_opens_cached_pch(backend_name, tmp_path):
     """
     if not uth._backend_tool_available(backend_name):
         pytest.skip(f"{backend_name} build tool not on PATH")
+
+    # The `! <path>.gch` / `x <path>.gch` markers this test greps for are
+    # gcc's `-H` output format; clang's `-H` emits a plain depth-indented
+    # tree without status prefixes, and clang's PCH file extension is
+    # `.pch` not `.gch`. Skip when the auto-detected compiler is anything
+    # other than gcc (Termux is the live case: `g++` is a symlink to
+    # clang-21).
+    cxx = compiletools.apptools.get_functional_cxx_compiler()
+    if compiletools.apptools.compiler_kind(cxx) != "gcc":
+        pytest.skip(f"PCH `-H` markers are gcc-specific; detected compiler={cxx!r}")
 
     # Slurm dispatches compile jobs to remote compute nodes, which see
     # the submit-host's `/tmp` as private node-local scratch. The

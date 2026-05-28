@@ -376,7 +376,7 @@ class TestLibrary:
 
             # Build the library
             temp_config_name = uth.create_temp_config(tmpdir)
-            uth.create_temp_ct_conf(tmpdir, defaultvariant=temp_config_name[:-5])
+            uth.create_temp_ct_conf(tmpdir)
             argv = capped_parallel_argv + [
                 "--exemarkers=main",
                 "--testmarkers=unittest.hpp",

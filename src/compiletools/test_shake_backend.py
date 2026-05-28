@@ -928,6 +928,7 @@ class TestContentAddressableShortCircuit:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(not hasattr(os, "link"), reason="os.link unavailable (e.g. Termux/Android Python)")
 class TestSymlinkPublishShortCircuit:
     """A SYMLINK rule republishes a CAS artefact at a user-facing path via
     ct-cas-publish (hardlink by default, symlink fallback on EXDEV). When
@@ -1437,21 +1438,24 @@ def test_quoted_define_with_space_compiles_end_to_end(tmp_path, monkeypatch):
             backend.generate(graph)
             backend.execute("build")
 
-    exe_path = bindir / "greeting"
-    if not exe_path.exists():
-        candidates = []
-        for dirpath, _dirs, files in os.walk(str(tmp_path)):
-            for f in files:
-                full = os.path.join(dirpath, f)
-                if os.access(full, os.X_OK) and f == "greeting":
-                    candidates.append(full)
-        assert candidates, f"greeting executable not found under {tmp_path}"
-        exe_path = Path(candidates[0])
+        # Inspect the exe before isolated_cas_dirs rmtree's cas_root: on
+        # platforms lacking os.link (e.g. Termux), the publish degrades to
+        # a symlink and bindir/greeting would dangle after teardown.
+        exe_path = bindir / "greeting"
+        if not exe_path.exists():
+            candidates = []
+            for dirpath, _dirs, files in os.walk(str(tmp_path)):
+                for f in files:
+                    full = os.path.join(dirpath, f)
+                    if os.access(full, os.X_OK) and f == "greeting":
+                        candidates.append(full)
+            assert candidates, f"greeting executable not found under {tmp_path}"
+            exe_path = Path(candidates[0])
 
-    result = subprocess.run([str(exe_path)], capture_output=True, text=True, timeout=10)
-    assert result.returncode == 0, (
-        f"greeting exe failed (rc={result.returncode}): stdout={result.stdout!r} stderr={result.stderr!r}"
-    )
+        result = subprocess.run([str(exe_path)], capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0, (
+            f"greeting exe failed (rc={result.returncode}): stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
