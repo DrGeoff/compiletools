@@ -9,14 +9,28 @@ Public symbols are re-exported from submodules:
 - ``export_ccache_metrics`` (from ``metrics``) -- ships parsed ccache
   stats counts as OTLP metrics. Used by ct-cake when ``--ccache-statslog``
   is set together with ``--otel-export``.
-
-Future PRs will add ``derive_build_aggregates`` (from ``aggregates``, P5).
+- ``derive_build_aggregates`` / ``derive_rule_cache_layer`` /
+  ``annotate_rule_cache_layers`` (from ``aggregates``) -- P5 cross-layer
+  cache aggregates derived from P2's per-rule CAS metadata and P4's
+  build-wide ccache event counts.
 
 ``_connection`` is private to the subpackage. Tests may import it
 directly; no other production caller should.
 """
 
+from compiletools.otel.aggregates import (
+    annotate_rule_cache_layers,
+    derive_build_aggregates,
+    derive_rule_cache_layer,
+)
 from compiletools.otel.metrics import export_cache_metrics, export_ccache_metrics
 from compiletools.otel.traces import export_buildtimer
 
-__all__ = ["export_buildtimer", "export_cache_metrics", "export_ccache_metrics"]
+__all__ = [
+    "annotate_rule_cache_layers",
+    "derive_build_aggregates",
+    "derive_rule_cache_layer",
+    "export_buildtimer",
+    "export_cache_metrics",
+    "export_ccache_metrics",
+]

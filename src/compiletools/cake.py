@@ -674,6 +674,38 @@ class Cake:
 
                         outcomes = read_rule_outcomes(outcomes_path)
                         timer.merge_rule_outcomes(outcomes)
+                    # P5: derive cross-layer cache aggregates from the now-
+                    # merged per-rule CAS metadata (P2) and the pre-parsed
+                    # ccache event counts (P4).  Writing the aggregates into
+                    # timer._root.metadata BEFORE to_json means timing.json
+                    # carries them too -- offline tooling sees what the OTel
+                    # spans see -- and the existing P4 root-metadata lift in
+                    # otel/traces.py:export_buildtimer turns them into root
+                    # span attributes with no exporter changes.  Gracefully
+                    # degrades when either signal is absent (see aggregates
+                    # module docstring).
+                    try:
+                        from compiletools.otel.aggregates import (
+                            annotate_rule_cache_layers,
+                            derive_build_aggregates,
+                        )
+
+                        timer._root.metadata.update(
+                            derive_build_aggregates(timer, ccache_counts)
+                        )
+                        # Per-rule ccache attribution is not available for
+                        # ninja/make backends (ccache statslog is build-wide),
+                        # so pass None and let derive_rule_cache_layer collapse
+                        # CAS-misses to "other".
+                        annotate_rule_cache_layers(timer, ccache_attribution=None)
+                    except Exception as exc:
+                        # Aggregation is best-effort -- a bug here must not
+                        # take down the JSON/export path that is the actual
+                        # build product.
+                        print(
+                            f"Warning: cache-aggregate derivation failed: {exc}",
+                            file=sys.stderr,
+                        )
                     timer.to_json(os.path.join(diag_dir, "timing.json"))
                     timer.print_summary()
                     if getattr(self.args, "otel_export", False):
@@ -693,7 +725,10 @@ class Cake:
                             os.unlink(outcomes_path)
                         except OSError:
                             pass
-                        os.environ.pop("CT_RULE_OUTCOMES_LOG", None)
+                    # P5: pop CT_RULE_OUTCOMES_LOG unconditionally so a second
+                    # ct-cake invocation in the same Python process (in-process
+                    # batch mode) doesn't inherit a stale path.
+                    os.environ.pop("CT_RULE_OUTCOMES_LOG", None)
                 # Now publish ccache metrics on the same exporter so they
                 # share resource attrs (ct.variant / ct.backend) and the
                 # invocation_id resource attr carries the root span's
