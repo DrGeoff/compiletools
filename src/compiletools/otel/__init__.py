@@ -11,4 +11,6 @@ Future PRs will add ``export_cache_metrics`` / ``export_ccache_metrics``
 directly; no other production caller should.
 """
 
-__all__: list[str] = []
+from compiletools.otel.traces import export_buildtimer
+
+__all__ = ["export_buildtimer"]
