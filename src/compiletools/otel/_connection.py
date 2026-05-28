@@ -52,11 +52,6 @@ def ensure_http_path(endpoint: str, *, signal: str) -> str:
     return endpoint + "/" + suffix
 
 
-def _ensure_http_traces_path(endpoint: str) -> str:
-    """Backward-compat shim for callers still on the old name."""
-    return ensure_http_path(endpoint, signal="traces")
-
-
 def get_git_commit_sha(cwd: str | None = None) -> str:
     """Return the current HEAD commit SHA, or empty string on failure.
 
