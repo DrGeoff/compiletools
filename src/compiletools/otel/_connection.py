@@ -8,6 +8,7 @@ module directly; no other production caller should. The public surface
 
 from __future__ import annotations
 
+import os
 import socket
 import subprocess
 from typing import Any
@@ -134,9 +135,15 @@ def build_resource(args):
 
     gitroot = resolve_gitroot(args)
 
+    hostname = socket.gethostname()
     defaults: dict[str, Any] = {
         "service.namespace": "compiletools",
-        "host.name": socket.gethostname(),
+        "host.name": hostname,
+        # OTel convention attribute disambiguating concurrent emitters on
+        # the same host (e.g., cron-driven ct-cache-report colliding with
+        # a manual run, or parallel ct-cake invocations). Hostname + pid
+        # is unique-enough for the lifetime of any single observation set.
+        "service.instance.id": f"{hostname}:{os.getpid()}",
         "git.commit.sha": get_git_commit_sha(cwd=gitroot),
         "ct.variant": getattr(args, "variant", "") or "",
         "ct.backend": getattr(args, "backend", "") or "",
