@@ -6,16 +6,17 @@ Hand-rolling a ``--otel-foo`` in a sibling tool would drift defaults,
 env-var rules, and help text; future PRs (P3, P5) add new ``ct-*`` tools
 that need the same surface.
 
-Mirrors the grep-based pattern of ``test_cas_dir_resolver_contract.py``."""
+Patterned on ``test_cas_dir_resolver_contract.py``; that file applies a
+comment/string filter for false-positive suppression which is omitted
+here because the ``--otel-*`` surface is small enough that no production
+file currently mentions the pattern outside a real registration."""
 
 import os
 import re
 
 _OTEL_ARG_RE = re.compile(r'add_argument\s*\(\s*["\']--otel-[A-Za-z0-9_-]+["\']')
-_FLAG_ARG_RE = re.compile(
-    r'add_flag_argument\s*\([^)]*name\s*=\s*["\']otel-[A-Za-z0-9_-]+["\']',
-    re.DOTALL,
-)
+# [^)]* matches newlines (it's a negated class, not `.`), so no re.DOTALL needed.
+_FLAG_ARG_RE = re.compile(r'add_flag_argument\s*\([^)]*name\s*=\s*["\']otel-[A-Za-z0-9_-]+["\']')
 
 # apptools.py is THE registrar; the contract is about every OTHER file.
 _DEFINITION_FILES = frozenset({"apptools.py"})
