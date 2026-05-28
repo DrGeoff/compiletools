@@ -15,6 +15,7 @@ import pytest
 # interrupts the whole pytest run rather than skipping just this module.
 pytest.importorskip("opentelemetry.sdk")
 
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
@@ -56,37 +57,9 @@ def _make_args(**overrides):
     return ns
 
 
-def _make_timer_with_tree() -> BuildTimer:
-    """Build a synthetic finished BuildTimer with two phases + a few rules."""
-    timer = BuildTimer(enabled=True, variant="gcc.debug", backend="ninja")
-    base = timer._root.start_s
-    with timer.phase("build_graph"):
-        pass
-    with timer.phase("build_execution"):
-        timer.record_rule(
-            rule_type="compile",
-            target="obj/foo.o",
-            source="src/foo.cpp",
-            elapsed_s=0.5,
-            start_s=base + 1.0,
-            end_s=base + 1.5,
-        )
-        timer.record_rule(
-            rule_type="compile",
-            target="obj/bar.o",
-            source="src/bar.cpp",
-            elapsed_s=0.25,
-            start_s=base + 1.5,
-            end_s=base + 1.75,
-        )
-        timer.record_rule(
-            rule_type="link",
-            target="bin/app",
-            source="",
-            elapsed_s=0.1,
-            start_s=base + 1.75,
-            end_s=base + 1.85,
-        )
+def _make_minimal_timer() -> BuildTimer:
+    """Minimal finished BuildTimer sufficient to emit a root span via export_buildtimer."""
+    timer = BuildTimer(enabled=True)
     timer.finish()
     return timer
 
@@ -128,7 +101,7 @@ def test_missing_grpc_exporter_raises_with_install_hint(monkeypatch):
         sys.modules.pop(grpc_mod, None)
         monkeypatch.setitem(sys.modules, grpc_mod, None)
 
-        timer = _make_timer_with_tree()
+        timer = _make_minimal_timer()
         with pytest.raises(RuntimeError) as excinfo:
             # No _processor passed: real _build_processor() runs and trips
             # the partial-install import.
@@ -154,9 +127,7 @@ def test_service_name_env_wins_when_cli_unset(monkeypatch):
         lambda args: "",
     )
 
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-
-    timer = _make_timer_with_tree()
+    timer = _make_minimal_timer()
     sink = InMemorySpanExporter()
     export_buildtimer(timer, _make_args(otel_service_name=None), _processor=SimpleSpanProcessor(sink))
     spans = list(sink.get_finished_spans())
@@ -173,9 +144,7 @@ def test_service_name_cli_wins_over_env(monkeypatch):
         lambda args: "",
     )
 
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-
-    timer = _make_timer_with_tree()
+    timer = _make_minimal_timer()
     sink = InMemorySpanExporter()
     export_buildtimer(timer, _make_args(otel_service_name="from-cli"), _processor=SimpleSpanProcessor(sink))
     spans = list(sink.get_finished_spans())
@@ -193,9 +162,7 @@ def test_service_name_fallback_when_neither_set(monkeypatch):
         lambda args: "",
     )
 
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-
-    timer = _make_timer_with_tree()
+    timer = _make_minimal_timer()
     sink = InMemorySpanExporter()
     export_buildtimer(timer, _make_args(otel_service_name=None), _processor=SimpleSpanProcessor(sink))
     spans = list(sink.get_finished_spans())
