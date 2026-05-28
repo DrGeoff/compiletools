@@ -157,6 +157,17 @@ class TestExtractModuleDeclarations:
 class TestCompilerKindClassification:
     """apptools.compiler_kind classifies common compiler invocations."""
 
+    @pytest.fixture(autouse=True)
+    def _isolate_from_host_compiler(self, monkeypatch):
+        # compiler_kind introspects --version on gcc-ish basenames to catch
+        # distros (e.g. Termux) where g++/gcc are clang symlinks. This
+        # class tests the *classification* logic in isolation, so neutralise
+        # the probe to None (=> "couldn't read banner, trust the basename")
+        # and clear the lru_cache so prior real-host calls don't bleed in.
+        import compiletools.apptools as _ap
+        monkeypatch.setattr(_ap, "_compiler_major_version", lambda _c: None)
+        _ap.compiler_kind.cache_clear()
+
     def test_bare_gpp(self):
         # Even if g++ doesn't resolve, fallback should still recognize the name.
         assert compiler_kind("g++") == "gcc"
