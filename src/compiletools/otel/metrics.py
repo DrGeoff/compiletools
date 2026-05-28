@@ -4,18 +4,20 @@ Public surface:
 
 - :func:`export_cache_metrics` — emit ``ct.cas.*`` gauges from a
   :mod:`compiletools.cache_report` scan (used by ``ct-cache-report``).
-
-Future PRs will add ``export_ccache_metrics`` (P4) here.
+- :func:`export_ccache_metrics` — ship parsed ccache stats counts as
+  OTLP metrics (used by ct-cake's post-build hook when
+  ``--ccache-statslog`` is set).
 
 Snapshot-and-exit by construction: each entry point builds a
-``MeterProvider``, populates one observation per gauge, force-flushes,
-and shuts down. No long-running daemon, no periodic re-export.
+``MeterProvider``, populates one observation per gauge / counter,
+force-flushes, and shuts down. No long-running daemon, no periodic
+re-export.
 
 Trace-only collectors: when ``args.otel_metrics_as_spans`` is set, the
-gauge set is flattened into a single short-lived span whose attributes
-encode the metric values, and no metric pipeline is built at all. This
-lets a trace-only collector still surface CAS health without a separate
-metrics endpoint.
+metric set is flattened into a single short-lived span whose attributes
+encode the values, and no metric pipeline is built at all. This lets a
+trace-only collector still surface the data without a separate metrics
+endpoint.
 
 Lazy SDK import; install the optional ``otel`` extra
 (``pip install 'compiletools[otel]'``) to enable.
@@ -25,8 +27,9 @@ from __future__ import annotations
 
 import sys
 import time
+from collections import Counter
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from compiletools.otel._connection import (
     MISSING_EXTRA_HINT,
@@ -269,3 +272,185 @@ def _emit_cache_snapshot_as_span(points: list[_Point], args) -> None:
             provider.shutdown()
         except Exception as exc:
             print(f"Warning: OTLP metrics-as-spans shutdown raised: {exc}", file=sys.stderr)
+
+
+def _resource_with_invocation_id(args, invocation_id: str | None):
+    """Build the OTel Resource and tack ``ct.invocation_id`` on top.
+
+    The trace path derives ``ct.invocation_id`` from the diagnostics-dir
+    leaf (see ``_connection.build_resource``). The metrics path lets the
+    caller override it with the **root span's trace_id** so dashboards can
+    join metrics to spans without a side-channel correlation id.
+    """
+    from opentelemetry.sdk.resources import Resource
+
+    base = build_resource(args)
+    if not invocation_id:
+        return base
+    return base.merge(Resource({"ct.invocation_id": invocation_id}))
+
+
+def export_ccache_metrics(
+    counts: Counter[str],
+    args,
+    *,
+    invocation_id: str | None = None,
+    _reader: Any = None,
+) -> None:
+    """Ship parsed ccache stats counts as OTLP metrics.
+
+    ``counts`` is the ``{event_name: count}`` mapping returned by
+    ``compiletools.ccache_stats.parse_statslog``. Emits:
+
+    - ``ct.ccache.events`` (counter, tag ``ccache_event``) -- one
+      observation per distinct event with its total count for the build.
+    - ``ct.ccache.hit_rate`` (gauge) -- local hit ratio in ``[0,1]``.
+    - ``ct.ccache.remote_hit_rate`` (gauge) -- remote-storage hit ratio.
+
+    Empty ``counts`` is a silent no-op (matches the trace-side contract).
+
+    ``invocation_id`` is attached as the ``ct.invocation_id`` resource
+    attribute on the emitted metrics. Callers (ct-cake) pass the root
+    build span's trace_id here so the metrics natively join against the
+    build's spans in any backend that indexes on trace_id.
+
+    ``_reader`` is a test seam: pass an ``InMemoryMetricReader`` to
+    capture emissions in-memory instead of shipping over the network.
+
+    When ``args.otel_metrics_as_spans`` is true, the metric set is
+    flattened onto attributes of a single short-lived span instead of
+    OTLP metrics -- the fallback for trace-only collectors documented
+    in the design doc.
+
+    Raises ``RuntimeError(MISSING_EXTRA_HINT)`` if the optional ``otel``
+    extra isn't installed. All other failures (network, flush timeout)
+    are caught and warned to stderr -- metrics publishing must never
+    break a build.
+    """
+    if not counts:
+        return
+
+    if getattr(args, "otel_metrics_as_spans", False):
+        _emit_as_span(counts, args, invocation_id=invocation_id)
+        return
+
+    try:
+        from opentelemetry.sdk.metrics import MeterProvider
+    except ImportError as exc:
+        raise RuntimeError(MISSING_EXTRA_HINT) from exc
+
+    resource = _resource_with_invocation_id(args, invocation_id)
+    reader = _reader if _reader is not None else _build_metric_reader(args)
+    provider = MeterProvider(resource=resource, metric_readers=[reader])
+    meter = provider.get_meter("compiletools.ccache")
+
+    events_counter = meter.create_counter(
+        "ct.ccache.events",
+        description="ccache event occurrences over the build",
+    )
+    hit_rate_gauge = meter.create_gauge(
+        "ct.ccache.hit_rate",
+        description="Local ccache hit ratio in [0,1]",
+    )
+    remote_hit_rate_gauge = meter.create_gauge(
+        "ct.ccache.remote_hit_rate",
+        description="Remote ccache hit ratio in [0,1]",
+    )
+
+    for event_name, count in counts.items():
+        if count <= 0:
+            continue
+        events_counter.add(count, {"ccache_event": event_name})
+
+    from compiletools.ccache_stats import hit_rate, remote_hit_rate
+
+    hit_rate_gauge.set(hit_rate(counts))
+    remote_hit_rate_gauge.set(remote_hit_rate(counts))
+
+    # When a test seam reader is supplied (e.g. InMemoryMetricReader),
+    # tests pull metrics via reader.get_metrics_data() AFTER this function
+    # returns. Calling shutdown() here would short-circuit the gauge
+    # collection path on those readers (gauges are read at collect-time,
+    # and the SDK skips collect when the provider is shut down). For the
+    # production path -- where _reader was None and we built a
+    # PeriodicExportingMetricReader -- we still need shutdown() to join
+    # the background flush thread.
+    if _reader is None:
+        flush_start = time.monotonic()
+        try:
+            flushed = provider.force_flush(timeout_millis=5000)
+        except Exception as exc:
+            flushed = False
+            print(f"Warning: OTLP metrics flush raised: {exc}", file=sys.stderr)
+        if not flushed:
+            print(
+                "Warning: OTLP metrics export timed out flushing; some points may be lost",
+                file=sys.stderr,
+            )
+        elif time.monotonic() - flush_start > 2.0:
+            print(
+                f"Warning: OTLP metrics export took {time.monotonic() - flush_start:.1f}s to flush",
+                file=sys.stderr,
+            )
+        try:
+            provider.shutdown()
+        except Exception as exc:
+            print(f"Warning: OTLP metrics shutdown raised: {exc}", file=sys.stderr)
+
+
+def _emit_as_span(counts: Counter[str], args, *, invocation_id: str | None) -> None:
+    """Trace-only-collector fallback for ``export_ccache_metrics``.
+
+    Synthesises one short-lived span named ``ct.ccache.snapshot`` whose
+    attributes are the per-event counts flattened to
+    ``ct.ccache.events.<event_name>`` plus the hit-rate gauges. Lets a
+    pure-traces collector show the ccache outcome alongside the build
+    span tree without a metrics endpoint.
+
+    Note: this does not nest under the build root span. The build trace
+    has already been flushed by ``export_buildtimer`` by the time this
+    runs; nesting would require us to keep the TracerProvider alive
+    across the publish gap. Dashboards can still join on
+    ``ct.invocation_id``.
+    """
+    try:
+        from opentelemetry import context as otel_context
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    except ImportError as exc:
+        raise RuntimeError(MISSING_EXTRA_HINT) from exc
+
+    from compiletools.ccache_stats import hit_rate, remote_hit_rate
+    from compiletools.otel._connection import _build_processor
+
+    resource = _resource_with_invocation_id(args, invocation_id)
+    provider = TracerProvider(resource=resource)
+    processor: BatchSpanProcessor = _build_processor(args)
+    provider.add_span_processor(processor)
+    tracer = provider.get_tracer("compiletools.ccache")
+
+    span = tracer.start_span("ct.ccache.snapshot", context=otel_context.Context())
+    try:
+        for event_name, count in counts.items():
+            if count <= 0:
+                continue
+            try:
+                span.set_attribute(f"ct.ccache.events.{event_name}", int(count))
+            except (TypeError, ValueError):
+                pass
+        span.set_attribute("ct.ccache.hit_rate", float(hit_rate(counts)))
+        span.set_attribute("ct.ccache.remote_hit_rate", float(remote_hit_rate(counts)))
+    finally:
+        try:
+            span.end()
+        except Exception as exc:
+            print(f"Warning: OTLP ccache snapshot span end raised: {exc}", file=sys.stderr)
+
+    try:
+        provider.force_flush(timeout_millis=5000)
+    except Exception as exc:
+        print(f"Warning: OTLP ccache snapshot flush raised: {exc}", file=sys.stderr)
+    try:
+        provider.shutdown()
+    except Exception as exc:
+        print(f"Warning: OTLP ccache snapshot shutdown raised: {exc}", file=sys.stderr)

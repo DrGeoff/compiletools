@@ -186,6 +186,33 @@ class Cake:
         compiletools.apptools.add_otel_export_arguments(cap)
 
         cap.add_argument(
+            "--ccache-statslog",
+            default=None,
+            nargs="?",
+            const="auto",
+            metavar="PATH|auto",
+            help=(
+                "Capture ccache per-call events for this build. "
+                "Exports CCACHE_STATSLOG=<path> into the build subprocess "
+                "environment; ccache writes one event-name per line to "
+                "<path> for the duration of the build. With value 'auto' "
+                "(or no value), the path is allocated under the "
+                "per-invocation diagnostics dir as ccache.statslog and "
+                "removed after post-build ingest. With an explicit path, "
+                "the file's lifecycle is the caller's responsibility. "
+                "When combined with --otel-export, the parsed counts are "
+                "shipped as OTLP metrics (ct.ccache.events / "
+                "ct.ccache.hit_rate / ct.ccache.remote_hit_rate) on the "
+                "same exporter as the build spans, and the headline "
+                "numbers are lifted onto the root build span as "
+                "ct.ccache.* attributes. The statslog file is useful on "
+                "its own (without --otel-export), so the flag is allowed "
+                "in that mode -- a warning is emitted explaining no "
+                "metrics will be shipped."
+            ),
+        )
+
+        cap.add_argument(
             "--diagnostics-dir",
             default=None,
             help=(
@@ -421,104 +448,269 @@ class Cake:
 
             self._copyexes()
 
+    def _resolve_ccache_statslog_path(self) -> Optional[str]:
+        """Resolve --ccache-statslog into an absolute filesystem path.
+
+        ``--ccache-statslog=auto`` (or the flag passed without a value)
+        allocates ``<diagnostics-dir>/ccache.statslog`` under the per-
+        invocation diagnostics directory, matching where ct-cake already
+        writes ``timing.json``. An explicit path is returned verbatim
+        (made absolute relative to the invocation cwd if needed) and is
+        treated as caller-owned -- not auto-removed after publish.
+
+        Returns ``None`` when the flag was not set.
+        """
+        value = getattr(self.args, "ccache_statslog", None)
+        if not value:
+            return None
+        if value == "auto":
+            diag_dir = compiletools.diagnostics.resolve_diagnostics_dir(self.args)
+            return os.path.join(diag_dir, "ccache.statslog")
+        return os.path.abspath(os.path.expanduser(value))
+
+    def _setup_ccache_statslog_env(self) -> Optional[str]:
+        """Export CCACHE_STATSLOG into this process's environment.
+
+        Mutates ``os.environ`` rather than building per-rule env dicts
+        because the build backends (trace_backend / ninja_backend /
+        makefile_backend) spawn many subprocesses through different paths
+        and all of them inherit the parent env -- one mutation reaches
+        every compile. Returns the resolved path (for the post-build
+        ingest hook) or ``None`` when the flag was not set.
+        """
+        path = self._resolve_ccache_statslog_path()
+        if path is None:
+            return None
+        # Ensure the parent dir exists -- ccache silently no-ops the
+        # statslog write if the dir is missing, which would manifest as
+        # an empty Counter at ingest time. ``auto`` lands under the
+        # diagnostics dir (already created by resolve_diagnostics_dir)
+        # but an explicit user path may be brand-new.
+        parent = os.path.dirname(path)
+        if parent:
+            try:
+                os.makedirs(parent, exist_ok=True)
+            except OSError as exc:
+                print(
+                    f"Warning: --ccache-statslog parent dir {parent!r} not creatable ({exc}); "
+                    "ccache stats will not be collected.",
+                    file=sys.stderr,
+                )
+                return None
+        os.environ["CCACHE_STATSLOG"] = path
+        return path
+
+    def _publish_ccache_stats(self, statslog_path: str, counts, root_trace_id: Optional[str]) -> None:
+        """Ship parsed ccache counts as OTLP metrics + log a one-line summary.
+
+        Called from the ``process()`` finally block once the build (and
+        ``export_buildtimer``) have run. ``counts`` is the pre-parsed
+        Counter from the same statslog file (or ``None`` if pre-parse
+        failed). Best-effort: any failure here is logged to stderr and
+        the build still succeeds. The statslog file is removed afterwards
+        iff the user picked ``auto`` mode -- explicit paths are caller-
+        owned.
+        """
+        try:
+            if counts is None:
+                # Pre-parse failed earlier; fall back to a fresh parse so
+                # the summary line still has a chance to land.
+                from compiletools import ccache_stats
+
+                counts = ccache_stats.parse_statslog(statslog_path)
+
+            # Whether or not we end up shipping to OTLP, the parsed
+            # numbers belong in the build log so a grep on the build
+            # output answers "did ccache help?" without a metrics
+            # backend round-trip.
+            cacheable = (
+                counts.get("direct_cache_hit", 0)
+                + counts.get("preprocessed_cache_hit", 0)
+                + counts.get("cache_miss", 0)
+            )
+            if cacheable > 0:
+                hits = counts.get("direct_cache_hit", 0) + counts.get("preprocessed_cache_hit", 0)
+                rate_pct = (hits / cacheable) * 100.0
+                print(
+                    f"ccache: cacheable={cacheable} hits={hits} misses={counts.get('cache_miss', 0)} "
+                    f"hit_rate={rate_pct:.1f}%"
+                )
+
+            if not getattr(self.args, "otel_export", False):
+                if getattr(self.args, "verbose", 0) >= 1:
+                    print(
+                        "Note: --ccache-statslog set without --otel-export; statslog written but no metrics shipped.",
+                        file=sys.stderr,
+                    )
+                return
+
+            if not counts:
+                return
+
+            from compiletools.otel import export_ccache_metrics
+
+            try:
+                export_ccache_metrics(counts, self.args, invocation_id=root_trace_id)
+            except Exception as exc:
+                print(f"Warning: OTLP ccache-metrics export failed: {exc}", file=sys.stderr)
+        except Exception as exc:
+            # Defensive belt: parse_statslog / import faults must never
+            # propagate. Build success comes first.
+            print(f"Warning: ccache stats publish failed: {exc}", file=sys.stderr)
+        finally:
+            if getattr(self.args, "ccache_statslog", None) == "auto":
+                try:
+                    os.remove(statslog_path)
+                except OSError:
+                    pass
+
     def process(self):
         """Transform the arguments into suitable versions for ct-* tools
         and call the appropriate tool.
         """
         assert self.context.timer is not None
         timer = self.context.timer
+        # Snapshot CCACHE_STATSLOG BEFORE we mutate it so we can restore
+        # (or pop) it on the way out. Without this, a second ct-cake run
+        # in the same Python process (in-process batch mode does this)
+        # would inherit a stale CCACHE_STATSLOG -- possibly pointing at
+        # an already-deleted ``auto``-mode path. The restore must run
+        # unconditionally, regardless of build success/failure/exception.
+        _ccache_statslog_prev = os.environ.get("CCACHE_STATSLOG")
+        # CCACHE_STATSLOG must be set before any compile subprocess fires.
+        # Setting it here (top of process, outside the try) means the
+        # finally block has a deterministic value to switch on regardless
+        # of whether the build itself raised before any compile ran.
+        statslog_path = self._setup_ccache_statslog_env()
         try:
-            # If the user specified only a single file to be turned into a library, guess that
-            # they mean for ct-cake to chase down all the implied files.
-            if self.args.verbose > 4:
-                print("Early scanning. Cake determining targets and implied files")
+            try:
+                # If the user specified only a single file to be turned into a library, guess that
+                # they mean for ct-cake to chase down all the implied files.
+                if self.args.verbose > 4:
+                    print("Early scanning. Cake determining targets and implied files")
 
-            with timer.phase("target_discovery"):
-                created_ctobjs = False
-                recreateobjs = False
-                if self.args.static and len(self.args.static) == 1:
-                    if not created_ctobjs:
+                with timer.phase("target_discovery"):
+                    created_ctobjs = False
+                    recreateobjs = False
+                    if self.args.static and len(self.args.static) == 1:
+                        if not created_ctobjs:
+                            self._createctobjs()
+                            created_ctobjs = True
+                        assert self.hunter is not None
+                        self.args.static.extend(self.hunter.required_source_files(self.args.static[0]))
+                        recreateobjs = True
+
+                    if self.args.dynamic and len(self.args.dynamic) == 1:
+                        if not created_ctobjs:
+                            self._createctobjs()
+                            created_ctobjs = True
+                        assert self.hunter is not None
+                        self.args.dynamic.extend(self.hunter.required_source_files(self.args.dynamic[0]))
+                        recreateobjs = True
+
+                    if self.args.auto and not any(
+                        [self.args.filename, self.args.static, self.args.dynamic, self.args.tests]
+                    ):
+                        findtargets = compiletools.findtargets.FindTargets(self.args, context=self.context)
+                        findtargets.process(self.args)
+                        recreateobjs = True
+
+                    if recreateobjs:
+                        # Since we've fiddled with the args,
+                        # run the substitutions again
+                        # Primarily, this fixes the --includes for the git root of the
+                        # targets. And recreate the ct objects
+                        if self.args.verbose > 4:
+                            print("Cake recreating objects and reparsing for second stage processing")
+                        compiletools.apptools.substitutions(self.args, verbose=0)
                         self._createctobjs()
                         created_ctobjs = True
-                    assert self.hunter is not None
-                    self.args.static.extend(self.hunter.required_source_files(self.args.static[0]))
-                    recreateobjs = True
-
-                if self.args.dynamic and len(self.args.dynamic) == 1:
-                    if not created_ctobjs:
+                    elif not created_ctobjs:
                         self._createctobjs()
-                        created_ctobjs = True
-                    assert self.hunter is not None
-                    self.args.dynamic.extend(self.hunter.required_source_files(self.args.dynamic[0]))
-                    recreateobjs = True
 
-                if self.args.auto and not any(
-                    [self.args.filename, self.args.static, self.args.dynamic, self.args.tests]
-                ):
-                    findtargets = compiletools.findtargets.FindTargets(self.args, context=self.context)
-                    findtargets.process(self.args)
-                    recreateobjs = True
+                compiletools.apptools.verboseprintconfig(self.args)
 
-                if recreateobjs:
-                    # Since we've fiddled with the args,
-                    # run the substitutions again
-                    # Primarily, this fixes the --includes for the git root of the
-                    # targets. And recreate the ct objects
-                    if self.args.verbose > 4:
-                        print("Cake recreating objects and reparsing for second stage processing")
-                    compiletools.apptools.substitutions(self.args, verbose=0)
-                    self._createctobjs()
-                    created_ctobjs = True
-                elif not created_ctobjs:
-                    self._createctobjs()
-
-            compiletools.apptools.verboseprintconfig(self.args)
-
-            if self.args.filelist:
-                self._callfilelist()
-            else:
-                self._call_backend()
-        finally:
-            # P1: apptools.validate_otel_timing_pair (called from main()) flips
-            # args.timing = True when --otel-export is set without --timing,
-            # and hard-exits on the explicit --otel-export --no-timing combo.
-            # By the time we get here, "otel_export set and timing not set"
-            # is unreachable via the front door, so no warning is needed.
-            if timer.enabled:
-                diag_dir = compiletools.diagnostics.resolve_diagnostics_dir(self.args)
-                # Ingest the per-build rule-outcomes log (CAS hit/miss per
-                # rule, written by backends during the build) and merge
-                # the cas.* metadata into the recorded TimingEvents
-                # before serialising to JSON.  Doing the merge BEFORE
-                # to_json means the on-disk timing.json carries cas.*
-                # too, so offline tooling (timing-report, ad-hoc jq
-                # queries) sees the same metadata the OTel spans do.
-                outcomes_path = getattr(self, "_rule_outcomes_log_path", None)
-                if outcomes_path:
-                    from compiletools.build_timer import read_rule_outcomes
-
-                    outcomes = read_rule_outcomes(outcomes_path)
-                    timer.merge_rule_outcomes(outcomes)
-                timer.to_json(os.path.join(diag_dir, "timing.json"))
-                timer.print_summary()
-                if getattr(self.args, "otel_export", False):
-                    from compiletools.otel import export_buildtimer
-
-                    # README.ct-otel.rst: "a failed export does not fail the build".
+                if self.args.filelist:
+                    self._callfilelist()
+                else:
+                    self._call_backend()
+            finally:
+                # P1: apptools.validate_otel_timing_pair (called from main()) flips
+                # args.timing = True when --otel-export is set without --timing,
+                # and hard-exits on the explicit --otel-export --no-timing combo.
+                # By the time we get here, "otel_export set and timing not set"
+                # is unreachable via the front door, so no warning is needed.
+                # Pre-parse the ccache statslog so the headline numbers can be
+                # lifted onto the root build span via timer._root.metadata (the
+                # P2 lift plumbing in otel/traces.py picks them up). Doing the
+                # parse here -- before export_buildtimer -- keeps the metric
+                # export path further down and avoids re-parsing the file twice.
+                ccache_counts = None
+                if statslog_path:
                     try:
-                        export_buildtimer(timer, self.args)
+                        from compiletools import ccache_stats
+
+                        ccache_counts = ccache_stats.parse_statslog(statslog_path)
+                        if ccache_counts and timer.enabled:
+                            timer._root.metadata.update(ccache_stats.summary_attributes(ccache_counts))
                     except Exception as exc:
-                        print(f"Warning: OTLP export failed: {exc}", file=sys.stderr)
-                # Best-effort cleanup of the outcomes log.  Leaving it in
-                # the diagnostics dir would accumulate across builds; the
-                # diagnostics dir is meant for the latest build's
-                # artefacts only.
-                if outcomes_path:
-                    try:
-                        os.unlink(outcomes_path)
-                    except OSError:
-                        pass
-                    os.environ.pop("CT_RULE_OUTCOMES_LOG", None)
+                        print(
+                            f"Warning: ccache stats pre-parse failed: {exc}",
+                            file=sys.stderr,
+                        )
+                root_trace_id: Optional[str] = None
+                if timer.enabled:
+                    diag_dir = compiletools.diagnostics.resolve_diagnostics_dir(self.args)
+                    # Ingest the per-build rule-outcomes log (CAS hit/miss per
+                    # rule, written by backends during the build) and merge
+                    # the cas.* metadata into the recorded TimingEvents
+                    # before serialising to JSON.  Doing the merge BEFORE
+                    # to_json means the on-disk timing.json carries cas.*
+                    # too, so offline tooling (timing-report, ad-hoc jq
+                    # queries) sees the same metadata the OTel spans do.
+                    outcomes_path = getattr(self, "_rule_outcomes_log_path", None)
+                    if outcomes_path:
+                        from compiletools.build_timer import read_rule_outcomes
+
+                        outcomes = read_rule_outcomes(outcomes_path)
+                        timer.merge_rule_outcomes(outcomes)
+                    timer.to_json(os.path.join(diag_dir, "timing.json"))
+                    timer.print_summary()
+                    if getattr(self.args, "otel_export", False):
+                        from compiletools.otel import export_buildtimer
+
+                        # README.ct-otel.rst: "a failed export does not fail the build".
+                        try:
+                            root_trace_id = export_buildtimer(timer, self.args)
+                        except Exception as exc:
+                            print(f"Warning: OTLP export failed: {exc}", file=sys.stderr)
+                    # Best-effort cleanup of the outcomes log.  Leaving it in
+                    # the diagnostics dir would accumulate across builds; the
+                    # diagnostics dir is meant for the latest build's
+                    # artefacts only.
+                    if outcomes_path:
+                        try:
+                            os.unlink(outcomes_path)
+                        except OSError:
+                            pass
+                        os.environ.pop("CT_RULE_OUTCOMES_LOG", None)
+                # Now publish ccache metrics on the same exporter so they
+                # share resource attrs (ct.variant / ct.backend) and the
+                # invocation_id resource attr carries the root span's
+                # trace_id for native trace<->metric joins.
+                if statslog_path:
+                    self._publish_ccache_stats(statslog_path, ccache_counts, root_trace_id)
+        finally:
+            # Restore CCACHE_STATSLOG to its pre-invocation state. This
+            # runs unconditionally -- whether the build succeeded, failed,
+            # raised, or whether _publish_ccache_stats ran. Without this,
+            # a second ct-cake call in the same Python process (in-process
+            # batch mode) inherits a stale env var pointing at an
+            # already-deleted ``auto``-mode path.
+            if _ccache_statslog_prev is None:
+                os.environ.pop("CCACHE_STATSLOG", None)
+            else:
+                os.environ["CCACHE_STATSLOG"] = _ccache_statslog_prev
 
     def clear_cache(self):
         """Only useful in test scenarios where you need to reset to a pristine state"""

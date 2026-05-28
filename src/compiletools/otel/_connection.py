@@ -2,7 +2,7 @@
 
 Private to the ``compiletools.otel`` subpackage. Tests may import this
 module directly; no other production caller should. The public surface
-(``export_buildtimer``, future ``export_cache_metrics`` /
+(``export_buildtimer``, ``export_cache_metrics``,
 ``export_ccache_metrics``) is re-exported from ``compiletools.otel``.
 """
 

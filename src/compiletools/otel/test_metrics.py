@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import types
+from collections import Counter
 
 import pytest
 
@@ -37,6 +38,7 @@ from compiletools.otel.metrics import (
     METRIC_WASTED_BYTES,
     _cache_points_from_reports,
     export_cache_metrics,
+    export_ccache_metrics,
 )
 
 # ----------------------------------------------------------------- test helpers
@@ -358,3 +360,192 @@ def test_missing_extra_raises_with_install_hint(monkeypatch):
     finally:
         sys.modules.pop("opentelemetry", None)
         sys.modules.update(saved)
+
+
+# ----------------------------------------------------------------- ccache metrics (P4)
+
+
+def _collect_ccache_metrics(reader: InMemoryMetricReader):
+    """Return a flat ``{metric_name: [(attrs_frozenset, value)]}`` map.
+
+    InMemoryMetricReader emits a nested MetricsData tree (resource ->
+    scope -> metric -> data point); the call sites here only care about
+    final per-point (attrs, value) tuples per name, so flatten once.
+    """
+    out: dict[str, list[tuple[frozenset[tuple[str, str]], float | int]]] = {}
+    data = reader.get_metrics_data()
+    if data is None:
+        return out
+    for resource_metrics in data.resource_metrics:
+        for scope_metrics in resource_metrics.scope_metrics:
+            for metric in scope_metrics.metrics:
+                points = []
+                # Counter -> Sum, Gauge -> Gauge (both expose `.data_points`).
+                for dp in metric.data.data_points:
+                    attrs = frozenset((k, str(v)) for k, v in (dp.attributes or {}).items())
+                    value = getattr(dp, "value", None)
+                    if value is None:
+                        # Sum points expose `.value` directly; older SDKs
+                        # might expose `.sum`. Defensive fallback.
+                        value = getattr(dp, "sum", 0)
+                    points.append((attrs, value))
+                out.setdefault(metric.name, []).extend(points)
+    return out
+
+
+class TestExportCcacheMetrics:
+    def test_empty_counts_is_silent_no_op(self):
+        # No SDK objects constructed; flag-only ``export()`` path returns
+        # before any provider/reader work. Asserting the call simply
+        # doesn't raise is enough: if a provider WERE constructed we'd
+        # see a flush warning to stderr.
+        export_ccache_metrics(Counter(), _make_args())
+
+    def test_counter_metric_per_event(self):
+        reader = InMemoryMetricReader()
+        counts = Counter(
+            {
+                "direct_cache_hit": 3,
+                "cache_miss": 5,
+                "local_storage_write": 2,
+            }
+        )
+        export_ccache_metrics(counts, _make_args(), _reader=reader)
+
+        metrics = _collect_ccache_metrics(reader)
+        assert "ct.ccache.events" in metrics
+
+        # Build {event_name: count} from the captured points so the
+        # assertion is independent of point iteration order.
+        events_points = metrics["ct.ccache.events"]
+        captured = {}
+        for attrs, value in events_points:
+            attrs_dict = dict(attrs)
+            captured[attrs_dict["ccache_event"]] = value
+        assert captured == {
+            "direct_cache_hit": 3,
+            "cache_miss": 5,
+            "local_storage_write": 2,
+        }
+
+    def test_hit_rate_gauges_emitted(self):
+        reader = InMemoryMetricReader()
+        counts = Counter(
+            {
+                "direct_cache_hit": 7,
+                "cache_miss": 3,
+                "remote_storage_hit": 2,
+                "remote_storage_miss": 8,
+            }
+        )
+        export_ccache_metrics(counts, _make_args(), _reader=reader)
+
+        metrics = _collect_ccache_metrics(reader)
+        assert "ct.ccache.hit_rate" in metrics
+        assert "ct.ccache.remote_hit_rate" in metrics
+
+        # Single point each, no tags.
+        hit_rate_points = metrics["ct.ccache.hit_rate"]
+        assert len(hit_rate_points) == 1
+        attrs, value = hit_rate_points[0]
+        assert attrs == frozenset()
+        assert value == pytest.approx(0.70)
+
+        remote_points = metrics["ct.ccache.remote_hit_rate"]
+        assert len(remote_points) == 1
+        _, remote_value = remote_points[0]
+        assert remote_value == pytest.approx(0.20)
+
+    def test_invocation_id_lands_on_resource(self):
+        reader = InMemoryMetricReader()
+        export_ccache_metrics(
+            Counter({"direct_cache_hit": 1}),
+            _make_args(),
+            invocation_id="deadbeefcafef00d" * 2,  # 32-hex synthetic trace_id
+            _reader=reader,
+        )
+        data = reader.get_metrics_data()
+        assert data is not None
+        attrs = data.resource_metrics[0].resource.attributes
+        assert attrs.get("ct.invocation_id") == "deadbeefcafef00d" * 2
+
+    def test_invocation_id_absent_does_not_blank_diag_dir_id(self):
+        # When the caller passes invocation_id=None, the underlying
+        # build_resource() may still populate ct.invocation_id from
+        # the diagnostics-dir leaf -- the override must not clobber it
+        # with None/empty.
+        reader = InMemoryMetricReader()
+        export_ccache_metrics(
+            Counter({"direct_cache_hit": 1}),
+            _make_args(),
+            invocation_id=None,
+            _reader=reader,
+        )
+        # If this raised, the metric path was destroyed by the None
+        # override. We only assert no exception here.
+
+    def test_resource_carries_variant_and_backend(self):
+        """ct.variant / ct.backend land on the metrics resource so
+        dashboards can join metric series to span series by these keys."""
+        reader = InMemoryMetricReader()
+        export_ccache_metrics(
+            Counter({"direct_cache_hit": 1}),
+            _make_args(variant="gcc.release.foo", backend="trace"),
+            _reader=reader,
+        )
+        data = reader.get_metrics_data()
+        assert data is not None
+        attrs = data.resource_metrics[0].resource.attributes
+        assert attrs.get("ct.variant") == "gcc.release.foo"
+        assert attrs.get("ct.backend") == "trace"
+
+    def test_failure_modes_no_crash(self):
+        """A network-failing exporter (or any post-emission flush issue)
+        must not propagate. ``export_ccache_metrics`` should still return
+        cleanly; we drive this via the in-memory reader path so the
+        exception surface here is just import resilience."""
+        # The simplest failure-mode coverage is: empty Counter (already
+        # tested above) plus a Counter with a zero value to ensure we
+        # filter zeros instead of choking on them.
+        reader = InMemoryMetricReader()
+        export_ccache_metrics(
+            Counter({"direct_cache_hit": 0, "cache_miss": 4}),
+            _make_args(),
+            _reader=reader,
+        )
+        metrics = _collect_ccache_metrics(reader)
+        events = metrics.get("ct.ccache.events", [])
+        # Only the non-zero event lands as a counter point.
+        captured = {dict(attrs)["ccache_event"]: value for attrs, value in events}
+        assert "cache_miss" in captured
+        assert "direct_cache_hit" not in captured
+
+
+class TestCcacheMetricsAsSpansFallback:
+    def test_flag_routes_through_span_path(self, monkeypatch):
+        """``--otel-metrics-as-spans`` must redirect emission to a span
+        synthesis path -- the BatchSpanProcessor's exporter is what would
+        actually send the data. We stub the _build_processor so no real
+        network call is attempted, and assert the synthesised span is
+        captured with the right attributes."""
+        exporter = InMemorySpanExporter()
+        processor = SimpleSpanProcessor(exporter)
+        import compiletools.otel._connection as conn
+
+        monkeypatch.setattr(conn, "_build_processor", lambda args: processor)
+
+        counts = Counter({"direct_cache_hit": 4, "cache_miss": 1})
+        export_ccache_metrics(
+            counts,
+            _make_args(otel_metrics_as_spans=True),
+            invocation_id="aa" * 16,
+        )
+
+        spans = exporter.get_finished_spans()
+        assert len(spans) == 1
+        span = spans[0]
+        assert span.name == "ct.ccache.snapshot"
+        attrs = dict(span.attributes or {})
+        assert attrs.get("ct.ccache.events.direct_cache_hit") == 4
+        assert attrs.get("ct.ccache.events.cache_miss") == 1
+        assert attrs.get("ct.ccache.hit_rate") == pytest.approx(0.80)

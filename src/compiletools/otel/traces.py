@@ -113,7 +113,7 @@ def _emit_event(tracer, event: TimingEvent, parent_ctx, mono_to_wall_offset: flo
         span.end(end_time=end_ns)
 
 
-def export_buildtimer(timer: BuildTimer, args, *, _processor=None) -> None:
+def export_buildtimer(timer: BuildTimer, args, *, _processor=None) -> str | None:
     """Export a finished BuildTimer's span tree via OTLP.
 
     Emits one OTel span per ``TimingEvent`` (root + phases + rules),
@@ -122,6 +122,12 @@ def export_buildtimer(timer: BuildTimer, args, *, _processor=None) -> None:
     timeline via ``BuildTimer._wall_to_monotonic_offset``, so the
     resulting trace lines up with the rest of the user's observability
     data.
+
+    Returns the **hex-encoded trace_id** of the root build span, or
+    ``None`` when timing is disabled and no span tree was emitted. The
+    P4 ccache-stats hook in ct-cake uses this as the ``ct.invocation_id``
+    on the emitted ccache metrics so metrics natively join to spans
+    without a side-channel correlation id.
 
     Raises ``RuntimeError`` if the optional ``otel`` extra isn't
     installed.  ``_processor`` is a test seam: pass a
@@ -136,7 +142,7 @@ def export_buildtimer(timer: BuildTimer, args, *, _processor=None) -> None:
         raise RuntimeError(MISSING_EXTRA_HINT) from exc
 
     if not timer.enabled:
-        return
+        return None
 
     timer.finish()
 
@@ -160,7 +166,27 @@ def export_buildtimer(timer: BuildTimer, args, *, _processor=None) -> None:
         context=otel_context.Context(),
         start_time=root_start_ns,
     )
+    # Capture the trace_id once -- get_span_context() is safe to call
+    # even after end() but capturing eagerly keeps the return path simple.
     try:
+        root_trace_id = format(root_span.get_span_context().trace_id, "032x")
+    except Exception:
+        root_trace_id = None
+    try:
+        # Lift any metadata producers attached to the root TimingEvent
+        # (P4 ccache headline numbers today; P5 cross-layer aggregates
+        # tomorrow). Same try/except shape as the per-rule lift -- a single
+        # mis-typed value must not poison the whole export. Run before
+        # child emission so the root span is fully populated even if a
+        # child emission later raises.
+        for key, value in (timer._root.metadata or {}).items():
+            if value is None:
+                continue
+            try:
+                root_span.set_attribute(key, value)
+            except (TypeError, ValueError) as exc:
+                if getattr(args, "verbose", 0) >= 1:
+                    print(f"otel: dropped root span attr {key!r}: {exc}", file=sys.stderr)
         try:
             root_ctx = trace.set_span_in_context(root_span)
             for child in timer._root.children:
@@ -202,3 +228,4 @@ def export_buildtimer(timer: BuildTimer, args, *, _processor=None) -> None:
             provider.shutdown()
         except Exception as exc:
             print(f"Warning: OTLP export shutdown raised: {exc}", file=sys.stderr)
+    return root_trace_id
