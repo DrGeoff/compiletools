@@ -23,8 +23,32 @@ import subprocess
 
 import pytest
 
+import compiletools.apptools
 import compiletools.testhelper as uth
 from compiletools.build_backend import available_backends, ensure_backends_registered, get_backend_class
+
+
+def _skip_if_clang_lt_22_pch_dedup_bug() -> None:
+    """Skip when the resolved C++ compiler is clang < 22.
+
+    Cross-workspace shared cas-pchdir trips clang < 22's `#pragma once`
+    dedup, which keys on (st_dev, st_ino) only: the staged
+    <cas-pchdir>/<hash>/<header> hardlinks to the first builder's
+    inode, but the second workspace's `#include "<header>"` resolves
+    to a distinct inode and clang re-parses the inline-defining header
+    on top of the already-loaded PCH, erroring "redefinition". gcc and
+    clang ≥ 22 dedupe by content/include-guard and handle this. See
+    test_e2e_cas_reuse_across_workspaces.test_pch_artefact_reused_across_workspaces
+    for the long-form rationale.
+    """
+    cxx = compiletools.apptools.get_functional_cxx_compiler()
+    ver = compiletools.apptools._compiler_major_version(cxx) if cxx else None
+    if ver is not None and ver[0] == "clang" and ver[1] < 22:
+        pytest.skip(
+            f"clang {ver[1]} dedupes #pragma once by inode only; cross-workspace "
+            "PCH reuse re-parses the header (clang issue, not a ct-cake regression). "
+            "Re-enable on clang ≥ 22."
+        )
 
 # Trigger @register_backend across all backend modules so available_backends()
 # returns the full list at parametrization time.
@@ -297,6 +321,7 @@ def test_two_checkouts_produce_byte_identical_o_with_shared_cas_pchdir(backend_n
     build_backend.py).
     """
     _skip_if_backend_bypasses_cas_layer(backend_name, "cas-objdir")
+    _skip_if_clang_lt_22_pch_dedup_bug()
     sample = pathlib.Path(uth.example_path("pch"))
     if not sample.is_dir():
         pytest.skip(f"missing sample dir: {sample}")
