@@ -402,7 +402,12 @@ class CMakeBackend(BuildBackend):
         # prefix (e.g. CXX="ccache g++") is split off into
         # CMAKE_*_COMPILER_LAUNCHER because CMAKE_*_COMPILER itself must be
         # a single executable path.
-        configure_cmd = [cmake, "-S", source_dir, "-B", build_dir]
+        #
+        # CMAKE_BUILD_TYPE="" suppresses CMake's injected build-type flags
+        # (CMake 4.x defaults to RelWithDebInfo → -O2 -g -DNDEBUG). The
+        # variant axis owns optimization; a stray -O from CMake desyncs
+        # __OPTIMIZE__ between the ct-cake-built PCH and the consumer compile.
+        configure_cmd = [cmake, "-S", source_dir, "-B", build_dir, "-DCMAKE_BUILD_TYPE="]
         if hasattr(self.args, "CXX") and self.args.CXX:
             cxx_parts = compiletools.utils.split_command_cached(self.args.CXX)
             configure_cmd.append(f"-DCMAKE_CXX_COMPILER={cxx_parts[-1]}")
