@@ -2458,7 +2458,13 @@ def test_normalize_wild_clang_rewrites_to_ld_path():
     assert "-fuse-ld=wild" not in args.LDFLAGS
 
 
-def test_normalize_wild_gcc_passthrough():
+def test_normalize_wild_gcc_passthrough(monkeypatch):
+    # compiler_kind introspects --version when the basename is gcc-ish to
+    # detect distros (e.g. Termux) where g++ is a clang symlink. The unit
+    # test wants "g++ means gcc" regardless of the host's PATH, so pin
+    # the probe and clear the lru_cache.
+    monkeypatch.setattr(apptools, "_compiler_major_version", lambda _c: ("gcc", 16))
+    apptools.compiler_kind.cache_clear()
     args = _wild_args("g++", "-fuse-ld=wild", "gcc.wild.release")
     apptools._normalize_wild_linker(args)
     assert args.LDFLAGS == "-fuse-ld=wild"

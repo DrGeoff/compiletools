@@ -2003,13 +2003,19 @@ def compiler_kind(cxx: str | None) -> str:
     flag set: gcc needs ``-fmodules-ts`` while clang doesn't, and clang
     uses ``--precompile`` / ``-fprebuilt-module-path=`` for the BMI flow).
 
-    Detection is purely string-based on the resolved binary path's
-    basename. We resolve via ``shutil.which`` first so that a wrapper on
-    PATH (e.g., ``ccache g++``, or a versioned shim like ``cxx``) is
-    pointed at its real target. Falls back to scanning the original
-    string for ``clang`` / ``gcc`` / ``g++`` substrings when the binary
-    can't be located -- callers that hand us a compound string like
-    ``ccache clang++`` should still get the right answer.
+    Detection resolves the binary via ``shutil.which`` and inspects the
+    basename. A gcc-ish basename (``g++``/``gcc``) is then verified
+    against the binary's ``--version`` banner -- on Termux ``g++`` is a
+    symlink to ``clang-21``, and dispatching gcc-only flags like
+    ``-fmodules-ts`` at it fails the compile. Symmetric reverse case
+    (``clang`` symlinked to gcc) is exceedingly rare and not probed; the
+    basename wins for the clang side. The probe happens at most once per
+    unique input string because the function is ``lru_cache``-d.
+
+    Falls back to scanning the original string for ``clang`` / ``gcc`` /
+    ``g++`` substrings when the binary can't be located -- callers that
+    hand us a compound string like ``ccache clang++`` should still get
+    the right answer.
 
     Returns ``"unknown"`` for ``None`` / empty input or when the basename
     matches neither toolchain. Callers must handle the unknown case
@@ -2023,6 +2029,15 @@ def compiler_kind(cxx: str | None) -> str:
     if "clang" in base:
         return "clang"
     if "g++" in base or "gcc" in base:
+        # Verify against --version: a gcc-ish basename on a binary that
+        # actually reports clang (Termux ships ``g++`` -> ``clang-21``)
+        # must be classified as clang, otherwise we dispatch gcc-only
+        # flags at it and the compile fails. Use the resolved path so
+        # ``--version`` is the binary on disk; fall through to "gcc" if
+        # the probe can't parse a recognised banner.
+        probe = _compiler_major_version(resolved)
+        if probe is not None and probe[0] == "clang":
+            return "clang"
         return "gcc"
     # Fall back to scanning the raw string -- handles ``ccache g++`` and
     # similar wrappers that point at a shim with no toolchain hint in

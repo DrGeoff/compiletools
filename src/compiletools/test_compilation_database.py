@@ -1525,7 +1525,7 @@ class TestCompilationDatabaseModuleFlags:
         )
         return creator
 
-    def test_gcc_module_importer_gets_fmodules_ts(self):
+    def test_gcc_module_importer_gets_fmodules_ts(self, monkeypatch):
         """A TU with `import math;` compiled under gcc must carry -fmodules-ts
         in its compile_commands.json entry; without it clangd / clang-tidy
         report the import as undefined. Unit-level test (no compiler required):
@@ -1534,6 +1534,11 @@ class TestCompilationDatabaseModuleFlags:
         Avoiding the end-to-end path is deliberate: the CDB-on-disk variant
         only worked when get_functional_cxx_compiler() returned a g++ that
         accepted -std=c++20, which is environment-dependent."""
+        # compiler_kind introspects --version on gcc-ish basenames; pin
+        # the probe so "g++" classifies as gcc on hosts (e.g. Termux)
+        # where g++ is actually a clang symlink.
+        monkeypatch.setattr(compiletools.apptools, "_compiler_major_version", lambda _c: ("gcc", 16))
+        compiletools.apptools.compiler_kind.cache_clear()
         creator = self._make_creator(cxx="g++", module_imports=("math",))
         flags = creator._module_kind_flags("/src/main.cpp")
         assert "-fmodules-ts" in flags, f"gcc TU with import math; needs -fmodules-ts, got {flags!r}"
