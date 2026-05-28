@@ -121,6 +121,31 @@ def test_missing_grpc_exporter_raises_with_install_hint(monkeypatch):
 # --------------------------------------------------------------- service.name precedence
 
 
+def test_service_instance_id_is_hostname_and_pid(monkeypatch):
+    """service.instance.id must be f'{hostname}:{pid}' — the OTel convention
+    attribute that disambiguates concurrent emitters on the same host
+    (e.g., cron-driven ct-cache-report colliding with a manual run, or
+    parallel ct-cake invocations).
+    """
+    import os as _os
+
+    monkeypatch.setattr("socket.gethostname", lambda: "fake-host")
+    monkeypatch.setattr("compiletools.otel._connection.get_git_commit_sha", lambda cwd=None: "")
+    monkeypatch.setattr(
+        "compiletools.otel._connection._invocation_id_from_diag_dir",
+        lambda args: "",
+    )
+
+    timer = _make_minimal_timer()
+    sink = InMemorySpanExporter()
+    export_buildtimer(timer, _make_args(), _processor=SimpleSpanProcessor(sink))
+    spans = list(sink.get_finished_spans())
+    root = next(s for s in spans if s.name == "compiletools.build")
+    attrs = dict(root.resource.attributes)
+    assert "service.instance.id" in attrs
+    assert attrs["service.instance.id"] == f"fake-host:{_os.getpid()}"
+
+
 def test_service_name_env_wins_when_cli_unset(monkeypatch):
     """OTEL_SERVICE_NAME / OTEL_RESOURCE_ATTRIBUTES must beat the literal default."""
     monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "service.name=from-env")

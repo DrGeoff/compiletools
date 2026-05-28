@@ -640,104 +640,119 @@ class Cake:
                 # and hard-exits on the explicit --otel-export --no-timing combo.
                 # By the time we get here, "otel_export set and timing not set"
                 # is unreachable via the front door, so no warning is needed.
-                # Pre-parse the ccache statslog so the headline numbers can be
-                # lifted onto the root build span via timer._root.metadata (the
-                # P2 lift plumbing in otel/traces.py picks them up). Doing the
-                # parse here -- before export_buildtimer -- keeps the metric
-                # export path further down and avoids re-parsing the file twice.
-                ccache_counts = None
-                if statslog_path:
-                    try:
-                        from compiletools import ccache_stats
-
-                        ccache_counts = ccache_stats.parse_statslog(statslog_path)
-                        if ccache_counts and timer.enabled:
-                            timer._root.metadata.update(ccache_stats.summary_attributes(ccache_counts))
-                    except Exception as exc:
-                        print(
-                            f"Warning: ccache stats pre-parse failed: {exc}",
-                            file=sys.stderr,
-                        )
-                root_trace_id: Optional[str] = None
-                if timer.enabled:
-                    diag_dir = compiletools.diagnostics.resolve_diagnostics_dir(self.args)
-                    # Ingest the per-build rule-outcomes log (CAS hit/miss per
-                    # rule, written by backends during the build) and merge
-                    # the cas.* metadata into the recorded TimingEvents
-                    # before serialising to JSON.  Doing the merge BEFORE
-                    # to_json means the on-disk timing.json carries cas.*
-                    # too, so offline tooling (timing-report, ad-hoc jq
-                    # queries) sees the same metadata the OTel spans do.
-                    outcomes_path = getattr(self, "_rule_outcomes_log_path", None)
-                    if outcomes_path:
-                        from compiletools.build_timer import read_rule_outcomes
-
-                        outcomes = read_rule_outcomes(outcomes_path)
-                        timer.merge_rule_outcomes(outcomes)
-                    # P5: derive cross-layer cache aggregates from the now-
-                    # merged per-rule CAS metadata (P2) and the pre-parsed
-                    # ccache event counts (P4).  Writing the aggregates into
-                    # timer._root.metadata BEFORE to_json means timing.json
-                    # carries them too -- offline tooling sees what the OTel
-                    # spans see -- and the existing P4 root-metadata lift in
-                    # otel/traces.py:export_buildtimer turns them into root
-                    # span attributes with no exporter changes.  Gracefully
-                    # degrades when either signal is absent (see aggregates
-                    # module docstring).
-                    try:
-                        from compiletools.otel.aggregates import (
-                            annotate_rule_cache_layers,
-                            derive_build_aggregates,
-                        )
-
-                        timer._root.metadata.update(
-                            derive_build_aggregates(timer, ccache_counts)
-                        )
-                        # Per-rule ccache attribution is not available for
-                        # ninja/make backends (ccache statslog is build-wide),
-                        # so pass None and let derive_rule_cache_layer collapse
-                        # CAS-misses to "other".
-                        annotate_rule_cache_layers(timer, ccache_attribution=None)
-                    except Exception as exc:
-                        # Aggregation is best-effort -- a bug here must not
-                        # take down the JSON/export path that is the actual
-                        # build product.
-                        print(
-                            f"Warning: cache-aggregate derivation failed: {exc}",
-                            file=sys.stderr,
-                        )
-                    timer.to_json(os.path.join(diag_dir, "timing.json"))
-                    timer.print_summary()
-                    if getattr(self.args, "otel_export", False):
-                        from compiletools.otel import export_buildtimer
-
-                        # README.ct-otel.rst: "a failed export does not fail the build".
+                #
+                # Wrap the post-build pipeline in its own try/finally so the
+                # CT_RULE_OUTCOMES_LOG pop runs even if a step in the
+                # pipeline (ccache parse / outcomes merge / aggregate
+                # derivation / to_json / export / metric publish) raises.
+                # The env var must not leak into a subsequent invocation in
+                # the same process (in-process batch mode, tests, REPL).
+                try:
+                    # Pre-parse the ccache statslog so the headline numbers can be
+                    # lifted onto the root build span via timer._root.metadata
+                    # (the root-metadata loop in otel/traces.py:export_buildtimer
+                    # picks them up — added in P4 alongside the per-rule metadata
+                    # lift in _emit_event). Doing the parse here -- before
+                    # export_buildtimer -- keeps the metric export path further
+                    # down and avoids re-parsing the file twice.
+                    ccache_counts = None
+                    if statslog_path:
                         try:
-                            root_trace_id = export_buildtimer(timer, self.args)
+                            from compiletools import ccache_stats
+
+                            ccache_counts = ccache_stats.parse_statslog(statslog_path)
+                            if ccache_counts and timer.enabled:
+                                timer._root.metadata.update(ccache_stats.summary_attributes(ccache_counts))
                         except Exception as exc:
-                            print(f"Warning: OTLP export failed: {exc}", file=sys.stderr)
-                    # Best-effort cleanup of the outcomes log.  Leaving it in
-                    # the diagnostics dir would accumulate across builds; the
-                    # diagnostics dir is meant for the latest build's
-                    # artefacts only.
-                    if outcomes_path:
+                            print(
+                                f"Warning: ccache stats pre-parse failed: {exc}",
+                                file=sys.stderr,
+                            )
+                    root_trace_id: Optional[str] = None
+                    if timer.enabled:
+                        diag_dir = compiletools.diagnostics.resolve_diagnostics_dir(self.args)
+                        # Ingest the per-build rule-outcomes log (CAS hit/miss per
+                        # rule, written by backends during the build) and merge
+                        # the cas.* metadata into the recorded TimingEvents
+                        # before serialising to JSON.  Doing the merge BEFORE
+                        # to_json means the on-disk timing.json carries cas.*
+                        # too, so offline tooling (timing-report, ad-hoc jq
+                        # queries) sees the same metadata the OTel spans do.
+                        outcomes_path = getattr(self, "_rule_outcomes_log_path", None)
+                        if outcomes_path:
+                            from compiletools.build_timer import read_rule_outcomes
+
+                            outcomes = read_rule_outcomes(outcomes_path)
+                            timer.merge_rule_outcomes(outcomes)
+                        # P5: derive cross-layer cache aggregates from the now-
+                        # merged per-rule CAS metadata (P2) and the pre-parsed
+                        # ccache event counts (P4).  Writing the aggregates into
+                        # timer._root.metadata BEFORE to_json means timing.json
+                        # carries them too -- offline tooling sees what the OTel
+                        # spans see -- and the existing P4 root-metadata lift in
+                        # otel/traces.py:export_buildtimer turns them into root
+                        # span attributes with no exporter changes.  Gracefully
+                        # degrades when either signal is absent (see aggregates
+                        # module docstring).
                         try:
-                            os.unlink(outcomes_path)
-                        except OSError:
-                            pass
-                # Now publish ccache metrics on the same exporter so they
-                # share resource attrs (ct.variant / ct.backend) and the
-                # invocation_id resource attr carries the root span's
-                # trace_id for native trace<->metric joins.
-                if statslog_path:
-                    self._publish_ccache_stats(statslog_path, ccache_counts, root_trace_id)
-                # P5: pop CT_RULE_OUTCOMES_LOG unconditionally (belt-and-
-                # braces). Setup is gated on ``timer.enabled`` so a
-                # safely-paired teardown would also be gated -- but a
-                # caller that flips ``timer.enabled`` mid-process (or sets
-                # the env var from outside) must not leak it into the next
-                # caller in the same interpreter (tests, REPL, library use).
-                os.environ.pop("CT_RULE_OUTCOMES_LOG", None)
+                            from compiletools.otel.aggregates import (
+                                annotate_rule_cache_layers,
+                                derive_build_aggregates,
+                            )
+
+                            timer._root.metadata.update(
+                                derive_build_aggregates(timer, ccache_counts)
+                            )
+                            # Per-rule ccache attribution is not available for
+                            # ninja/make backends (ccache statslog is build-wide),
+                            # so pass None and let derive_rule_cache_layer collapse
+                            # CAS-misses to "other".
+                            annotate_rule_cache_layers(timer, ccache_attribution=None)
+                        except Exception as exc:
+                            # Aggregation is best-effort -- a bug here must not
+                            # take down the JSON/export path that is the actual
+                            # build product.
+                            print(
+                                f"Warning: cache-aggregate derivation failed: {exc}",
+                                file=sys.stderr,
+                            )
+                        timer.to_json(os.path.join(diag_dir, "timing.json"))
+                        timer.print_summary()
+                        if getattr(self.args, "otel_export", False):
+                            from compiletools.otel import export_buildtimer
+
+                            # README.ct-otel.rst: "a failed export does not fail the build".
+                            try:
+                                root_trace_id = export_buildtimer(timer, self.args)
+                            except Exception as exc:
+                                print(f"Warning: OTLP export failed: {exc}", file=sys.stderr)
+                        # Best-effort cleanup of the outcomes log.  Leaving it in
+                        # the diagnostics dir would accumulate across builds; the
+                        # diagnostics dir is meant for the latest build's
+                        # artefacts only.
+                        if outcomes_path:
+                            try:
+                                os.unlink(outcomes_path)
+                            except OSError:
+                                pass
+                    # Now publish ccache metrics on the same exporter so they
+                    # share resource attrs (ct.variant / ct.backend) and the
+                    # invocation_id resource attr carries the root span's
+                    # trace_id for native trace<->metric joins.
+                    if statslog_path:
+                        self._publish_ccache_stats(statslog_path, ccache_counts, root_trace_id)
+                finally:
+                    # P5: pop CT_RULE_OUTCOMES_LOG unconditionally (belt-and-
+                    # braces). Setup is gated on ``timer.enabled`` so a
+                    # safely-paired teardown would also be gated -- but a
+                    # caller that flips ``timer.enabled`` mid-process (or sets
+                    # the env var from outside) must not leak it into the next
+                    # caller in the same interpreter (tests, REPL, library use).
+                    # The pop is in its own finally so any exception raised by
+                    # a step in the post-build pipeline above (merge / to_json /
+                    # export / _publish_ccache_stats) still leaves the env var
+                    # cleaned up.
+                    os.environ.pop("CT_RULE_OUTCOMES_LOG", None)
         finally:
             # Restore CCACHE_STATSLOG to its pre-invocation state. This
             # runs unconditionally -- whether the build succeeded, failed,

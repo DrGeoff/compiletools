@@ -26,6 +26,11 @@ mechanism that P4 already added to ``otel/traces.py``):
   saved work (best-effort; see the per-rule attribution caveat below).
 * ``ct.build.compile_avoided_rate`` -- ``(cas+ccache) / total`` clamped
   to ``[0, 1]``.  ``0.0`` when ``total == 0`` (avoids div-by-zero).
+* ``ct.build.aggregate_warning`` -- ``"ccache_overcount"`` only when the
+  recompiled clamp fires (statslog reported more ccache hits than there
+  were CAS-miss compile rules to attribute to).  Absent in the well-
+  formed case so its presence is a reliable "results may be misleading"
+  signal for dashboards.
 
 Per-rule span attribute (lifted via the per-rule metadata loop in
 ``_emit_event``):
@@ -145,6 +150,7 @@ def derive_build_aggregates(
     # statslog reporting more hits than rules (e.g. user reused the
     # log across two builds) does not yield a negative count.
     cas_misses = total - cas_avoided
+    overcount = cas_misses - ccache_avoided < 0
     recompiled = max(0, cas_misses - ccache_avoided)
 
     if total > 0:
@@ -158,12 +164,20 @@ def derive_build_aggregates(
     else:
         avoided_rate = 0.0
 
-    return {
+    result: dict[str, Any] = {
         "ct.build.cas_avoided_count": int(cas_avoided),
         "ct.build.ccache_avoided_count": int(ccache_avoided),
         "ct.build.recompiled_count": int(recompiled),
         "ct.build.compile_avoided_rate": float(avoided_rate),
     }
+    # Surface ccache-statslog overcount as a structured warning attribute
+    # so dashboards don't silently interpret a degenerate "100% cache
+    # savings" as a real signal.  Triggered when statslog reports more
+    # ccache hits than there were CAS-miss compile rules to attribute to
+    # (e.g., reused stale statslog across builds).
+    if overcount:
+        result["ct.build.aggregate_warning"] = "ccache_overcount"
+    return result
 
 
 def derive_rule_cache_layer(

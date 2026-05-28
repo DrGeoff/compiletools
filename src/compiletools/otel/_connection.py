@@ -130,6 +130,10 @@ def build_resource(args):
     effect for whichever field the CLI flag leaves unset.  The literal
     ``"compiletools"`` fallback is applied AFTER the env-aware
     ``Resource.create`` only when both CLI and env are silent.
+
+    Attributes with empty values are filtered out (e.g., ``ct.backend``
+    is intentionally absent for non-build invocations like
+    ct-cache-report, which don't have a backend concept).
     """
     from opentelemetry.sdk.resources import Resource
 

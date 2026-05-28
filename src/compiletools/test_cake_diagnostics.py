@@ -297,6 +297,43 @@ def test_otel_export_with_timing_no_warning(monkeypatch, tmp_path, capsys):
     assert "no spans to export" not in captured.err
 
 
+def test_ct_rule_outcomes_log_popped_on_exception(monkeypatch, tmp_path):
+    """If a step inside the post-build pipeline (here: ``BuildTimer.to_json``)
+    raises, CT_RULE_OUTCOMES_LOG must still be popped on the way out.
+    Otherwise the env var leaks into the next invocation in the same
+    Python process (in-process batch mode, tests, REPL).
+    """
+    bindir, _objdir, argv = _bindir_objdir_argv(tmp_path, "--filename", "irrelevant.cpp")
+    args = _build_args(argv)
+
+    def _stub_createctobjs(self):
+        self.hunter = object()
+
+    monkeypatch.setattr(compiletools.cake.Cake, "_createctobjs", _stub_createctobjs)
+    monkeypatch.setattr(compiletools.cake.Cake, "_call_backend", lambda self: None)
+
+    # Simulate the env var being set by Cake's setup path (or by an outer
+    # caller).  We assert below that it does NOT survive the raised
+    # exception.
+    monkeypatch.setenv("CT_RULE_OUTCOMES_LOG", str(tmp_path / "outcomes.log"))
+
+    class _PipelineBoom(RuntimeError):
+        pass
+
+    def _explode(self, path):
+        raise _PipelineBoom("synthetic to_json failure")
+
+    monkeypatch.setattr(BuildTimer, "to_json", _explode)
+
+    cake = compiletools.cake.Cake(args)
+    with pytest.raises(_PipelineBoom):
+        cake.process()
+
+    # The pop in the new innermost finally must have run even though
+    # to_json raised on the way out of the post-build pipeline.
+    assert "CT_RULE_OUTCOMES_LOG" not in os.environ
+
+
 def test_env_vars_handled_even_when_timer_disabled(monkeypatch, tmp_path):
     """Belt-and-braces env-var hygiene when timer is disabled.
 

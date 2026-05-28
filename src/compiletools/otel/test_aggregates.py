@@ -193,13 +193,32 @@ class TestDeriveBuildAggregates:
     def test_ccache_overcount_clamped_to_total(self):
         # Pathological: statslog reports more hits than there are compile
         # rules (e.g. reused stale statslog).  recompiled stays ≥ 0 and
-        # the avoided_rate is clamped to 1.0.
+        # the avoided_rate is clamped to 1.0.  The clamp also raises a
+        # structured warning attribute so dashboards don't silently treat
+        # the resulting 100% as a real signal.
         timer = _make_timer([{"cas_hit": False}, {"cas_hit": False}])
         attrs = derive_build_aggregates(
             timer, ccache_counts={"direct_cache_hit": 99}
         )
         assert attrs["ct.build.recompiled_count"] == 0
         assert attrs["ct.build.compile_avoided_rate"] == 1.0
+        assert attrs["ct.build.aggregate_warning"] == "ccache_overcount"
+
+    def test_no_aggregate_warning_when_counts_consistent(self):
+        # In the well-formed case (ccache_avoided <= cas_misses) the
+        # warning attribute must be absent so dashboards can use its
+        # presence as a reliable "something is off" signal.
+        timer = _make_timer(
+            [
+                {"cas_hit": True},
+                {"cas_hit": False},
+                {"cas_hit": False},
+            ]
+        )
+        attrs = derive_build_aggregates(
+            timer, ccache_counts={"direct_cache_hit": 1, "cache_miss": 1}
+        )
+        assert "ct.build.aggregate_warning" not in attrs
 
 
 # -------------------------------------------------------------- derive_rule_cache_layer

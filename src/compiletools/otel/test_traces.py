@@ -533,6 +533,109 @@ class TestRuleSpanMetadataLift:
         assert "cas.kind" not in foo.attributes
 
 
+class TestRootSpanAggregateAttributes:
+    """Integration test: the cake.process() lift pipeline must produce
+    root-span aggregate attributes and per-rule cache_layer attributes
+    when the in-memory span exporter is wired against the same export
+    machinery.
+
+    Mirrors TestCcacheStatslogRootSpanLift's pattern in
+    test_cake_ccache_statslog.py (P4) but exercises the P5 cross-layer
+    aggregate path directly without spinning up the whole ct-cake
+    argparser.  Asserts that:
+
+    1. All four root aggregate attrs land on the exported root span
+       (``ct.build.cas_avoided_count``, ``ct.build.ccache_avoided_count``,
+       ``ct.build.recompiled_count``, ``ct.build.compile_avoided_rate``).
+    2. Per-rule ``ct.rule.cache_layer`` is set correctly on each
+       exported rule span (cas-hit rule -> "cas", cas-miss rule -> "other").
+    """
+
+    def test_aggregate_attrs_land_on_root_and_per_rule_spans(self, monkeypatch):
+        monkeypatch.setattr("compiletools.otel._connection.get_git_commit_sha", lambda cwd=None: "")
+        monkeypatch.setattr(
+            "compiletools.otel._connection._invocation_id_from_diag_dir",
+            lambda args: "",
+        )
+
+        # --- Build a synthetic tree with three compile rules:
+        #   * one CAS-hit  (cas.hit==True)         -> contributes to cas_avoided
+        #   * one CAS-miss (cas.hit==False)        -> ccache layer will save it
+        #   * one CAS-miss (cas.hit==False)        -> presumed recompile
+        timer = BuildTimer(enabled=True, variant="gcc.debug", backend="ninja")
+        base = timer._root.start_s
+        with timer.phase("build_execution"):
+            timer.record_rule(
+                rule_type="compile",
+                target="obj/cas_hit.o",
+                source="src/cas_hit.cpp",
+                elapsed_s=0.1,
+                start_s=base + 1.0,
+                end_s=base + 1.1,
+                metadata={"cas.hit": True, "cas.kind": "obj", "cas.bytes_reused": 1024},
+            )
+            timer.record_rule(
+                rule_type="compile",
+                target="obj/cas_miss_ccache.o",
+                source="src/cas_miss_ccache.cpp",
+                elapsed_s=0.2,
+                start_s=base + 1.1,
+                end_s=base + 1.3,
+                metadata={"cas.hit": False},
+            )
+            timer.record_rule(
+                rule_type="compile",
+                target="obj/cas_miss_recompile.o",
+                source="src/cas_miss_recompile.cpp",
+                elapsed_s=0.3,
+                start_s=base + 1.3,
+                end_s=base + 1.6,
+                metadata={"cas.hit": False},
+            )
+        timer.finish()
+
+        # --- Run the same lift logic cake.process() runs.  Fake ccache
+        # statslog reporting one direct hit covers the second compile rule;
+        # the third rule lands as a true recompile.
+        ccache_counts = {"direct_cache_hit": 1, "cache_miss": 1}
+
+        from compiletools.otel.aggregates import (
+            annotate_rule_cache_layers,
+            derive_build_aggregates,
+        )
+
+        timer._root.metadata.update(
+            derive_build_aggregates(timer, ccache_counts)
+        )
+        annotate_rule_cache_layers(timer, ccache_attribution=None)
+
+        # --- Export and capture spans in-memory.
+        sink = InMemorySpanExporter()
+        export_buildtimer(timer, _make_args(), _processor=SimpleSpanProcessor(sink))
+        spans = list(sink.get_finished_spans())
+
+        # --- Root span carries the four aggregate attrs.
+        root = next(s for s in spans if s.name == "compiletools.build")
+        root_attrs = dict(root.attributes or {})
+        assert root_attrs["ct.build.cas_avoided_count"] == 1
+        assert root_attrs["ct.build.ccache_avoided_count"] == 1
+        # 2 cas-misses - 1 ccache hit = 1 recompile.
+        assert root_attrs["ct.build.recompiled_count"] == 1
+        # (cas_avoided + ccache_avoided) / total = (1 + 1) / 3.
+        assert root_attrs["ct.build.compile_avoided_rate"] == pytest.approx(2 / 3)
+
+        # --- Per-rule spans carry the cache_layer annotation.  Ninja/make
+        # backends pass ccache_attribution=None, so CAS-misses land as
+        # "other" (the build-wide ccache count cannot attribute per-target).
+        by_name = {s.name: s for s in spans}
+        cas_hit_span = by_name["compile.src/cas_hit.cpp"]
+        cas_miss_ccache_span = by_name["compile.src/cas_miss_ccache.cpp"]
+        cas_miss_recompile_span = by_name["compile.src/cas_miss_recompile.cpp"]
+        assert cas_hit_span.attributes["ct.rule.cache_layer"] == "cas"
+        assert cas_miss_ccache_span.attributes["ct.rule.cache_layer"] == "other"
+        assert cas_miss_recompile_span.attributes["ct.rule.cache_layer"] == "other"
+
+
 def test_same_basename_in_different_dirs_get_distinct_span_names(monkeypatch):
     """src/util.cpp and tests/util.cpp must not collide on span name."""
     monkeypatch.setattr("compiletools.otel._connection.get_git_commit_sha", lambda cwd=None: "")
