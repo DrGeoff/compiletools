@@ -297,6 +297,47 @@ def test_otel_export_with_timing_no_warning(monkeypatch, tmp_path, capsys):
     assert "no spans to export" not in captured.err
 
 
+def test_env_vars_handled_even_when_timer_disabled(monkeypatch, tmp_path):
+    """Belt-and-braces env-var hygiene when timer is disabled.
+
+    - CT_RULE_OUTCOMES_LOG is unconditionally popped on the way out of
+      process(), even if the timer is disabled when the finally block
+      runs. Setup is gated on ``timer.enabled``, but a caller that
+      disables the timer mid-process (or sets the env var by other means
+      before invoking Cake) must not leave it behind.
+
+    - CCACHE_STATSLOG is snapshot-restored, not popped. A user-supplied
+      pre-existing value (here simulated via ``monkeypatch.setenv``)
+      must be preserved across the process() call so that an outer
+      caller's setting is not silently clobbered.
+    """
+    bindir, _objdir, argv = _bindir_objdir_argv(tmp_path, "--filename", "irrelevant.cpp")
+    args = _build_args(argv)
+
+    def _stub_createctobjs(self):
+        self.hunter = object()
+
+    monkeypatch.setattr(compiletools.cake.Cake, "_createctobjs", _stub_createctobjs)
+    monkeypatch.setattr(compiletools.cake.Cake, "_call_backend", lambda self: None)
+
+    # Simulate env vars that were set by some outer caller (or by setup
+    # paths that have since been disabled). CT_RULE_OUTCOMES_LOG must
+    # be cleared regardless of timer.enabled state; CCACHE_STATSLOG must
+    # be preserved as a user-supplied value.
+    monkeypatch.setenv("CT_RULE_OUTCOMES_LOG", str(tmp_path / "outcomes.log"))
+    ccache_statslog_value = str(tmp_path / "ccache.log")
+    monkeypatch.setenv("CCACHE_STATSLOG", ccache_statslog_value)
+
+    cake = compiletools.cake.Cake(args)
+    # Force the timer to be disabled for the finally block path.
+    cake.context.timer.enabled = False
+
+    cake.process()
+
+    assert "CT_RULE_OUTCOMES_LOG" not in os.environ
+    assert os.environ.get("CCACHE_STATSLOG") == ccache_statslog_value
+
+
 class TestOtelSdkEnvVarsDoNotLeakToArgs:
     """Three OTel flags must defer to the SDK as the env-var authority:
     configargparse must NOT promote OTEL_ENDPOINT (auto-uppercased),

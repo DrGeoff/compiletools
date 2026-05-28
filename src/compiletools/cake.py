@@ -725,16 +725,19 @@ class Cake:
                             os.unlink(outcomes_path)
                         except OSError:
                             pass
-                    # P5: pop CT_RULE_OUTCOMES_LOG unconditionally so a second
-                    # ct-cake invocation in the same Python process (in-process
-                    # batch mode) doesn't inherit a stale path.
-                    os.environ.pop("CT_RULE_OUTCOMES_LOG", None)
                 # Now publish ccache metrics on the same exporter so they
                 # share resource attrs (ct.variant / ct.backend) and the
                 # invocation_id resource attr carries the root span's
                 # trace_id for native trace<->metric joins.
                 if statslog_path:
                     self._publish_ccache_stats(statslog_path, ccache_counts, root_trace_id)
+                # P5: pop CT_RULE_OUTCOMES_LOG unconditionally (belt-and-
+                # braces). Setup is gated on ``timer.enabled`` so a
+                # safely-paired teardown would also be gated -- but a
+                # caller that flips ``timer.enabled`` mid-process (or sets
+                # the env var from outside) must not leak it into the next
+                # caller in the same interpreter (tests, REPL, library use).
+                os.environ.pop("CT_RULE_OUTCOMES_LOG", None)
         finally:
             # Restore CCACHE_STATSLOG to its pre-invocation state. This
             # runs unconditionally -- whether the build succeeded, failed,
@@ -742,6 +745,10 @@ class Cake:
             # a second ct-cake call in the same Python process (in-process
             # batch mode) inherits a stale env var pointing at an
             # already-deleted ``auto``-mode path.
+            #
+            # Note: this restore-not-pop is strictly more correct than a
+            # blind pop -- if the user supplied CCACHE_STATSLOG via env
+            # rather than via flag, we preserve their value.
             if _ccache_statslog_prev is None:
                 os.environ.pop("CCACHE_STATSLOG", None)
             else:
