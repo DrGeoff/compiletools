@@ -8,11 +8,15 @@ import types
 import pytest
 
 # importorskip the SDK, not the bare ``opentelemetry`` namespace package:
-# ``opentelemetry-api`` (a common transitive dependency) satisfies the PEP 420
-# namespace import on its own, so ``importorskip("opentelemetry")`` would pass
-# in an api-only environment and then the module-level ``opentelemetry.sdk``
-# import below would raise ModuleNotFoundError -- a collection error that
-# interrupts the whole pytest run rather than skipping just this module.
+# ``opentelemetry`` is a PEP 420 implicit namespace package (no top-level
+# ``__init__.py``; ``opentelemetry.__file__`` is ``None`` and ``__path__`` is
+# a ``_NamespacePath``), and the ``opentelemetry-api`` distribution (a common
+# transitive dependency) ships portion subpackages under ``opentelemetry/``,
+# which is enough for ``import opentelemetry`` to succeed. So a bare
+# ``importorskip("opentelemetry")`` would pass in an api-only environment and
+# then the module-level ``opentelemetry.sdk`` import below would raise
+# ModuleNotFoundError -- a collection error that interrupts the whole pytest
+# run rather than skipping just this module.
 pytest.importorskip("opentelemetry.sdk")
 
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
