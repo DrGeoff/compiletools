@@ -218,10 +218,16 @@ def _emit_cache_points_as_metrics(points: list[_Point], args, *, _reader=None) -
                 file=sys.stderr,
             )
     finally:
-        try:
-            provider.shutdown()
-        except Exception as exc:
-            print(f"Warning: OTLP metric export shutdown raised: {exc}", file=sys.stderr)
+        # Skip shutdown() when a test seam reader was supplied: with
+        # InMemoryMetricReader, observable gauges collect at read-time and
+        # some SDK versions short-circuit collection inside shutdown(),
+        # leaving the test with no observations. The production path
+        # (PeriodicExportingMetricReader) still gets a clean shutdown.
+        if _reader is None:
+            try:
+                provider.shutdown()
+            except Exception as exc:
+                print(f"Warning: OTLP metric export shutdown raised: {exc}", file=sys.stderr)
 
 
 def _emit_cache_snapshot_as_span(points: list[_Point], args) -> None:
