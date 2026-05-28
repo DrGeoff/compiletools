@@ -98,6 +98,43 @@ def create_lock(strategy, target_file, args):
         raise ValueError(f"Unknown strategy: {strategy}")
 
 
+def _record_rule_outcome(target: str, cas_kind: str, result_was_skip: bool) -> None:
+    """Append a CAS hit/miss outcome line to ``CT_RULE_OUTCOMES_LOG`` if set.
+
+    Mirrors the writer path used by trace_backend's in-process execution so
+    that ninja/make backends — whose compile/link recipes shell out to
+    ``ct-lock-helper`` — also surface ``cas.*`` per-rule attributes on the
+    OTel spans ct-cake emits post-build.  Best-effort: any failure here
+    silently no-ops so it cannot perturb a successful build (the helper's
+    own exit code semantics matter to the recipe).
+
+    Note: the native-flock fast-path in ``build_backend.wrap_compile_with_lock``
+    (local filesystems with util-linux ``flock`` available) bypasses this
+    helper entirely and so does not write outcomes.  Documented in
+    ``README.ct-otel.rst`` under "P2 coverage scope".
+    """
+    try:
+        from compiletools.build_timer import append_rule_outcome
+
+        if not os.environ.get("CT_RULE_OUTCOMES_LOG"):
+            return
+        # On a skip, atomic_compile/atomic_link returned None — the artefact
+        # already existed when we acquired the lock (CAS hit from a peer).
+        # On a real run, the target file exists post-rename; size is the
+        # bytes the next downstream caller would have produced.
+        cas_hit = result_was_skip
+        try:
+            bytes_reused = os.path.getsize(target) if cas_hit and os.path.exists(target) else 0
+        except OSError:
+            bytes_reused = 0
+        append_rule_outcome(target, cas_kind, cas_hit, bytes_reused)
+    except Exception:
+        # Outcomes-log writes are diagnostics only — never fail a build over
+        # them.  The build_timer module guards each syscall internally; this
+        # outer try/except catches import errors or unexpected failures.
+        pass
+
+
 def cmd_compile(args, exit_handler):
     """Handle 'compile' subcommand.
 
@@ -116,8 +153,18 @@ def cmd_compile(args, exit_handler):
     # Register lock for signal-handler cleanup
     exit_handler.lock = lock
 
-    # Delegate to shared atomic_compile (compile to temp, rename to target)
-    atomic_compile(lock, args.target, args.compile_cmd)
+    # Delegate to shared atomic_compile (compile to temp, rename to target).
+    # atomic_compile returns None when skip_if_exists short-circuited; we
+    # leave skip_if_exists at its default False here (a recipe-driven compile
+    # has already passed the build system's up-to-date check, so the helper
+    # itself does not skip) so the outcome is always a "miss" (compiler ran).
+    # The hit/miss distinction at this layer is whether the target exists
+    # when we get inside the lock; the build system handles the higher-level
+    # CAS hit semantics.  For now ct-lock-helper records every invocation as
+    # a miss — the build_system-level CAS short-circuit happens before the
+    # recipe is even dispatched.
+    result = atomic_compile(lock, args.target, args.compile_cmd)
+    _record_rule_outcome(args.target, "obj", result is None)
 
 
 def cmd_link(args, exit_handler):
@@ -134,7 +181,14 @@ def cmd_link(args, exit_handler):
 
     exit_handler.lock = lock
 
-    atomic_link(lock, args.target, args.link_cmd)
+    # See cmd_compile for the result-is-None semantics.  cas_kind="exe" is
+    # the closest fit — ninja/make backends route static/shared libraries
+    # through their own archive/link recipes that also call into this helper;
+    # at this layer we cannot tell a static library from an executable, so
+    # we tag it "exe" and accept the small fidelity loss.  trace_backend,
+    # which has the rule-type metadata, tags lib/pcm/pch correctly.
+    result = atomic_link(lock, args.target, args.link_cmd)
+    _record_rule_outcome(args.target, "exe", result is None)
 
 
 def main(argv=None):

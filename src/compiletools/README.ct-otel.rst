@@ -192,6 +192,36 @@ span in the collector can be cross-referenced one-to-one with the
 timeout; an empty value is dropped from the Resource if git is not
 available.
 
+P2 coverage scope (CAS attributes on rule spans)
+------------------------------------------------
+
+Per-rule ``cas.hit`` / ``cas.kind`` / ``cas.bytes_reused`` attributes
+require the build backend to emit per-rule outcomes that the exporter
+can ingest.  Today's coverage:
+
+================================================  ==============================
+Backend / path                                    ``cas.*`` on spans?
+================================================  ==============================
+``trace`` backend (Shake / Slurm)                 yes — in-process via
+                                                  ``BuildTimer.record_rule``
+``ninja`` / ``make`` via ``ct-lock-helper``       yes — lockdir / fcntl / cifs
+(strategies for NFS / Lustre, GPFS, CIFS / SMB)   strategies write to
+                                                  ``CT_RULE_OUTCOMES_LOG``
+``ninja`` / ``make`` via native ``flock(1)``      **no** — the local-filesystem
+fast-path (local filesystem with util-linux       fast-path bypasses
+``flock`` available)                              ``ct-lock-helper`` for speed;
+                                                  ``cas.*`` keys are absent
+``cmake`` / ``bazel``                             no — backends are outside
+                                                  compiletools' lock wrapper
+================================================  ==============================
+
+The ``ct.backend`` resource attribute lets dashboards filter to
+backends that emit ``cas.*`` reliably without scraping span attrs.
+``cas.kind`` for the ``ct-lock-helper`` writer is currently best-effort
+``"obj"`` (compile) or ``"exe"`` (link/archive) — that layer cannot
+distinguish static-library from executable.  The ``trace`` backend has
+the rule-type metadata and tags ``lib``/``pcm``/``pch`` correctly.
+
 EXAMPLES
 ========
 

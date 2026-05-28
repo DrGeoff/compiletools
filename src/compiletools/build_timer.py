@@ -129,6 +129,8 @@ def _cas_kind_for_rule_type(rule_type: str) -> str:
         return "lib"
     if rule_type == "header_unit":
         return "pcm"
+    # If a RuleType.PRECOMPILED_HEADER rule type is ever introduced, branch
+    # it here to return "pch" — PCH isn't a distinct rule type today.
     return ""
 
 
@@ -151,6 +153,20 @@ def append_rule_outcome(
     No-op when ``path`` is ``None`` (resolved from ``CT_RULE_OUTCOMES_LOG``
     if not passed) or when the line would exceed ``PIPE_BUF``.  Best-effort
     by design: a failure here must not fail a build rule.
+
+    Writer coverage today:
+      * ``ct-lock-helper`` ``cmd_compile`` / ``cmd_link`` — used by the
+        ninja/make backends for the lockdir/fcntl/cifs strategies, plus
+        the flock strategy when the native ``flock`` binary is missing.
+      * The trace_backend path does NOT call this (Issue #2): it records
+        ``metadata`` in-process via ``BuildTimer.record_rule``, which is
+        the source of truth for that backend.
+      * The native-flock fast-path in
+        ``build_backend.wrap_compile_with_lock`` (local filesystems with
+        util-linux ``flock`` available) bypasses ``ct-lock-helper`` for
+        speed and so does not write outcomes — ``cas.*`` keys are
+        absent for those rules.  Documented in ``README.ct-otel.rst``
+        under "P2 coverage scope".
     """
     if path is None:
         path = os.environ.get(_RULE_OUTCOMES_LOG_ENV)

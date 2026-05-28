@@ -75,7 +75,7 @@ from compiletools.build_backend import (
     register_backend,
 )
 from compiletools.build_graph import BuildGraph, BuildRule, RuleType
-from compiletools.build_timer import _cas_kind_for_rule_type, append_rule_outcome
+from compiletools.build_timer import _cas_kind_for_rule_type
 from compiletools.global_hash_registry import get_file_hash
 from compiletools.locking import execute_compile_rule, execute_link_rule
 
@@ -550,15 +550,14 @@ class ShakeBackend(BuildBackend):
         # Record per-rule timing
         elapsed = time.monotonic() - start
         timer = self._timer
-        # Build CAS metadata for the in-process record_rule call AND mirror
-        # it to the outcomes log when CT_RULE_OUTCOMES_LOG is set.  The
-        # outcomes log is the universal ingest path for the OTel exporter
-        # (Path B of the design): trace_backend writes in-process,
-        # ninja/make backends will write via ct-lock-helper, and the
-        # exporter merges everything keyed by target.  Writing both
-        # in-memory and to disk costs one extra os.write per rule and
-        # keeps the metadata path identical regardless of which backend
-        # produced the rule.
+        # Build CAS metadata for the in-process record_rule call.  trace_backend
+        # executes rules in-process, so the in-memory record_rule(metadata=...)
+        # is the source of truth and the cake.py post-build merge_rule_outcomes
+        # roundtrip is unnecessary here — skipping append_rule_outcome saves
+        # ~3 syscalls per rule on builds with thousands of rules.  Other
+        # backends (ninja/make/shake) still need the outcomes log because they
+        # execute rules out-of-process (via ct-lock-helper) and cannot reach
+        # this in-memory timer.
         metadata: dict[str, object] | None = None
         if cas_hit is not None:
             cas_kind = _cas_kind_for_rule_type(rule.rule_type)
@@ -572,7 +571,6 @@ class ShakeBackend(BuildBackend):
             }
             if cas_kind:
                 metadata["cas.kind"] = cas_kind
-            append_rule_outcome(target, cas_kind, cas_hit, bytes_reused)
         if timer:
             source = rule.inputs[0] if rule.inputs else ""
             timer.record_rule(
