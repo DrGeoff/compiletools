@@ -90,6 +90,137 @@ class TimingEvent:
 _FORMAT_VERSION = 1
 
 
+# ---------------------------------------------------------------- rule outcomes log
+#
+# Per-build, per-rule outcomes log written by build backends (trace_backend
+# and ct-lock-helper for ninja/make backends) when ``CT_RULE_OUTCOMES_LOG``
+# is set in the environment.  One line per executed rule, tab-separated:
+#
+#     <target>\t<cas_kind>\t<cas_hit:0|1>\t<bytes_reused>\n
+#
+# Lines stay well below ``PIPE_BUF`` (4096 on Linux) so concurrent
+# ``O_APPEND`` writes from parallel build workers do not interleave (POSIX
+# atomicity guarantee for ``write()`` with ``O_APPEND`` when the payload
+# fits in one ``PIPE_BUF``).  The exporter ingests the file once after the
+# build to populate ``TimingEvent.metadata`` with ``cas.*`` keys keyed by
+# target; ``_emit_event`` then lifts them onto span attributes.
+#
+# Best-effort: missing/empty/malformed lines leave the affected rules
+# without ``cas.*`` metadata rather than failing the build.
+
+
+_RULE_OUTCOMES_LOG_ENV = "CT_RULE_OUTCOMES_LOG"
+
+
+def _cas_kind_for_rule_type(rule_type: str) -> str:
+    """Map a BuildRule rule_type to a CAS kind tag.
+
+    Returns one of ``obj`` / ``exe`` / ``lib`` / ``pch`` / ``pcm``, or an
+    empty string when the rule type has no CAS bucket (e.g. ``mkdir``,
+    ``phony``, ``symlink``, ``test``).  Empty kind is still written to the
+    outcomes log so the line shape is uniform; the exporter filters them
+    out at ingest by checking truthiness.
+    """
+    if rule_type == "compile":
+        return "obj"
+    if rule_type in ("link", "executable"):
+        return "exe"
+    if rule_type in ("static_library", "shared_library"):
+        return "lib"
+    if rule_type == "header_unit":
+        return "pcm"
+    return ""
+
+
+def append_rule_outcome(
+    target: str,
+    cas_kind: str,
+    cas_hit: bool,
+    bytes_reused: int,
+    *,
+    path: str | None = None,
+) -> None:
+    """Atomically append one rule outcome line to the outcomes log.
+
+    Uses ``os.open(O_APPEND | O_CREAT | O_WRONLY)`` + a single ``os.write``
+    call to leverage POSIX's guarantee that an ``O_APPEND`` write of fewer
+    than ``PIPE_BUF`` bytes is atomic across concurrent writers.  Buffered
+    ``open()`` would defeat that because Python's write buffer may flush in
+    multiple syscalls.
+
+    No-op when ``path`` is ``None`` (resolved from ``CT_RULE_OUTCOMES_LOG``
+    if not passed) or when the line would exceed ``PIPE_BUF``.  Best-effort
+    by design: a failure here must not fail a build rule.
+    """
+    if path is None:
+        path = os.environ.get(_RULE_OUTCOMES_LOG_ENV)
+    if not path:
+        return
+    # Sanitise: tabs/newlines in the target would corrupt the format. Drop
+    # such lines rather than encode them — targets with embedded
+    # whitespace are pathological and exceedingly rare.
+    if "\t" in target or "\n" in target:
+        return
+    line = f"{target}\t{cas_kind}\t{1 if cas_hit else 0}\t{int(bytes_reused)}\n"
+    data = line.encode("utf-8")
+    # PIPE_BUF on Linux is 4096; oversize lines lose atomicity, so drop
+    # them rather than risk interleaving.
+    if len(data) >= 4096:
+        return
+    try:
+        fd = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o644)
+    except OSError:
+        return
+    try:
+        os.write(fd, data)
+    except OSError:
+        pass
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def read_rule_outcomes(path: str | None) -> dict[str, dict[str, Any]]:
+    """Parse a rule-outcomes log into ``{target: {cas.*: ...}}``.
+
+    Returns an empty dict if ``path`` is None/empty/missing.  Malformed
+    lines are silently skipped; the rest of the file is still ingested.
+    When the same target appears multiple times (a build retried a rule),
+    the last entry wins — matches ninja's last-entry-wins semantics for
+    its own log.
+    """
+    if not path or not os.path.exists(path):
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for raw in f:
+                line = raw.rstrip("\n")
+                if not line:
+                    continue
+                parts = line.split("\t")
+                if len(parts) != 4:
+                    continue
+                target, cas_kind, hit_str, bytes_str = parts
+                try:
+                    cas_hit = bool(int(hit_str))
+                    bytes_reused = int(bytes_str)
+                except ValueError:
+                    continue
+                md: dict[str, Any] = {
+                    "cas.hit": cas_hit,
+                    "cas.bytes_reused": bytes_reused,
+                }
+                if cas_kind:
+                    md["cas.kind"] = cas_kind
+                out[target] = md
+    except OSError:
+        return {}
+    return out
+
+
 def _union_span(events: list[TimingEvent]) -> float:
     """Total wall-clock time during which any of ``events`` was running.
 
@@ -189,10 +320,19 @@ class BuildTimer:
         elapsed_s: float,
         start_s: float | None = None,
         end_s: float | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         """Record a completed compile/link/library rule.
 
         Thread-safe for use from Shake backend's thread pool.
+
+        ``metadata`` is an opt-in producer-side dict that round-trips
+        through ``to_dict`` / ``from_dict`` and is lifted onto span
+        attributes by the OTel exporter (``otel/traces.py:_emit_event``).
+        Used today for ``cas.hit`` / ``cas.kind`` / ``cas.bytes_reused``;
+        the lift is generic so new keys flow through without exporter
+        changes. A shallow copy is taken so callers can reuse a single
+        dict across rules without worrying about cross-contamination.
         """
         if not self.enabled:
             return
@@ -211,6 +351,7 @@ class BuildTimer:
             end_s=end_s,
             target=target,
             source=source,
+            metadata=dict(metadata) if metadata else {},
         )
         with self._lock:
             if self._phase_stack:
@@ -350,6 +491,36 @@ class BuildTimer:
                     start_s=start_ns / 1_000_000_000.0 + offset,
                     end_s=end_ns / 1_000_000_000.0 + offset,
                 )
+
+    # --------------------------------------------------- rule outcomes merge
+
+    def merge_rule_outcomes(self, outcomes: dict[str, dict[str, Any]]) -> int:
+        """Merge an ``{target: metadata}`` map into existing rule events.
+
+        Walks the event tree once and, for each non-phase event whose
+        target appears in *outcomes*, updates the event's ``metadata``
+        dict with the supplied keys (existing keys are overwritten — the
+        outcomes log is authoritative for ``cas.*``).  Returns the count
+        of events that received metadata, for diagnostics.
+
+        Safe to call after ``finish()`` and before ``export_buildtimer``;
+        not safe to call concurrently with ``record_rule``.
+        """
+        if not outcomes:
+            return 0
+        merged = 0
+        stack: list[TimingEvent] = [self._root]
+        while stack:
+            ev = stack.pop()
+            stack.extend(ev.children)
+            if ev.category == "phase" or not ev.target:
+                continue
+            md = outcomes.get(ev.target)
+            if md is None:
+                continue
+            ev.metadata.update(md)
+            merged += 1
+        return merged
 
     # --------------------------------------------------------- serialization
 

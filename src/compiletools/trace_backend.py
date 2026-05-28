@@ -75,6 +75,7 @@ from compiletools.build_backend import (
     register_backend,
 )
 from compiletools.build_graph import BuildGraph, BuildRule, RuleType
+from compiletools.build_timer import _cas_kind_for_rule_type, append_rule_outcome
 from compiletools.global_hash_registry import get_file_hash
 from compiletools.locking import execute_compile_rule, execute_link_rule
 
@@ -508,6 +509,14 @@ class ShakeBackend(BuildBackend):
         False — verify-trace already decided the output is stale.
         """
         start = time.monotonic()
+        # cas_hit semantics: True iff execute_*_rule returned True because
+        # skip_if_exists short-circuited (peer / prior build produced the
+        # artefact).  None for branches where the concept doesn't apply
+        # (TEST runs the binary; the ``else`` branch executes
+        # unconditionally without skip_if_exists).  None disables the
+        # outcomes-log append for that rule, leaving cas.* absent on the
+        # span — distinct from "ran the compiler, no cache hit".
+        cas_hit: bool | None = None
         if rule.rule_type == RuleType.TEST:
             # Pure-argv test invocation -- NOT routed through
             # execute_compile_rule / execute_link_rule (those are for
@@ -524,16 +533,16 @@ class ShakeBackend(BuildBackend):
             else:
                 self._test_failures.append(f"{target} (exit {result.returncode}): {' '.join(flat_cmd)}")
         elif rule.rule_type == RuleType.COMPILE:
-            execute_compile_rule(target, flat_cmd, self.args, skip_if_exists=True, cwd=rule.cwd)
+            cas_hit = execute_compile_rule(target, flat_cmd, self.args, skip_if_exists=True, cwd=rule.cwd)
         elif rule.rule_type == RuleType.LINK:
             # Link output IS the cas-exe path; the downstream publish-as-symlink
             # rule materialises bin/<name>. No per-rule CA-then-copy here —
             # that's only for static_library / shared_library.
-            execute_link_rule(target, flat_cmd, self.args, skip_if_exists=True)
+            cas_hit = execute_link_rule(target, flat_cmd, self.args, skip_if_exists=True)
         elif _is_build_artifact(rule):
             ca = self._ca_target(rule)
             ca_cmd = [ca if a == target else a for a in flat_cmd]
-            execute_link_rule(ca, ca_cmd, self.args, skip_if_exists=True)
+            cas_hit = execute_link_rule(ca, ca_cmd, self.args, skip_if_exists=True)
             compiletools.filesystem_utils.atomic_copy(ca, target)
         else:
             execute_link_rule(target, flat_cmd, self.args)
@@ -541,6 +550,29 @@ class ShakeBackend(BuildBackend):
         # Record per-rule timing
         elapsed = time.monotonic() - start
         timer = self._timer
+        # Build CAS metadata for the in-process record_rule call AND mirror
+        # it to the outcomes log when CT_RULE_OUTCOMES_LOG is set.  The
+        # outcomes log is the universal ingest path for the OTel exporter
+        # (Path B of the design): trace_backend writes in-process,
+        # ninja/make backends will write via ct-lock-helper, and the
+        # exporter merges everything keyed by target.  Writing both
+        # in-memory and to disk costs one extra os.write per rule and
+        # keeps the metadata path identical regardless of which backend
+        # produced the rule.
+        metadata: dict[str, object] | None = None
+        if cas_hit is not None:
+            cas_kind = _cas_kind_for_rule_type(rule.rule_type)
+            try:
+                bytes_reused = os.path.getsize(target) if cas_hit and os.path.exists(target) else 0
+            except OSError:
+                bytes_reused = 0
+            metadata = {
+                "cas.hit": cas_hit,
+                "cas.bytes_reused": bytes_reused,
+            }
+            if cas_kind:
+                metadata["cas.kind"] = cas_kind
+            append_rule_outcome(target, cas_kind, cas_hit, bytes_reused)
         if timer:
             source = rule.inputs[0] if rule.inputs else ""
             timer.record_rule(
@@ -550,6 +582,7 @@ class ShakeBackend(BuildBackend):
                 elapsed_s=elapsed,
                 start_s=start,
                 end_s=start + elapsed,
+                metadata=metadata,
             )
 
     def _verify(self, rule, trace: TraceEntry) -> bool:

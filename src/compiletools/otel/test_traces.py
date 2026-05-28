@@ -342,13 +342,13 @@ def test_root_span_ends_even_when_child_emission_raises(monkeypatch):
 
     real = __import__("compiletools.otel.traces", fromlist=["_emit_event"])._emit_event
 
-    def maybe_boom(tracer, event, parent_ctx, offset):
+    def maybe_boom(tracer, event, parent_ctx, offset, **kwargs):
         # Raise inside the first compile event's emission, after its parent
         # phase span has been started.
         if event.category == "compile" and boom_count["n"] == 0:
             boom_count["n"] += 1
             raise RuntimeError("synthetic child failure")
-        return real(tracer, event, parent_ctx, offset)
+        return real(tracer, event, parent_ctx, offset, **kwargs)
 
     monkeypatch.setattr("compiletools.otel.traces._emit_event", maybe_boom)
     try:
@@ -425,6 +425,112 @@ def test_rule_with_default_start_sentinel_is_skipped(monkeypatch):
     names = {s.name for s in spans}
     assert "compile.src/good.cpp" in names
     assert "compile.src/orphan.cpp" not in names
+
+
+class TestRuleSpanMetadataLift:
+    """_emit_event lifts TimingEvent.metadata onto span attributes.
+
+    Generic mechanism: each (key, value) lands as a span attribute; a
+    non-serializable value (e.g. a set) is dropped individually without
+    aborting the whole span — other attributes still export.
+    """
+
+    def test_cas_metadata_appears_on_span(self, monkeypatch):
+        monkeypatch.setattr("compiletools.otel._connection.get_git_commit_sha", lambda cwd=None: "")
+        monkeypatch.setattr(
+            "compiletools.otel._connection._invocation_id_from_diag_dir",
+            lambda args: "",
+        )
+
+        timer = BuildTimer(enabled=True, variant="gcc.debug", backend="trace")
+        base = timer._root.start_s
+        with timer.phase("build_execution"):
+            timer.record_rule(
+                rule_type="compile",
+                target="obj/foo.o",
+                source="src/foo.cpp",
+                elapsed_s=0.5,
+                start_s=base + 1.0,
+                end_s=base + 1.5,
+                metadata={"cas.hit": True, "cas.kind": "obj", "cas.bytes_reused": 2048},
+            )
+        timer.finish()
+        spans = _export_into_memory(timer, _make_args())
+        foo = next(s for s in spans if s.name == "compile.src/foo.cpp")
+        assert foo.attributes["cas.hit"] is True
+        assert foo.attributes["cas.kind"] == "obj"
+        assert foo.attributes["cas.bytes_reused"] == 2048
+
+    def test_non_serializable_value_is_dropped_without_crash(self, monkeypatch):
+        """A producer putting a set / datetime / arbitrary object in
+        metadata must not abort the span — that one attribute is
+        dropped and the rest still export.  The SDK's set_attribute
+        raises TypeError on unsupported types."""
+        import datetime as _dt
+
+        monkeypatch.setattr("compiletools.otel._connection.get_git_commit_sha", lambda cwd=None: "")
+        monkeypatch.setattr(
+            "compiletools.otel._connection._invocation_id_from_diag_dir",
+            lambda args: "",
+        )
+
+        timer = BuildTimer(enabled=True, variant="gcc.debug", backend="trace")
+        base = timer._root.start_s
+        with timer.phase("build_execution"):
+            timer.record_rule(
+                rule_type="compile",
+                target="obj/foo.o",
+                source="src/foo.cpp",
+                elapsed_s=0.5,
+                start_s=base + 1.0,
+                end_s=base + 1.5,
+                metadata={
+                    "cas.hit": True,                              # serializable
+                    "cas.kind": "obj",                            # serializable
+                    "bad.set": {1, 2, 3},                         # NOT serializable
+                    "bad.datetime": _dt.datetime(2026, 5, 27),    # NOT serializable
+                    "good.after_bad": "trailing-value",           # serializable
+                },
+            )
+        timer.finish()
+        # Must not raise; bad attrs are dropped individually.
+        spans = _export_into_memory(timer, _make_args())
+        foo = next(s for s in spans if s.name == "compile.src/foo.cpp")
+        # The serializable attrs survived ...
+        assert foo.attributes["cas.hit"] is True
+        assert foo.attributes["cas.kind"] == "obj"
+        assert foo.attributes["good.after_bad"] == "trailing-value"
+        # ... the non-serializable ones were dropped.
+        assert "bad.set" not in foo.attributes
+        assert "bad.datetime" not in foo.attributes
+
+    def test_none_value_in_metadata_is_skipped(self, monkeypatch):
+        """A producer using None as a sentinel ('attribute not applicable')
+        should leave the attribute absent rather than try to set it (the
+        SDK would raise on None too)."""
+        monkeypatch.setattr("compiletools.otel._connection.get_git_commit_sha", lambda cwd=None: "")
+        monkeypatch.setattr(
+            "compiletools.otel._connection._invocation_id_from_diag_dir",
+            lambda args: "",
+        )
+
+        timer = BuildTimer(enabled=True, variant="gcc.debug", backend="trace")
+        base = timer._root.start_s
+        with timer.phase("build_execution"):
+            timer.record_rule(
+                rule_type="compile",
+                target="obj/foo.o",
+                source="src/foo.cpp",
+                elapsed_s=0.5,
+                start_s=base + 1.0,
+                end_s=base + 1.5,
+                metadata={"cas.hit": True, "cas.kind": None},
+            )
+        timer.finish()
+        spans = _export_into_memory(timer, _make_args())
+        foo = next(s for s in spans if s.name == "compile.src/foo.cpp")
+        assert foo.attributes["cas.hit"] is True
+        assert "cas.kind" not in foo.attributes
 
 
 def test_same_basename_in_different_dirs_get_distinct_span_names(monkeypatch):

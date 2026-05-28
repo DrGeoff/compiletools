@@ -986,25 +986,31 @@ def execute_compile_rule(
     *,
     skip_if_exists: bool = False,
     cwd: str | None = None,
-) -> None:
+) -> bool:
     """Strip ``-o target`` from *cmd* and run it under a target-keyed FileLock.
 
     The ``-o``/target pair is supplied by ``atomic_compile`` via the temp+rename
     pipeline; passing it in *cmd* would race with the atomic rewrite.
     ``skip_if_exists`` and ``cwd`` are forwarded to ``atomic_compile``.
+
+    Returns ``True`` when ``skip_if_exists`` short-circuited the compile
+    (a peer / prior build already produced the artefact — i.e. a CAS
+    hit), ``False`` when the compiler was actually invoked.  Callers
+    use this to populate ``cas.hit`` metadata on per-rule TimingEvents.
     """
     try:
         o_idx = cmd.index("-o")
     except ValueError as e:
         raise AssertionError(f"compile rule for {target!r} missing -o flag: {cmd}") from e
     cmd_without_output = cmd[:o_idx] + cmd[o_idx + 2 :]
-    atomic_compile(
+    result = atomic_compile(
         FileLock(target, args).lock,
         target,
         cmd_without_output,
         skip_if_exists=skip_if_exists,
         cwd=cwd,
     )
+    return result is None
 
 
 def execute_link_rule(
@@ -1013,15 +1019,19 @@ def execute_link_rule(
     args,
     *,
     skip_if_exists: bool = False,
-) -> None:
+) -> bool:
     """Run a link / header-unit / generic rule under a target-keyed FileLock.
 
     The command keeps any ``-o target`` it has — ``atomic_link``'s rewriter
     handles the redirection to a temp path. Used for ``LINK``, ``HEADER_UNIT``,
     and the trace-backend ``else`` branch. ``skip_if_exists`` is forwarded
     to ``atomic_link``.
+
+    Returns ``True`` on a CAS short-circuit (target already present),
+    ``False`` when the linker actually ran.
     """
-    atomic_link(FileLock(target, args).lock, target, cmd, skip_if_exists=skip_if_exists)
+    result = atomic_link(FileLock(target, args).lock, target, cmd, skip_if_exists=skip_if_exists)
+    return result is None
 
 
 def _rewrite_link_cmd_for_temp(link_cmd: list[str], target: str, tempfile_path: str) -> tuple[list[str], bool]:

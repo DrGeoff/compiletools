@@ -839,3 +839,246 @@ class TestLoadedTimerReadOnly:
         loaded = BuildTimer.from_dict(timer.to_dict())
         with pytest.raises(RuntimeError, match="read-only"):
             loaded.record_rule("compile", "x.o", "x.cpp", 1.0)
+
+
+# ---------------------------------------------------------------- metadata kwarg
+
+
+class TestRecordRuleMetadata:
+    """``record_rule(metadata=...)`` lands on the TimingEvent and
+    round-trips through to_dict/from_dict."""
+
+    def test_metadata_lands_on_event(self):
+        timer = BuildTimer(enabled=True)
+        with timer.phase("build_execution"):
+            timer.record_rule(
+                "compile",
+                "obj/foo.o",
+                "src/foo.cpp",
+                0.5,
+                metadata={"cas.hit": True, "cas.kind": "obj", "cas.bytes_reused": 1024},
+            )
+        ev = timer._root.children[0].children[0]
+        assert ev.metadata == {"cas.hit": True, "cas.kind": "obj", "cas.bytes_reused": 1024}
+
+    def test_metadata_default_empty(self):
+        timer = BuildTimer(enabled=True)
+        with timer.phase("p"):
+            timer.record_rule("compile", "a.o", "a.cpp", 0.1)
+        ev = timer._root.children[0].children[0]
+        assert ev.metadata == {}
+
+    def test_metadata_is_copied(self):
+        """Caller-side reuse of a single dict across rules must not
+        cross-contaminate (record_rule takes a shallow copy)."""
+        timer = BuildTimer(enabled=True)
+        shared: dict[str, object] = {"cas.hit": True}
+        with timer.phase("p"):
+            timer.record_rule("compile", "a.o", "a.cpp", 0.1, metadata=shared)
+            shared["cas.hit"] = False  # mutate after recording
+            timer.record_rule("compile", "b.o", "b.cpp", 0.1, metadata=shared)
+        events = timer._root.children[0].children
+        assert events[0].metadata == {"cas.hit": True}
+        assert events[1].metadata == {"cas.hit": False}
+
+    def test_metadata_round_trip(self):
+        timer = BuildTimer(enabled=True)
+        with timer.phase("p"):
+            timer.record_rule(
+                "compile", "obj/foo.o", "src/foo.cpp", 0.5,
+                start_s=1.0, end_s=1.5,
+                metadata={"cas.hit": True, "cas.kind": "obj"},
+            )
+        loaded = BuildTimer.from_dict(timer.to_dict())
+        ev = loaded._root.children[0].children[0]
+        assert ev.metadata == {"cas.hit": True, "cas.kind": "obj"}
+
+
+# ---------------------------------------------------------------- outcomes log
+
+
+class TestRuleOutcomesAppend:
+    """The append_rule_outcome writer uses O_APPEND+os.write so parallel
+    appenders do not interleave (POSIX guarantees atomicity for writes
+    < PIPE_BUF)."""
+
+    def test_format_is_tab_separated(self, tmp_path):
+        from compiletools.build_timer import append_rule_outcome
+        log = tmp_path / "outcomes.log"
+        append_rule_outcome("obj/foo.o", "obj", True, 1234, path=str(log))
+        text = log.read_text()
+        assert text == "obj/foo.o\tobj\t1\t1234\n"
+
+    def test_miss_writes_zero_bytes_not_omitted(self, tmp_path):
+        """Design says: don't omit bytes_reused on miss — set 0 so
+        downstream sums don't have to distinguish 'miss' from 'unset'."""
+        from compiletools.build_timer import append_rule_outcome
+        log = tmp_path / "outcomes.log"
+        append_rule_outcome("obj/foo.o", "obj", False, 0, path=str(log))
+        text = log.read_text()
+        assert text.endswith("\t0\t0\n")
+
+    def test_noop_without_path(self, tmp_path, monkeypatch):
+        from compiletools.build_timer import append_rule_outcome
+        monkeypatch.delenv("CT_RULE_OUTCOMES_LOG", raising=False)
+        # Must not raise; nothing to assert other than absence of exception.
+        append_rule_outcome("obj/foo.o", "obj", True, 1)
+
+    def test_uses_env_var_when_path_none(self, tmp_path, monkeypatch):
+        from compiletools.build_timer import append_rule_outcome
+        log = tmp_path / "outcomes.log"
+        monkeypatch.setenv("CT_RULE_OUTCOMES_LOG", str(log))
+        append_rule_outcome("obj/foo.o", "obj", True, 1)
+        assert log.read_text() == "obj/foo.o\tobj\t1\t1\n"
+
+    def test_oversize_line_dropped(self, tmp_path):
+        from compiletools.build_timer import append_rule_outcome
+        log = tmp_path / "outcomes.log"
+        # Target longer than PIPE_BUF (4096) — the helper should drop it
+        # rather than risk an interleaved write.
+        huge_target = "x" * 5000
+        append_rule_outcome(huge_target, "obj", True, 1, path=str(log))
+        assert not log.exists() or log.read_text() == ""
+
+    def test_parallel_appends_do_not_interleave(self, tmp_path):
+        """Smoke test: 100 threads each append 50 lines; every resulting
+        line must parse cleanly (4 tab fields, integer hit and bytes).
+        An interleaved write would corrupt the field count."""
+        from compiletools.build_timer import append_rule_outcome
+        log = tmp_path / "outcomes.log"
+
+        def worker(tid: int) -> None:
+            for i in range(50):
+                append_rule_outcome(
+                    f"obj/t{tid}_r{i}.o", "obj", i % 2 == 0, i * 100,
+                    path=str(log),
+                )
+
+        threads = [threading.Thread(target=worker, args=(t,)) for t in range(100)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # Every line must be exactly 4 tab-separated fields with parseable
+        # int hit and int bytes; corruption from interleaving would
+        # produce malformed lines.
+        lines = log.read_text().splitlines()
+        assert len(lines) == 100 * 50
+        for line in lines:
+            parts = line.split("\t")
+            assert len(parts) == 4, f"interleaved write produced malformed line: {line!r}"
+            assert parts[1] == "obj"
+            assert parts[2] in ("0", "1")
+            int(parts[3])  # raises if interleaved write garbled the bytes field
+
+
+class TestRuleOutcomesIngest:
+    """read_rule_outcomes parses a synthetic log and merge_rule_outcomes
+    populates metadata on the right events keyed by target."""
+
+    def test_read_parses_tab_format(self, tmp_path):
+        from compiletools.build_timer import read_rule_outcomes
+        log = tmp_path / "outcomes.log"
+        log.write_text(
+            "obj/foo.o\tobj\t1\t2048\n"
+            "obj/bar.o\tobj\t0\t0\n"
+            "bin/app\texe\t1\t102400\n"
+        )
+        out = read_rule_outcomes(str(log))
+        assert out["obj/foo.o"] == {"cas.hit": True, "cas.bytes_reused": 2048, "cas.kind": "obj"}
+        assert out["obj/bar.o"] == {"cas.hit": False, "cas.bytes_reused": 0, "cas.kind": "obj"}
+        assert out["bin/app"] == {"cas.hit": True, "cas.bytes_reused": 102400, "cas.kind": "exe"}
+
+    def test_missing_file_returns_empty(self, tmp_path):
+        from compiletools.build_timer import read_rule_outcomes
+        assert read_rule_outcomes(str(tmp_path / "no.log")) == {}
+        assert read_rule_outcomes(None) == {}
+        assert read_rule_outcomes("") == {}
+
+    def test_malformed_lines_skipped(self, tmp_path):
+        from compiletools.build_timer import read_rule_outcomes
+        log = tmp_path / "outcomes.log"
+        log.write_text(
+            "obj/good.o\tobj\t1\t100\n"
+            "malformed_only_two_fields\tobj\n"
+            "obj/bad_bytes.o\tobj\t1\tnotanint\n"
+            "\n"
+            "obj/other_good.o\texe\t0\t0\n"
+        )
+        out = read_rule_outcomes(str(log))
+        assert set(out.keys()) == {"obj/good.o", "obj/other_good.o"}
+
+    def test_last_entry_wins(self, tmp_path):
+        from compiletools.build_timer import read_rule_outcomes
+        log = tmp_path / "outcomes.log"
+        log.write_text(
+            "obj/foo.o\tobj\t0\t0\n"
+            "obj/foo.o\tobj\t1\t512\n"
+        )
+        out = read_rule_outcomes(str(log))
+        assert out["obj/foo.o"]["cas.hit"] is True
+        assert out["obj/foo.o"]["cas.bytes_reused"] == 512
+
+    def test_empty_cas_kind_omitted(self, tmp_path):
+        """An empty cas_kind field (e.g. for a rule type with no CAS bucket)
+        should leave cas.kind out of the metadata dict rather than setting
+        it to an empty string."""
+        from compiletools.build_timer import read_rule_outcomes
+        log = tmp_path / "outcomes.log"
+        log.write_text("some/target\t\t0\t0\n")
+        out = read_rule_outcomes(str(log))
+        assert "cas.kind" not in out["some/target"]
+        assert out["some/target"]["cas.hit"] is False
+
+    def test_merge_into_events(self):
+        """merge_rule_outcomes walks the event tree and joins by target."""
+        timer = BuildTimer(enabled=True)
+        with timer.phase("build_execution"):
+            timer.record_rule("compile", "obj/foo.o", "src/foo.cpp", 0.5)
+            timer.record_rule("compile", "obj/bar.o", "src/bar.cpp", 0.3)
+            timer.record_rule("link", "bin/app", "", 0.1)
+        outcomes = {
+            "obj/foo.o": {"cas.hit": True, "cas.kind": "obj", "cas.bytes_reused": 1024},
+            "bin/app": {"cas.hit": False, "cas.kind": "exe", "cas.bytes_reused": 0},
+            # obj/bar.o intentionally omitted; should stay metadata-free.
+            "obj/missing.o": {"cas.hit": True},  # unrelated target — must not error.
+        }
+        merged = timer.merge_rule_outcomes(outcomes)
+        assert merged == 2  # only foo.o and bin/app match
+        phase = timer._root.children[0]
+        by_target = {ev.target: ev for ev in phase.children}
+        assert by_target["obj/foo.o"].metadata["cas.hit"] is True
+        assert by_target["obj/foo.o"].metadata["cas.kind"] == "obj"
+        assert by_target["obj/bar.o"].metadata == {}
+        assert by_target["bin/app"].metadata["cas.hit"] is False
+
+    def test_merge_empty_outcomes_is_noop(self):
+        timer = BuildTimer(enabled=True)
+        with timer.phase("p"):
+            timer.record_rule("compile", "a.o", "a.cpp", 0.1)
+        assert timer.merge_rule_outcomes({}) == 0
+
+
+# ---------------------------------------------------------------- cas_kind mapping
+
+
+class TestCasKindMapping:
+    def test_compile_maps_to_obj(self):
+        from compiletools.build_timer import _cas_kind_for_rule_type
+        assert _cas_kind_for_rule_type("compile") == "obj"
+
+    def test_link_maps_to_exe(self):
+        from compiletools.build_timer import _cas_kind_for_rule_type
+        assert _cas_kind_for_rule_type("link") == "exe"
+
+    def test_libraries_map_to_lib(self):
+        from compiletools.build_timer import _cas_kind_for_rule_type
+        assert _cas_kind_for_rule_type("static_library") == "lib"
+        assert _cas_kind_for_rule_type("shared_library") == "lib"
+
+    def test_unknown_returns_empty(self):
+        from compiletools.build_timer import _cas_kind_for_rule_type
+        assert _cas_kind_for_rule_type("phony") == ""
+        assert _cas_kind_for_rule_type("mkdir") == ""
+        assert _cas_kind_for_rule_type("test") == ""

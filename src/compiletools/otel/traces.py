@@ -52,7 +52,7 @@ def _rule_span_name(event: TimingEvent) -> str:
     return f"{event.category}.{event.name}"
 
 
-def _emit_event(tracer, event: TimingEvent, parent_ctx, mono_to_wall_offset: float) -> None:
+def _emit_event(tracer, event: TimingEvent, parent_ctx, mono_to_wall_offset: float, *, args=None) -> None:
     """Recursively emit OTel spans for a TimingEvent subtree.
 
     Rule events whose ``start_s`` is the ``record_rule`` default-sentinel
@@ -84,10 +84,28 @@ def _emit_event(tracer, event: TimingEvent, parent_ctx, mono_to_wall_offset: flo
         if event.source:
             span.set_attribute("ct.source", event.source)
 
+        # Lift TimingEvent.metadata onto span attributes.  Producer-side
+        # opt-in: only keys the recorder explicitly set land here, so
+        # there's no allow-list to maintain.  The try/except keeps a
+        # misbehaving producer (a value the SDK can't serialize — dict,
+        # set, datetime, ...) from killing the whole span: the offending
+        # attribute is dropped and the rest of the span still exports.
+        for key, value in event.metadata.items():
+            if value is None:
+                continue
+            try:
+                span.set_attribute(key, value)
+            except (TypeError, ValueError) as exc:
+                # One bad attribute should not poison the whole export.
+                # Surface it at verbose>=1 so a producer wiring bug is
+                # findable without scraping the collector.
+                if getattr(args, "verbose", 0) >= 1:
+                    print(f"otel: dropped span attr {key!r}: {exc}", file=sys.stderr)
+
         if event.children:
             child_ctx = trace.set_span_in_context(span, parent_ctx)
             for child in event.children:
-                _emit_event(tracer, child, child_ctx, mono_to_wall_offset)
+                _emit_event(tracer, child, child_ctx, mono_to_wall_offset, args=args)
     finally:
         # End the span even when a child emission raises; otherwise the
         # BatchSpanProcessor never flushes the parent and the whole subtree
@@ -146,7 +164,7 @@ def export_buildtimer(timer: BuildTimer, args, *, _processor=None) -> None:
         try:
             root_ctx = trace.set_span_in_context(root_span)
             for child in timer._root.children:
-                _emit_event(tracer, child, root_ctx, mono_to_wall_offset)
+                _emit_event(tracer, child, root_ctx, mono_to_wall_offset, args=args)
         finally:
             # End root even if child emission raised; otherwise the
             # BatchSpanProcessor never flushes it and the whole tree

@@ -357,6 +357,30 @@ class Cake:
         assert self.hunter is not None
         assert self.context.timer is not None
         timer = self.context.timer
+
+        # Set up the per-build rule-outcomes log when --otel-export is on
+        # so the build backends (trace_backend in-process, ct-lock-helper
+        # for ninja/make) have a path to append CAS hit/miss decisions to.
+        # The exporter ingests this file post-build, joins rows to
+        # TimingEvents by target, and _emit_event lifts the cas.* keys
+        # onto span attributes.  Allocated under the diagnostics dir so
+        # it shares the build's lifecycle.  Stashed on self for the
+        # post-build ingest path; cleaned up after export.
+        self._rule_outcomes_log_path: str | None = None
+        if getattr(self.args, "otel_export", False) and timer.enabled:
+            diag_dir = compiletools.diagnostics.resolve_diagnostics_dir(self.args)
+            os.makedirs(diag_dir, exist_ok=True)
+            self._rule_outcomes_log_path = os.path.join(diag_dir, "rule_outcomes.log")
+            # Best-effort: drop any stale file from a prior aborted build
+            # so we don't ingest decisions made under a different graph.
+            try:
+                os.unlink(self._rule_outcomes_log_path)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+            os.environ["CT_RULE_OUTCOMES_LOG"] = self._rule_outcomes_log_path
+
         backend_name = getattr(self.args, "backend", "make")
         BackendClass = get_backend_class(backend_name)
         backend = BackendClass(args=self.args, hunter=self.hunter, context=self.context)
@@ -462,6 +486,19 @@ class Cake:
             # is unreachable via the front door, so no warning is needed.
             if timer.enabled:
                 diag_dir = compiletools.diagnostics.resolve_diagnostics_dir(self.args)
+                # Ingest the per-build rule-outcomes log (CAS hit/miss per
+                # rule, written by backends during the build) and merge
+                # the cas.* metadata into the recorded TimingEvents
+                # before serialising to JSON.  Doing the merge BEFORE
+                # to_json means the on-disk timing.json carries cas.*
+                # too, so offline tooling (timing-report, ad-hoc jq
+                # queries) sees the same metadata the OTel spans do.
+                outcomes_path = getattr(self, "_rule_outcomes_log_path", None)
+                if outcomes_path:
+                    from compiletools.build_timer import read_rule_outcomes
+
+                    outcomes = read_rule_outcomes(outcomes_path)
+                    timer.merge_rule_outcomes(outcomes)
                 timer.to_json(os.path.join(diag_dir, "timing.json"))
                 timer.print_summary()
                 if getattr(self.args, "otel_export", False):
@@ -472,6 +509,16 @@ class Cake:
                         export_buildtimer(timer, self.args)
                     except Exception as exc:
                         print(f"Warning: OTLP export failed: {exc}", file=sys.stderr)
+                # Best-effort cleanup of the outcomes log.  Leaving it in
+                # the diagnostics dir would accumulate across builds; the
+                # diagnostics dir is meant for the latest build's
+                # artefacts only.
+                if outcomes_path:
+                    try:
+                        os.unlink(outcomes_path)
+                    except OSError:
+                        pass
+                    os.environ.pop("CT_RULE_OUTCOMES_LOG", None)
 
     def clear_cache(self):
         """Only useful in test scenarios where you need to reset to a pristine state"""
