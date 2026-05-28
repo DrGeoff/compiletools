@@ -15,7 +15,10 @@ import os
 import re
 
 _OTEL_ARG_RE = re.compile(r'add_argument\s*\(\s*["\']--otel-[A-Za-z0-9_-]+["\']')
-# [^)]* matches newlines (it's a negated class, not `.`), so no re.DOTALL needed.
+# Real add_flag_argument(...) calls are usually multi-line: the opening paren
+# on one line and the `name=` kwarg several lines later. `[^)]*` (a negated
+# character class, unlike `.`) matches newlines by default, so the regex spans
+# those lines without needing re.DOTALL.
 _FLAG_ARG_RE = re.compile(r'add_flag_argument\s*\([^)]*name\s*=\s*["\']otel-[A-Za-z0-9_-]+["\']')
 
 # apptools.py is THE registrar; the contract is about every OTHER file.
