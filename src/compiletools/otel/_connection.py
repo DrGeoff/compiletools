@@ -10,11 +10,7 @@ from __future__ import annotations
 
 import socket
 import subprocess
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    pass
-
+from typing import Any
 
 MISSING_EXTRA_HINT = (
     "compiletools OTel export requested but the opentelemetry SDK is not "
