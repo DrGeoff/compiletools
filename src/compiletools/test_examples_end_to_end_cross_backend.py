@@ -30,17 +30,20 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import functools
 import os
 import pathlib
 import shutil
 import subprocess
 import sys
+import tempfile
 from collections.abc import Iterable
 
 import pytest
 
 import compiletools.apptools
 import compiletools.testhelper as uth
+import compiletools.utils
 from compiletools.build_backend import available_backends, ensure_backends_registered
 
 ensure_backends_registered()
@@ -60,6 +63,44 @@ def _toolchain_supports_import_std() -> bool:
         return False
     kind = compiletools.apptools.compiler_kind(cxx)
     return compiletools.apptools.find_system_std_module_source(cxx, kind) is not None
+
+
+@functools.lru_cache(maxsize=1)
+def _toolchain_supports_stdlib_header_units() -> bool:
+    """True iff the local C++ toolchain can build a header unit from libc++/libstdc++.
+
+    ``import <vector>;`` requires the system standard library headers to be
+    *modules-clean*. Termux/Android ships libc++ on top of Bionic, and
+    Bionic's ``stdlib.h`` / ``sched.h`` declare types like ``locale_t`` /
+    ``pid_t`` before including their canonical declaration headers --
+    tolerated under preprocessor inclusion but rejected by clang's module
+    builder, which compiles each header unit in isolation. Distros that
+    use glibc are unaffected.
+
+    Probes the live toolchain with a one-shot ``import <vector>;`` compile;
+    the result is cached so the probe runs at most once per process. A
+    ``False`` return skips the cxx_modules header-unit examples; this is a
+    Bionic/libc++ packaging defect, not a ct-cake regression.
+    """
+    cxx = compiletools.apptools.get_functional_cxx_compiler()
+    if not cxx:
+        return False
+    with tempfile.TemporaryDirectory() as tmp:
+        src = os.path.join(tmp, "probe.cpp")
+        with open(src, "w") as f:
+            f.write("import <vector>;\nint main() { return 0; }\n")
+        argv = compiletools.utils.split_command_cached(cxx) + [
+            "-std=c++26",
+            "-fmodules",
+            "-fsyntax-only",
+            "-x", "c++",
+            src,
+        ]
+        try:
+            proc = subprocess.run(argv, capture_output=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return proc.returncode == 0
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +152,17 @@ _VANILLA: ExamplePlan = ExamplePlan()
 # native tool the prebuilt objects. `cxx_modules_header_units` was unblocked
 # earlier by the upstream fix tracked by commit d30e2040.
 _CXX_MODULES_NAMED_BACKENDS_BLOCKED = frozenset()
+
+# Examples whose build path involves ``import <stdlib_header>;`` --
+# either directly in main.cpp or transitively through a user header
+# that includes a libc++ header. These need the system standard
+# library to be modules-clean (see _toolchain_supports_stdlib_header_units).
+_EXAMPLES_REQUIRING_STDLIB_HEADER_UNITS = frozenset({
+    "cxx_modules_header_units",
+    "cxx_modules_header_unit_isystem",
+    "cxx_modules_header_unit_pkg_config",
+    "cxx_modules_transitive_header_unit",
+})
 
 _EXAMPLE_PLANS: dict[str, ExamplePlan] = {
     # ----- vanilla --auto, no special setup -----
@@ -469,6 +521,15 @@ def test_example_builds_with_backend(example_name, backend_name, cas_layout, tmp
     if example_name == "cxx_modules_import_std" and not _toolchain_supports_import_std():
         pytest.skip(
             "toolchain does not ship a std-module source (needs gcc 15+ for bits/std.cc, or clang+libc++ for std.cppm)"
+        )
+    # Examples that pull stdlib symbols through a header-unit import need
+    # the local libc++/libstdc++ to be modules-clean. Termux/Android's
+    # libc++ over Bionic is not (Bionic stdlib.h/sched.h declare
+    # locale_t/pid_t before their canonical headers); probe and skip.
+    if example_name in _EXAMPLES_REQUIRING_STDLIB_HEADER_UNITS and not _toolchain_supports_stdlib_header_units():
+        pytest.skip(
+            "toolchain's standard library headers are not modules-clean "
+            "(Termux/Android Bionic + libc++); stdlib header-unit imports fail"
         )
 
     with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp:
