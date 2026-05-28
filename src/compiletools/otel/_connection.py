@@ -24,22 +24,24 @@ MISSING_EXTRA_HINT = (
 # real latency bound is the per-request timeout the exporter itself uses.
 DEFAULT_EXPORT_REQUEST_TIMEOUT_SECONDS = 5
 
-# Path the OTLP/HTTP receiver listens on; the SDK appends this only on the
-# env-var fallback path (_append_trace_path), not on a constructor-supplied
-# endpoint. Replicated here so an explicit --otel-endpoint base URL still
-# reaches /v1/traces rather than POSTing to "/".
+# Paths the OTLP/HTTP receiver listens on; the SDK appends these only on the
+# env-var fallback path (_append_trace_path / _append_metric_path), not on a
+# constructor-supplied endpoint. Replicated here so an explicit
+# --otel-endpoint base URL still reaches /v1/{traces,metrics} rather than
+# POSTing to "/".
 _OTLP_HTTP_TRACES_PATH = "v1/traces"
+_OTLP_HTTP_METRICS_PATH = "v1/metrics"
 
 
 def ensure_http_path(endpoint: str, *, signal: str) -> str:
     """Append the OTLP/HTTP signal path to a base endpoint when missing.
 
-    ``signal`` is ``"traces"`` (this PR) or ``"metrics"`` (P3). Idempotent.
+    ``signal`` is ``"traces"`` or ``"metrics"``. Idempotent.
     """
     if signal == "traces":
         suffix = _OTLP_HTTP_TRACES_PATH
     elif signal == "metrics":
-        raise ValueError("ensure_http_path(signal='metrics') lands in P3")
+        suffix = _OTLP_HTTP_METRICS_PATH
     else:
         raise ValueError(f"unknown OTLP signal: {signal!r}")
     if not endpoint:
@@ -217,3 +219,53 @@ def _build_processor(args):
     exporter = OTLPSpanExporter(**kwargs)
 
     return BatchSpanProcessor(exporter)
+
+
+def _build_metric_reader(args):
+    """Build a one-shot MetricReader wrapping the configured OTLP metric exporter.
+
+    Mirrors ``_build_processor`` but for the metric pipeline. The reader
+    returned is a ``PeriodicExportingMetricReader``; the metrics caller is
+    responsible for triggering a flush + shutdown immediately after
+    populating its gauges (this module is one-shot, not long-running).
+    Same friendly ``RuntimeError(MISSING_EXTRA_HINT)`` semantics as the
+    trace processor for partial-install detection.
+    """
+    from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+
+    protocol = (getattr(args, "otel_protocol", "grpc") or "grpc").lower()
+    endpoint = getattr(args, "otel_endpoint", None)
+    headers = parse_kv_pairs(getattr(args, "otel_headers", None))
+    insecure = getattr(args, "otel_insecure", None)
+
+    try:
+        if protocol == "http":
+            from opentelemetry.exporter.otlp.proto.http.metric_exporter import (
+                OTLPMetricExporter,
+            )
+        else:
+            from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
+                OTLPMetricExporter,
+            )
+    except ImportError as exc:
+        raise RuntimeError(MISSING_EXTRA_HINT) from exc
+
+    kwargs: dict[str, Any] = {"timeout": DEFAULT_EXPORT_REQUEST_TIMEOUT_SECONDS}
+    if endpoint:
+        # The SDK only auto-appends /v1/metrics on the env-var fallback path;
+        # a constructor-supplied endpoint is used verbatim, so do it here.
+        kwargs["endpoint"] = ensure_http_path(endpoint, signal="metrics") if protocol == "http" else endpoint
+    if headers:
+        kwargs["headers"] = headers
+    # gRPC-only: omit when None so the SDK's URL-scheme inference takes over.
+    if protocol != "http" and insecure is not None:
+        kwargs["insecure"] = insecure
+    exporter = OTLPMetricExporter(**kwargs)
+
+    # ct-cache-report is one-shot — pick a very long collection interval so
+    # the periodic reader doesn't fire a stray mid-run export; the caller
+    # triggers force_flush() + shutdown() once gauges are populated.
+    return PeriodicExportingMetricReader(
+        exporter,
+        export_interval_millis=24 * 60 * 60 * 1000,  # 24h, effectively "never auto-fire"
+    )

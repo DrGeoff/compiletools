@@ -1093,6 +1093,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Emit JSON instead of human-readable text.",
     )
+    # --otel-* arg group (shared with ct-cake; declared once in apptools).
+    # ct-cache-report is one-shot: emit metrics once and exit. The natural
+    # deployment is a cron job (or a post-build hook) per CAS-bearing host
+    # so dashboards have a current picture of cache health without paying
+    # for continuous scraping.
+    compiletools.apptools.add_otel_export_arguments(cap)
 
     args = cap.parse_args(args=argv)
     compiletools.apptools.resolve_cas_directory_arguments(args)
@@ -1156,6 +1162,22 @@ def main(argv: list[str] | None = None) -> int:
         if exe_rep_obj is not None:
             chunks.append(_render_exe_text(exe_rep_obj, args.top))
         sys.stdout.write("\n".join(chunks))
+
+    if getattr(args, "otel_export", False):
+        # Lazy import: the otel extra is optional, so don't drag the SDK
+        # in for the (overwhelmingly common) ``ct-cache-report`` invocation
+        # that just wants the text/JSON output.
+        from compiletools.otel.metrics import export_cache_metrics
+
+        export_cache_metrics(
+            {
+                "obj": obj_rep,
+                "pch": pch_rep_obj,
+                "pcm": pcm_rep_obj,
+                "exe": exe_rep_obj,
+            },
+            args,
+        )
 
     return 0
 
