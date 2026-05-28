@@ -8,7 +8,12 @@ tree. P1 will wire ``validate_otel_timing_pair`` to flip
 in a new ``ct-*`` entry point would let the empty-tree footgun resurface.
 
 ``ct-cache-report`` has no ``--timing`` concept; the validator would be
-a no-op there, so it is exempted explicitly."""
+a no-op there, so it is exempted explicitly.
+
+Applies no comment/string filter for the validator check: a
+commented-out ``validate_otel_timing_pair(args)`` would satisfy
+the lint. Acceptable today because production callers are few and
+readable by inspection; revisit if the call corpus grows."""
 
 import os
 import re
@@ -39,7 +44,7 @@ def _production_python_files():
 
 def test_every_otel_registrar_caller_also_validates():
     """Every non-apptools, non-exempt module that calls
-    ``add_otel_export_arguments`` must also reference
+    ``add_otel_export_arguments`` must also call
     ``validate_otel_timing_pair`` in the same file."""
     failures = []
     for path in _production_python_files():
@@ -48,10 +53,11 @@ def test_every_otel_registrar_caller_also_validates():
             continue
         with open(path) as fh:
             text = fh.read()
-        if not _REGISTRAR_RE.search(text):
+        registrar_match = _REGISTRAR_RE.search(text)
+        if not registrar_match:
             continue
         if not _VALIDATOR_RE.search(text):
-            line = text[: _REGISTRAR_RE.search(text).start()].count("\n") + 1
+            line = text[: registrar_match.start()].count("\n") + 1
             failures.append(f"{basename}:{line}")
     assert not failures, (
         "Files that call add_otel_export_arguments but not "
