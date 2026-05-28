@@ -209,11 +209,12 @@ def test_otel_export_failure_does_not_fail_build(monkeypatch, tmp_path, capsys):
     assert "OTLP export failed: boom" in captured.err
 
 
-def test_otel_export_without_timing_warns(monkeypatch, tmp_path, capsys):
-    """--otel-export with no --timing must not be silent — the wire-in is
-    gated on timer.enabled, so without --timing nothing would be exported.
-    The finally block emits a single stderr warning so the misconfiguration
-    is visible."""
+def test_otel_export_with_no_timing_hard_errors(tmp_path):
+    """P1: ``--otel-export --no-timing`` is internally contradictory and
+    must hard-error at validate time, not silently warn and continue.
+    The user has asked the exporter to ship spans while also asking the
+    collector not to collect them; better to fail loudly than ship an
+    empty span tree."""
     bindir = tmp_path / "bin"
     objdir = tmp_path / "obj"
     argv = [
@@ -230,21 +231,38 @@ def test_otel_export_without_timing_warns(monkeypatch, tmp_path, capsys):
     assert args.otel_export is True
     assert args.timing is False
 
-    def _stub_createctobjs(self):
-        self.hunter = object()
-
-    monkeypatch.setattr(compiletools.cake.Cake, "_createctobjs", _stub_createctobjs)
-    monkeypatch.setattr(compiletools.cake.Cake, "_call_backend", lambda self: None)
-
-    cake = compiletools.cake.Cake(args)
-    cake.process()
-
-    captured = capsys.readouterr()
-    assert "--otel-export requested but --timing is not enabled" in captured.err
+    with pytest.raises(SystemExit, match="mutually exclusive"):
+        compiletools.apptools.validate_otel_timing_pair(args)
 
 
-def test_otel_export_with_timing_does_not_warn(monkeypatch, tmp_path, capsys):
-    """The 'no spans to export' warning must NOT fire when --timing is set."""
+def test_otel_export_implies_timing(tmp_path):
+    """P1: ``--otel-export`` without explicit ``--no-timing`` flips
+    ``args.timing`` to True so the span tree is populated. Removes a
+    footgun where the user thought ``--otel-export`` alone was enough."""
+    bindir = tmp_path / "bin"
+    objdir = tmp_path / "obj"
+    argv = [
+        "--bindir",
+        str(bindir),
+        "--cas-objdir",
+        str(objdir),
+        "--otel-export",
+        "--filename",
+        "irrelevant.cpp",
+    ]
+    args = _build_args(argv)
+    assert args.otel_export is True
+    # Pre-validate: default --timing is False; the implication has not
+    # fired yet because validate_otel_timing_pair has not been called.
+    assert args.timing is False
+
+    compiletools.apptools.validate_otel_timing_pair(args)
+    assert args.timing is True
+
+
+def test_otel_export_with_timing_no_warning(monkeypatch, tmp_path, capsys):
+    """Sanity: ``--otel-export --timing`` proceeds without the legacy
+    'no spans to export' warning and without raising."""
     bindir = tmp_path / "bin"
     objdir = tmp_path / "obj"
     argv = [
@@ -258,6 +276,9 @@ def test_otel_export_with_timing_does_not_warn(monkeypatch, tmp_path, capsys):
         "irrelevant.cpp",
     ]
     args = _build_args(argv)
+    # Validator is a silent no-op on the well-formed pairing.
+    compiletools.apptools.validate_otel_timing_pair(args)
+    assert args.timing is True
 
     def _stub_createctobjs(self):
         self.hunter = object()

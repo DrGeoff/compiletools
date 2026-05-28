@@ -53,9 +53,12 @@ zero startup cost.
 REQUIREMENTS
 ============
 
-``--otel-export`` requires ``--timing`` (the span tree must exist
-before there is anything to export).  Without ``--timing`` the
-exporter is a no-op.
+``--otel-export`` implies ``--timing``: passing ``--otel-export``
+without ``--timing`` automatically enables timing collection so the
+span tree exists for the exporter to ship.  Passing
+``--otel-export --no-timing`` together is rejected at parse time with
+a clear error — the two requests are internally contradictory
+(exporting an empty span tree is unambiguously a mistake).
 
 The optional extra installs four packages:
 
@@ -84,9 +87,11 @@ values (including trace-specific overrides such as
 SDK as the env-var authority so that precedence is honoured intact.
 
 **--otel-export / --no-otel-export**
-    Enable end-of-build OTLP export.  Default: off.  Requires
-    ``--timing``; passing ``--otel-export`` without ``--timing`` emits
-    a stderr warning and exports nothing (no span tree to ship).
+    Enable end-of-build OTLP export.  Default: off.  Implies
+    ``--timing`` (the span tree must exist before there is anything to
+    export, so ``--otel-export`` automatically turns timing on).
+    ``--otel-export --no-timing`` together is rejected at parse time
+    as internally contradictory.
 
 **--otel-endpoint URL**
     OTLP collector endpoint.  Default: unset, in which case the
@@ -296,9 +301,10 @@ TROUBLESHOOTING
     ``uv pip install 'compiletools[otel]'``).
 
 Export is silent — no spans show up in the collector
-    First, confirm ``--timing`` is also on (``--otel-export`` is a no-op
-    without a timing tree to export).  Then verify the collector
-    endpoint with a curl against the OTLP HTTP receiver path
+    ``--otel-export`` implies ``--timing`` since the P1 wiring landed,
+    so an empty span tree from a "forgot ``--timing``" misconfiguration
+    is no longer possible.  Verify the collector endpoint with a curl
+    against the OTLP HTTP receiver path
     (``http://<host>:4318/v1/traces``).  Run ct-cake at ``-vv`` to see
     the resolved CLI values and confirm the flags actually took effect
     in the configargparse hierarchy.

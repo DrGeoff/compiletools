@@ -734,13 +734,59 @@ def add_otel_export_arguments(cap):
     )
 
 
-def validate_otel_timing_pair(args):
-    """Deliberate no-op that exists so ``test_otel_timing_pair_validated.py``
-    has a real symbol to enforce the ``--otel-export`` / ``--timing`` pairing
-    contract against. P1 will expand this to flip ``args.timing = True`` when
-    ``--otel-export`` is set without ``--timing``, and hard-error on the
-    explicit ``--otel-export --no-timing`` combination."""
-    return
+def _user_passed_no_timing(argv: list[str] | None) -> bool:
+    """Return True iff the user explicitly passed ``--no-timing`` on the
+    command line.
+
+    Scans ``argv`` rather than inspecting ``args.timing`` because the parsed
+    value cannot distinguish "user passed ``--no-timing``" from "user passed
+    nothing and the default is False". ``--timing`` is registered via
+    ``add_flag_argument`` (store_true / store_false; no value form), so the
+    only literal that means "turn timing off" is the bare ``--no-timing``
+    token. The conf-file equivalents (``no-timing = True`` / ``timing =
+    False``) are not in scope here: this validator runs only when the user
+    typed ``--otel-export`` on the command line, which is itself a
+    deliberate, interactive act; treating an ambient conf-file
+    ``no-timing`` as a hard error would make the conf file user-hostile.
+    """
+    if not argv:
+        return False
+    return "--no-timing" in argv
+
+
+def validate_otel_timing_pair(args) -> None:
+    """Enforce the ``--otel-export`` / ``--timing`` pairing contract.
+
+    Three behaviors:
+
+    1. ``--otel-export`` and ``--no-timing`` both explicit on the command
+       line: hard-error via ``SystemExit``. Asking the exporter to ship
+       data while also asking the collector not to collect it is
+       internally contradictory; better to fail loudly at parse time than
+       silently export an empty span tree.
+    2. ``--otel-export`` set without explicit ``--no-timing``: flip
+       ``args.timing = True``. Exporting requires a populated span tree;
+       making the implication automatic removes a footgun without
+       changing the user's apparent intent.
+    3. Anything else (no ``--otel-export``, or ``--no-timing`` alone):
+       silent no-op.
+
+    Called by every ``ct-*`` entry point that registers the OTel arg
+    group via ``add_otel_export_arguments``, immediately after
+    ``parseargs`` returns. ``ct-cache-report`` is exempted in
+    ``test_otel_timing_pair_validated.py`` because it has no ``--timing``
+    concept.
+    """
+    if not getattr(args, "otel_export", False):
+        return
+    argv = getattr(args, "_argv", None)
+    if _user_passed_no_timing(argv):
+        raise SystemExit(
+            "--otel-export and --no-timing are mutually exclusive: "
+            "exporting an empty span tree is unambiguously a mistake. "
+            "Drop one of them."
+        )
+    args.timing = True
 
 
 def add_target_arguments(cap):

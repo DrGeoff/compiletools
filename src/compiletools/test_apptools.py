@@ -2610,3 +2610,81 @@ def test_check_wild_usable_not_selected_noop(monkeypatch):
     monkeypatch.setattr(shutil, "which", _boom)
     args = _wild_args("g++", "-O2 -lm", "gcc.release")
     apptools._check_wild_linker_usable(args)  # returns before any probe
+
+
+class TestValidateOtelTimingPair:
+    """P1 truth table for ``validate_otel_timing_pair``:
+
+    | otel_export | --no-timing in argv | timing (in) | outcome                            |
+    |-------------|---------------------|-------------|------------------------------------|
+    | False       | -                   | -           | silent no-op, args unchanged       |
+    | True        | no                  | False       | args.timing flipped to True        |
+    | True        | no                  | True        | args.timing stays True (no-op)     |
+    | True        | yes                 | False       | SystemExit (hard error)            |
+
+    The "explicit --no-timing" signal is recovered by scanning ``args._argv``
+    because the parsed ``args.timing`` value alone cannot distinguish
+    ``--no-timing`` from "no flag passed, default False".
+    """
+
+    @staticmethod
+    def _ns(*, otel_export, timing, argv):
+        ns = SimpleNamespace(otel_export=otel_export, timing=timing)
+        ns._argv = list(argv)
+        return ns
+
+    def test_no_op_when_otel_export_absent(self):
+        args = self._ns(otel_export=False, timing=False, argv=[])
+        apptools.validate_otel_timing_pair(args)
+        assert args.timing is False
+        assert args.otel_export is False
+
+    def test_no_op_when_otel_export_absent_even_if_no_timing_passed(self):
+        # --no-timing on its own is a perfectly valid request; validator
+        # only cares about the pair.
+        args = self._ns(otel_export=False, timing=False, argv=["--no-timing"])
+        apptools.validate_otel_timing_pair(args)
+        assert args.timing is False
+
+    def test_otel_export_implies_timing_when_no_timing_not_passed(self):
+        # The headline case: user typed --otel-export and forgot --timing.
+        # Implication fires; args.timing flips True.
+        args = self._ns(otel_export=True, timing=False, argv=["--otel-export"])
+        apptools.validate_otel_timing_pair(args)
+        assert args.timing is True
+
+    def test_otel_export_and_timing_both_explicit_is_no_op(self):
+        # Both already on: nothing to do; timing stays True.
+        args = self._ns(otel_export=True, timing=True, argv=["--otel-export", "--timing"])
+        apptools.validate_otel_timing_pair(args)
+        assert args.timing is True
+
+    def test_explicit_no_timing_with_otel_export_hard_errors(self):
+        args = self._ns(otel_export=True, timing=False, argv=["--otel-export", "--no-timing"])
+        with pytest.raises(SystemExit) as excinfo:
+            apptools.validate_otel_timing_pair(args)
+        msg = str(excinfo.value)
+        assert "--otel-export" in msg
+        assert "--no-timing" in msg
+        assert "mutually exclusive" in msg
+
+    def test_missing_argv_attr_treated_as_no_explicit_no_timing(self):
+        # Defensive: a caller that builds args without going through
+        # parseargs (e.g. SimpleNamespace in a test) must not crash the
+        # validator. Treat the missing _argv as "no explicit --no-timing"
+        # so the implication still fires.
+        ns = SimpleNamespace(otel_export=True, timing=False)
+        apptools.validate_otel_timing_pair(ns)
+        assert ns.timing is True
+
+    def test_no_timing_inside_a_quoted_value_not_treated_as_flag(self):
+        # Sanity: the substring match is on whole argv tokens, not a
+        # regex over the joined string. A value like ``--config=--no-timing``
+        # (silly but legal) must not trigger the hard error.
+        args = self._ns(
+            otel_export=True,
+            timing=False,
+            argv=["--otel-export", "--config=--no-timing"],
+        )
+        apptools.validate_otel_timing_pair(args)
+        assert args.timing is True

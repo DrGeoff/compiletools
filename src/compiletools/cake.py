@@ -455,11 +455,11 @@ class Cake:
             else:
                 self._call_backend()
         finally:
-            if getattr(self.args, "otel_export", False) and not getattr(self.args, "timing", False):
-                print(
-                    "Warning: --otel-export requested but --timing is not enabled; no spans to export.",
-                    file=sys.stderr,
-                )
+            # P1: apptools.validate_otel_timing_pair (called from main()) flips
+            # args.timing = True when --otel-export is set without --timing,
+            # and hard-exits on the explicit --otel-export --no-timing combo.
+            # By the time we get here, "otel_export set and timing not set"
+            # is unreachable via the front door, so no warning is needed.
             if timer.enabled:
                 diag_dir = compiletools.diagnostics.resolve_diagnostics_dir(self.args)
                 timer.to_json(os.path.join(diag_dir, "timing.json"))
