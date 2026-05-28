@@ -625,6 +625,115 @@ def add_output_directory_arguments(cap, variant):
     add_cas_arguments(cap)
 
 
+def add_otel_export_arguments(cap):
+    """Register all ``--otel-*`` flags on *cap*.
+
+    This is the single canonical declaration point for every OpenTelemetry
+    export flag.  ``cake.py`` delegates to this helper so that the full
+    ``--otel-*`` surface is defined in exactly one place.  The lint in
+    ``test_otel_arg_group_contract.py`` (landing in Task 4) enforces that no
+    other caller re-declares these flags inline.
+
+    Safe to call more than once on the same parser.
+    """
+    if _parser_has_option(cap, "--otel-export"):
+        return
+    compiletools.utils.add_flag_argument(
+        parser=cap,
+        name="otel-export",
+        dest="otel_export",
+        default=False,
+        help=(
+            "Ship the recorded BuildTimer span tree to an OTLP collector "
+            "at the end of the build. Requires --timing. Install the "
+            "optional 'otel' extra (pip install 'compiletools[otel]') "
+            "for the OpenTelemetry SDK."
+        ),
+    )
+    cap.add_argument(
+        "--otel-endpoint",
+        default=None,
+        # CLI/config-only on the configargparse side: the SDK has its own
+        # env-var precedence (incl. the trace-specific OTEL_EXPORTER_OTLP_TRACES_ENDPOINT)
+        # and must remain the env-var authority; promoting any generic env
+        # var into args.otel_endpoint would shadow that resolution.
+        env_var=compiletools.utils.ENV_VAR_DISABLED,
+        help=(
+            "OTLP collector endpoint URL. Defaults to "
+            "$OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, then "
+            "$OTEL_EXPORTER_OTLP_ENDPOINT, as picked up by the SDK."
+        ),
+    )
+    cap.add_argument(
+        "--otel-service-name",
+        default=None,
+        # CLI/config-only: SDK owns OTEL_SERVICE_NAME (see --otel-endpoint).
+        env_var=compiletools.utils.ENV_VAR_DISABLED,
+        help="OTel service.name resource attribute (default: 'compiletools').",
+    )
+    cap.add_argument(
+        "--otel-resource-attr",
+        action="append",
+        default=[],
+        # CLI/config-only: SDK owns OTEL_RESOURCE_ATTRIBUTES (see --otel-endpoint).
+        env_var=compiletools.utils.ENV_VAR_DISABLED,
+        help=(
+            "Extra OTel resource attribute as K=V (repeatable, or "
+            "comma-separated). Merged on top of OTEL_RESOURCE_ATTRIBUTES."
+        ),
+    )
+    cap.add_argument(
+        "--otel-protocol",
+        default="grpc",
+        choices=["grpc", "http"],
+        help="OTLP transport (default: grpc).",
+    )
+    cap.add_argument(
+        "--otel-headers",
+        default=None,
+        # CLI/config-only: SDK is the env-var authority (see --otel-endpoint).
+        env_var=compiletools.utils.ENV_VAR_DISABLED,
+        help="OTLP exporter headers as K=V,K=V (e.g. for auth proxies).",
+    )
+    # Tri-state: None = unset (let SDK infer insecure from endpoint URL scheme).
+    otel_insecure_group = cap.add_mutually_exclusive_group()
+    otel_insecure_group.add_argument(
+        "--otel-insecure",
+        dest="otel_insecure",
+        action="store_const",
+        const=True,
+        default=None,
+        # CLI/config-only: SDK is the env-var authority (see --otel-endpoint).
+        env_var=compiletools.utils.ENV_VAR_DISABLED,
+        help=(
+            "Disable TLS on the OTLP gRPC connection. If neither "
+            "--otel-insecure nor --no-otel-insecure is passed, the SDK "
+            "infers from the endpoint URL scheme (http:// -> insecure, "
+            "https:// -> secure)."
+        ),
+    )
+    otel_insecure_group.add_argument(
+        "--no-otel-insecure",
+        dest="otel_insecure",
+        action="store_const",
+        const=False,
+        env_var=compiletools.utils.ENV_VAR_DISABLED,
+        help="Force TLS on the OTLP gRPC connection.",
+    )
+    compiletools.utils.add_flag_argument(
+        parser=cap,
+        name="otel-metrics-as-spans",
+        dest="otel_metrics_as_spans",
+        default=False,
+        help=(
+            "When a collector accepts only traces (no metrics endpoint), "
+            "flatten emitted gauge/counter values into short-lived spans "
+            "instead of OTLP metrics. Has no effect until P3/P4 land the "
+            "metrics emitters."
+        ),
+    )
+
+
 def add_target_arguments(cap):
     """Insert the arguments that control what targets get created.
 
