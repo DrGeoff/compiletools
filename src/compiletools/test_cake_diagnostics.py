@@ -195,7 +195,7 @@ def test_otel_export_failure_does_not_fail_build(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(compiletools.cake.Cake, "_createctobjs", _stub_createctobjs)
     monkeypatch.setattr(compiletools.cake.Cake, "_call_backend", lambda self: None)
 
-    import compiletools.otel_exporter as oe
+    import compiletools.otel as oe
 
     def _boom(timer, args):
         raise RuntimeError("boom")
@@ -265,7 +265,7 @@ def test_otel_export_with_timing_does_not_warn(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(compiletools.cake.Cake, "_createctobjs", _stub_createctobjs)
     monkeypatch.setattr(compiletools.cake.Cake, "_call_backend", lambda self: None)
 
-    import compiletools.otel_exporter as oe
+    import compiletools.otel as oe
 
     monkeypatch.setattr(oe, "export_buildtimer", lambda timer, args: None)
 

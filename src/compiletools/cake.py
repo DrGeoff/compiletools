@@ -465,7 +465,7 @@ class Cake:
                 timer.to_json(os.path.join(diag_dir, "timing.json"))
                 timer.print_summary()
                 if getattr(self.args, "otel_export", False):
-                    from compiletools.otel_exporter import export_buildtimer
+                    from compiletools.otel import export_buildtimer
 
                     # README.ct-otel.rst: "a failed export does not fail the build".
                     try:
