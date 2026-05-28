@@ -630,19 +630,23 @@ class BuildBackend(abc.ABC):
         self._build_imports_std_cached: bool | None = None
         self._compile_used_libcxx = False
 
-        # Warn if the user explicitly opted into legacy mtime semantics
-        # but this backend can't deliver them. The flag is a make/ninja
-        # implementation detail; other backends fall back to their
-        # native (content-hash or self-managed) rebuild logic.
+        # Hard-fail if the user explicitly opted into legacy mtime semantics
+        # but this backend can't deliver them. ``--use-mtime`` is a
+        # make/ninja-only knob: only those two backends consume the prereq
+        # list as a literal mtime comparison. A content-hash backend (bazel,
+        # shake, slurm) or self-managed one (cmake) cannot deliver "touch the
+        # source to force a rebuild" semantics — a touch without a content
+        # change is invisible to their rebuild check — so silently ignoring
+        # the opt-in would mislead the user about what their flag does.
         # ``is True`` (not truthy) so a MagicMock attribute on a stub
-        # backend in tests doesn't trip the warning.
+        # backend in tests doesn't trip the check.
         if getattr(args, "use_mtime", False) is True and not self._honors_use_mtime():
-            print(
-                f"WARNING: --use-mtime=True is set but the {self.name()!r} backend does not "
-                "honor mtime-based rebuilds; the flag will be ignored. Only the 'make' and "
-                "'ninja' backends honor --use-mtime — others use content-hash-based "
-                "(bazel, shake, slurm) or self-managed (cmake) change detection.",
-                file=sys.stderr,
+            raise ValueError(
+                f"--use-mtime=True is not supported by the {self.name()!r} backend; only the "
+                "'make' and 'ninja' backends honor it. Other backends use content-hash-based "
+                "(bazel, shake, slurm) or self-managed (cmake) change detection, which cannot "
+                "deliver mtime-based 'touch the source to force a rebuild' semantics. Drop "
+                "--use-mtime (the CAS-only default) or switch to --backend=make / --backend=ninja."
             )
 
     @property
@@ -1333,13 +1337,16 @@ class BuildBackend(abc.ABC):
         # ``_extract_system_include_path_flags``). Order-preserving
         # dedup so the precompile probe sees a stable flag list.
         import stringzilla as sz
+
         magic_system_includes: list[str] = []
         _seen_magic_si: set[str] = set()
+
         def _add_magic_si_tokens(tokens: tuple[str, ...]) -> None:
             for tok in tokens:
                 if tok not in _seen_magic_si:
                     _seen_magic_si.add(tok)
                     magic_system_includes.append(tok)
+
         for filename in all_compile_sources:
             r = self.hunter._file_analysis_result(filename)
             if r is None:

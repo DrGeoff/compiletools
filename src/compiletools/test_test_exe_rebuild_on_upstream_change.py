@@ -34,6 +34,15 @@ from compiletools.build_backend import available_backends, ensure_backends_regis
 
 ensure_backends_registered()
 
+# Only make and ninja consume the prereq list as a literal mtime comparison,
+# so they are the only backends that honor ``--use-mtime=True``. Every other
+# backend (bazel/cmake/shake/slurm) hard-fails on that flag — see
+# ``build_backend.BuildBackend.__init__`` and the contract test in
+# ``test_build_backend.py``. The use-mtime arm of this matrix is therefore
+# only meaningful for these two; the rest are skipped (the hard-fail itself
+# is asserted in test_build_backend.py, not re-derived per scenario here).
+_MTIME_HONORING_BACKENDS = frozenset({"make", "ninja"})
+
 
 # Each successful test invocation appends exactly one fixed-length record
 # (the integer returned by val()) to the marker file. Strict equality on
@@ -234,6 +243,11 @@ def _build_session(
     slurm, fallback for the rest), and yield a fully-wired harness plus
     the materialised path map.
     """
+    if use_mtime and backend_name not in _MTIME_HONORING_BACKENDS:
+        pytest.skip(
+            f"--use-mtime=True is unsupported on the {backend_name!r} backend "
+            "(hard-fails; only make/ninja honor it — see test_build_backend.py)"
+        )
     uth.reset()
     try:
         with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as workdir:

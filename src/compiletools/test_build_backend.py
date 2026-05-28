@@ -421,35 +421,46 @@ class TestUseMtimeFlagPlumbing:
         backend = SlurmBackend(args=args, hunter=make_mock_hunter())
         assert backend._honors_use_mtime() is False
 
-    def test_warning_emitted_when_use_mtime_true_on_non_honoring_backend(self, tmp_path, capsys):
+    def test_use_mtime_true_on_non_honoring_backend_hard_fails(self, tmp_path):
         """User opts into legacy mtime semantics on a backend that can't
-        deliver them — must surface as a stderr warning, not a silent no-op."""
-        self._make_stub_backend(tmp_path, use_mtime=True)
-        captured = capsys.readouterr()
-        assert "WARNING" in captured.err
-        assert "--use-mtime" in captured.err
-        assert "stub_test" in captured.err
+        deliver them — must hard-fail at construction, not silently ignore
+        the flag. ``--use-mtime`` is a make/ninja-only knob; a content-hash
+        or self-managed backend cannot deliver "touch the source to force a
+        rebuild" semantics, so honouring the opt-in is impossible."""
+        with pytest.raises(ValueError) as excinfo:
+            self._make_stub_backend(tmp_path, use_mtime=True)
+        msg = str(excinfo.value)
+        assert "--use-mtime" in msg
+        assert "stub_test" in msg
 
-    def test_no_warning_when_use_mtime_default(self, tmp_path, capsys):
-        """Default ``use_mtime=False`` (CAS-only) — no warning anywhere,
-        regardless of backend."""
+    def test_bazel_backend_use_mtime_true_hard_fails(self, tmp_path):
+        """The concrete bazel backend hard-fails on --use-mtime=True."""
+        args = make_backend_args(tmp_path, use_mtime=True)
+        with pytest.raises(ValueError) as excinfo:
+            BazelBackend(args=args, hunter=make_mock_hunter())
+        assert "--use-mtime" in str(excinfo.value)
+        assert "bazel" in str(excinfo.value)
+
+    def test_no_error_when_use_mtime_default(self, tmp_path, capsys):
+        """Default ``use_mtime=False`` (CAS-only) — no error, no warning
+        anywhere, regardless of backend."""
         self._make_stub_backend(tmp_path)
         captured = capsys.readouterr()
         assert "use-mtime" not in captured.err
 
-    def test_no_warning_when_make_backend_with_use_mtime_true(self, tmp_path, capsys):
-        """Make honors the flag — no warning when the user opts in."""
+    def test_no_error_when_make_backend_with_use_mtime_true(self, tmp_path, capsys):
+        """Make honors the flag — no error, no warning when the user opts in."""
         self._make_make_backend(tmp_path, use_mtime=True)
         captured = capsys.readouterr()
         assert "use-mtime" not in captured.err
 
-    def test_no_warning_when_ninja_backend_with_use_mtime_true(self, tmp_path, capsys):
-        """Ninja honors the flag — no warning when the user opts in."""
+    def test_no_error_when_ninja_backend_with_use_mtime_true(self, tmp_path, capsys):
+        """Ninja honors the flag — no error, no warning when the user opts in."""
         self._make_ninja_backend(tmp_path, use_mtime=True)
         captured = capsys.readouterr()
         assert "use-mtime" not in captured.err
 
-    def test_no_warning_when_use_mtime_explicitly_false(self, tmp_path, capsys):
+    def test_no_error_when_use_mtime_explicitly_false(self, tmp_path, capsys):
         """Explicitly setting ``use_mtime=False`` (the default) on a
         non-honoring backend is fine — the backend's natural behavior
         already matches CAS-only semantics for content-tracked tools."""
@@ -884,7 +895,10 @@ class TestBuildGraphPopulation:
 
     def test_serialise_tests_chain_uses_inputs_in_mtime_mode(self, tmp_path):
         """Under --use-mtime, the chain dep goes in ``inputs`` (not order_only_deps)
-        so the previous marker's mtime can gate the next test."""
+        so the previous marker's mtime can gate the next test. Uses a make
+        backend because --use-mtime=True hard-fails on non-honoring backends,
+        so make/ninja are the only backends that reach ``build_graph`` with
+        the flag set."""
         args = make_backend_args(
             tmp_path,
             filename=[],
@@ -893,7 +907,8 @@ class TestBuildGraphPopulation:
             use_mtime=True,
         )
         hunter = make_mock_hunter(sources=["/src/test_foo.cpp", "/src/test_bar.cpp"])
-        backend = self._make_backend(tmp_path, args=args, hunter=hunter)
+        backend = MakefileBackend(args=args, hunter=hunter)
+        backend.namer = make_mock_namer(args)
 
         graph = backend.build_graph()
 
@@ -1886,16 +1901,12 @@ class TestHeaderUnitPrecompileCarriesProjectIncludePaths:
         return backend
 
     def test_gcc_cache_mode_precompile_carries_cxxflags_isystem(self, tmp_path):
-        backend = self._make_backend(
-            tmp_path, kind="gcc", extra_cxxflags="-isystem /opt/extlib-1.0/include"
-        )
+        backend = self._make_backend(tmp_path, kind="gcc", extra_cxxflags="-isystem /opt/extlib-1.0/include")
         backend._gcc_header_unit_resolved = {
             "<extlib/Exception.h>": ["/opt/extlib-1.0/include/extlib/Exception.h"],
         }
         artefact_path = str(tmp_path / "cas-pcmdir" / "abc" / "Exception.h.gcm")
-        rule = backend._create_header_unit_precompile_rule(
-            "<extlib/Exception.h>", artefact_path
-        )
+        rule = backend._create_header_unit_precompile_rule("<extlib/Exception.h>", artefact_path)
         pipeline = _cmd(rule)[2]  # ["sh", "-c", "<pipeline>"]
         assert "-isystem /opt/extlib-1.0/include" in pipeline or (
             "-isystem" in pipeline and "/opt/extlib-1.0/include" in pipeline
@@ -1906,15 +1917,11 @@ class TestHeaderUnitPrecompileCarriesProjectIncludePaths:
         )
 
     def test_gcc_fallback_mode_precompile_carries_cxxflags_isystem(self, tmp_path):
-        backend = self._make_backend(
-            tmp_path, kind="gcc", extra_cxxflags="-isystem /opt/extlib-1.0/include"
-        )
+        backend = self._make_backend(tmp_path, kind="gcc", extra_cxxflags="-isystem /opt/extlib-1.0/include")
         # No resolved abs paths -> the fallback (cache-off / unresolved) branch.
         backend._gcc_header_unit_resolved = {}
         artefact_path = str(tmp_path / "cas-pcmdir" / "abc" / "Exception.h.gcm")
-        rule = backend._create_header_unit_precompile_rule(
-            "<extlib/Exception.h>", artefact_path
-        )
+        rule = backend._create_header_unit_precompile_rule("<extlib/Exception.h>", artefact_path)
         cmd = _cmd(rule)
         assert "-isystem" in cmd and "/opt/extlib-1.0/include" in cmd, (
             f"gcc fallback HU precompile must carry project -isystem paths "
@@ -1923,14 +1930,10 @@ class TestHeaderUnitPrecompileCarriesProjectIncludePaths:
         )
 
     def test_clang_precompile_carries_cxxflags_isystem(self, tmp_path):
-        backend = self._make_backend(
-            tmp_path, kind="clang", extra_cxxflags="-isystem /opt/extlib-1.0/include"
-        )
+        backend = self._make_backend(tmp_path, kind="clang", extra_cxxflags="-isystem /opt/extlib-1.0/include")
         backend._build_imports_std_cached = False
         artefact_path = str(tmp_path / "cas-pcmdir" / "abc" / "Exception.h.pcm")
-        rule = backend._create_header_unit_precompile_rule(
-            "<extlib/Exception.h>", artefact_path
-        )
+        rule = backend._create_header_unit_precompile_rule("<extlib/Exception.h>", artefact_path)
         cmd = _cmd(rule)
         assert "-isystem" in cmd and "/opt/extlib-1.0/include" in cmd, (
             f"clang HU precompile must carry project -isystem paths from "
@@ -3154,13 +3157,17 @@ class TestExtractSystemIncludePathFlags:
         from compiletools.build_backend import _extract_system_include_path_flags
 
         tokens = (
-            "-I", "/p/inc",
-            "-iquote", "/p/local",
-            "-idirafter", "/p/last",
+            "-I",
+            "/p/inc",
+            "-iquote",
+            "/p/local",
+            "-idirafter",
+            "/p/last",
             "-DFOO=1",
         )
         assert _extract_system_include_path_flags(tokens) == (
-            "-idirafter", "/p/last",
+            "-idirafter",
+            "/p/last",
         )
 
     def test_drops_attached_I_and_iquote(self):
@@ -3169,7 +3176,8 @@ class TestExtractSystemIncludePathFlags:
 
         tokens = ("-I/p/a", "-isystem/p/b", "-O2", "-iquote/p/c", "-idirafter/p/d")
         assert _extract_system_include_path_flags(tokens) == (
-            "-isystem/p/b", "-idirafter/p/d",
+            "-isystem/p/b",
+            "-idirafter/p/d",
         )
 
     def test_isystem_not_misclassified_by_attached_scan(self):
@@ -3187,9 +3195,14 @@ class TestExtractSystemIncludePathFlags:
         from compiletools.build_backend import _extract_system_include_path_flags
 
         tokens = (
-            "-std=c++20", "-O2", "-g", "-fPIC",
-            "-DNDEBUG", "-UFOO",
-            "-Wall", "-Werror",
+            "-std=c++20",
+            "-O2",
+            "-g",
+            "-fPIC",
+            "-DNDEBUG",
+            "-UFOO",
+            "-Wall",
+            "-Werror",
             "-ffile-prefix-map=/x=.",
             "-L/no/lib/in/include",
         )
@@ -3203,7 +3216,10 @@ class TestExtractSystemIncludePathFlags:
 
         tokens = ("-isystem", "/a", "-I", "/b", "-iquote", "/c", "-idirafter", "/d")
         assert _extract_system_include_path_flags(tokens) == (
-            "-isystem", "/a", "-idirafter", "/d",
+            "-isystem",
+            "/a",
+            "-idirafter",
+            "/d",
         )
 
     def test_handles_bare_trailing_flag(self):
@@ -3273,7 +3289,9 @@ class TestExtractSystemIncludePathFlags:
 
         tokens = ("-iframework", "/Library/Frameworks", "-iframework/Other/Frameworks")
         assert _extract_system_include_path_flags(tokens) == (
-            "-iframework", "/Library/Frameworks", "-iframework/Other/Frameworks",
+            "-iframework",
+            "/Library/Frameworks",
+            "-iframework/Other/Frameworks",
         )
 
     def test_mixed_families_preserve_order_and_form(self):
@@ -3285,20 +3303,27 @@ class TestExtractSystemIncludePathFlags:
 
         tokens = (
             "-O2",
-            "-iquote", "/p/q",
+            "-iquote",
+            "/p/q",
             "-DNDEBUG",
-            "-isystem", "/p/s",
+            "-isystem",
+            "/p/s",
             "-I/p/i",
             "--sysroot=/opt/sdk",
-            "-idirafter", "/p/d",
-            "-isysroot", "/opt/sdk2",
+            "-idirafter",
+            "/p/d",
+            "-isysroot",
+            "/opt/sdk2",
             "-Wall",
         )
         assert _extract_system_include_path_flags(tokens) == (
-            "-isystem", "/p/s",
+            "-isystem",
+            "/p/s",
             "--sysroot=/opt/sdk",
-            "-idirafter", "/p/d",
-            "-isysroot", "/opt/sdk2",
+            "-idirafter",
+            "/p/d",
+            "-isysroot",
+            "/opt/sdk2",
         )
 
 
