@@ -132,11 +132,11 @@ class TestExportRoundTrip:
     def test_emits_root_phase_and_rule_spans(self, monkeypatch):
         monkeypatch.setattr("socket.gethostname", lambda: "test-host")
         monkeypatch.setattr(
-            "compiletools.otel_exporter._get_git_commit_sha",
+            "compiletools.otel._connection.get_git_commit_sha",
             lambda cwd=None: "abc123",
         )
         monkeypatch.setattr(
-            "compiletools.otel_exporter._invocation_id_from_diag_dir",
+            "compiletools.otel._connection._invocation_id_from_diag_dir",
             lambda args: "inv-001",
         )
 
@@ -154,9 +154,9 @@ class TestExportRoundTrip:
         assert "link.bin/app" in names
 
     def test_rule_attributes_are_set(self, monkeypatch):
-        monkeypatch.setattr("compiletools.otel_exporter._get_git_commit_sha", lambda cwd=None: "")
+        monkeypatch.setattr("compiletools.otel._connection.get_git_commit_sha", lambda cwd=None: "")
         monkeypatch.setattr(
-            "compiletools.otel_exporter._invocation_id_from_diag_dir",
+            "compiletools.otel._connection._invocation_id_from_diag_dir",
             lambda args: "",
         )
 
@@ -177,9 +177,9 @@ class TestExportRoundTrip:
 
     def test_root_resource_attributes(self, monkeypatch):
         monkeypatch.setattr("socket.gethostname", lambda: "test-host")
-        monkeypatch.setattr("compiletools.otel_exporter._get_git_commit_sha", lambda cwd=None: "deadbeef")
+        monkeypatch.setattr("compiletools.otel._connection.get_git_commit_sha", lambda cwd=None: "deadbeef")
         monkeypatch.setattr(
-            "compiletools.otel_exporter._invocation_id_from_diag_dir",
+            "compiletools.otel._connection._invocation_id_from_diag_dir",
             lambda args: "inv-xyz",
         )
 
@@ -197,9 +197,9 @@ class TestExportRoundTrip:
         assert attrs["ct.invocation_id"] == "inv-xyz"
 
     def test_parent_child_links_form_tree(self, monkeypatch):
-        monkeypatch.setattr("compiletools.otel_exporter._get_git_commit_sha", lambda cwd=None: "")
+        monkeypatch.setattr("compiletools.otel._connection.get_git_commit_sha", lambda cwd=None: "")
         monkeypatch.setattr(
-            "compiletools.otel_exporter._invocation_id_from_diag_dir",
+            "compiletools.otel._connection._invocation_id_from_diag_dir",
             lambda args: "",
         )
 
@@ -222,9 +222,9 @@ class TestExportRoundTrip:
         assert len(trace_ids) == 1
 
     def test_timestamps_round_trip_via_wall_offset(self, monkeypatch):
-        monkeypatch.setattr("compiletools.otel_exporter._get_git_commit_sha", lambda cwd=None: "")
+        monkeypatch.setattr("compiletools.otel._connection.get_git_commit_sha", lambda cwd=None: "")
         monkeypatch.setattr(
-            "compiletools.otel_exporter._invocation_id_from_diag_dir",
+            "compiletools.otel._connection._invocation_id_from_diag_dir",
             lambda args: "",
         )
 
@@ -291,9 +291,9 @@ def test_round_trip_determinism(monkeypatch):
     timestamps must be stable.
     """
     monkeypatch.setattr("socket.gethostname", lambda: "test-host")
-    monkeypatch.setattr("compiletools.otel_exporter._get_git_commit_sha", lambda cwd=None: "abc123")
+    monkeypatch.setattr("compiletools.otel._connection.get_git_commit_sha", lambda cwd=None: "abc123")
     monkeypatch.setattr(
-        "compiletools.otel_exporter._invocation_id_from_diag_dir",
+        "compiletools.otel._connection._invocation_id_from_diag_dir",
         lambda args: "inv-001",
     )
 
@@ -354,9 +354,9 @@ def test_service_name_env_wins_when_cli_unset(monkeypatch):
     """OTEL_SERVICE_NAME / OTEL_RESOURCE_ATTRIBUTES must beat the literal default."""
     monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "service.name=from-env")
     monkeypatch.delenv("OTEL_SERVICE_NAME", raising=False)
-    monkeypatch.setattr("compiletools.otel_exporter._get_git_commit_sha", lambda cwd=None: "")
+    monkeypatch.setattr("compiletools.otel._connection.get_git_commit_sha", lambda cwd=None: "")
     monkeypatch.setattr(
-        "compiletools.otel_exporter._invocation_id_from_diag_dir",
+        "compiletools.otel._connection._invocation_id_from_diag_dir",
         lambda args: "",
     )
 
@@ -369,9 +369,9 @@ def test_service_name_env_wins_when_cli_unset(monkeypatch):
 def test_service_name_cli_wins_over_env(monkeypatch):
     """An explicit --otel-service-name still beats OTEL_SERVICE_NAME."""
     monkeypatch.setenv("OTEL_SERVICE_NAME", "from-env")
-    monkeypatch.setattr("compiletools.otel_exporter._get_git_commit_sha", lambda cwd=None: "")
+    monkeypatch.setattr("compiletools.otel._connection.get_git_commit_sha", lambda cwd=None: "")
     monkeypatch.setattr(
-        "compiletools.otel_exporter._invocation_id_from_diag_dir",
+        "compiletools.otel._connection._invocation_id_from_diag_dir",
         lambda args: "",
     )
 
@@ -385,9 +385,9 @@ def test_service_name_fallback_when_neither_set(monkeypatch):
     """With no CLI and no env, the literal ``compiletools`` fallback applies."""
     monkeypatch.delenv("OTEL_SERVICE_NAME", raising=False)
     monkeypatch.delenv("OTEL_RESOURCE_ATTRIBUTES", raising=False)
-    monkeypatch.setattr("compiletools.otel_exporter._get_git_commit_sha", lambda cwd=None: "")
+    monkeypatch.setattr("compiletools.otel._connection.get_git_commit_sha", lambda cwd=None: "")
     monkeypatch.setattr(
-        "compiletools.otel_exporter._invocation_id_from_diag_dir",
+        "compiletools.otel._connection._invocation_id_from_diag_dir",
         lambda args: "",
     )
 
@@ -405,9 +405,9 @@ def test_root_span_has_no_parent_even_with_ambient_context(monkeypatch):
     from opentelemetry import trace
     from opentelemetry.sdk.trace import TracerProvider
 
-    monkeypatch.setattr("compiletools.otel_exporter._get_git_commit_sha", lambda cwd=None: "")
+    monkeypatch.setattr("compiletools.otel._connection.get_git_commit_sha", lambda cwd=None: "")
     monkeypatch.setattr(
-        "compiletools.otel_exporter._invocation_id_from_diag_dir",
+        "compiletools.otel._connection._invocation_id_from_diag_dir",
         lambda args: "",
     )
 
@@ -427,9 +427,9 @@ def test_root_span_has_no_parent_even_with_ambient_context(monkeypatch):
 
 def test_root_span_ends_even_when_child_emission_raises(monkeypatch):
     """A child exception must not abandon the parent span unflushed."""
-    monkeypatch.setattr("compiletools.otel_exporter._get_git_commit_sha", lambda cwd=None: "")
+    monkeypatch.setattr("compiletools.otel._connection.get_git_commit_sha", lambda cwd=None: "")
     monkeypatch.setattr(
-        "compiletools.otel_exporter._invocation_id_from_diag_dir",
+        "compiletools.otel._connection._invocation_id_from_diag_dir",
         lambda args: "",
     )
 
@@ -470,9 +470,9 @@ def test_flush_timeout_warns_to_stderr(monkeypatch, capsys):
         def force_flush(self, timeout_millis=None):
             return False
 
-    monkeypatch.setattr("compiletools.otel_exporter._get_git_commit_sha", lambda cwd=None: "")
+    monkeypatch.setattr("compiletools.otel._connection.get_git_commit_sha", lambda cwd=None: "")
     monkeypatch.setattr(
-        "compiletools.otel_exporter._invocation_id_from_diag_dir",
+        "compiletools.otel._connection._invocation_id_from_diag_dir",
         lambda args: "",
     )
 
@@ -491,9 +491,9 @@ def test_rule_with_default_start_sentinel_is_skipped(monkeypatch):
     ``start_s == 0.0`` (the ``record_rule`` default); emitting those would
     drag the trace to ~1970.  They should be skipped instead.
     """
-    monkeypatch.setattr("compiletools.otel_exporter._get_git_commit_sha", lambda cwd=None: "")
+    monkeypatch.setattr("compiletools.otel._connection.get_git_commit_sha", lambda cwd=None: "")
     monkeypatch.setattr(
-        "compiletools.otel_exporter._invocation_id_from_diag_dir",
+        "compiletools.otel._connection._invocation_id_from_diag_dir",
         lambda args: "",
     )
 
@@ -695,9 +695,9 @@ class TestGrpcInsecureTriState:
 
 def test_same_basename_in_different_dirs_get_distinct_span_names(monkeypatch):
     """src/util.cpp and tests/util.cpp must not collide on span name."""
-    monkeypatch.setattr("compiletools.otel_exporter._get_git_commit_sha", lambda cwd=None: "")
+    monkeypatch.setattr("compiletools.otel._connection.get_git_commit_sha", lambda cwd=None: "")
     monkeypatch.setattr(
-        "compiletools.otel_exporter._invocation_id_from_diag_dir",
+        "compiletools.otel._connection._invocation_id_from_diag_dir",
         lambda args: "",
     )
 
