@@ -59,7 +59,10 @@ from "build aggregated to zero".  Specifically:
   "not CAS-saved" when computing ``recompiled_count``.
 * P4 data absent (``--ccache-statslog`` not set): ``ccache_avoided_count
   == 0``; ``compile_avoided_rate`` reflects CAS-only savings.
-* Both absent: all four attrs are ``0``/``0.0``.
+* Both absent: ``cas_avoided_count`` and ``ccache_avoided_count`` are
+  zero; ``recompiled_count`` equals the total compile rule count
+  (every compile is presumed recompiled when no cache layer reports
+  otherwise); ``compile_avoided_rate == 0.0``.
 """
 
 from __future__ import annotations

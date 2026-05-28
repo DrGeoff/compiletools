@@ -140,7 +140,7 @@ class TestDeriveBuildAggregates:
         assert attrs["ct.build.recompiled_count"] == 2
         assert attrs["ct.build.compile_avoided_rate"] == 0.5
 
-    def test_both_absent_returns_zeros(self):
+    def test_both_absent_treats_all_rules_as_recompiled(self):
         # cmake/bazel build with no ccache_statslog: still emit zeros so
         # dashboards can distinguish "didn't aggregate" from "aggregated
         # to zero".
