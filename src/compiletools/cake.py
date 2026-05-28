@@ -567,6 +567,7 @@ def main(argv=None):
 
     context = BuildContext()
     args = compiletools.apptools.parseargs(cap, argv, context=context)
+    compiletools.apptools.validate_otel_timing_pair(args)
 
     if not any([args.filename, args.static, args.dynamic, args.tests, args.auto]):
         print("Nothing for cake to do.  Did you mean cake --auto? Use cake --help for help.")

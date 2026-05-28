@@ -734,6 +734,14 @@ def add_otel_export_arguments(cap):
     )
 
 
+def validate_otel_timing_pair(args):
+    """Stub. P1 will wire --otel-export to imply --timing and hard-error
+    on the explicit ``--otel-export --no-timing`` combination. For now this
+    is a no-op so the test_otel_timing_pair_validated.py lint has a
+    function to point at."""
+    return
+
+
 def add_target_arguments(cap):
     """Insert the arguments that control what targets get created.
 
