@@ -413,9 +413,7 @@ class TestExtendIncludesUsingGitRootDeterministic:
         # All runs must produce identical INCLUDE strings; otherwise the
         # cxxflags_tokens hash component of cas-objdir keys shifts between
         # processes and forces a full re-link on no-op rebuilds.
-        assert len(set(outputs)) == 1, (
-            f"Non-deterministic git-root ordering across PYTHONHASHSEEDs: {outputs!r}"
-        )
+        assert len(set(outputs)) == 1, f"Non-deterministic git-root ordering across PYTHONHASHSEEDs: {outputs!r}"
 
 
 class TestExtractSystemIncludePaths:
@@ -755,14 +753,13 @@ class TestAddArguments:
         add_output_directory_arguments(cap, variant="unsupplied")
         args = cap.parse_args([])
         assert args.bindir == "unsupplied", (
-            f"bindir default should be the bare sentinel when variant is "
-            f"'unsupplied', got {args.bindir!r}"
+            f"bindir default should be the bare sentinel when variant is 'unsupplied', got {args.bindir!r}"
         )
         swapped = unsupplied_replacement(args.bindir, "bin/gcc.debug", 0, "bindir")
         assert swapped == "bin/gcc.debug"
 
     def test_add_output_directory_arguments_registers_use_mtime(self):
-        """M2: --use-mtime must be registered for every backend that
+        """--use-mtime must be registered for every backend that
         calls add_output_directory_arguments — without this, ``ct-cake
         --backend=ninja --use-mtime`` is rejected by argparse even
         though ninja_backend.py reads ``args.use_mtime``.
@@ -2701,7 +2698,7 @@ def test_check_wild_usable_not_selected_noop(monkeypatch):
 
 
 class TestValidateOtelTimingPair:
-    """P1 truth table for ``validate_otel_timing_pair``:
+    """Truth table for ``validate_otel_timing_pair``:
 
     | otel_export | --no-timing in argv | timing (in) | outcome                            |
     |-------------|---------------------|-------------|------------------------------------|
@@ -2812,6 +2809,7 @@ class TestCasDirAllowFakeGitPropagation:
         monkeypatch.chdir(sub)
 
         import compiletools.git_utils
+
         compiletools.git_utils.clear_cache()
         compiletools.git_utils.set_allow_fake_git(False)
         try:
@@ -2849,6 +2847,7 @@ class TestCasDirAllowFakeGitPropagation:
         monkeypatch.chdir(sub)
 
         import compiletools.git_utils
+
         compiletools.git_utils.clear_cache()
         compiletools.git_utils.set_allow_fake_git(False)
         try:

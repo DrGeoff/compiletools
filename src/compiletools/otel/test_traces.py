@@ -540,7 +540,7 @@ class TestRootSpanAggregateAttributes:
     machinery.
 
     Mirrors TestCcacheStatslogRootSpanLift's pattern in
-    test_cake_ccache_statslog.py (P4) but exercises the P5 cross-layer
+    test_cake_ccache_statslog.py but exercises the cross-layer
     aggregate path directly without spinning up the whole ct-cake
     argparser.  Asserts that:
 

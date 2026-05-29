@@ -641,7 +641,7 @@ def add_output_directory_arguments(cap, variant):
         default=bindir_default,
     )
     add_cas_directory_arguments(cap, variant)
-    # M2: register --use-mtime here so every backend that calls
+    # Register --use-mtime here so every backend that calls
     # add_output_directory_arguments picks it up. Previously only
     # makefile_backend registered it, so ``ct-cake --backend=ninja
     # --use-mtime`` was rejected by argparse even though

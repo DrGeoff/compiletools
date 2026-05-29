@@ -2,10 +2,10 @@
 must also call ``apptools.validate_otel_timing_pair``.
 
 Why: ``--otel-export`` requires ``--timing`` to produce a non-empty span
-tree. P1 will wire ``validate_otel_timing_pair`` to flip
-``args.timing = True`` and hard-error on the explicit
-``--otel-export --no-timing`` combo. Forgetting to call the validator
-in a new ``ct-*`` entry point would let the empty-tree footgun resurface.
+tree. ``validate_otel_timing_pair`` flips ``args.timing = True`` and
+hard-errors on the explicit ``--otel-export --no-timing`` combo.
+Forgetting to call the validator in a new ``ct-*`` entry point would let
+the empty-tree footgun resurface.
 
 ``ct-cache-report`` has no ``--timing`` concept; the validator would be
 a no-op there, so it is exempted explicitly.
@@ -27,11 +27,9 @@ _DEFINITION_FILES = frozenset({"apptools.py"})
 # Tools that register the OTel arg group but legitimately do NOT need the
 # timing-pair validator. Add a comment alongside each entry explaining why.
 #
-# - cache_report.py: ct-cache-report emits cache-health metrics, has no
-#   --timing concept; validate_otel_timing_pair would be a no-op for it.
-#   (Allowlisted in anticipation of P3 landing the --otel-export wiring
-#   in cache_report.py; harmless until then since it doesn't yet call
-#   add_otel_export_arguments.)
+# - cache_report.py: ct-cache-report registers --otel-export to emit
+#   cache-health gauges but has no --timing concept, so
+#   validate_otel_timing_pair would be a no-op for it.
 _EXEMPT: frozenset[str] = frozenset({"cache_report.py"})
 
 

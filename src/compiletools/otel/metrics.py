@@ -66,9 +66,8 @@ class _Point:
     """One (metric, value, tags) tuple ready for emission.
 
     Built once by ``_cache_points_from_reports``; consumed by either the
-    OTLP metric emitter or the metrics-as-spans fallback. Mirrors the
-    design-doc shape so future emitters (P4 ccache counters) can share
-    the same private helper.
+    OTLP metric emitter or the metrics-as-spans fallback. The ccache
+    counter emitter shares the same private helper.
     """
 
     metric_name: str

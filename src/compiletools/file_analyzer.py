@@ -595,10 +595,10 @@ def _extract_magic_flags(
 
 # C++20 module declarations. Recognized at the start of a logical line
 # (after stripping leading whitespace, ignoring lines inside block
-# comments). Phase 1 of compiletools' modules support handles only the
-# three forms below; partition-internal imports (`import :part;`),
-# header units (`import "h";`, `import <h>;`), and the global module
-# fragment opener (`module;`) are recognized syntactically and skipped.
+# comments). Named modules, partitions (`M:P`, `import :part;`), and
+# header units (`import "h";`, `import <h>;`) are all classified below;
+# the global module fragment opener (`module;`) is recognized
+# syntactically and skipped, since it carries no module name.
 def _classify_module_line(rest: "stringzilla.Str"):
     """Classify a single source line as a C++20 module declaration.
 
@@ -616,10 +616,9 @@ def _classify_module_line(rest: "stringzilla.Str"):
     precompile invocation and on the importer's
     ``-fmodule-file=NAME=PATH`` flag.
 
-    Phase 1 deliberately returned ``(None, None)`` for the global module
-    fragment opener (``module;``), partition imports (``import :p;``),
-    and header units. Phase 3 added partitions; Phase 5 adds header
-    units.
+    Partition imports (``import :p;``) and header units are classified.
+    The global module fragment opener (``module;``) returns
+    ``(None, None)`` -- it carries no module name to record.
     """
     s = str(rest)
     n = len(s)
@@ -1026,8 +1025,8 @@ def analyze_file(content_hash: str, context: "BuildContext") -> "FileAnalysisRes
     # Detect marker type - check for exe, test, or library markers
     marker_type = _detect_marker_type(str_text, exe_markers, test_markers, library_markers)
 
-    # C++20 module declarations (Phase 1: name-only modules; partitions
-    # and header units are skipped at the classifier).
+    # C++20 module declarations (named modules, partitions, and header
+    # units; the global module fragment opener is skipped at the classifier).
     module_decls = _extract_module_declarations(str_text, line_byte_offsets)
 
     result = FileAnalysisResult(
@@ -1342,8 +1341,8 @@ class FileAnalysisResult:
     marker_type: MarkerType = MarkerType.NONE  # Type of marker found in file (exe, test, library, or none)
 
     # C++20 module declarations. See _extract_module_declarations for the
-    # forms recognized in Phase 1; partition imports, header units, and
-    # the global module fragment opener are deliberately not surfaced.
+    # forms recognized; only the global module fragment opener (`module;`)
+    # is deliberately not surfaced, since it carries no module name.
     module_exports: tuple[str, ...] = ()  # `export module NAME;`
     module_implements: tuple[str, ...] = ()  # `module NAME;` (impl unit)
     module_imports: tuple[str, ...] = ()  # `import NAME;`

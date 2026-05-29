@@ -10,9 +10,9 @@ Public symbols are re-exported from submodules:
   stats counts as OTLP metrics. Used by ct-cake when ``--ccache-statslog``
   is set together with ``--otel-export``.
 - ``derive_build_aggregates`` / ``derive_rule_cache_layer`` /
-  ``annotate_rule_cache_layers`` (from ``aggregates``) -- P5 cross-layer
-  cache aggregates derived from P2's per-rule CAS metadata and P4's
-  build-wide ccache event counts.
+  ``annotate_rule_cache_layers`` (from ``aggregates``) -- cross-layer
+  cache aggregates derived from per-rule CAS metadata and build-wide
+  ccache event counts.
 
 ``_connection`` is private to the subpackage. Tests may import it
 directly; no other production caller should.

@@ -210,7 +210,7 @@ def test_otel_export_failure_does_not_fail_build(monkeypatch, tmp_path, capsys):
 
 
 def test_otel_export_with_no_timing_hard_errors(tmp_path):
-    """P1: ``--otel-export --no-timing`` is internally contradictory and
+    """``--otel-export --no-timing`` is internally contradictory and
     must hard-error at validate time, not silently warn and continue.
     The user has asked the exporter to ship spans while also asking the
     collector not to collect them; better to fail loudly than ship an
@@ -236,7 +236,7 @@ def test_otel_export_with_no_timing_hard_errors(tmp_path):
 
 
 def test_otel_export_implies_timing(tmp_path):
-    """P1: ``--otel-export`` without explicit ``--no-timing`` flips
+    """``--otel-export`` without explicit ``--no-timing`` flips
     ``args.timing`` to True so the span tree is populated. Removes a
     footgun where the user thought ``--otel-export`` alone was enough."""
     bindir = tmp_path / "bin"

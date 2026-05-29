@@ -1,24 +1,25 @@
-"""Cross-layer cache aggregates derived from per-rule CAS hits (P2) and
-build-wide ccache event counts (P4).
+"""Cross-layer cache aggregates derived from per-rule CAS hits and
+build-wide ccache event counts.
 
-P2 emits ``cas.hit`` / ``cas.kind`` / ``cas.bytes_reused`` on each rule
-span when the CAS short-circuit fires.  P4 emits a build-wide histogram
-of ccache events (``direct_cache_hit``, ``preprocessed_cache_hit``,
-``cache_miss``, ...).  The two cache layers are nested -- a CAS hit
-means the compiler never ran, so ccache never saw the TU; a CAS miss
-can still be a ccache hit because compiletools' lock wrapper invokes
-the real compiler under ccache.
+Backends emit ``cas.hit`` / ``cas.kind`` / ``cas.bytes_reused`` on each
+rule span when the CAS short-circuit fires.  ct-cake's ccache statslog
+parse emits a build-wide histogram of ccache events
+(``direct_cache_hit``, ``preprocessed_cache_hit``, ``cache_miss``, ...).
+The two cache layers are nested -- a CAS hit means the compiler never
+ran, so ccache never saw the TU; a CAS miss can still be a ccache hit
+because compiletools' lock wrapper invokes the real compiler under
+ccache.
 
-P5 turns the two signals into a single user-facing headline -- "what
-fraction of TUs did caching save?" -- so dashboards do not have to
-re-derive the join every query.  No new collection happens here; P5
-is a pure post-build aggregation pass.
+This module turns the two signals into a single user-facing headline --
+"what fraction of TUs did caching save?" -- so dashboards do not have to
+re-derive the join every query.  No new collection happens here; it is a
+pure post-build aggregation pass.
 
 Emitted signals
 ---------------
 
 Root build span attributes (lifted via the ``timer._root.metadata``
-mechanism that P4 already added to ``otel/traces.py``):
+mechanism in ``otel/traces.py``):
 
 * ``ct.build.cas_avoided_count`` -- compile rules with ``cas.hit==True``.
 * ``ct.build.ccache_avoided_count`` -- ccache direct + preprocessed hits.
@@ -55,14 +56,14 @@ for ninja/make builds.
 Partial-data behaviour
 ----------------------
 
-Both P2 and P4 are optional.  The four root attrs are always emitted
+Both signals are optional.  The four root attrs are always emitted
 (even as zeros) so dashboards can distinguish "build did not aggregate"
 from "build aggregated to zero".  Specifically:
 
-* P2 data absent (no ``cas.hit`` on any rule, e.g. cmake/bazel
+* CAS metadata absent (no ``cas.hit`` on any rule, e.g. cmake/bazel
   backends): ``cas_avoided_count == 0``; every compile rule counts as
   "not CAS-saved" when computing ``recompiled_count``.
-* P4 data absent (``--ccache-statslog`` not set): ``ccache_avoided_count
+* ccache data absent (``--ccache-statslog`` not set): ``ccache_avoided_count
   == 0``; ``compile_avoided_rate`` reflects CAS-only savings.
 * Both absent: ``cas_avoided_count`` and ``ccache_avoided_count`` are
   zero; ``recompiled_count`` equals the total compile rule count
@@ -126,7 +127,7 @@ def derive_build_aggregates(
     produced by ``compiletools.ccache_stats.parse_statslog``).
 
     Returns a dict ready to merge into ``timer._root.metadata`` -- the
-    P4 root-event metadata-lift in ``otel/traces.py:export_buildtimer``
+    root-event metadata-lift in ``otel/traces.py:export_buildtimer``
     will then set each entry as a root-span attribute.
 
     Partial-data behaviour is specified in this module's docstring.
@@ -215,7 +216,7 @@ def annotate_rule_cache_layers(
     Walks ``timer._root``, computes ``derive_rule_cache_layer`` for each
     compile rule, and writes the result into ``event.metadata`` so the
     per-rule metadata-lift loop in ``otel/traces.py:_emit_event`` picks
-    it up at export time -- no exporter changes needed for P5.
+    it up at export time -- no exporter changes needed.
 
     ``ccache_attribution`` is an optional ``{target: hit}`` map used by
     callers who *can* attribute ccache events per-target (a future

@@ -362,7 +362,7 @@ def test_missing_extra_raises_with_install_hint(monkeypatch):
         sys.modules.update(saved)
 
 
-# ----------------------------------------------------------------- ccache metrics (P4)
+# ----------------------------------------------------------------- ccache metrics
 
 
 def _collect_ccache_metrics(reader: InMemoryMetricReader):

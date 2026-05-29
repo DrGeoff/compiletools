@@ -125,7 +125,7 @@ def export_buildtimer(timer: BuildTimer, args, *, _processor=None) -> str | None
 
     Returns the **hex-encoded trace_id** of the root build span, or
     ``None`` when timing is disabled and no span tree was emitted. The
-    P4 ccache-stats hook in ct-cake uses this as the ``ct.invocation_id``
+    ccache-stats hook in ct-cake uses this as the ``ct.invocation_id``
     on the emitted ccache metrics so metrics natively join to spans
     without a side-channel correlation id.
 
@@ -174,8 +174,8 @@ def export_buildtimer(timer: BuildTimer, args, *, _processor=None) -> str | None
         root_trace_id = None
     try:
         # Lift any metadata producers attached to the root TimingEvent
-        # (P4 ccache headline numbers today; P5 cross-layer aggregates
-        # tomorrow). Same try/except shape as the per-rule lift -- a single
+        # (ccache headline numbers and cross-layer cache aggregates).
+        # Same try/except shape as the per-rule lift -- a single
         # mis-typed value must not poison the whole export. Run before
         # child emission so the root span is fully populated even if a
         # child emission later raises.

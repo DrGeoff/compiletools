@@ -3,8 +3,8 @@
 
 Why: the OTel arg group must stay DRY across every ``ct-*`` entry point.
 Hand-rolling a ``--otel-foo`` in a sibling tool would drift defaults,
-env-var rules, and help text; future PRs (P3, P5) add new ``ct-*`` tools
-that need the same surface.
+env-var rules, and help text; any new ``ct-*`` tool that needs the OTel
+surface should register it through this one helper.
 
 Patterned on ``test_cas_dir_resolver_contract.py``; that file applies a
 comment/string filter for false-positive suppression which is omitted

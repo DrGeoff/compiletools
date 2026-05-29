@@ -1,4 +1,4 @@
-"""Tests for compiletools.otel.aggregates (P5 cross-layer cache aggregates).
+"""Tests for compiletools.otel.aggregates (cross-layer cache aggregates).
 
 These tests use the in-memory ``BuildTimer`` API to construct synthetic
 rule trees and verify the four root-span aggregates plus the per-rule
@@ -15,7 +15,6 @@ from compiletools.otel.aggregates import (
     derive_rule_cache_layer,
 )
 
-
 # ---------------------------------------------------------------- test helpers
 
 
@@ -24,7 +23,7 @@ def _make_timer(rule_specs: list[dict]) -> BuildTimer:
 
     Each spec is ``{"rule_type": ..., "target": ..., "source": ...,
     "cas_hit": bool | None}``.  When ``cas_hit`` is omitted the rule has
-    no cas.* metadata (P2 was absent for that rule).
+    no cas.* metadata (no CAS attribution for that rule).
     """
     timer = BuildTimer(enabled=True, variant="gcc.debug", backend="ninja")
     base = timer._root.start_s
@@ -197,9 +196,7 @@ class TestDeriveBuildAggregates:
         # structured warning attribute so dashboards don't silently treat
         # the resulting 100% as a real signal.
         timer = _make_timer([{"cas_hit": False}, {"cas_hit": False}])
-        attrs = derive_build_aggregates(
-            timer, ccache_counts={"direct_cache_hit": 99}
-        )
+        attrs = derive_build_aggregates(timer, ccache_counts={"direct_cache_hit": 99})
         assert attrs["ct.build.recompiled_count"] == 0
         assert attrs["ct.build.compile_avoided_rate"] == 1.0
         assert attrs["ct.build.aggregate_warning"] == "ccache_overcount"
@@ -215,9 +212,7 @@ class TestDeriveBuildAggregates:
                 {"cas_hit": False},
             ]
         )
-        attrs = derive_build_aggregates(
-            timer, ccache_counts={"direct_cache_hit": 1, "cache_miss": 1}
-        )
+        attrs = derive_build_aggregates(timer, ccache_counts={"direct_cache_hit": 1, "cache_miss": 1})
         assert "ct.build.aggregate_warning" not in attrs
 
 
@@ -249,29 +244,17 @@ class TestDeriveRuleCacheLayer:
         assert derive_rule_cache_layer(self._evt(True), ccache_attribution=True) == "cas"
 
     def test_cas_miss_no_ccache_attribution_returns_other(self):
-        assert (
-            derive_rule_cache_layer(self._evt(False), ccache_attribution=None)
-            == "other"
-        )
+        assert derive_rule_cache_layer(self._evt(False), ccache_attribution=None) == "other"
 
     def test_no_cas_metadata_returns_other(self):
-        # Missing metadata is treated like CAS-miss (P2 absent for this rule).
-        assert (
-            derive_rule_cache_layer(self._evt(None), ccache_attribution=None)
-            == "other"
-        )
+        # Missing metadata is treated like CAS-miss (no CAS attribution for this rule).
+        assert derive_rule_cache_layer(self._evt(None), ccache_attribution=None) == "other"
 
     def test_cas_miss_ccache_hit_returns_ccache(self):
-        assert (
-            derive_rule_cache_layer(self._evt(False), ccache_attribution=True)
-            == "ccache"
-        )
+        assert derive_rule_cache_layer(self._evt(False), ccache_attribution=True) == "ccache"
 
     def test_cas_miss_ccache_miss_returns_compiled(self):
-        assert (
-            derive_rule_cache_layer(self._evt(False), ccache_attribution=False)
-            == "compiled"
-        )
+        assert derive_rule_cache_layer(self._evt(False), ccache_attribution=False) == "compiled"
 
 
 # ----------------------------------------------------------- annotate_rule_cache_layers
@@ -289,21 +272,11 @@ class TestAnnotateRuleCacheLayers:
         n = annotate_rule_cache_layers(timer, ccache_attribution=None)
         # 2 compile rules annotated; link rule skipped.
         assert n == 2
-        compile_rules = [
-            r
-            for phase in timer._root.children
-            for r in phase.children
-            if r.category == "compile"
-        ]
+        compile_rules = [r for phase in timer._root.children for r in phase.children if r.category == "compile"]
         assert compile_rules[0].metadata["ct.rule.cache_layer"] == "cas"
         assert compile_rules[1].metadata["ct.rule.cache_layer"] == "other"
         # The link rule should not have been touched.
-        link_rules = [
-            r
-            for phase in timer._root.children
-            for r in phase.children
-            if r.category == "link"
-        ]
+        link_rules = [r for phase in timer._root.children for r in phase.children if r.category == "link"]
         assert "ct.rule.cache_layer" not in link_rules[0].metadata
 
     def test_per_target_ccache_attribution_resolves_ccache_vs_compiled(self):
@@ -317,11 +290,7 @@ class TestAnnotateRuleCacheLayers:
             timer,
             ccache_attribution={"obj/a.o": True, "obj/b.o": False},
         )
-        compile_rules = [
-            r
-            for phase in timer._root.children
-            for r in phase.children
-        ]
+        compile_rules = [r for phase in timer._root.children for r in phase.children]
         assert compile_rules[0].metadata["ct.rule.cache_layer"] == "ccache"
         assert compile_rules[1].metadata["ct.rule.cache_layer"] == "compiled"
 

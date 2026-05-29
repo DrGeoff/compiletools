@@ -635,7 +635,7 @@ class Cake:
                 else:
                     self._call_backend()
             finally:
-                # P1: apptools.validate_otel_timing_pair (called from main()) flips
+                # apptools.validate_otel_timing_pair (called from main()) flips
                 # args.timing = True when --otel-export is set without --timing,
                 # and hard-exits on the explicit --otel-export --no-timing combo.
                 # By the time we get here, "otel_export set and timing not set"
@@ -651,8 +651,8 @@ class Cake:
                     # Pre-parse the ccache statslog so the headline numbers can be
                     # lifted onto the root build span via timer._root.metadata
                     # (the root-metadata loop in otel/traces.py:export_buildtimer
-                    # picks them up — added in P4 alongside the per-rule metadata
-                    # lift in _emit_event). Doing the parse here -- before
+                    # picks them up, alongside the per-rule metadata lift in
+                    # _emit_event). Doing the parse here -- before
                     # export_buildtimer -- keeps the metric export path further
                     # down and avoids re-parsing the file twice.
                     ccache_counts = None
@@ -684,12 +684,12 @@ class Cake:
 
                             outcomes = read_rule_outcomes(outcomes_path)
                             timer.merge_rule_outcomes(outcomes)
-                        # P5: derive cross-layer cache aggregates from the now-
-                        # merged per-rule CAS metadata (P2) and the pre-parsed
-                        # ccache event counts (P4).  Writing the aggregates into
+                        # Derive cross-layer cache aggregates from the now-
+                        # merged per-rule CAS metadata and the pre-parsed
+                        # ccache event counts.  Writing the aggregates into
                         # timer._root.metadata BEFORE to_json means timing.json
                         # carries them too -- offline tooling sees what the OTel
-                        # spans see -- and the existing P4 root-metadata lift in
+                        # spans see -- and the root-metadata lift in
                         # otel/traces.py:export_buildtimer turns them into root
                         # span attributes with no exporter changes.  Gracefully
                         # degrades when either signal is absent (see aggregates
@@ -700,9 +700,7 @@ class Cake:
                                 derive_build_aggregates,
                             )
 
-                            timer._root.metadata.update(
-                                derive_build_aggregates(timer, ccache_counts)
-                            )
+                            timer._root.metadata.update(derive_build_aggregates(timer, ccache_counts))
                             # Per-rule ccache attribution is not available for
                             # ninja/make backends (ccache statslog is build-wide),
                             # so pass None and let derive_rule_cache_layer collapse
@@ -742,7 +740,7 @@ class Cake:
                     if statslog_path:
                         self._publish_ccache_stats(statslog_path, ccache_counts, root_trace_id)
                 finally:
-                    # P5: pop CT_RULE_OUTCOMES_LOG unconditionally (belt-and-
+                    # Pop CT_RULE_OUTCOMES_LOG unconditionally (belt-and-
                     # braces). Setup is gated on ``timer.enabled`` so a
                     # safely-paired teardown would also be gated -- but a
                     # caller that flips ``timer.enabled`` mid-process (or sets

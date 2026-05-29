@@ -236,8 +236,8 @@ exporters described below; metrics additionally carry
 that indexes on trace_id joins the ccache metrics natively against the
 build's spans.
 
-P2 coverage scope (CAS attributes on rule spans)
-------------------------------------------------
+CAS-attribute coverage scope (CAS attributes on rule spans)
+-----------------------------------------------------------
 
 Per-rule ``cas.hit`` / ``cas.kind`` / ``cas.bytes_reused`` attributes
 require the build backend to emit per-rule outcomes that the exporter
@@ -310,7 +310,7 @@ Root-span attribute                 Meaning
 
 The four counts/rate are always emitted (even as zeros) so a dashboard
 can tell "build did not aggregate" from "build aggregated to zero".
-With no P2 CAS data (cmake/bazel backends) ``cas_avoided_count`` is 0;
+With no per-rule CAS data (cmake/bazel backends) ``cas_avoided_count`` is 0;
 with no ``--ccache-statslog`` ``ccache_avoided_count`` is 0 and the
 rate reflects CAS-only savings; with both absent ``recompiled_count``
 equals the total compile-rule count.
@@ -523,9 +523,8 @@ TROUBLESHOOTING
     ``uv pip install 'compiletools[otel]'``).
 
 Export is silent — no spans show up in the collector
-    ``--otel-export`` implies ``--timing`` since the P1 wiring landed,
-    so an empty span tree from a "forgot ``--timing``" misconfiguration
-    is no longer possible.  Verify the collector endpoint with a curl
+    ``--otel-export`` implies ``--timing``, so an empty span tree from a
+    "forgot ``--timing``" misconfiguration is not possible.  Verify the collector endpoint with a curl
     against the OTLP HTTP receiver path
     (``http://<host>:4318/v1/traces``).  Run ct-cake at ``-vv`` to see
     the resolved CLI values and confirm the flags actually took effect

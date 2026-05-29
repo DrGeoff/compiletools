@@ -166,7 +166,7 @@ def append_rule_outcome(
         util-linux ``flock`` available) bypasses ``ct-lock-helper`` for
         speed and so does not write outcomes — ``cas.*`` keys are
         absent for those rules.  Documented in ``README.ct-otel.rst``
-        under "P2 coverage scope".
+        under "CAS-attribute coverage scope".
     """
     if path is None:
         path = os.environ.get(_RULE_OUTCOMES_LOG_ENV)

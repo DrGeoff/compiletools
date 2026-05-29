@@ -111,7 +111,7 @@ def _record_rule_outcome(target: str, cas_kind: str, result_was_skip: bool) -> N
     Note: the native-flock fast-path in ``build_backend.wrap_compile_with_lock``
     (local filesystems with util-linux ``flock`` available) bypasses this
     helper entirely and so does not write outcomes.  Documented in
-    ``README.ct-otel.rst`` under "P2 coverage scope".
+    ``README.ct-otel.rst`` under "CAS-attribute coverage scope".
     """
     try:
         from compiletools.build_timer import append_rule_outcome

@@ -1464,7 +1464,7 @@ class SlurmBackend(ShakeBackend):
                             if os.path.exists(rule.output):
                                 os.remove(rule.output)
                         except (ValueError, IndexError, OSError):
-                            # M1: do not misattribute by falling back to rules[0];
+                            # Do not misattribute by falling back to rules[0];
                             # log and skip the malformed entry.
                             logger.warning(
                                 "could not parse failed task index from sacct jid %r "
@@ -1519,7 +1519,7 @@ class SlurmBackend(ShakeBackend):
         warned = False
         interval = 0.1
         while missing and time.monotonic() < deadline:
-            # M4: don't sleep past the deadline.
+            # Don't sleep past the deadline.
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
