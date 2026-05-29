@@ -740,6 +740,27 @@ class TestAddArguments:
         apptools.resolve_cas_directory_arguments(args)
         assert "obj" in args.cas_objdir
 
+    def test_add_output_directory_arguments_unsupplied_variant_uses_sentinel(self):
+        """Regression: ``Namer.add_arguments(cap)`` (called from cake.py
+        before the variant has been resolved) passes ``variant="unsupplied"``
+        through to ``add_output_directory_arguments``. The bindir default
+        must register as the bare sentinel ``"unsupplied"`` -- NOT
+        ``"bin/unsupplied"`` -- so the post-parse
+        ``unsupplied_replacement(args.bindir, "bin/<variant>", ...)`` in
+        ``_commonsubstitutions`` actually fires (exact-membership check
+        against ``_UNSUPPLIED_SENTINELS``). Otherwise every build lands in
+        ``bin/unsupplied/`` instead of ``bin/<variant>/``.
+        """
+        cap = configargparse.ArgParser(default_config_files=[])
+        add_output_directory_arguments(cap, variant="unsupplied")
+        args = cap.parse_args([])
+        assert args.bindir == "unsupplied", (
+            f"bindir default should be the bare sentinel when variant is "
+            f"'unsupplied', got {args.bindir!r}"
+        )
+        swapped = unsupplied_replacement(args.bindir, "bin/gcc.debug", 0, "bindir")
+        assert swapped == "bin/gcc.debug"
+
     def test_add_output_directory_arguments_registers_use_mtime(self):
         """M2: --use-mtime must be registered for every backend that
         calls add_output_directory_arguments — without this, ``ct-cake

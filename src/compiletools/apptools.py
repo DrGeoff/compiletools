@@ -625,10 +625,20 @@ def resolve_cas_directory_arguments(args):
 def add_output_directory_arguments(cap, variant):
     if _parser_has_option(cap, "--bindir"):
         return
+    # When the caller hasn't resolved the variant yet (Namer.add_arguments
+    # in cake.py / findtargets.py / makefile_backend.py passes the bare
+    # ``"unsupplied"`` sentinel), the bindir default must register as the
+    # bare sentinel too -- NOT ``"bin/unsupplied"`` -- so the post-parse
+    # ``unsupplied_replacement(args.bindir, "bin/<variant>", ...)`` in
+    # ``_commonsubstitutions`` (which membership-tests against
+    # ``_UNSUPPLIED_SENTINELS``) actually swaps the default for the
+    # resolved-variant path. Otherwise every build lands in
+    # ``bin/unsupplied/``.
+    bindir_default = "unsupplied" if variant in _UNSUPPLIED_SENTINELS else "".join(["bin/", variant])
     cap.add_argument(
         "--bindir",
         help="Output directory for executables",
-        default="".join(["bin/", variant]),
+        default=bindir_default,
     )
     add_cas_directory_arguments(cap, variant)
     # M2: register --use-mtime here so every backend that calls
