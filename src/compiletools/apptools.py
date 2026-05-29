@@ -742,8 +742,8 @@ def add_otel_export_arguments(cap):
         help=(
             "When a collector accepts only traces (no metrics endpoint), "
             "flatten emitted gauge/counter values into short-lived spans "
-            "instead of OTLP metrics. Has no effect until P3/P4 land the "
-            "metrics emitters."
+            "instead of OTLP metrics. Applies to ct-cache-report's "
+            "ct.cas.* gauges and ct-cake's ct.ccache.* counters/gauges."
         ),
     )
 
