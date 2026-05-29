@@ -7,6 +7,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import warnings
 from types import SimpleNamespace
@@ -276,7 +277,7 @@ class TestVerbosePrintArgs:
 
 class TestUnsuppliedReplacement:
     def test_unsupplied_returns_default(self):
-        result = unsupplied_replacement("unsupplied_use_CXX", "g++", 0, "CPP")
+        result = unsupplied_replacement(apptools._UNSUPPLIED_USE_CXX, "g++", 0, "CPP")
         assert result == "g++"
 
     def test_supplied_returns_original(self):
@@ -285,7 +286,7 @@ class TestUnsuppliedReplacement:
 
     def test_verbose_prints(self):
         with patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
-            unsupplied_replacement("unsupplied_use_CXX", "g++", 6, "CPP")
+            unsupplied_replacement(apptools._UNSUPPLIED_USE_CXX, "g++", 6, "CPP")
         assert "unsupplied" in mock_stdout.getvalue()
 
 
@@ -359,6 +360,62 @@ class TestAddIncludePathsToFlags:
         with patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
             _add_include_paths_to_flags(args)
         assert "include" in mock_stdout.getvalue().lower()
+
+
+class TestExtendIncludesUsingGitRootDeterministic:
+    """Regression: ``_extend_includes_using_git_root`` must emit git roots in a
+    deterministic order. Set iteration order depends on ``PYTHONHASHSEED``, so
+    a naive ``list(set)`` join shifts the ``-I`` order between processes,
+    invalidating the cas-objdir cache key (cxxflags_tokens hash component) on
+    no-op rebuilds."""
+
+    _SCRIPT = (
+        "import sys\n"
+        "from types import SimpleNamespace\n"
+        "import compiletools.git_utils\n"
+        "import compiletools.apptools as apptools\n"
+        "# Mock find_git_root to return distinct roots per call. The first\n"
+        "# (no-arg) call returns the cwd-root; subsequent (per-filename)\n"
+        "# calls return alternating roots. Using strings designed to hash\n"
+        "# differently under different PYTHONHASHSEEDs.\n"
+        "_ROOTS = ['/repo/alpha', '/repo/beta', '/repo/gamma', '/repo/delta']\n"
+        "_calls = {'n': 0}\n"
+        "def _fake_find_git_root(filename=None):\n"
+        "    if filename is None:\n"
+        "        return _ROOTS[0]\n"
+        "    idx = (_calls['n'] % (len(_ROOTS) - 1)) + 1\n"
+        "    _calls['n'] += 1\n"
+        "    return _ROOTS[idx]\n"
+        "compiletools.git_utils.find_git_root = _fake_find_git_root\n"
+        "args = SimpleNamespace(\n"
+        "    git_root=True,\n"
+        "    INCLUDE='',\n"
+        "    filename=['a.cpp', 'b.cpp', 'c.cpp'],\n"
+        "    verbose=0,\n"
+        ")\n"
+        "apptools._extend_includes_using_git_root(args)\n"
+        "sys.stdout.write(args.INCLUDE)\n"
+    )
+
+    def _run_with_seed(self, seed):
+        env = {**os.environ, "PYTHONHASHSEED": str(seed)}
+        result = subprocess.run(
+            [sys.executable, "-c", self._SCRIPT],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout
+
+    def test_include_order_is_deterministic_across_pythonhashseeds(self):
+        outputs = [self._run_with_seed(seed) for seed in (0, 1, 2, 3, 4, 5, 6, 7)]
+        # All runs must produce identical INCLUDE strings; otherwise the
+        # cxxflags_tokens hash component of cas-objdir keys shifts between
+        # processes and forces a full re-link on no-op rebuilds.
+        assert len(set(outputs)) == 1, (
+            f"Non-deterministic git-root ordering across PYTHONHASHSEEDs: {outputs!r}"
+        )
 
 
 class TestExtractSystemIncludePaths:
@@ -671,6 +728,16 @@ class TestAddArguments:
         add_output_directory_arguments(cap, variant="gcc.debug")
         args = cap.parse_args([])
         assert "gcc.debug" in args.bindir
+        # cas-*dir defaults are the literal sentinel; the real path is
+        # computed by resolve_cas_directory_arguments (which is called
+        # post-parse by apptools.parseargs / explicit diagnostic-tool
+        # callers). Until then, the value carries the sentinel.
+        assert args.cas_objdir == "unsupplied"
+        # Confirm the resolver turns the sentinel into a real path that
+        # mentions the obj kind segment.
+        args.variant = "gcc.debug"
+        args.verbose = 0
+        apptools.resolve_cas_directory_arguments(args)
         assert "obj" in args.cas_objdir
 
     def test_add_output_directory_arguments_registers_use_mtime(self):
@@ -2688,3 +2755,92 @@ class TestValidateOtelTimingPair:
         )
         apptools.validate_otel_timing_pair(args)
         assert args.timing is True
+
+
+class TestCasDirAllowFakeGitPropagation:
+    """Regression: ``--allow-fake-git`` must influence CAS dir defaults.
+
+    Previously ``add_cas_directory_arguments`` baked the absolute gitroot-
+    anchored default at parser-registration time, BEFORE
+    ``apptools.parseargs`` had a chance to propagate the parsed
+    ``--allow-fake-git`` flag into ``git_utils.set_allow_fake_git``. So
+    the strict-mode pre-parse resolution of ``find_git_root()`` got
+    baked into ``argparse`` defaults, and ``unsupplied_replacement``
+    only swaps when the value contains the literal ``"unsupplied"`` --
+    concrete absolute paths pass through unchanged.
+
+    Failure mode: user runs ``ct-cake --allow-fake-git`` from
+    ``/tmp/proj/subdir`` with a bare ``/tmp/proj/.git/`` placeholder.
+    Registrar-time strict ``find_git_root`` rejects the fake ``.git``
+    and falls through to the cwd ``/tmp/proj/subdir``; the post-parse
+    permissive walker (every other callsite) returns ``/tmp/proj`` --
+    but ``args.cas_objdir`` still holds the wrong subdir-anchored path.
+
+    The fix moves default-computation into
+    ``resolve_cas_directory_arguments`` (which runs AFTER the
+    ``set_allow_fake_git`` propagation), using the literal sentinel
+    ``"unsupplied"`` as the registrar-time default.
+    """
+
+    def test_allow_fake_git_propagates_to_cas_dir_defaults(self, tmp_path, monkeypatch):
+        # Build a fake repo: <tmp>/proj/.git (bare empty dir, no HEAD), cwd in subdir.
+        repo = tmp_path / "proj"
+        sub = repo / "subdir"
+        sub.mkdir(parents=True)
+        (repo / ".git").mkdir()  # bare placeholder, no HEAD -> strict mode rejects
+        monkeypatch.chdir(sub)
+
+        import compiletools.git_utils
+        compiletools.git_utils.clear_cache()
+        compiletools.git_utils.set_allow_fake_git(False)
+        try:
+            cap = apptools.create_parser("test", include_config=False)
+            apptools.add_cas_directory_arguments(cap, variant="gcc.debug")
+            args = cap.parse_args(["--allow-fake-git", "--variant=gcc.debug"])
+            args.variant = "gcc.debug"
+            args.verbose = 0
+            apptools.resolve_cas_directory_arguments(args)
+
+            # Cas dirs must anchor at the fake gitroot (repo), not the cwd subdir.
+            repo_real = os.path.realpath(str(repo))
+            sub_real = os.path.realpath(str(sub))
+            for attr in ("cas_objdir", "cas_pchdir", "cas_pcmdir", "cas_exedir"):
+                value = getattr(args, attr)
+                value_real = os.path.realpath(value)
+                assert value_real.startswith(repo_real), (
+                    f"{attr}={value!r} (realpath={value_real!r}) should anchor at fake "
+                    f"gitroot {repo_real!r} after --allow-fake-git propagated"
+                )
+                assert not value_real.startswith(sub_real + os.sep), (
+                    f"{attr}={value!r} (realpath={value_real!r}) is anchored at cwd subdir "
+                    f"{sub_real!r}; the registrar-time strict-mode default was not overridden"
+                )
+        finally:
+            compiletools.git_utils.set_allow_fake_git(False)
+            compiletools.git_utils.clear_cache()
+
+    def test_resolver_is_idempotent_after_fix(self, tmp_path, monkeypatch):
+        """Calling resolve_cas_directory_arguments twice must not double-suffix."""
+        repo = tmp_path / "proj"
+        sub = repo / "subdir"
+        sub.mkdir(parents=True)
+        (repo / ".git").mkdir()
+        monkeypatch.chdir(sub)
+
+        import compiletools.git_utils
+        compiletools.git_utils.clear_cache()
+        compiletools.git_utils.set_allow_fake_git(False)
+        try:
+            cap = apptools.create_parser("test", include_config=False)
+            apptools.add_cas_directory_arguments(cap, variant="gcc.debug")
+            args = cap.parse_args(["--allow-fake-git", "--variant=gcc.debug"])
+            args.variant = "gcc.debug"
+            args.verbose = 0
+            apptools.resolve_cas_directory_arguments(args)
+            first = {a: getattr(args, a) for a in ("cas_objdir", "cas_pchdir", "cas_pcmdir", "cas_exedir")}
+            apptools.resolve_cas_directory_arguments(args)
+            second = {a: getattr(args, a) for a in ("cas_objdir", "cas_pchdir", "cas_pcmdir", "cas_exedir")}
+            assert first == second, f"resolver not idempotent: {first!r} vs {second!r}"
+        finally:
+            compiletools.git_utils.set_allow_fake_git(False)
+            compiletools.git_utils.clear_cache()

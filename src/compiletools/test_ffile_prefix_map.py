@@ -127,7 +127,10 @@ def _build_in_two_checkouts(
                 shutil.copytree(entry, workspace / entry.name)
         # Marker so find_git_root() finds the per-user workspace via
         # the fallback walker (without invoking real `git rev-parse`).
+        # Include a valid HEAD so is_real_git_marker accepts it under the
+        # strict default (set_allow_fake_git(False)).
         (workspace / ".git").mkdir()
+        (workspace / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
 
         argv = [
             "ct-cake",
@@ -281,6 +284,7 @@ def _build_with_shared_pchdir(
             else:
                 shutil.copytree(entry, workspace / entry.name)
         (workspace / ".git").mkdir()
+        (workspace / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
 
         argv = [
             "ct-cake",

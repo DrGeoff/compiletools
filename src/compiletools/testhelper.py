@@ -984,7 +984,9 @@ def copy_example_workspace(src: Path, dst: Path) -> Path:
             shutil.copy2(entry, dst)
         else:
             shutil.copytree(entry, dst / entry.name)
-    (dst / ".git").mkdir()
+    git_dir = dst / ".git"
+    git_dir.mkdir()
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
     return dst
 
 
@@ -1157,8 +1159,27 @@ def build_real_backend(backend_cls, tmp_path, sources, *, tests=None, extra_argv
 
     objdir = os.path.join(str(tmp_path), "obj")
     bindir = os.path.join(str(tmp_path), "bin")
-    argv = list(extra_argv or [])
-    argv += ["--include", str(tmp_path), "--cas-objdir", objdir, "--bindir", bindir]
+    # Pin ALL four CAS dirs under tmp_path. Pinning only --cas-objdir/--bindir
+    # leaves --cas-exedir/--cas-pcmdir defaulting via find_git_root(), which —
+    # under /tmp with a stray /tmp/.git or any non-repo cwd — drops link
+    # artefacts (and their .result markers) outside tmp_path. Tests that walk
+    # tmp_path for .result sidecars then find nothing.
+    exedir = os.path.join(str(tmp_path), "cas-exedir")
+    pcmdir = os.path.join(str(tmp_path), "cas-pcmdir")
+    pchdir = os.path.join(str(tmp_path), "cas-pchdir")
+    # Helper defaults go FIRST so caller-supplied extra_argv overrides win
+    # under argparse's last-occurrence-wins rule. A caller passing
+    # ``extra_argv=['--cas-pchdir', '/custom']`` would otherwise be silently
+    # clobbered by the helper-appended default below.
+    argv = [
+        "--include", str(tmp_path),
+        "--cas-objdir", objdir,
+        "--cas-pchdir", pchdir,
+        "--cas-pcmdir", pcmdir,
+        "--cas-exedir", exedir,
+        "--bindir", bindir,
+    ]
+    argv += list(extra_argv or [])
     if tests:
         # --tests is nargs="*": one flag carrying all values. A repeated
         # --tests=... flag would let only the last value survive.

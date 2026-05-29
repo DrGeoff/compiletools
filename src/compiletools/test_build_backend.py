@@ -311,6 +311,35 @@ class TestPrebuildAuxArtefacts:
         with pytest.raises(AssertionError, match=r"artefact suffix|must be a directory"):
             backend._prebuild_aux_artefacts()
 
+    def test_pre_lock_fast_path_resolves_relative_output_against_rule_cwd(self, tmp_path):
+        """Latent-fix regression guard: a rule with a relative output + non-None
+        cwd must have its existence probe resolved against rule.cwd, matching
+        the cwd= forwarding into execute_compile_rule. Without this, a warm-PCH
+        peer cache (file present at <cwd>/<rel_output>) would be missed and the
+        rule would re-run."""
+        backend = self._make_backend(tmp_path)
+        bucket = tmp_path / "pch-bucket"
+        bucket.mkdir()
+        # Pre-populate the artefact at <cwd>/<rel_output>
+        rel_output = "pch-bucket/header.h.gch"
+        (tmp_path / rel_output).write_bytes(b"PEER_PRODUCED_PCH")
+
+        rule = BuildRule(
+            output=rel_output,
+            inputs=["/some/header.h"],
+            command=["g++", "-x", "c++-header", "-c", "/some/header.h", "-o", rel_output],
+            rule_type=RuleType.COMPILE,
+            order_only_deps=[str(bucket)],
+            cwd=str(tmp_path),
+        )
+        self._attach_rule(backend, rule)
+
+        with patch("compiletools.build_backend.execute_compile_rule") as mock_compile:
+            backend._prebuild_aux_artefacts()
+
+        # Fast path must skip: artefact exists at <cwd>/<rel_output>.
+        mock_compile.assert_not_called()
+
     def test_no_op_when_graph_has_no_aux_rules(self, tmp_path):
         backend = self._make_backend(tmp_path)
 

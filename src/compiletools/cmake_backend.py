@@ -7,11 +7,13 @@ operates at a higher abstraction level than Make/Ninja.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import subprocess
 
 import compiletools.filesystem_utils
+import compiletools.git_utils
 import compiletools.utils
 import compiletools.wrappedos
 from compiletools.build_backend import (
@@ -137,6 +139,26 @@ def _cmake_src_rel(path: str) -> str:
     cmake-build/. Absolute paths pass through unchanged.
     """
     return path if os.path.isabs(path) else f"${{CMAKE_SOURCE_DIR}}/{path}"
+
+
+def _cmake_cache_home_dir(cache_file: str) -> str | None:
+    """Return the ``CMAKE_HOME_DIRECTORY`` recorded in a CMakeCache.txt.
+
+    This is the source directory CMake bound the cache to at configure time.
+    Returns ``None`` if the cache file is absent or the entry can't be read —
+    callers treat ``None`` as "no pre-existing cache to conflict with".
+    """
+    try:
+        with open(cache_file, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                # Format: CMAKE_HOME_DIRECTORY:INTERNAL=/abs/source/dir
+                if line.startswith("CMAKE_HOME_DIRECTORY:"):
+                    _, _, value = line.partition("=")
+                    value = value.strip()
+                    return value or None
+    except OSError:
+        return None
+    return None
 
 
 @register_backend
@@ -392,9 +414,64 @@ class CMakeBackend(BuildBackend):
 
         self._prebuild_aux_artefacts()
 
-        # Use out-of-source build in {objdir}/cmake-build
-        source_dir = os.path.dirname(compiletools.wrappedos.realpath(self.build_filename()))
-        build_dir = os.path.join(self.args.cas_objdir, "cmake-build")
+        # Use out-of-source build in {objdir}/cmake-build-<src_key>
+        # CMake binds CMakeCache.txt to one source dir — hash the source so two projects
+        # sharing cas_objdir don't collide.
+        # Hash workspace-invariant key (gitroot-basename | gitroot-relative source dir) so two checkouts of the
+        # same project at different absolute paths produce byte-identical cmake-build dirs (preserves the
+        # cross-workspace .o byte-identity guarantee of -ffile-prefix-map). Outside a real git repo,
+        # find_git_root returns its cwd fallback — in that case fall back to the absolute-path hash
+        # (byte-identity across workspaces isn't expected there anyway, and the cwd fallback would
+        # spuriously equate unrelated trees that happen to live under the same parent).
+        # build_filename() may be a bare ``CMakeLists.txt`` (relative) — abspath() it FIRST so the
+        # wrappedos.realpath() result (and therefore the cache key) doesn't depend on the cwd the
+        # caller happened to be in.
+        source_dir = os.path.dirname(compiletools.wrappedos.realpath(os.path.abspath(self.build_filename())))
+        # abspath() FIRST (same reason as source_dir above): find_git_root ->
+        # wrappedos.realpath caches on the input *string*, so a bare relative
+        # build_filename() would return the first-seen cwd's resolution on a
+        # second call from a different cwd, yielding a stale anchor_root that
+        # disagrees with the (already abspath'd) source_dir.
+        anchor_root = compiletools.git_utils.find_git_root(os.path.abspath(self.build_filename()))
+        # find_git_root returns its cwd-style fallback (the queried directory itself) when no real
+        # .git marker is found — gate the workspace-invariant key on a *real* git marker so a stray
+        # empty ``/tmp/.git`` doesn't poison the hash.
+        if compiletools.git_utils.is_real_git_marker(anchor_root):
+            anchor_real = compiletools.wrappedos.realpath(anchor_root)
+            # Guard against ``source_dir`` not actually living under ``anchor_real`` (would yield
+            # ``../../...`` traversal escapes that leak workspace structure into the cache key).
+            # When not under, fall back to the absolute-source-dir hash.
+            try:
+                common = os.path.commonpath([source_dir, anchor_real])
+            except ValueError:
+                # Different drives on Windows etc. — treat as not-under.
+                common = ""
+            if common == anchor_real:
+                rel_src = os.path.relpath(source_dir, anchor_real)
+                # ``anchor_real == "/"`` would basename to ``""`` and produce a key like ``|rel`` —
+                # substitute a sentinel so the key always has a nonempty gitroot name.
+                gitroot_name = os.path.basename(os.path.normpath(anchor_real)) or "ROOT"
+                key_material = f"{gitroot_name}|{rel_src}"
+            else:
+                key_material = source_dir
+        else:
+            key_material = source_dir
+        # blake2b (truncated to 6 bytes = 12 hex chars) avoids sha1's historical baggage and is
+        # faster. Width is pinned at 12 hex chars to match the prior layout exactly.
+        src_key = hashlib.blake2b(key_material.encode("utf-8"), digest_size=6).hexdigest()
+        build_dir = os.path.join(self.args.cas_objdir, f"cmake-build-{src_key}")
+        # Cross-repo collision guard. The workspace-invariant key deliberately
+        # collides two checkouts of the *same* repo (preserving .o byte-identity
+        # under a shared cas_objdir), but two *distinct* repos that share a
+        # gitroot basename AND gitroot-relative source path hash to the same
+        # src_key. CMake binds CMakeCache.txt to one source dir and would abort
+        # the second project with a "source directory has changed" error. If an
+        # existing cache points at a different source dir, fall back to an
+        # absolute-source-dir key (unique per checkout) for this tree only.
+        cached_home = _cmake_cache_home_dir(os.path.join(build_dir, "CMakeCache.txt"))
+        if cached_home is not None and compiletools.wrappedos.realpath(cached_home) != source_dir:
+            fallback_key = hashlib.blake2b(source_dir.encode("utf-8"), digest_size=6).hexdigest()
+            build_dir = os.path.join(self.args.cas_objdir, f"cmake-build-{fallback_key}")
         os.makedirs(build_dir, exist_ok=True)
 
         # Configure — pass the user-configured compilers so CMake does not

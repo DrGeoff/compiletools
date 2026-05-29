@@ -878,13 +878,21 @@ class BuildBackend(abc.ABC):
         iface_bmi_by_output = self._module_interface_bmi_by_output()
 
         verbose = getattr(self.args, "verbose", 0)
+
+        # Resolve probe paths against rule.cwd so relative outputs are checked
+        # under the same cwd execute_compile_rule will run the rule with below.
+        def _cwd_aware(path: str, cwd: str | None) -> str:
+            if os.path.isabs(path) or not cwd:
+                return path
+            return os.path.join(cwd, path)
+
         for rule in aux_rules:
             # Pre-lock fast-path mirrors trace_backend._do_build:365-383.
             # The skip_if_exists below closes the TOCTOU window inside the
             # lock; this skip avoids the lock entirely on warm builds.
-            output_exists = os.path.exists(rule.output)
+            output_exists = os.path.exists(_cwd_aware(rule.output, rule.cwd))
             bmi = iface_bmi_by_output.get(rule.output)
-            bmi_missing = bmi is not None and not os.path.exists(bmi)
+            bmi_missing = bmi is not None and not os.path.exists(_cwd_aware(bmi, rule.cwd))
             if output_exists and not bmi_missing:
                 continue
             assert rule.command is not None, f"aux rule {rule.output} has no command"
@@ -896,11 +904,28 @@ class BuildBackend(abc.ABC):
             # BMI ungenerated. The .o rewrite is content-identical (temp+rename).
             skip_if_exists = not (output_exists and bmi_missing)
             if rule.rule_type == RuleType.COMPILE:
-                execute_compile_rule(rule.output, rule.command, self.args, skip_if_exists=skip_if_exists)
+                # Forward rule.cwd so PCH / module-interface rules emitted
+                # with cwd=anchor_root keep their workspace-relative source
+                # resolution at execute time (matches trace_backend.py:536).
+                # Without this, bazel/cmake prebuild paths run the compiler
+                # from the wrong cwd whenever anchor_root != current cwd —
+                # latent today because affected scenarios have matching
+                # cwds, but a real defect once cas-pchdir/pcmdir is shared
+                # across workspaces with subdir invocations.
+                execute_compile_rule(
+                    rule.output, rule.command, self.args, skip_if_exists=skip_if_exists, cwd=rule.cwd
+                )
             else:
                 # gcc's shell-pipeline header-unit form does its own producer-side
                 # rename inside the pipeline; atomic_link's outer rewrite no-ops
                 # (emits a one-time warning) but the rule still runs correctly.
+                # NOTE: execute_link_rule does not currently accept a cwd
+                # kwarg (atomic_link runs in the parent's cwd). HEADER_UNIT
+                # rules emitted here use absolute paths and do not set
+                # BuildRule.cwd, so this is safe today. If a future rule
+                # routed through this branch sets a non-None cwd, the
+                # locking layer will need a cwd= kwarg extension symmetric
+                # to atomic_compile.
                 execute_link_rule(rule.output, list(rule.command), self.args, skip_if_exists=skip_if_exists)
 
     def clean(self) -> None:

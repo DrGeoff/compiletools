@@ -370,7 +370,7 @@ class TestCMakeExecute:
             with pytest.raises(RuntimeError, match=r"cmake.*not found"):
                 backend.execute()
 
-    def _capture_configure(self, *, CXX, CC, tmp_path):
+    def _capture_configure(self, *, CXX, CC, tmp_path, cmakelists_dir=None):
         """Run _execute_build('build') with subprocess and FS calls stubbed,
         returning the configure command list."""
         import os
@@ -392,13 +392,18 @@ class TestCMakeExecute:
         def fake_check_call(cmd, **kwargs):
             captured.append(cmd)
 
+        cmakelists_dir = cmakelists_dir if cmakelists_dir is not None else tmp_path
+        os.makedirs(cmakelists_dir, exist_ok=True)
+        cmakelists_path = str(os.path.join(cmakelists_dir, "CMakeLists.txt"))
+
         with (
             patch("shutil.which", return_value="/usr/bin/cmake"),
             patch("subprocess.check_call", side_effect=fake_check_call),
             patch.object(backend, "_copy_built_executables"),
-            patch.object(backend, "build_filename", return_value=str(tmp_path / "CMakeLists.txt")),
+            patch.object(backend, "build_filename", return_value=cmakelists_path),
         ):
-            (tmp_path / "CMakeLists.txt").write_text("")
+            with open(cmakelists_path, "w") as fh:
+                fh.write("")
             backend._execute_build("build")
 
         # First call is configure
@@ -413,6 +418,282 @@ class TestCMakeExecute:
         assert "-DCMAKE_C_COMPILER=gcc" in cmd
         assert not any(a.startswith("-DCMAKE_CXX_COMPILER_LAUNCHER=") for a in cmd)
         assert not any(a.startswith("-DCMAKE_C_COMPILER_LAUNCHER=") for a in cmd)
+
+    def test_build_dir_differs_per_source_dir(self, tmp_path):
+        """Two source trees sharing one cas_objdir must NOT collide on
+        ``cmake-build/`` — CMake binds CMakeCache.txt to one source dir, so
+        a shared build_dir produces ``CMake Error: The source ... does not
+        match the source ... used to generate cache.`` Build dir must be
+        keyed by source dir.
+
+        ``tmp_path`` is not under a real git checkout, so this exercises the
+        absolute-source-dir fallback (no real ``.git`` → no anchoring). The
+        gitroot-anchored variant is exercised by
+        ``test_build_dir_differs_per_gitroot``."""
+        src_a = tmp_path / "proj_a"
+        src_b = tmp_path / "proj_b"
+        cmd_a = self._capture_configure(CXX="g++", CC="gcc", tmp_path=tmp_path, cmakelists_dir=src_a)
+        cmd_b = self._capture_configure(CXX="g++", CC="gcc", tmp_path=tmp_path, cmakelists_dir=src_b)
+
+        # Extract the -B argument (build dir) from each configure command
+        def build_dir_of(cmd):
+            i = cmd.index("-B")
+            return cmd[i + 1]
+
+        bd_a = build_dir_of(cmd_a)
+        bd_b = build_dir_of(cmd_b)
+        assert bd_a != bd_b, f"build_dir must differ per source dir; got {bd_a!r} == {bd_b!r}"
+        # Both must live inside cas_objdir
+        assert bd_a.startswith(str(tmp_path / "obj"))
+        assert bd_b.startswith(str(tmp_path / "obj"))
+        # Sanity: same source dir twice → same build_dir (deterministic hash)
+        cmd_a2 = self._capture_configure(CXX="g++", CC="gcc", tmp_path=tmp_path, cmakelists_dir=src_a)
+        assert build_dir_of(cmd_a2) == bd_a
+
+    def test_build_dir_differs_per_gitroot(self, tmp_path):
+        """Inside real git checkouts, the build_dir hash key is
+        ``(gitroot_basename | gitroot-relative source dir)`` — workspace
+        invariant, so two checkouts of the same project at different
+        absolute paths collide (deliberately, to preserve cross-workspace
+        ``.o`` byte-identity under shared ``cas_objdir``), but two
+        distinct gitroot-name projects sharing a ``cas_objdir`` get
+        distinct build dirs."""
+        # Two checkouts of "same" project at different abs paths.
+        alice = tmp_path / "alice" / "proj"
+        bob = tmp_path / "bob" / "proj"
+        # Two unrelated projects sharing a cas_objdir.
+        other = tmp_path / "alice" / "other"
+        # Real git markers: `.git` directory containing HEAD (so
+        # `find_git_root`'s fallback walker accepts each as a genuine
+        # repository, not a fake/empty placeholder).
+        import compiletools.git_utils as _gu
+
+        _gu.clear_cache()
+        for d in (alice, bob, other):
+            d.mkdir(parents=True)
+            git_dir = d / ".git"
+            git_dir.mkdir()
+            (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
+
+        def build_dir_of(cmd):
+            return cmd[cmd.index("-B") + 1]
+
+        cmd_alice = self._capture_configure(CXX="g++", CC="gcc", tmp_path=tmp_path, cmakelists_dir=alice)
+        cmd_bob = self._capture_configure(CXX="g++", CC="gcc", tmp_path=tmp_path, cmakelists_dir=bob)
+        cmd_other = self._capture_configure(CXX="g++", CC="gcc", tmp_path=tmp_path, cmakelists_dir=other)
+
+        bd_alice = build_dir_of(cmd_alice)
+        bd_bob = build_dir_of(cmd_bob)
+        bd_other = build_dir_of(cmd_other)
+
+        # Two checkouts of same-named project → same build_dir (workspace-invariant key)
+        assert bd_alice == bd_bob, (
+            f"two checkouts of same project should hash identically; got {bd_alice!r} vs {bd_bob!r}"
+        )
+        # Different gitroot basename → different build_dir
+        assert bd_alice != bd_other, (
+            f"unrelated projects must NOT collide on cmake-build; got {bd_alice!r} == {bd_other!r}"
+        )
+
+    def test_build_dir_stable_across_cwd_changes(self, tmp_path, monkeypatch):
+        """build_filename() may be a bare ``CMakeLists.txt`` (relative). The
+        cache key must NOT depend on the process's cwd at the moment
+        ``_execute_build`` runs.
+
+        Two *different logical projects* are invoked from cwds where the same
+        bare relative filename ``CMakeLists.txt`` resolves to each one. Without
+        the ``abspath`` fix the *cached* ``wrappedos.realpath('CMakeLists.txt')``
+        result from the first call (keyed on the input string) is reused for
+        the second call, collapsing both projects to the same build dir — a
+        cross-project collision under shared ``cas_objdir``. With the fix,
+        ``abspath`` runs first (cwd-resolved lexically) so two distinct cwds
+        feed distinct *absolute* strings into ``wrappedos.realpath`` and the
+        per-project answers stay distinct."""
+        import compiletools.git_utils as _gu
+        import compiletools.wrappedos as _wos
+
+        # Two independent projects, each with its own real .git marker.
+        proj_a = tmp_path / "proj_a"
+        proj_b = tmp_path / "proj_b"
+        for d in (proj_a, proj_b):
+            d.mkdir()
+            (d / ".git").mkdir()
+            (d / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+            (d / "CMakeLists.txt").write_text("")
+        # NB: only clear once before the pair so the second call inherits any
+        # poisoned wrappedos cache from the first — reproducing the bug.
+        _gu.clear_cache()
+        _wos.clear_cache()
+
+        def build_dir(cwd):
+            args = MagicMock()
+            args.CXX = "g++"
+            args.CC = "gcc"
+            args.cas_objdir = str(tmp_path / "obj")
+            args.parallel = 0
+            args.output = str(tmp_path / "out")
+            os.makedirs(args.cas_objdir, exist_ok=True)
+            hunter = MagicMock()
+            backend = CMakeBackend(args=args, hunter=hunter)
+            backend._graph = None
+            captured = []
+            monkeypatch.chdir(cwd)
+            with (
+                patch("shutil.which", return_value="/usr/bin/cmake"),
+                patch("subprocess.check_call", side_effect=lambda cmd, **kw: captured.append(cmd)),
+                patch.object(backend, "_copy_built_executables"),
+                # Bare relative filename — the load-bearing piece. realpath()'s
+                # functools.cache keys on the string, so a second call from a
+                # different cwd returns the stale answer without abspath first.
+                patch.object(backend, "build_filename", return_value="CMakeLists.txt"),
+            ):
+                backend._execute_build("build")
+            return captured[0][captured[0].index("-B") + 1]
+
+        bd_a = build_dir(proj_a)
+        bd_b = build_dir(proj_b)
+        assert bd_a != bd_b, (
+            f"two distinct projects must hash to different build_dirs even when invoked with the "
+            f"same bare relative build_filename from different cwds; got {bd_a!r} == {bd_b!r}"
+        )
+
+    def test_build_dir_blake2b_pinned_for_known_input(self, tmp_path):
+        """Regression guard: pin the hash output for a known input so that a
+        future swap of the hashing algorithm (or its truncation width) is
+        caught by the test suite. Mirrors the production keying path:
+        blake2b(<gitroot_name>|<rel_src>, digest_size=6).hexdigest()."""
+        import hashlib
+
+        key_material = "myproj|."
+        expected = hashlib.blake2b(key_material.encode("utf-8"), digest_size=6).hexdigest()
+        # Exactly 12 hex chars (6 bytes * 2) — width invariant the cmake_backend
+        # cache directory layout depends on.
+        assert len(expected) == 12
+
+        # End-to-end check that the build_dir suffix matches what the keying
+        # function produces for the literal "myproj" project at the gitroot.
+        import compiletools.git_utils as _gu
+
+        proj = tmp_path / "myproj"
+        proj.mkdir()
+        (proj / ".git").mkdir()
+        (proj / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+        (proj / "CMakeLists.txt").write_text("")
+        _gu.clear_cache()
+
+        args = MagicMock()
+        args.CXX = "g++"
+        args.CC = "gcc"
+        args.cas_objdir = str(tmp_path / "obj")
+        args.parallel = 0
+        args.output = str(tmp_path / "out")
+        os.makedirs(args.cas_objdir, exist_ok=True)
+        hunter = MagicMock()
+        backend = CMakeBackend(args=args, hunter=hunter)
+        backend._graph = None
+        captured = []
+        with (
+            patch("shutil.which", return_value="/usr/bin/cmake"),
+            patch("subprocess.check_call", side_effect=lambda cmd, **kw: captured.append(cmd)),
+            patch.object(backend, "_copy_built_executables"),
+            patch.object(backend, "build_filename", return_value=str(proj / "CMakeLists.txt")),
+        ):
+            backend._execute_build("build")
+        bd = captured[0][captured[0].index("-B") + 1]
+        assert bd.endswith(f"cmake-build-{expected}"), f"expected suffix cmake-build-{expected}; got {bd!r}"
+
+    def test_build_dir_falls_back_when_source_not_under_gitroot(self, tmp_path):
+        """If the resolved ``source_dir`` is not actually under the gitroot
+        ``anchor_real`` (symlink, separate tree, race), ``os.path.relpath``
+        would emit ``../../...`` traversal escapes that leak absolute
+        workspace structure into the key. The fix is to detect this case
+        and fall back to hashing the absolute source dir directly."""
+        import hashlib
+
+        import compiletools.git_utils as _gu
+
+        # Real gitroot in one location.
+        gitroot = tmp_path / "real_root"
+        gitroot.mkdir()
+        (gitroot / ".git").mkdir()
+        (gitroot / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+        # Source dir lives in a completely separate tree.
+        outside_src = tmp_path / "outside" / "proj"
+        outside_src.mkdir(parents=True)
+        (outside_src / "CMakeLists.txt").write_text("")
+        _gu.clear_cache()
+
+        args = MagicMock()
+        args.CXX = "g++"
+        args.CC = "gcc"
+        args.cas_objdir = str(tmp_path / "obj")
+        args.parallel = 0
+        args.output = str(tmp_path / "out")
+        os.makedirs(args.cas_objdir, exist_ok=True)
+        hunter = MagicMock()
+        backend = CMakeBackend(args=args, hunter=hunter)
+        backend._graph = None
+        captured = []
+        # Force find_git_root to return the unrelated gitroot, simulating a
+        # build where the resolved source dir doesn't live under it.
+        with (
+            patch("shutil.which", return_value="/usr/bin/cmake"),
+            patch("subprocess.check_call", side_effect=lambda cmd, **kw: captured.append(cmd)),
+            patch.object(backend, "_copy_built_executables"),
+            patch.object(backend, "build_filename", return_value=str(outside_src / "CMakeLists.txt")),
+            patch("compiletools.git_utils.find_git_root", return_value=str(gitroot)),
+        ):
+            backend._execute_build("build")
+        bd = captured[0][captured[0].index("-B") + 1]
+        # Expect the absolute-path fallback hash, NOT a hash containing
+        # traversal escapes ("../../..").
+        expected_key = hashlib.blake2b(str(outside_src).encode("utf-8"), digest_size=6).hexdigest()
+        assert bd.endswith(f"cmake-build-{expected_key}"), (
+            f"expected fallback to absolute-path hash {expected_key!r}; got {bd!r}"
+        )
+
+    def test_build_dir_handles_root_gitroot(self, tmp_path):
+        """``anchor_real == '/'`` would basename to ``''`` and produce a key
+        like ``|rel`` with an empty gitroot name. Substitute a sentinel
+        (``ROOT``) so the key always has a nonempty gitroot name."""
+        import hashlib
+
+        import compiletools.git_utils as _gu
+
+        # We can't actually make a gitroot at "/", but we can simulate it.
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "CMakeLists.txt").write_text("")
+        _gu.clear_cache()
+
+        args = MagicMock()
+        args.CXX = "g++"
+        args.CC = "gcc"
+        args.cas_objdir = str(tmp_path / "obj")
+        args.parallel = 0
+        args.output = str(tmp_path / "out")
+        os.makedirs(args.cas_objdir, exist_ok=True)
+        hunter = MagicMock()
+        backend = CMakeBackend(args=args, hunter=hunter)
+        backend._graph = None
+        captured = []
+
+        # Patch is_real_git_marker → True for "/", and realpath("/") → "/".
+        with (
+            patch("shutil.which", return_value="/usr/bin/cmake"),
+            patch("subprocess.check_call", side_effect=lambda cmd, **kw: captured.append(cmd)),
+            patch.object(backend, "_copy_built_executables"),
+            patch.object(backend, "build_filename", return_value=str(src / "CMakeLists.txt")),
+            patch("compiletools.git_utils.find_git_root", return_value="/"),
+            patch("compiletools.git_utils.is_real_git_marker", return_value=True),
+        ):
+            backend._execute_build("build")
+        bd = captured[0][captured[0].index("-B") + 1]
+        rel_src = os.path.relpath(str(src), "/")
+        expected_key = hashlib.blake2b(f"ROOT|{rel_src}".encode(), digest_size=6).hexdigest()
+        assert bd.endswith(f"cmake-build-{expected_key}"), (
+            f"expected sentinel-ROOT key {expected_key!r}; got {bd!r}"
+        )
 
     def test_configure_with_ccache_wrapper(self, tmp_path):
         """``CXX='ccache g++'`` must split into COMPILER + COMPILER_LAUNCHER —

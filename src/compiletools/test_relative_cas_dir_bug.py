@@ -64,7 +64,9 @@ def _nested_workspace(tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Pat
     repo = tmp_path / "repo"
     sub = repo / "sub"
     sub.mkdir(parents=True)
-    (repo / ".git").mkdir()
+    git_dir = repo / ".git"
+    git_dir.mkdir()
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
     src = pathlib.Path(example_path("relative_cas_dir_bug"))
     for entry in src.iterdir():
         if entry.is_file():
@@ -211,7 +213,9 @@ def test_relative_cas_dir_resolves_to_same_location_from_any_cwd(tmp_path, monke
     repo = tmp_path / "repo"
     sub = repo / "sub"
     sub.mkdir(parents=True)
-    (repo / ".git").mkdir()  # makes find_git_root() resolve to <repo> from both cwds
+    git_dir = repo / ".git"
+    git_dir.mkdir()  # makes find_git_root() resolve to <repo> from both cwds
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
 
     def _physical_cas_objdir(cwd: pathlib.Path) -> str:
         monkeypatch.chdir(cwd)

@@ -77,6 +77,15 @@ if _rich_rst_available and sys.version_info >= (3, 9):
 _UNSUPPLIED_USE_CXX = "unsupplied_implies_use_CXX"
 _UNSUPPLIED_USE_CXXFLAGS = "unsupplied_implies_use_CXXFLAGS"
 
+# The closed set of "not supplied by the user" sentinels recognised by
+# ``unsupplied_replacement``. The cas-*dir flags register the bare
+# ``"unsupplied"`` sentinel; CPP/CPPFLAGS/LD/LDFLAGS register the two
+# ``unsupplied_implies_*`` forms above. Membership is checked by *exact*
+# equality (not substring) so a user-supplied path that merely contains the
+# text ``unsupplied`` (e.g. ``--cas-objdir=/data/unsupplied/obj``) is not
+# silently discarded and replaced with the computed default.
+_UNSUPPLIED_SENTINELS = frozenset({"unsupplied", _UNSUPPLIED_USE_CXX, _UNSUPPLIED_USE_CXXFLAGS})
+
 
 def parser_has_option(cap, option_string):
     """Check whether *cap* already has an action for *option_string*.
@@ -155,6 +164,27 @@ def add_base_arguments(cap, argv=None, variant=None):
     )
     cap.add_argument("--version", action="version", version=__version__)
     cap.add_argument("-?", action="help", help="Help")
+
+    # Opt-in to legacy permissive gitroot-marker walker. By default,
+    # ``compiletools.git_utils._find_git_root`` requires a real ``.git``
+    # (regular-file gitlink or directory with HEAD) so a stray empty
+    # ``/tmp/.git`` left by another user can't silently become the gitroot
+    # for every build running under ``/tmp/...``. Users who deliberately
+    # drop bare ``.git`` placeholders as project-root markers can flip this
+    # on to restore the prior behaviour.
+    compiletools.utils.add_flag_argument(
+        parser=cap,
+        name="allow-fake-git",
+        dest="allow_fake_git",
+        default=False,
+        help=(
+            "Permit the gitroot fallback walker to accept a bare '.git' "
+            "file/dir without verifying it's a real git repository "
+            "(legacy/dummy marker support). Default False: only real "
+            "markers are accepted — a regular-file '.git' (worktree "
+            "gitlink) or a directory containing HEAD."
+        ),
+    )
 
     if _rich_rst_available and sys.version_info >= (3, 9):
         cap.add_argument("--man", "--doc", action=DocumentationAction)
@@ -393,10 +423,20 @@ def add_link_arguments(cap):
 def add_cas_directory_arguments(cap, variant):
     """Register the four ``--cas-{obj,pch,pcm,exe}dir`` flags on *cap*.
 
-    Variant-aware defaults: when invoked inside a git working tree,
-    each CAS lives at ``<git_root>/cas-<kind>dir/<variant>``. Outside
-    a git tree the defaults land under ``bin/<variant>/<kind>``,
-    matching what the build backends would otherwise compute.
+    Variant-aware defaults: each CAS lives at
+    ``<git_root>/cas-<kind>dir/<variant>``, where ``<git_root>`` is the
+    value ``find_git_root()`` resolves (the real git toplevel, an
+    ``--allow-fake-git``-accepted marker, or the current directory as a
+    fallback when no marker is found).
+
+    The registrar deliberately stores the literal sentinel
+    ``"unsupplied"`` as the argparse default; the real path is computed
+    by ``resolve_cas_directory_arguments`` AFTER the post-parse
+    ``set_allow_fake_git`` propagation. This lets ``--allow-fake-git``
+    actually steer the gitroot lookup (issue: registrar-time
+    ``find_git_root()`` ran with strict mode and baked the wrong
+    answer into argparse defaults; ``unsupplied_replacement`` only
+    swaps on the literal ``"unsupplied"`` string).
 
     Sliced out of ``add_output_directory_arguments`` so read-only tools
     (e.g. ``ct-cache-report``) can register exactly the four CAS flags
@@ -415,53 +455,45 @@ def add_cas_directory_arguments(cap, variant):
     """
     if _parser_has_option(cap, "--cas-objdir"):
         return
-    git_root = compiletools.git_utils.find_git_root()
-    if git_root:
-        default_cas_objdir = os.path.join(git_root, "cas-objdir", variant)
-    else:
-        default_cas_objdir = "".join(["bin/", variant, "/obj"])
+    # Defaults are the literal sentinel "unsupplied"; the real path is
+    # computed inside ``resolve_cas_directory_arguments`` after
+    # ``set_allow_fake_git`` has propagated. See docstring.
     cap.add_argument(
         "--cas-objdir",
         help=(
             "Output directory for object files (content-addressable store). "
-            "If the supplied path does not already end in /<variant>, the "
-            "active variant is appended automatically so the layer stays "
-            "separated per variant."
+            "Defaults to <git_root>/cas-objdir/<variant> (git_root falls back "
+            "to the current directory when no repo marker is found). If the "
+            "supplied path does not already end in /<variant>, the active "
+            "variant is appended automatically so the layer stays separated "
+            "per variant."
         ),
-        default=default_cas_objdir,
+        default="unsupplied",
     )
-    if git_root:
-        default_cas_pchdir = os.path.join(git_root, "cas-pchdir", variant)
-    else:
-        default_cas_pchdir = os.path.join("bin", variant, "pch")
     cap.add_argument(
         "--cas-pchdir",
         help=(
             "Output directory for precompiled header cache (content-addressable store). "
-            "If the supplied path does not already end in /<variant>, the "
-            "active variant is appended automatically so the layer stays "
-            "separated per variant."
+            "Defaults to <git_root>/cas-pchdir/<variant> (git_root falls back "
+            "to the current directory when no repo marker is found). If the "
+            "supplied path does not already end in /<variant>, the active "
+            "variant is appended automatically so the layer stays separated "
+            "per variant."
         ),
-        default=default_cas_pchdir,
+        default="unsupplied",
     )
-    if git_root:
-        default_cas_pcmdir = os.path.join(git_root, "cas-pcmdir", variant)
-    else:
-        default_cas_pcmdir = os.path.join("bin", variant, "pcm")
     cap.add_argument(
         "--cas-pcmdir",
         help=(
             "Output directory for precompiled C++20 module cache (content-addressable store). "
-            "If the supplied path does not already end in /<variant>, the "
-            "active variant is appended automatically so the layer stays "
-            "separated per variant."
+            "Defaults to <git_root>/cas-pcmdir/<variant> (git_root falls back "
+            "to the current directory when no repo marker is found). If the "
+            "supplied path does not already end in /<variant>, the active "
+            "variant is appended automatically so the layer stays separated "
+            "per variant."
         ),
-        default=default_cas_pcmdir,
+        default="unsupplied",
     )
-    if git_root:
-        default_cas_exedir = os.path.join(git_root, "cas-exedir", variant)
-    else:
-        default_cas_exedir = os.path.join("bin", variant, "exe")
     cap.add_argument(
         "--cas-exedir",
         help=(
@@ -470,11 +502,13 @@ def add_cas_directory_arguments(cap, variant):
             "the user-facing bin/<variant>/<name> is a hard link (with symlink "
             "fallback for cross-filesystem cases) to that file. Sharing this "
             "directory across CI runners makes link rules reusable across "
-            "fresh checkouts. If the supplied path does not already end in "
-            "/<variant>, the active variant is appended automatically so the "
-            "layer stays separated per variant."
+            "fresh checkouts. Defaults to <git_root>/cas-exedir/<variant> "
+            "(git_root falls back to the current directory when no repo marker "
+            "is found). If the supplied path does not already end in /<variant>, "
+            "the active variant is appended automatically so the layer stays "
+            "separated per variant."
         ),
-        default=default_cas_exedir,
+        default="unsupplied",
     )
 
 
@@ -527,7 +561,21 @@ def resolve_cas_directory_arguments(args):
     touches attributes that were registered by
     ``add_cas_directory_arguments`` (or its caller
     ``add_output_directory_arguments``).
+
+    Diagnostic-only tools (ct-cleanup-locks, ct-trim-cache,
+    ct-cache-report, ct-timing-report) that register
+    ``--allow-fake-git`` via ``add_base_arguments`` but never go
+    through ``apptools.parseargs`` rely on the
+    ``set_allow_fake_git`` propagation at the top of this function:
+    without it, the flag would be a silent no-op for them.
     """
+    # Propagate --allow-fake-git into the git_utils module-level setting
+    # BEFORE any find_git_root() call below resolves a default. This is the
+    # single canonical propagation point: parseargs ALSO calls
+    # set_allow_fake_git (redundantly, kept for explicitness), but the
+    # diagnostic-only tools that bypass parseargs rely on it firing here.
+    compiletools.git_utils.set_allow_fake_git(getattr(args, "allow_fake_git", False))
+
     variant = args.variant
     # Only gitroot-anchor a relative cas dir when the gitroot actually differs
     # from the invocation cwd -- i.e. ct-cake was invoked from a subdir of the
@@ -542,70 +590,36 @@ def resolve_cas_directory_arguments(args):
     # is a one-off direct read. Both inputs are absolute strings, so neither is
     # subject to the chdir footgun (CLAUDE.md "wrappedos" Caveat #3).
     cwd_real = os.path.realpath(os.getcwd())
-    try:
-        # Same idea as the bindir modification -- use cas-objdir at git root if available
-        git_root = compiletools.git_utils.find_git_root()
-        if git_root:
-            default_cas_objdir = os.path.join(git_root, "cas-objdir", variant)
-        else:
-            default_cas_objdir = os.path.join(args.bindir, "obj")
-        args.cas_objdir = unsupplied_replacement(args.cas_objdir, default_cas_objdir, args.verbose, "cas-objdir")
-        args.cas_objdir = _ensure_variant_suffix(args.cas_objdir, variant)
-        if git_root and compiletools.wrappedos.realpath(git_root) != cwd_real:
-            args.cas_objdir = compiletools.wrappedos.normpath(os.path.join(git_root, args.cas_objdir))
-    except AttributeError:
-        pass
 
-    try:
+    # ``find_git_root()`` always returns a usable absolute root: the real git
+    # toplevel, an ``--allow-fake-git``-accepted marker, or (when nothing is
+    # found) the queried directory / cwd as a fallback. It never returns a
+    # falsy value, so cas dirs are always anchored at that root -- there is no
+    # "no gitroot" bindir-relative fallback branch.
+    def _resolve(attr, kind, registered):
+        if not registered:
+            return None
         git_root = compiletools.git_utils.find_git_root()
-        if git_root:
-            default_cas_pchdir = os.path.join(git_root, "cas-pchdir", variant)
-        else:
-            default_cas_pchdir = os.path.join(args.bindir, "pch")
-        args.cas_pchdir = unsupplied_replacement(args.cas_pchdir, default_cas_pchdir, args.verbose, "cas-pchdir")
-        args.cas_pchdir = _ensure_variant_suffix(args.cas_pchdir, variant)
-        if git_root and compiletools.wrappedos.realpath(git_root) != cwd_real:
-            args.cas_pchdir = compiletools.wrappedos.normpath(os.path.join(git_root, args.cas_pchdir))
-    except AttributeError:
-        pass
+        default_value = os.path.join(git_root, f"cas-{kind}dir", variant)
+        current = getattr(args, attr)
+        new = unsupplied_replacement(current, default_value, args.verbose, f"cas-{kind}dir")
+        new = _ensure_variant_suffix(new, variant)
+        if compiletools.wrappedos.realpath(git_root) != cwd_real:
+            new = compiletools.wrappedos.normpath(os.path.join(git_root, new))
+        setattr(args, attr, new)
+        return git_root
 
-    try:
-        git_root = compiletools.git_utils.find_git_root()
-        if git_root:
-            default_cas_pcmdir = os.path.join(git_root, "cas-pcmdir", variant)
-        else:
-            default_cas_pcmdir = os.path.join(args.bindir, "pcm")
-        args.cas_pcmdir = unsupplied_replacement(args.cas_pcmdir, default_cas_pcmdir, args.verbose, "cas-pcmdir")
-        args.cas_pcmdir = _ensure_variant_suffix(args.cas_pcmdir, variant)
-        if git_root and compiletools.wrappedos.realpath(git_root) != cwd_real:
-            args.cas_pcmdir = compiletools.wrappedos.normpath(os.path.join(git_root, args.cas_pcmdir))
-    except AttributeError:
-        pass
+    _resolve("cas_objdir", "obj", hasattr(args, "cas_objdir"))
+    _resolve("cas_pchdir", "pch", hasattr(args, "cas_pchdir"))
+    _resolve("cas_pcmdir", "pcm", hasattr(args, "cas_pcmdir"))
 
-    try:
-        git_root = compiletools.git_utils.find_git_root()
-        if git_root:
-            default_cas_exedir = os.path.join(git_root, "cas-exedir", variant)
-        else:
-            default_cas_exedir = os.path.join(args.bindir, "exe")
-            # M1: when no gitroot is detected, the cas-exedir lands
-            # inside the working tree but isn't necessarily gitignored.
-            # Surface this so users can `.gitignore` the dir themselves
-            # before they accidentally commit cache entries.
-            if args.verbose >= 1:
-                import sys
-
-                print(
-                    f"WARN: cas-exedir defaulted to {default_cas_exedir!r} (no gitroot detected). "
-                    f"Add to .gitignore manually if this directory lives inside a VCS-tracked tree.",
-                    file=sys.stderr,
-                )
+    if hasattr(args, "cas_exedir"):
+        git_root_exe = compiletools.git_utils.find_git_root()
+        default_cas_exedir = os.path.join(git_root_exe, "cas-exedir", variant)
         args.cas_exedir = unsupplied_replacement(args.cas_exedir, default_cas_exedir, args.verbose, "cas-exedir")
         args.cas_exedir = _ensure_variant_suffix(args.cas_exedir, variant)
-        if git_root and compiletools.wrappedos.realpath(git_root) != cwd_real:
-            args.cas_exedir = compiletools.wrappedos.normpath(os.path.join(git_root, args.cas_exedir))
-    except AttributeError:
-        pass
+        if compiletools.wrappedos.realpath(git_root_exe) != cwd_real:
+            args.cas_exedir = compiletools.wrappedos.normpath(os.path.join(git_root_exe, args.cas_exedir))
 
 
 def add_output_directory_arguments(cap, variant):
@@ -864,11 +878,15 @@ def add_target_arguments_ex(cap):
 
 
 def unsupplied_replacement(variable, default_variable, verbose, variable_str):
-    """If a given variable has the letters "unsupplied" in it
+    """If a given variable is one of the recognised "unsupplied" sentinels
     then return the given default variable.
+
+    The check is exact membership in ``_UNSUPPLIED_SENTINELS`` rather than a
+    substring test, so a real user-supplied value that merely contains the
+    text ``unsupplied`` is preserved instead of being clobbered.
     """
     replacement = variable
-    if "unsupplied" in variable:
+    if variable in _UNSUPPLIED_SENTINELS:
         replacement = default_variable
         if verbose >= 6:
             print(" ".join([variable_str, "was unsupplied. Changed to use ", default_variable]))
@@ -945,9 +963,13 @@ def _extend_includes_using_git_root(args):
             git_roots.add(compiletools.git_utils.find_git_root(filename))
 
         if git_roots:
-            args.INCLUDE = " ".join(args.INCLUDE.split() + list(git_roots))
+            # sorted(), not list(): set iteration order depends on
+            # PYTHONHASHSEED, which would shift the -I order between processes
+            # and invalidate the cas-objdir cxxflags_tokens hash component on
+            # no-op rebuilds. See TestExtendIncludesUsingGitRootDeterministic.
+            args.INCLUDE = " ".join(args.INCLUDE.split() + sorted(git_roots))
             if args.verbose > 6:
-                print(f"Extended includes to have the gitroots {git_roots}")
+                print(f"Extended includes to have the gitroots {sorted(git_roots)}")
         else:
             raise ValueError(
                 "args.git_root is True but no git roots found. :( .  If this is expected then specify --no-git-root."
@@ -4032,6 +4054,17 @@ def create_parser(description, argv=None, include_config=True, include_write_con
                 needed by each tool after creation when include_config=False.
     """
     if include_config:
+        # Propagate --allow-fake-git BEFORE config discovery resolves the
+        # gitroot (extract_variant / resolve_variant -> find_git_root). The
+        # authoritative propagation still happens post-parse in parseargs /
+        # resolve_cas_directory_arguments; this only ensures config discovery
+        # sees the right mode. Only clear the configutils caches when the
+        # toggle actually changes, so the steady state keeps its cache hits.
+        scan_argv = argv if argv is not None else sys.argv
+        fake = "--allow-fake-git" in scan_argv
+        if fake != compiletools.git_utils.get_allow_fake_git():
+            compiletools.git_utils.set_allow_fake_git(fake)
+            compiletools.configutils.clear_cache()
         variant = compiletools.configutils.extract_variant(argv=argv)
         resolution = compiletools.configutils.resolve_variant(variant=variant, argv=argv)
         config_files = resolution.flat_paths
@@ -4169,6 +4202,18 @@ def parseargs(cap, argv, verbose=None, *, context):
             "verbose was not found in args. Fix is to call apptools.add_common_arguments "
             "or apptools.add_base_arguments before calling parseargs"
         )
+
+    # Propagate --allow-fake-git into the git_utils module-level setting
+    # BEFORE any downstream find_git_root() call inside substitutions /
+    # anchor_root computation. The resolver
+    # ``resolve_cas_directory_arguments`` ALSO calls this (so that
+    # diagnostic-only tools bypassing parseargs still get the flag
+    # honoured), but we propagate it here as well so any other
+    # find_git_root() callsite reached before the resolver runs (inside
+    # _commonsubstitutions) sees the post-parse value. set_allow_fake_git
+    # clears the @functools.cache when the value actually changes, so
+    # earlier strict-mode lookups don't poison subsequent permissive ones.
+    compiletools.git_utils.set_allow_fake_git(getattr(args, "allow_fake_git", False))
 
     if verbose is None:
         verbose = args.verbose
