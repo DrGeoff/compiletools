@@ -303,7 +303,7 @@ def test_ct_rule_outcomes_log_popped_on_exception(monkeypatch, tmp_path):
     Otherwise the env var leaks into the next invocation in the same
     Python process (in-process batch mode, tests, REPL).
     """
-    bindir, _objdir, argv = _bindir_objdir_argv(tmp_path, "--filename", "irrelevant.cpp")
+    _bindir, _objdir, argv = _bindir_objdir_argv(tmp_path, "--filename", "irrelevant.cpp")
     args = _build_args(argv)
 
     def _stub_createctobjs(self):
@@ -348,7 +348,7 @@ def test_env_vars_handled_even_when_timer_disabled(monkeypatch, tmp_path):
       must be preserved across the process() call so that an outer
       caller's setting is not silently clobbered.
     """
-    bindir, _objdir, argv = _bindir_objdir_argv(tmp_path, "--filename", "irrelevant.cpp")
+    _bindir, _objdir, argv = _bindir_objdir_argv(tmp_path, "--filename", "irrelevant.cpp")
     args = _build_args(argv)
 
     def _stub_createctobjs(self):
@@ -367,6 +367,7 @@ def test_env_vars_handled_even_when_timer_disabled(monkeypatch, tmp_path):
 
     cake = compiletools.cake.Cake(args)
     # Force the timer to be disabled for the finally block path.
+    assert cake.context.timer is not None
     cake.context.timer.enabled = False
 
     cake.process()

@@ -485,11 +485,11 @@ class TestRuleSpanMetadataLift:
                 start_s=base + 1.0,
                 end_s=base + 1.5,
                 metadata={
-                    "cas.hit": True,                              # serializable
-                    "cas.kind": "obj",                            # serializable
-                    "bad.set": {1, 2, 3},                         # NOT serializable
-                    "bad.datetime": _dt.datetime(2026, 5, 27),    # NOT serializable
-                    "good.after_bad": "trailing-value",           # serializable
+                    "cas.hit": True,  # serializable
+                    "cas.kind": "obj",  # serializable
+                    "bad.set": {1, 2, 3},  # NOT serializable
+                    "bad.datetime": _dt.datetime(2026, 5, 27),  # NOT serializable
+                    "good.after_bad": "trailing-value",  # serializable
                 },
             )
         timer.finish()
@@ -604,9 +604,7 @@ class TestRootSpanAggregateAttributes:
             derive_build_aggregates,
         )
 
-        timer._root.metadata.update(
-            derive_build_aggregates(timer, ccache_counts)
-        )
+        timer._root.metadata.update(derive_build_aggregates(timer, ccache_counts))
         annotate_rule_cache_layers(timer, ccache_attribution=None)
 
         # --- Export and capture spans in-memory.
@@ -631,9 +629,9 @@ class TestRootSpanAggregateAttributes:
         cas_hit_span = by_name["compile.src/cas_hit.cpp"]
         cas_miss_ccache_span = by_name["compile.src/cas_miss_ccache.cpp"]
         cas_miss_recompile_span = by_name["compile.src/cas_miss_recompile.cpp"]
-        assert cas_hit_span.attributes["ct.rule.cache_layer"] == "cas"
-        assert cas_miss_ccache_span.attributes["ct.rule.cache_layer"] == "other"
-        assert cas_miss_recompile_span.attributes["ct.rule.cache_layer"] == "other"
+        assert dict(cas_hit_span.attributes or {})["ct.rule.cache_layer"] == "cas"
+        assert dict(cas_miss_ccache_span.attributes or {})["ct.rule.cache_layer"] == "other"
+        assert dict(cas_miss_recompile_span.attributes or {})["ct.rule.cache_layer"] == "other"
 
 
 def test_same_basename_in_different_dirs_get_distinct_span_names(monkeypatch):
