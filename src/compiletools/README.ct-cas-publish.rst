@@ -8,7 +8,7 @@ Atomically publish a CAS artefact at a stable user-facing path
 
 :Author: drgeoffathome@gmail.com
 :Date:   2026-05-09
-:Version: 10.1.2
+:Version: 10.1.3
 :Manual section: 1
 :Manual group: developers
 
