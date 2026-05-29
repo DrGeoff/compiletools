@@ -14,7 +14,7 @@ Summarize occupancy and detect duplication across the CAS directories
 
 SYNOPSIS
 ========
-ct-cache-report [--cas-objdir PATH] [--cas-pchdir PATH] [--cas-pcmdir PATH] [--cas-exedir PATH] [--top N] [--json]
+ct-cache-report [--cas-objdir PATH] [--cas-pchdir PATH] [--cas-pcmdir PATH] [--cas-exedir PATH] [--top N] [--json] [--otel-export [--otel-endpoint URL] [--otel-protocol grpc|http] ...]
 
 DESCRIPTION
 ===========
@@ -130,6 +130,44 @@ OPTIONS
     Emit JSON instead of human-readable text. The JSON schema is
     described below.
 
+``--otel-export`` / ``--no-otel-export``
+    Also ship the CAS-health gauges to an OTLP collector as
+    OpenTelemetry metrics. Default: off (text/JSON output only).
+    Unlike ``ct-cake``'s ``--otel-export``, there is no ``--timing``
+    coupling here -- ``ct-cache-report`` is a one-shot scan, so the
+    metric snapshot is emitted directly from the report it just built.
+    See the OPENTELEMETRY METRIC EXPORT section below for the metric
+    set and the optional install extra.
+
+``--otel-endpoint URL``
+    OTLP collector endpoint URL. Defaults to
+    ``$OTEL_EXPORTER_OTLP_TRACES_ENDPOINT``, then
+    ``$OTEL_EXPORTER_OTLP_ENDPOINT``, as picked up by the SDK.
+
+``--otel-protocol grpc|http``
+    OTLP transport. Default: ``grpc``.
+
+``--otel-service-name NAME``
+    OTel ``service.name`` resource attribute. Default:
+    ``compiletools``. Also honours ``OTEL_SERVICE_NAME``.
+
+``--otel-resource-attr K=V``
+    Extra OTel resource attribute as ``K=V`` (repeatable, or
+    comma-separated). Merged on top of ``OTEL_RESOURCE_ATTRIBUTES``.
+
+``--otel-headers K=V,K=V``
+    OTLP exporter headers as ``K=V,K=V`` (e.g. for auth proxies).
+
+``--otel-insecure`` / ``--no-otel-insecure``
+    Disable / force TLS on the OTLP gRPC connection. If neither is
+    passed, the SDK infers from the endpoint URL scheme (``http://``
+    -> insecure, ``https://`` -> secure).
+
+``--otel-metrics-as-spans`` / ``--no-otel-metrics-as-spans``
+    When the collector accepts only traces (no metrics endpoint),
+    flatten the gauge values into a single short-lived span instead of
+    emitting OTLP metrics. Default: off.
+
 JSON OUTPUT
 ===========
 With ``--json``, the report is emitted as a single JSON document.
@@ -161,6 +199,51 @@ Preserved for back-compat: when ONLY ``--cas-objdir`` is supplied with
 under ``cas-objdir-report``. Any combination involving another cache
 flag triggers the combined schema above.
 
+OPENTELEMETRY METRIC EXPORT
+===========================
+With ``--otel-export``, the same CAS-health figures rendered as text or
+JSON are also emitted as OpenTelemetry (OTLP) metrics, then the process
+flushes and exits. There is no daemon and no periodic re-export: the
+natural deployment is a cron job or post-build hook per CAS-bearing host
+so dashboards have a current picture of cache health without paying for
+continuous scraping.
+
+Five gauges are emitted, each tagged with a ``cas_kind`` attribute
+(``obj`` / ``pch`` / ``pcm`` / ``exe``) so one query can break down by
+cache:
+
+* ``ct.cas.total_bytes`` -- total bytes occupied by the cache.
+* ``ct.cas.total_entries`` -- total cache entries scanned.
+* ``ct.cas.unique_buckets`` -- distinct logical artefacts (the
+  per-cache grouping key: ``(file_hash, dep_hash)`` for objdir, header
+  realpath for pchdir, ``bucket_key`` for pcmdir,
+  ``(source_realpath, suffix)`` for exedir).
+* ``ct.cas.wasted_bytes`` -- bytes attributable to key-pollution
+  duplication (sum-min per group).
+* ``ct.cas.duplicate_groups`` -- number of duplicated groups.
+
+A cas directory that was scanned but empty contributes one observation
+per gauge with value 0 ("I scanned, found nothing"); a cas directory
+that was not scanned contributes no observations at all. The same
+scope rules as the text/JSON report apply -- only the caches requested
+(or, with no explicit ``--cas-*dir`` flag, the variant-default caches
+present on disk) are observed.
+
+With ``--otel-metrics-as-spans``, the gauge values are instead
+flattened onto attributes of a single ``ct.cache.snapshot`` span
+(attribute shape ``ct.cas.<metric_stem>.<cas_kind>``, e.g.
+``ct.cas.total_bytes.obj``); no metric pipeline is built. This is the
+fallback for collectors that accept traces but not metrics.
+
+The OpenTelemetry SDK is an optional dependency. Install the ``otel``
+extra to enable export::
+
+    pip install 'compiletools[otel]'
+
+Without the extra, ``--otel-export`` raises ``RuntimeError`` naming the
+missing extra. Default behaviour is off: absent ``--otel-export``, no
+SDK is imported and no metrics are emitted.
+
 EXIT CODES
 ==========
 0
@@ -191,9 +274,17 @@ EXAMPLES
 
     ct-cache-report --cas-objdir=cas-objdir/blank --top 3
 
+**Emit CAS-health gauges to an OTLP collector (cron-friendly)**::
+
+    ct-cache-report --otel-export \
+        --otel-endpoint=http://otel-collector.internal:4317 \
+        --otel-resource-attr host=$(hostname)
+
 SEE ALSO
 ========
 ``ct-trim-cache`` (1) -- removes the duplicates this tool reports.
+``ct-otel`` (1) -- documents the same shared ``--otel-*`` flags for
+``ct-cake``'s build-span export, plus collector-setup recipes.
 ``ct-cas-publish`` (1) -- writes the ``.manifest`` sidecars that the
 ``cas-exedir`` report uses to bucket by source identity.
 ``ct-cake`` (1) -- the build orchestrator; its

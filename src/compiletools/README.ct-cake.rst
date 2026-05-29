@@ -813,15 +813,35 @@ Common Options
 
 **--otel-export / --no-otel-export**
     End-of-build OpenTelemetry (OTLP) export of the ``--timing`` span
-    tree.  Off by default.  Requires the optional ``otel`` extra
+    tree, plus OTLP metrics: cross-layer cache aggregates lifted onto
+    the root build span as ``ct.build.*`` attributes, and (with
+    ``--ccache-statslog``) ``ct.ccache.*`` ccache stats.  Off by
+    default.  Requires the optional ``otel`` extra
     (``pip install 'compiletools[otel]'``) and ``--timing``.  See
-    ``ct-otel`` (1) for the full span model, collector setup, and
-    examples.  Related flags: ``--otel-endpoint``,
+    ``ct-otel`` (1) for the full span/metrics model, collector setup,
+    and examples.  Related flags: ``--otel-endpoint``,
     ``--otel-service-name``, ``--otel-protocol`` (``grpc``/``http``),
     ``--otel-resource-attr`` (repeatable ``K=V``), ``--otel-headers``,
-    ``--otel-insecure``.  All values are also settable via ``ct.conf``
-    and the configargparse env-var hierarchy, plus the standard
-    ``OTEL_*`` env vars the SDK consults directly.
+    ``--otel-insecure``, ``--otel-metrics-as-spans``.  All values are
+    also settable via ``ct.conf`` and the configargparse env-var
+    hierarchy, plus the standard ``OTEL_*`` env vars the SDK consults
+    directly.
+
+**--ccache-statslog PATH|auto**
+    Capture ccache per-call events for this build by exporting
+    ``CCACHE_STATSLOG=<path>`` into the build subprocess environment;
+    ccache appends one event name per cache lookup to that file.  After
+    the build, ct-cake parses it and prints a one-line
+    ``ccache: cacheable=... hits=... misses=... hit_rate=...%`` summary.
+    With ``auto`` (or no value) the log is allocated at
+    ``<diagnostics-dir>/ccache.statslog`` and removed after ingest; with
+    an explicit path the file is caller-owned.  When combined with
+    ``--otel-export`` the parsed counts are shipped as OTLP metrics
+    (``ct.ccache.events`` / ``ct.ccache.hit_rate`` /
+    ``ct.ccache.remote_hit_rate``).  Allowed without ``--otel-export``
+    (statslog and summary are useful on their own); a ``-v`` note then
+    explains no metrics will be shipped.  See ``ct-otel`` (1).
+    Example: ``ct-cake --auto --ccache-statslog=auto --otel-export``
 
 **--diagnostics-dir PATH**
     Parent directory for per-invocation diagnostic artifacts -- the

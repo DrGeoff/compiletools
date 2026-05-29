@@ -2,9 +2,9 @@
 ct-otel
 ========
 
-------------------------------------------------------------
-Export ct-cake build timing as OpenTelemetry (OTLP) traces
-------------------------------------------------------------
+------------------------------------------------------------------------
+Export ct-cake build timing as OpenTelemetry (OTLP) traces and metrics
+------------------------------------------------------------------------
 
 :Author: drgeoffathome@gmail.com
 :Date:   2026-05-27
@@ -17,7 +17,9 @@ SYNOPSIS
 ct-cake --auto --timing --otel-export [--otel-endpoint URL]
 [--otel-service-name NAME] [--otel-protocol grpc|http]
 [--otel-resource-attr K=V ...] [--otel-headers K=V,K=V]
-[--otel-insecure]
+[--otel-insecure] [--otel-metrics-as-spans] [--ccache-statslog PATH|auto]
+
+ct-cache-report --otel-export [--otel-endpoint URL] [...]
 
 DESCRIPTION
 ===========
@@ -30,6 +32,18 @@ one OpenTelemetry span per event to an OTLP collector — the same data
 that would otherwise only land in ``timing.json``, but in a format any
 OTel-aware backend (Tempo, Jaeger, Honeycomb, an internal OTel
 collector, a ClickHouse pipeline, ...) can ingest.
+
+``--otel-export`` ships **OTLP metrics** alongside the traces:
+
+- Cross-layer cache aggregates — the headline "what fraction of TUs
+  did caching save?" numbers — are lifted onto the root build span as
+  ``ct.build.*`` attributes (see `CROSS-LAYER CACHE AGGREGATES`_).
+- ``ct-cake --ccache-statslog`` parses the build's ccache event log
+  and, when ``--otel-export`` is also on, ships it as ``ct.ccache.*``
+  metrics (see `CCACHE STATS METRICS`_).
+- ``ct-cache-report --otel-export`` emits ``ct.cas.*`` CAS-health
+  gauges from a content-addressable-store scan (see
+  `CAS-HEALTH GAUGES`_).
 
 The exporter is a pure end-of-build batch step.  No spans are emitted
 during the build itself.  Each OTLP request carries a 5-second
@@ -134,6 +148,23 @@ SDK as the env-var authority so that precedence is honoured intact.
     secure); pass ``--otel-insecure`` / ``--no-otel-insecure`` only
     to override that inference.
 
+**--otel-metrics-as-spans / --no-otel-metrics-as-spans**
+    For collectors that accept traces but expose no metrics endpoint.
+    When set, the metric sets described under `CCACHE STATS METRICS`_
+    and `CAS-HEALTH GAUGES`_ are flattened onto the attributes of a
+    single short-lived span each (``ct.ccache.snapshot`` /
+    ``ct.cache.snapshot``) instead of being shipped as OTLP metrics —
+    no metrics pipeline is built.  Default: off.  Has no effect on the
+    trace export or the ``ct.build.*`` root-span aggregates (those are
+    span attributes regardless).
+
+**--ccache-statslog PATH|auto**
+    ``ct-cake`` only.  Capture ccache per-call events for this build by
+    exporting ``CCACHE_STATSLOG=<path>`` into the build subprocess
+    environment; ccache appends one event name per cache lookup to that
+    file for the duration of the build.  See `CCACHE STATS METRICS`_ for
+    values, lifecycle, and the ``--otel-export`` interaction.
+
 Standard ``OTEL_*`` environment variables consulted by the
 OpenTelemetry SDK itself — ``OTEL_EXPORTER_OTLP_ENDPOINT``,
 ``OTEL_EXPORTER_OTLP_HEADERS``, ``OTEL_EXPORTER_OTLP_INSECURE``,
@@ -161,7 +192,8 @@ with the rest of an observability stack.
 Level            Span name                        Notable attributes
 ================ ================================ =====================================================================================================
 Root             ``compiletools.build``           Resource: ``service.name``, ``service.namespace=compiletools``, ``host.name``,
-                                                  ``git.commit.sha``, ``ct.variant``, ``ct.backend``, ``ct.invocation_id``
+                                                  ``service.instance.id``, ``git.commit.sha``, ``ct.variant``, ``ct.backend``,
+                                                  ``ct.invocation_id``; plus ``ct.build.*`` cross-layer cache aggregates (see below)
 Phase            ``phase.<name>``                 No span attrs (phase carries its name in the span name)
 Rule (compile)   ``compile.<dir>/<basename>``     ``ct.rule_type=compile``, ``ct.target``, ``ct.source``
 Rule (link)      ``link.<dir>/<basename>``        ``ct.rule_type=link``, ``ct.target`` (``ct.source`` omitted for link rules)
@@ -192,6 +224,18 @@ span in the collector can be cross-referenced one-to-one with the
 timeout; an empty value is dropped from the Resource if git is not
 available.
 
+``service.instance.id`` is ``<host.name>:<pid>`` — the standard OTel
+convention attribute disambiguating concurrent emitters on the same
+host (parallel ct-cake invocations, or a cron-driven
+``ct-cache-report`` colliding with a manual run).  It is attached to
+every Resource the exporter builds (traces and metrics alike).  The
+same set of Resource attributes — including ``service.instance.id`` and
+any ``--otel-resource-attr`` values — is attached to the metric
+exporters described below; metrics additionally carry
+``ct.invocation_id`` set to the build root span's trace_id so a backend
+that indexes on trace_id joins the ccache metrics natively against the
+build's spans.
+
 P2 coverage scope (CAS attributes on rule spans)
 ------------------------------------------------
 
@@ -221,6 +265,134 @@ backends that emit ``cas.*`` reliably without scraping span attrs.
 ``"obj"`` (compile) or ``"exe"`` (link/archive) — that layer cannot
 distinguish static-library from executable.  The ``trace`` backend has
 the rule-type metadata and tags ``lib``/``pcm``/``pch`` correctly.
+
+METRICS MODEL
+=============
+
+Beyond the span tree, ``--otel-export`` ships three metric families.
+All metric export is snapshot-and-exit: each entry point builds a fresh
+``MeterProvider``, records one observation per instrument,
+force-flushes, and shuts down.  There is no long-running daemon and no
+periodic re-export.  Under ``--otel-metrics-as-spans`` the ccache and
+CAS-health families are emitted as attribute-bearing spans instead (the
+``ct.build.*`` aggregates are always span attributes regardless).  Like
+the trace path, a failed or timed-out metric flush warns on stderr but
+never fails the build.
+
+CROSS-LAYER CACHE AGGREGATES
+----------------------------
+
+compiletools has two nested cache layers: the per-rule object/PCH/PCM
+CAS (a CAS hit means the compiler never ran) and ccache (a CAS *miss*
+can still be a ccache hit, because the lock wrapper invokes the real
+compiler under ccache).  At end-of-build, ``ct-cake`` joins the
+per-rule CAS-hit metadata with the build-wide ccache event counts into
+a single set of root-build-span attributes — the "what fraction of TUs
+did caching save?" headline — so dashboards do not re-derive the join
+per query.  These are span attributes on ``compiletools.build`` (not
+OTLP metrics), and they are also written into ``timing.json`` so
+offline tooling sees the same numbers.
+
+=================================== =====================================================================
+Root-span attribute                 Meaning
+=================================== =====================================================================
+``ct.build.cas_avoided_count``      Compile rules with ``cas.hit == True`` (compiler never ran).
+``ct.build.ccache_avoided_count``   ccache ``direct_cache_hit`` + ``preprocessed_cache_hit`` events.
+``ct.build.recompiled_count``       Compile rules neither CAS- nor ccache-saved (best-effort; floored
+                                    at zero — ccache attribution is build-wide, not per-rule).
+``ct.build.compile_avoided_rate``   ``(cas + ccache) / total`` compile rules, clamped to ``[0, 1]``;
+                                    ``0.0`` when there are no compile rules.
+``ct.build.aggregate_warning``      ``"ccache_overcount"`` — present ONLY when the statslog reported
+                                    more ccache hits than there were CAS-miss compile rules to
+                                    attribute to (e.g. a stale log reused across builds).  Absence is
+                                    a reliable "numbers are well-formed" signal.
+=================================== =====================================================================
+
+The four counts/rate are always emitted (even as zeros) so a dashboard
+can tell "build did not aggregate" from "build aggregated to zero".
+With no P2 CAS data (cmake/bazel backends) ``cas_avoided_count`` is 0;
+with no ``--ccache-statslog`` ``ccache_avoided_count`` is 0 and the
+rate reflects CAS-only savings; with both absent ``recompiled_count``
+equals the total compile-rule count.
+
+Each compile rule's span additionally carries
+``ct.rule.cache_layer``: ``"cas"`` when that rule's CAS short-circuit
+fired, otherwise ``"other"`` for ninja/make builds (ccache's statslog
+is a build-wide event stream with no per-target binding, so a precise
+``"ccache"`` vs ``"compiled"`` split is reported only at the root-span
+level, not per rule).
+
+CCACHE STATS METRICS
+--------------------
+
+``ct-cake --ccache-statslog`` exports ``CCACHE_STATSLOG=<path>`` into
+the build subprocess environment.  ccache then appends one event name
+per cache lookup (``direct_cache_hit``, ``preprocessed_cache_hit``,
+``cache_miss``, plus secondary ``local_storage_*`` / ``remote_storage_*``
+events) to that file for the duration of the build.  After the build,
+ct-cake parses the file and prints a one-line summary
+(``ccache: cacheable=... hits=... misses=... hit_rate=...%``) to the
+build log regardless of whether OTLP export is on.
+
+Values:
+
+**--ccache-statslog auto** (or the flag with no value)
+    Allocate the log at ``<diagnostics-dir>/ccache.statslog`` (alongside
+    ``timing.json``; see ``--diagnostics-dir`` in ``ct-cake`` (1)).  The
+    file is removed after the post-build ingest.
+
+**--ccache-statslog PATH**
+    Use an explicit path (made absolute relative to the invocation cwd).
+    The file's lifecycle is the caller's responsibility — ct-cake does
+    not remove it.
+
+When combined with ``--otel-export``, the parsed counts ship as OTLP
+metrics:
+
+============================= ========= =================================================================
+Metric                        Kind      Notes
+============================= ========= =================================================================
+``ct.ccache.events``          counter   One observation per distinct event name, tagged
+                                        ``ccache_event=<name>``, with that event's total count for the
+                                        build.  Zero-count events are skipped.
+``ct.ccache.hit_rate``        gauge     Local hit ratio in ``[0, 1]``:
+                                        ``(direct + preprocessed) / cacheable``.
+``ct.ccache.remote_hit_rate`` gauge     Remote-backend hit ratio in ``[0, 1]``:
+                                        ``remote_storage_hit / (remote_hit + remote_miss)``.
+============================= ========= =================================================================
+
+The headline ccache numbers are additionally lifted onto the root build
+span as ``ct.ccache.*`` attributes.
+
+``--ccache-statslog`` is **allowed without** ``--otel-export`` — the
+statslog file and the one-line summary are useful on their own.  In that
+mode no metrics are shipped, and at verbosity ``-v`` (or higher) ct-cake
+prints ``Note: --ccache-statslog set without --otel-export; statslog
+written but no metrics shipped.`` to stderr.
+
+CAS-HEALTH GAUGES
+-----------------
+
+``ct-cache-report --otel-export`` scans the content-addressable stores
+and emits five gauges per scanned store, tagged ``cas_kind`` (one of
+``obj`` / ``pch`` / ``pcm`` / ``exe``).  The natural deployment is a
+cron or post-build hook per CAS-bearing host.
+
+=========================== ===========================================================================
+Gauge                       Meaning
+=========================== ===========================================================================
+``ct.cas.total_bytes``      Total on-disk size of the store.
+``ct.cas.total_entries``    Number of cache entries.
+``ct.cas.unique_buckets``   Distinct logical keys (src+deps for obj, header for pch, bucket for
+                            pcm/exe) — collapsed to one canonical metric across store kinds.
+``ct.cas.wasted_bytes``     Bytes attributable to duplicate / superseded entries.
+``ct.cas.duplicate_groups`` Number of groups containing more than one entry for the same key.
+=========================== ===========================================================================
+
+A store directory that was not scanned contributes no rows; a scanned
+but empty store contributes one zero-valued row per gauge — "I scanned,
+found nothing" is signal distinct from "I didn't scan".  If none of the
+four stores were scanned the export is a silent no-op.
 
 EXAMPLES
 ========
@@ -290,6 +462,26 @@ Honeycomb requires an API key in the request headers::
         --otel-headers="x-honeycomb-team=$HONEYCOMB_API_KEY" \
         --otel-service-name=ci-builds
 
+ccache metrics and CAS-health gauges
+------------------------------------
+
+Ship ccache stats alongside the build trace and metrics::
+
+    ct-cake --auto --timing --otel-export \
+        --ccache-statslog=auto \
+        --otel-endpoint=http://otel-collector.internal:4317
+
+Snapshot CAS-store health on a cron, to the same collector::
+
+    ct-cache-report --otel-export \
+        --otel-endpoint=http://otel-collector.internal:4317
+
+Against a trace-only collector, flatten the metric families into spans::
+
+    ct-cake --auto --timing --otel-export \
+        --ccache-statslog=auto --otel-metrics-as-spans \
+        --otel-endpoint=http://tempo.internal:4317
+
 CI integration via configargparse env vars
 ------------------------------------------
 
@@ -351,7 +543,7 @@ Span timestamps look implausible (e.g. 1970)
 
 SEE ALSO
 ========
-``ct-cake`` (1), ``ct-timing-report`` (1), ``ct-config`` (1), ``compiletools`` (1)
+``ct-cake`` (1), ``ct-cache-report`` (1), ``ct-timing-report`` (1), ``ct-config`` (1), ``compiletools`` (1)
 
 The OpenTelemetry specification: https://opentelemetry.io/docs/specs/otel/
 
