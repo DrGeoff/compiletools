@@ -3315,7 +3315,11 @@ def substitutions(args, verbose=None):
 
 
 def _fix_variable_handling_method(cap, argv, verbose):
-    # TODO: FIXME: Correct fix is to have a PR into configargparse
+    # Re-route env-sourced flag vars (CPPFLAGS -> APPEND_CPPFLAGS, etc.) so
+    # they accumulate onto config/CLI values instead of overriding them, then
+    # reparse. This dance would be unnecessary if configargparse offered an
+    # "append" variable-handling method for environment-sourced values; it
+    # only supports global "override", which we partially undo here.
     verbose_print = verbose > 8
     fix_keys = ["CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS", "INCLUDE"]
     for key in fix_keys:
@@ -4228,9 +4232,10 @@ def parseargs(cap, argv, verbose=None, *, context):
     if verbose is None:
         verbose = args.verbose
 
-    # TODO: if arg.variable_handling_method == "append" then fix up the environment
-    # Note that configargparse uses the "override" method, so we need to partially undo that.
-    # TODO: Write up a PR for configargparse to do override
+    # configargparse only applies the "override" method to environment-sourced
+    # variables, so when the user asks for "append" we partially undo that in
+    # _fix_variable_handling_method. This would be simpler if configargparse
+    # natively supported an "append" variable-handling method for env vars.
     if args.variable_handling_method == "append":
         args = _fix_variable_handling_method(cap, argv, verbose)
     _flatten_variables(args)
