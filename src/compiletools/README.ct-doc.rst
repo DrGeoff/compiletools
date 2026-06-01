@@ -176,6 +176,13 @@ CORE TOOLS
     Summarize content-addressable cache occupancy and flag duplication
     in the object, PCH, PCM, and linker-artefact caches.
 
+**ct-debug-pcm-hash-inputs**
+    Dump the seven inputs that drive a C++20 module BMI's
+    ``<cas-pcmdir>/<cmd_hash>/`` cache path as JSON. Run twice across
+    back-to-back ``ct-cake`` invocations and ``diff`` the outputs to
+    identify which input drifted when a BMI lands under a fresh subdir
+    on unchanged source.
+
 **ct-cas-publish**
     Helper invoked from generated build recipes: atomically publish a
     cas-exedir entry to a user-facing ``bin/<variant>/<name>`` path
@@ -257,6 +264,7 @@ SEE ALSO
 * ct-config
 * ct-cppdeps
 * ct-create-makefile
+* ct-debug-pcm-hash-inputs
 * ct-filelist
 * ct-findtargets
 * ct-git-sha-report

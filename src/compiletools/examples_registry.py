@@ -79,6 +79,7 @@ EXAMPLES_FEATURES: frozenset[str] = frozenset(
         "duplicate_flags",
         "dynamic_library",
         "empty_macro_bug",
+        "export_template_cmd_hash",
         "header_guard_bug",
         "isystem_include_bug",
         "ldflags",
