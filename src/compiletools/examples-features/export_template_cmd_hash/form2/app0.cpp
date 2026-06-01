@@ -1,4 +1,5 @@
 // ct-exemarker
+// export-template form2 consumer (whole-namespace export variant)
 import myproj.util.rounding;
 
 #include <cstdio>
