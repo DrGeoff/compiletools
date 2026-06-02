@@ -1207,6 +1207,34 @@ class BuildBackend(abc.ABC):
                 )
             )
 
+        compiler_kind = self._init_module_state()
+
+        gcc_cache_active = self._plan_module_prepass(graph, all_compile_sources, compiler_kind)
+
+        self._plan_header_unit_prepass(graph, all_compile_sources, gcc_cache_active)
+
+        # Generate the gcc module-mapper file now that every named
+        # module's .gcm path and every header-unit resolution is known.
+        # No-op when not gcc+cache.
+        self._write_gcc_module_mapper()
+
+        self._plan_compile_rules(graph, all_compile_sources)
+
+        library_outputs = self._plan_link_and_publish_rules(graph)
+
+        self._plan_test_rules(graph, library_outputs)
+
+        return graph
+
+    def _init_module_state(self) -> str:
+        """Phase E: initialise C++20-module backend state and return the
+        compiler kind ("gcc"/"clang"/other).
+
+        Sets ``self._module_compiler_kind``, ``self._module_pcm_cache_root``,
+        ``self._gcc_module_mapper_path``, and ``self._module_pcm_dir``. The
+        returned ``compiler_kind`` is threaded into the module pre-pass so its
+        truthiness matches the original inline value exactly.
+        """
         # C++20 modules pre-pass.
         #
         # We compute, per discovered module name, the artefact a downstream
@@ -1268,6 +1296,17 @@ class BuildBackend(abc.ABC):
         # below.
         self._module_pcm_dir = os.path.join(self.args.cas_objdir, ".pcm") if compiler_kind == "clang" else None
 
+        return compiler_kind
+
+    def _plan_module_prepass(self, graph: BuildGraph, all_compile_sources: set[str], compiler_kind: str) -> bool:
+        """Phase F: scan interface/impl units, populate the ``_module_iface_*``
+        / ``_module_impl_obj`` state, emit per-hash pcm-dir mkdir rules, and
+        return ``gcc_cache_active``.
+
+        ``compiler_kind`` is threaded from :meth:`_init_module_state`; the
+        returned ``gcc_cache_active`` flows into the header-unit pre-pass.
+        Mutates *graph* in place.
+        """
         module_iface_obj: dict[str, str] = {}
         module_iface_pcm: dict[str, str] = {}  # populated only for clang
         module_iface_gcm: dict[str, str] = {}  # populated for gcc + cache
@@ -1316,20 +1355,7 @@ class BuildBackend(abc.ABC):
                 )
             )
 
-        self._plan_header_unit_prepass(graph, all_compile_sources, gcc_cache_active)
-
-        # Generate the gcc module-mapper file now that every named
-        # module's .gcm path and every header-unit resolution is known.
-        # No-op when not gcc+cache.
-        self._write_gcc_module_mapper()
-
-        self._plan_compile_rules(graph, all_compile_sources)
-
-        library_outputs = self._plan_link_and_publish_rules(graph)
-
-        self._plan_test_rules(graph, library_outputs)
-
-        return graph
+        return gcc_cache_active
 
     def _plan_header_unit_prepass(
         self, graph: BuildGraph, all_compile_sources: set[str], gcc_cache_active: bool
