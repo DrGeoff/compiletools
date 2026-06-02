@@ -41,17 +41,17 @@ def _production_python_files():
 _RESOLVER_EXEMPT: frozenset[str] = frozenset({"namer.py", "timing_report.py"})
 
 
-# apptools itself defines these and chains them through _commonsubstitutions;
-# the contract doesn't apply to the definition module.
-_DEFINITION_FILES = frozenset({"apptools.py"})
+# apptools itself chains these through _commonsubstitutions, and
+# apptools_argparse.py is where ``add_cas_directory_arguments`` /
+# ``add_output_directory_arguments`` / ``resolve_cas_directory_arguments`` are
+# now DEFINED (extracted from apptools.py in Plan 03e; apptools re-exports them
+# by binding). The contract is about every OTHER consumer, so both the facade
+# and the definition module are exempt.
+_DEFINITION_FILES = frozenset({"apptools.py", "apptools_argparse.py"})
 
 
-_REGISTRAR_RE = re.compile(
-    r"(?<![A-Za-z0-9_])(?:add_cas_directory_arguments|add_output_directory_arguments)\s*\("
-)
-_RESOLVER_RE = re.compile(
-    r"(?<![A-Za-z0-9_])(?:apptools\.parseargs|resolve_cas_directory_arguments)\s*\("
-)
+_REGISTRAR_RE = re.compile(r"(?<![A-Za-z0-9_])(?:add_cas_directory_arguments|add_output_directory_arguments)\s*\(")
+_RESOLVER_RE = re.compile(r"(?<![A-Za-z0-9_])(?:apptools\.parseargs|resolve_cas_directory_arguments)\s*\(")
 
 
 def _is_in_comment_or_string(text: str, pos: int) -> bool:
@@ -89,14 +89,10 @@ def test_every_add_cas_directory_arguments_caller_resolves_or_parseargs():
             continue
         with open(path) as fh:
             text = fh.read()
-        registrar_hits = [
-            m for m in _REGISTRAR_RE.finditer(text) if not _is_in_comment_or_string(text, m.start())
-        ]
+        registrar_hits = [m for m in _REGISTRAR_RE.finditer(text) if not _is_in_comment_or_string(text, m.start())]
         if not registrar_hits:
             continue
-        resolver_hits = [
-            m for m in _RESOLVER_RE.finditer(text) if not _is_in_comment_or_string(text, m.start())
-        ]
+        resolver_hits = [m for m in _RESOLVER_RE.finditer(text) if not _is_in_comment_or_string(text, m.start())]
         if not resolver_hits:
             first = registrar_hits[0]
             line = text[: first.start()].count("\n") + 1
@@ -131,6 +127,5 @@ def test_known_diagnostic_tools_have_the_resolver_wired(known):
     with open(os.path.join(src_dir, known)) as fh:
         text = fh.read()
     assert "resolve_cas_directory_arguments" in text, (
-        f"{known} no longer calls resolve_cas_directory_arguments; the "
-        "variant-suffix bug will silently re-appear."
+        f"{known} no longer calls resolve_cas_directory_arguments; the variant-suffix bug will silently re-appear."
     )

@@ -3,9 +3,21 @@ import os
 import re
 import subprocess
 
-import compiletools.apptools
 import compiletools.utils
 import compiletools.wrappedos
+
+# NOTE: ``compiletools.apptools`` is imported *deferred* (in-function), not at
+# module level, to break an import cycle introduced by Plan 03e. apptools now
+# re-exports the CLI argument-registration layer from
+# ``compiletools.apptools_argparse``, and that module imports
+# ``compiletools.configutils`` -> ``compiletools.git_utils`` at load time. A
+# top-level ``import compiletools.apptools`` here would, when apptools_argparse
+# is imported first, re-enter apptools while it is still mid-way through its
+# ``from compiletools.apptools_argparse import ...`` re-export block (the names
+# aren't bound yet), raising ImportError. git_utils only ever touches apptools
+# at call time (``_parser_has_option`` / ``create_parser`` below), so the
+# deferred import is safe and keeps git_utils pointed at the apptools *facade*
+# (NOT apptools_argparse), preserving the documented patch-target contract.
 
 # Match a bare detached-HEAD SHA on the first line of `.git/HEAD`: 40 hex
 # digits for sha1 repos, 64 for sha256 (`git init --object-format=sha256`).
@@ -204,7 +216,12 @@ class NameAdjuster:
 
     @staticmethod
     def add_arguments(cap):
-        if compiletools.apptools._parser_has_option(cap, "--shorten"):
+        # Aliased import (not bare ``import compiletools.apptools``) so the
+        # local ``compiletools`` name isn't shadowed -- the module-level
+        # ``compiletools.utils`` reference below must keep resolving.
+        import compiletools.apptools as _apptools  # deferred: see module-top note
+
+        if _apptools._parser_has_option(cap, "--shorten"):
             return
         compiletools.utils.add_flag_argument(
             cap,
@@ -222,7 +239,9 @@ class NameAdjuster:
 
 
 def main(argv=None):
-    cap = compiletools.apptools.create_parser("Find git repository root", argv=argv, include_config=False)
+    import compiletools.apptools as _apptools  # deferred: see module-top note
+
+    cap = _apptools.create_parser("Find git repository root", argv=argv, include_config=False)
     cap.parse_args(args=argv)
     print(find_git_root())
     return 0

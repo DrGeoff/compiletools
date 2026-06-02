@@ -21,8 +21,12 @@ _OTEL_ARG_RE = re.compile(r'add_argument\s*\(\s*["\']--otel-[A-Za-z0-9_-]+["\']'
 # those lines without needing re.DOTALL.
 _FLAG_ARG_RE = re.compile(r'add_flag_argument\s*\([^)]*name\s*=\s*["\']otel-[A-Za-z0-9_-]+["\']')
 
-# apptools.py is THE registrar; the contract is about every OTHER file.
-_DEFINITION_FILES = frozenset({"apptools.py"})
+# ``add_otel_export_arguments`` is THE registrar; the contract is about every
+# OTHER file. The helper was extracted from ``apptools.py`` into
+# ``apptools_argparse.py`` in Plan 03e (apptools still re-exports it by binding,
+# so callers are unaffected); the actual ``add_argument`` declarations now live
+# in apptools_argparse.py, so that is the file the lint must exempt.
+_DEFINITION_FILES = frozenset({"apptools_argparse.py"})
 
 # No exemptions at landing; add an entry only if a future tool genuinely
 # needs to declare a one-off --otel-* arg outside the shared helper

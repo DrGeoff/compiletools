@@ -101,6 +101,47 @@ _add(
         "extract_include_paths_from_tokens",
     ],
 )
+_add(
+    "compiletools.apptools",
+    "compiletools.apptools_argparse",
+    [
+        # CLI argument registrars (Plan 03e). Every ct-* entry point reaches
+        # these via the apptools facade, and many tests patch them there.
+        "create_parser",
+        "parser_has_option",
+        "_parser_has_option",
+        "add_base_arguments",
+        "add_common_arguments",
+        "add_locking_arguments",
+        "add_cas_arguments",
+        "add_link_arguments",
+        "add_cas_directory_arguments",
+        "add_output_directory_arguments",
+        "add_otel_export_arguments",
+        "add_target_arguments",
+        "add_target_arguments_ex",
+        "_add_xxpend_argument",
+        "_add_xxpend_arguments",
+        "resolve_cas_directory_arguments",
+        "validate_otel_timing_pair",
+        "_user_passed_no_timing",
+        "_fix_variable_handling_method",
+        # configargparse subclasses + create_parser wiring -- identity matters
+        # because tests/consumers isinstance-check and patch these.
+        "_AccumulatingConfigFileParser",
+        "_ComposingArgumentParser",
+        "DocumentationAction",
+        # conf-file value helpers + their sentinel constants.
+        "_open_conf_file_utf8",
+        "_expand_conf_dir",
+        "_expand_env_and_user",
+        "_CONF_DIR_SEGMENT_HEADER_PREFIX",
+        "_CONF_DIR_SEGMENT_HEADER_SUFFIX",
+        "_CONF_DIR_PLACEHOLDER",
+        "_DOLLAR_SENTINEL",
+        "_rich_rst_available",
+    ],
+)
 
 # --- build_backend facade ---------------------------------------------------
 _add(
@@ -177,6 +218,12 @@ _add(
 def test_facade_reexports_by_binding(facade_mod: str, attr: str, source_mod: str) -> None:
     facade = importlib.import_module(facade_mod)
     source = importlib.import_module(source_mod)
+    # ``DocumentationAction`` is gated on the optional ``rich_rst`` extra: it is
+    # only defined (on either module) when that dependency is installed. When it
+    # is absent the symbol legitimately does not exist on EITHER side, so the
+    # re-export contract is vacuously satisfied -- skip rather than fail.
+    if attr == "DocumentationAction" and not hasattr(source, attr):
+        pytest.skip("rich_rst not installed; DocumentationAction is intentionally absent")
     assert hasattr(source, attr), f"{source_mod}.{attr} missing (moved/renamed?)"
     assert hasattr(facade, attr), (
         f"{facade_mod}.{attr} was dropped -- a re-export was lost "
