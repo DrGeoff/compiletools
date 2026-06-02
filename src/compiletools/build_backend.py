@@ -1582,6 +1582,17 @@ class BuildBackend(abc.ABC):
                 )
             )
 
+        self._plan_test_rules(graph, library_outputs)
+
+        return graph
+
+    def _plan_test_rules(self, graph: BuildGraph, library_outputs: list[str]) -> None:
+        """Phase K: emit the ``build`` phony, per-test execution rules, the
+        ``runtests`` phony, and the top-level ``all`` aggregate.
+
+        ``library_outputs`` (produced by the link/publish phase) feeds the
+        ``build`` phony's prerequisites. Mutates *graph* in place.
+        """
         build_deps = []
         if self.args.filename:
             build_deps.extend(
@@ -1688,8 +1699,6 @@ class BuildBackend(abc.ABC):
             all_deps.append("runtests")
 
         graph.add_rule(BuildRule(output="all", inputs=all_deps, command=None, rule_type="phony"))
-
-        return graph
 
     def _result_marker_path(self, exe_path: str) -> str:
         """Return the success-marker path for ``exe_path``.
