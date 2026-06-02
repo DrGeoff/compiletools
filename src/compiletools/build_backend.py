@@ -1049,6 +1049,37 @@ class BuildBackend(abc.ABC):
                 library_compile_sources.update(self.hunter.required_source_files(source))
         all_compile_sources.update(library_compile_sources)
 
+        self._plan_directories(graph)
+
+        self._plan_pch_rules(graph, all_compile_sources)
+
+        compiler_kind = self._init_module_state()
+
+        gcc_cache_active = self._plan_module_prepass(graph, all_compile_sources, compiler_kind)
+
+        self._plan_header_unit_prepass(graph, all_compile_sources, gcc_cache_active)
+
+        # Generate the gcc module-mapper file now that every named
+        # module's .gcm path and every header-unit resolution is known.
+        # No-op when not gcc+cache.
+        self._write_gcc_module_mapper()
+
+        self._plan_compile_rules(graph, all_compile_sources)
+
+        library_outputs = self._plan_link_and_publish_rules(graph)
+
+        self._plan_test_rules(graph, library_outputs)
+
+        return graph
+
+    def _plan_directories(self, graph: BuildGraph) -> None:
+        """Phase B: emit the base objdir + executable-dir mkdir rules and
+        record ``self._dynamic_sources`` (sources needing ``-fPIC``).
+
+        Runs only on the non-early-return path, so ``self._dynamic_sources``
+        is set exactly when build_graph proceeds past the empty-target guard.
+        Mutates *graph* in place.
+        """
         # Create objdir creation rule (needed by compile rules as order-only dep)
         graph.add_rule(
             BuildRule(
@@ -1078,27 +1109,6 @@ class BuildBackend(abc.ABC):
                 self._dynamic_sources.update(self.hunter.required_source_files(source))
         else:
             self._dynamic_sources = set()
-
-        self._plan_pch_rules(graph, all_compile_sources)
-
-        compiler_kind = self._init_module_state()
-
-        gcc_cache_active = self._plan_module_prepass(graph, all_compile_sources, compiler_kind)
-
-        self._plan_header_unit_prepass(graph, all_compile_sources, gcc_cache_active)
-
-        # Generate the gcc module-mapper file now that every named
-        # module's .gcm path and every header-unit resolution is known.
-        # No-op when not gcc+cache.
-        self._write_gcc_module_mapper()
-
-        self._plan_compile_rules(graph, all_compile_sources)
-
-        library_outputs = self._plan_link_and_publish_rules(graph)
-
-        self._plan_test_rules(graph, library_outputs)
-
-        return graph
 
     def _plan_pch_rules(self, graph: BuildGraph, all_compile_sources: set[str]) -> None:
         """Phases C+D: discover PCH headers from magic flags, emit one compile
