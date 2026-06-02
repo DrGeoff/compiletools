@@ -21,11 +21,12 @@ import re
 _REGISTRAR_RE = re.compile(r"(?<![A-Za-z0-9_])add_otel_export_arguments\s*\(")
 _VALIDATOR_RE = re.compile(r"(?<![A-Za-z0-9_])validate_otel_timing_pair\s*\(")
 
-# apptools_argparse.py defines both ``add_otel_export_arguments`` and
-# ``validate_otel_timing_pair`` (extracted from apptools.py;
-# apptools re-exports them by binding). The contract doesn't apply to the
-# definition module or the facade.
-_DEFINITION_FILES = frozenset({"apptools.py", "apptools_argparse.py"})
+# apptools_argparse.py DEFINES both ``add_otel_export_arguments`` and
+# ``validate_otel_timing_pair``; the contract doesn't apply to the file that
+# defines the registrar. apptools re-exports both by binding but never *calls*
+# the registrar (the re-export is an ``import``, not a call), so the facade is
+# not a caller and needs no exemption.
+_DEFINITION_FILES = frozenset({"apptools_argparse.py"})
 
 # Tools that register the OTel arg group but legitimately do NOT need the
 # timing-pair validator. Add a comment alongside each entry explaining why.

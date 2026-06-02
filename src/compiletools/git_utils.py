@@ -7,10 +7,10 @@ import compiletools.utils
 import compiletools.wrappedos
 
 # NOTE: ``compiletools.apptools`` is imported *deferred* (in-function), not at
-# module level, to break an import cycle. apptools now
-# re-exports the CLI argument-registration layer from
-# ``compiletools.apptools_argparse``, and that module imports
-# ``compiletools.configutils`` -> ``compiletools.git_utils`` at load time. A
+# module level, to break an import cycle: apptools now re-exports the CLI
+# argument-registration layer from ``compiletools.apptools_argparse``, and that
+# module imports ``compiletools.configutils`` -> ``compiletools.git_utils`` at
+# load time. A
 # top-level ``import compiletools.apptools`` here would, when apptools_argparse
 # is imported first, re-enter apptools while it is still mid-way through its
 # ``from compiletools.apptools_argparse import ...`` re-export block (the names

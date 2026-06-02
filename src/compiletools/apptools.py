@@ -36,8 +36,8 @@ import compiletools.git_utils
 import compiletools.utils
 import compiletools.wrappedos
 
-# Re-exported from the apptools_argparse module (the CLI
-# argument-registration + configargparse layer) so existing
+# Re-exported from the apptools_argparse module (the CLI argument-registration
+# + configargparse layer) so existing
 # ``apptools.<name>`` call sites, ``from compiletools.apptools import ...``
 # importers, and the many ``unittest.mock.patch("compiletools.apptools.<name>")``
 # targets keep working with identical object identity.

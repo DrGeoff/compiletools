@@ -21,6 +21,7 @@ import dataclasses
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
+from compiletools.apptools_compiler import compiler_identity
 from compiletools.flag_ops import (
     dedup_include_paths_to_append,
     extract_include_paths_from_tokens,
@@ -59,7 +60,9 @@ class Flags:
         canonicalise to ``<GITROOT>/...`` instead of leaking the per-
         checkout absolute path into every downstream cache key.
         """
-        from compiletools.apptools import compiler_identity
+        # ``compiler_identity`` is a module-level import (apptools_compiler is a
+        # leaf). ``find_git_root`` stays deferred: git_utils imports apptools, so
+        # a top-level import here would reintroduce the flags<->apptools cycle.
         from compiletools.git_utils import find_git_root
 
         cxx_command = getattr(args, "CXX", "") or ""
