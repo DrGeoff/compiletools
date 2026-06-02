@@ -1467,6 +1467,21 @@ class BuildBackend(abc.ABC):
         # No-op when not gcc+cache.
         self._write_gcc_module_mapper()
 
+        self._plan_compile_rules(graph, all_compile_sources)
+
+        library_outputs = self._plan_link_and_publish_rules(graph)
+
+        self._plan_test_rules(graph, library_outputs)
+
+        return graph
+
+    def _plan_compile_rules(self, graph: BuildGraph, all_compile_sources: set[str]) -> None:
+        """Phase I: emit per-source compile rules (clang module interface
+        two-rule split, or the plain compile rule) plus the per-used-bucket
+        objdir mkdir rules. Mutates *graph* in place.
+
+        Reads ``self._module_pcm_dir`` (set by the module-state init phase).
+        """
         compile_bucket_dirs: set[str] = set()
         for filename in all_compile_sources:
             file_result = self.hunter._file_analysis_result(filename)
@@ -1522,12 +1537,6 @@ class BuildBackend(abc.ABC):
                     rule_type="mkdir",
                 )
             )
-
-        library_outputs = self._plan_link_and_publish_rules(graph)
-
-        self._plan_test_rules(graph, library_outputs)
-
-        return graph
 
     def _plan_link_and_publish_rules(self, graph: BuildGraph) -> list[str]:
         """Phase J: emit static/shared library, link, publish-symlink, and
