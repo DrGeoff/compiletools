@@ -2,7 +2,6 @@ import json
 import os
 import sys
 from collections.abc import Callable
-from typing import TYPE_CHECKING
 
 import compiletools.apptools
 import compiletools.diagnostics
@@ -11,10 +10,13 @@ import compiletools.headerdeps
 import compiletools.magicflags
 import compiletools.utils
 import compiletools.wrappedos
+from compiletools.cmdline_macro_index import CmdlineMacroIndex
+from compiletools.global_hash_registry import (
+    get_file_hash,
+    get_filepath_by_hash,
+    get_tracked_files,
+)
 from compiletools.utils import instance_cache
-
-if TYPE_CHECKING:
-    from compiletools.cmdline_macro_index import CmdlineMacroIndex
 
 
 def add_arguments(cap):
@@ -220,8 +222,6 @@ class Hunter:
 
     def _file_analysis_result(self, realpath: str):
         """Return the FileAnalysisResult for `realpath`, or None on error."""
-        from compiletools.global_hash_registry import get_file_hash
-
         # Module discovery is reachable from arbitrary call sites (Hunter,
         # build_backend, tests) -- not just from FindTargets which is the
         # usual init path for analyzer_args. Set it lazily here so the
@@ -248,8 +248,6 @@ class Hunter:
         cached = getattr(self, "_module_iface_registry_cached", None)
         if cached is not None:
             return cached
-
-        from compiletools.global_hash_registry import get_file_hash, get_tracked_files
 
         # Same lazy-init rationale as in _file_analysis_result.
         if self.context.analyzer_args is None:
@@ -568,8 +566,6 @@ class Hunter:
         if dep_hash is None or not cmdline_origin:
             return self.magicparser.get_final_macro_state_hash(filename)
 
-        from compiletools.global_hash_registry import get_file_hash
-
         tu_hash = get_file_hash(filename, self.context)
         transitive = self._transitive_content_hashes(filename)
         scope_filter = self._get_cmdline_macro_index().tu_referenced_macros(
@@ -628,7 +624,6 @@ class Hunter:
         to :class:`CmdlineMacroIndex`, which caches results by content
         hash so a given file is read at most once.
         """
-        from compiletools.global_hash_registry import get_filepath_by_hash
 
         def provider(content_hash: str) -> bytes:
             try:
@@ -648,11 +643,9 @@ class Hunter:
 
         return provider
 
-    def _get_cmdline_macro_index(self) -> "CmdlineMacroIndex":
+    def _get_cmdline_macro_index(self) -> CmdlineMacroIndex:
         """Lazily build the :class:`CmdlineMacroIndex` (one per Hunter)."""
         if not hasattr(self, "_cmdline_macro_index_cached"):
-            from compiletools.cmdline_macro_index import CmdlineMacroIndex
-
             cmdline_origin = self.magicparser._initial_macro_state.cmdline_origin
             self._cmdline_macro_index_cached = CmdlineMacroIndex(
                 cmdline_d_macro_names=cmdline_origin,
@@ -669,8 +662,6 @@ class Hunter:
         passes it separately as ``tu_content_hash`` to
         :meth:`CmdlineMacroIndex.tu_referenced_macros`.
         """
-        from compiletools.global_hash_registry import get_file_hash
-
         headers = self.header_dependencies(filename)
         return [get_file_hash(str(h), self.context) for h in headers]
 
