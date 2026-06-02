@@ -3152,9 +3152,15 @@ class TestResolveSystemHeaderAbsPath:
     def test_returns_first_path_when_probe_succeeds(self, monkeypatch):
         """Stub _resolve_system_header_abs_paths so we can exercise the
         wrapper's first-of-list selection without touching a real compiler."""
+        # The wrapper and the all-spellings probe both live in
+        # ``backend_cxx_modules`` (re-exported via build_backend). The
+        # wrapper resolves the probe through its OWN module globals, so the
+        # stub must target ``backend_cxx_modules`` -- patching the
+        # ``build_backend`` re-export binding would not be seen.
+        from compiletools import backend_cxx_modules as bcm
 
         monkeypatch.setattr(
-            bb,
+            bcm,
             "_resolve_system_header_abs_paths",
             lambda *a, **kw: ["/canonical/vector", "/noncanonical/../vector"],
         )
@@ -3365,7 +3371,11 @@ class TestResolveSystemHeaderAbsPathsHonoursIncludeFlags:
     def test_subprocess_invocation_includes_isystem_flag(self, monkeypatch, tmp_path):
         """Stub ``subprocess.run`` and assert the argv carries the
         ``-isystem`` pair we passed in."""
-        from compiletools import build_backend as bb_module
+        # ``_resolve_system_header_abs_paths`` lives in
+        # ``backend_cxx_modules`` (re-exported via build_backend) and reads
+        # ``subprocess`` from its OWN module globals, so the probe stub must
+        # target that module.
+        from compiletools import backend_cxx_modules as bb_module
 
         captured_argvs: list[list[str]] = []
 
@@ -3404,7 +3414,9 @@ class TestResolveSystemHeaderAbsPathsHonoursIncludeFlags:
         that drops ``include_flags`` from the lru_cache key would cause
         the second call to return the first call's resolved path --
         silently miscompiling against the wrong header."""
-        from compiletools import build_backend as bb_module
+        # See sibling test: the probe and its ``subprocess`` import live in
+        # ``backend_cxx_modules``, so the stub must target that module.
+        from compiletools import backend_cxx_modules as bb_module
 
         captured_argvs: list[list[str]] = []
 
