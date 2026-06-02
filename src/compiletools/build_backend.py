@@ -1316,6 +1316,33 @@ class BuildBackend(abc.ABC):
                 )
             )
 
+        self._plan_header_unit_prepass(graph, all_compile_sources, gcc_cache_active)
+
+        # Generate the gcc module-mapper file now that every named
+        # module's .gcm path and every header-unit resolution is known.
+        # No-op when not gcc+cache.
+        self._write_gcc_module_mapper()
+
+        self._plan_compile_rules(graph, all_compile_sources)
+
+        library_outputs = self._plan_link_and_publish_rules(graph)
+
+        self._plan_test_rules(graph, library_outputs)
+
+        return graph
+
+    def _plan_header_unit_prepass(
+        self, graph: BuildGraph, all_compile_sources: set[str], gcc_cache_active: bool
+    ) -> None:
+        """Phase G: aggregate every ``import <h>;`` token across the build,
+        emit one deduplicated precompile rule per token plus its mkdir, and
+        populate the header-unit state dicts importer rules read.
+
+        Sets ``self._header_unit_artefact``, ``self._gcc_header_unit_resolved``,
+        and ``self._header_unit_extra_system_includes``. Mutates *graph* in
+        place. ``gcc_cache_active`` is threaded from the module-state phase so
+        its truthiness is identical to the original inline computation.
+        """
         # Header units pre-pass.
         #
         # We aggregate every unique `import <h>;` / `import "h";` token
@@ -1461,19 +1488,6 @@ class BuildBackend(abc.ABC):
                 # Importers wait on this artefact path -- the .gcm
                 # cache path for gcc+cache, the stamp for gcc no-cache,
                 # the .pcm for clang.
-
-        # Generate the gcc module-mapper file now that every named
-        # module's .gcm path and every header-unit resolution is known.
-        # No-op when not gcc+cache.
-        self._write_gcc_module_mapper()
-
-        self._plan_compile_rules(graph, all_compile_sources)
-
-        library_outputs = self._plan_link_and_publish_rules(graph)
-
-        self._plan_test_rules(graph, library_outputs)
-
-        return graph
 
     def _plan_compile_rules(self, graph: BuildGraph, all_compile_sources: set[str]) -> None:
         """Phase I: emit per-source compile rules (clang module interface
