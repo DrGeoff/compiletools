@@ -21,6 +21,13 @@ import dataclasses
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
+from compiletools.flag_ops import (
+    dedup_include_paths_to_append,
+    extract_include_paths_from_tokens,
+    filter_hash_irrelevant_tokens,
+    strip_d_u_tokens,
+)
+
 
 @dataclass(frozen=True)
 class Flags:
@@ -71,16 +78,12 @@ class Flags:
 
         slot: one of "cpp", "c", "cxx", "ld".
         """
-        from compiletools.apptools import filter_hash_irrelevant_tokens, strip_d_u_tokens
-
         stripped = strip_d_u_tokens(getattr(self, slot))
         return filter_hash_irrelevant_tokens(stripped)
 
     def existing_include_paths(self, slot: str) -> set[str]:
         """Return the set of -I paths (attached or detached) in the given
         slot's tokens."""
-        from compiletools.apptools import extract_include_paths_from_tokens
-
         return extract_include_paths_from_tokens(getattr(self, slot))
 
     def append_include(self, path: str, slots: Iterable[str] = ("cpp", "c", "cxx")) -> Flags:
@@ -89,8 +92,6 @@ class Flags:
         present as an -I entry. Slots that already contain the path are
         left unchanged.
         """
-        from compiletools.apptools import dedup_include_paths_to_append
-
         updates: dict[str, tuple[str, ...]] = {}
         for slot in slots:
             tokens = getattr(self, slot)
