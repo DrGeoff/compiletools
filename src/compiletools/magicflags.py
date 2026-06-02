@@ -12,11 +12,14 @@ import compiletools.compiler_macros
 import compiletools.git_utils
 import compiletools.headerdeps
 import compiletools.namer
+import compiletools.preprocessing_cache
 import compiletools.preprocessor
 import compiletools.utils
 import compiletools.wrappedos
 from compiletools.file_analyzer import FileAnalysisResult
+from compiletools.global_hash_registry import get_file_hash, get_filepath_by_hash
 from compiletools.preprocessing_cache import MacroState, get_or_compute_preprocessing
+from compiletools.simple_preprocessor import SimplePreprocessor
 from compiletools.stringzilla_utils import strip_sz
 from compiletools.utils import instance_cache
 
@@ -273,7 +276,6 @@ class MagicFlagsBase:
             FileAnalysisResult: Analysis result for the file
         """
         from compiletools.file_analyzer import analyze_file
-        from compiletools.global_hash_registry import get_file_hash
 
         content_hash = get_file_hash(filename, self.context)
         return analyze_file(content_hash, self.context)
@@ -481,8 +483,6 @@ class MagicFlagsBase:
         self._headerdeps.process(filename, frozenset())
 
         # Both DirectMagicFlags and CppMagicFlags now use structured data approach
-        from compiletools.global_hash_registry import get_filepath_by_hash
-
         flagsforfilename = defaultdict(list)
 
         file_analysis_data = self.get_structured_data(filename)
@@ -492,8 +492,6 @@ class MagicFlagsBase:
         macro_state = self._final_macro_states.get(abs_filename)
         expander = None
         if macro_state:
-            from compiletools.simple_preprocessor import SimplePreprocessor
-
             # Filter out legacy compiler macros (e.g. 'linux', 'unix')
             # that lack a leading underscore — they corrupt path
             # components in pkg-config output.  Conditional compilation
@@ -972,8 +970,6 @@ class DirectMagicFlags(MagicFlagsBase):
             List of dicts with structure per file (see above)
             See MagicFlagsBase docstring for magic flag dict structure.
         """
-        from compiletools.global_hash_registry import get_file_hash
-
         if self._args.verbose >= 4:
             print("DirectMagicFlags: Setting up structured data with macro processing")
 
@@ -1033,9 +1029,6 @@ class DirectMagicFlags(MagicFlagsBase):
             # Invariant caches are preserved - those files have no conditionals
             if self._args.verbose >= 7:
                 print("DirectMagicFlags: Clearing variant caches before Pass 2")
-            import compiletools.headerdeps
-            import compiletools.preprocessing_cache
-
             compiletools.headerdeps.clear_include_list_cache(context=self.context)
             compiletools.preprocessing_cache.clear_variant_cache(context=self.context)
 
@@ -1086,8 +1079,6 @@ class DirectMagicFlags(MagicFlagsBase):
             Stores content_hash (not filepath) to prevent path staleness. Current file paths
             can be resolved via global_hash_registry.get_filepath_by_hash(content_hash).
         """
-        from compiletools.global_hash_registry import get_file_hash
-
         if self._args.verbose >= 7:
             print(f"DirectMagicFlags: Building result from {len(all_files)} stored files")
 
@@ -1328,8 +1319,6 @@ class CppMagicFlags(MagicFlagsBase):
 
         if self._args.verbose >= 9:
             print(f"CppMagicFlags: Found {len(magic_flags)} magic flags in preprocessed output")
-
-        from compiletools.global_hash_registry import get_file_hash
 
         content_hash = get_file_hash(filename, self.context)
 
