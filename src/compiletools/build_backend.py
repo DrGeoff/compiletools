@@ -1079,6 +1079,35 @@ class BuildBackend(abc.ABC):
         else:
             self._dynamic_sources = set()
 
+        self._plan_pch_rules(graph, all_compile_sources)
+
+        compiler_kind = self._init_module_state()
+
+        gcc_cache_active = self._plan_module_prepass(graph, all_compile_sources, compiler_kind)
+
+        self._plan_header_unit_prepass(graph, all_compile_sources, gcc_cache_active)
+
+        # Generate the gcc module-mapper file now that every named
+        # module's .gcm path and every header-unit resolution is known.
+        # No-op when not gcc+cache.
+        self._write_gcc_module_mapper()
+
+        self._plan_compile_rules(graph, all_compile_sources)
+
+        library_outputs = self._plan_link_and_publish_rules(graph)
+
+        self._plan_test_rules(graph, library_outputs)
+
+        return graph
+
+    def _plan_pch_rules(self, graph: BuildGraph, all_compile_sources: set[str]) -> None:
+        """Phases C+D: discover PCH headers from magic flags, emit one compile
+        rule per header (CAS-keyed .gch when cas-pchdir is active), and the
+        per-hash pchdir mkdir rules.
+
+        Sets ``self._pch_gch_paths`` and ``self._pch_include_dirs`` (read by
+        the compile phase). Mutates *graph* in place.
+        """
         # Discover PCH headers from magic flags and create PCH compile rules.
         # When pchdir is configured, .gch files are placed in a shared
         # content-addressable cache: <pchdir>/<command_hash>/<header>.gch
@@ -1206,25 +1235,6 @@ class BuildBackend(abc.ABC):
                     rule_type="mkdir",
                 )
             )
-
-        compiler_kind = self._init_module_state()
-
-        gcc_cache_active = self._plan_module_prepass(graph, all_compile_sources, compiler_kind)
-
-        self._plan_header_unit_prepass(graph, all_compile_sources, gcc_cache_active)
-
-        # Generate the gcc module-mapper file now that every named
-        # module's .gcm path and every header-unit resolution is known.
-        # No-op when not gcc+cache.
-        self._write_gcc_module_mapper()
-
-        self._plan_compile_rules(graph, all_compile_sources)
-
-        library_outputs = self._plan_link_and_publish_rules(graph)
-
-        self._plan_test_rules(graph, library_outputs)
-
-        return graph
 
     def _init_module_state(self) -> str:
         """Phase E: initialise C++20-module backend state and return the
