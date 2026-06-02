@@ -33,6 +33,7 @@ from typing import NamedTuple, TypeVar
 
 import compiletools.apptools
 import compiletools.diagnostics
+import compiletools.file_analyzer
 import compiletools.filesystem_utils
 import compiletools.git_utils
 import compiletools.global_hash_registry
@@ -912,9 +913,7 @@ class BuildBackend(abc.ABC):
                 # latent today because affected scenarios have matching
                 # cwds, but a real defect once cas-pchdir/pcmdir is shared
                 # across workspaces with subdir invocations.
-                execute_compile_rule(
-                    rule.output, rule.command, self.args, skip_if_exists=skip_if_exists, cwd=rule.cwd
-                )
+                execute_compile_rule(rule.output, rule.command, self.args, skip_if_exists=skip_if_exists, cwd=rule.cwd)
             else:
                 # gcc's shell-pipeline header-unit form does its own producer-side
                 # rename inside the pipeline; atomic_link's outer rewrite no-ops
@@ -2966,12 +2965,9 @@ class BuildBackend(abc.ABC):
         # len(quoted_headers) from FileAnalyzer correlates with peak RSS (r=0.85)
         # because each quoted include transitively pulls in framework templates.
         # analyze_file is already cached from the header dep walk -- zero cost.
-        from compiletools.file_analyzer import analyze_file
-        from compiletools.global_hash_registry import get_file_hash
-
         try:
-            content_hash = get_file_hash(filename, self.context)
-            analysis = analyze_file(content_hash, self.context)
+            content_hash = compiletools.global_hash_registry.get_file_hash(filename, self.context)
+            analysis = compiletools.file_analyzer.analyze_file(content_hash, self.context)
             include_weight = len(analysis.quoted_headers)
         except (FileNotFoundError, OSError, RuntimeError) as e:
             print(
@@ -4445,8 +4441,6 @@ def _build_lock_env_prefix(strategy: str, args, filesystem_type: str) -> str:
     Returns:
         Space-terminated env var prefix string, or empty string if no vars needed.
     """
-    import compiletools.filesystem_utils
-
     env_vars = []
 
     if strategy == "lockdir":
@@ -4491,8 +4485,6 @@ def wrap_compile_with_lock(compile_cmd: str, target: str, args, filesystem_type:
     """
     if not args.file_locking:
         return compile_cmd + " -o " + target
-
-    import compiletools.filesystem_utils
 
     strategy = compiletools.filesystem_utils.get_lock_strategy(filesystem_type)
 
@@ -4545,8 +4537,6 @@ def wrap_link_with_lock(link_cmd: str, target: str, args, filesystem_type: str) 
     """
     if not args.file_locking:
         return link_cmd
-
-    import compiletools.filesystem_utils
 
     strategy = compiletools.filesystem_utils.get_lock_strategy(filesystem_type)
 

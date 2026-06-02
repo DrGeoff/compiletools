@@ -20,7 +20,11 @@ import compiletools.magicflags
 import compiletools.namer
 import compiletools.utils
 import compiletools.wrappedos
-from compiletools.build_backend import get_backend_class, known_backend_names
+from compiletools.build_backend import (
+    get_backend_class,
+    known_backend_names,
+    register_backend_cli_arguments,
+)
 from compiletools.build_context import BuildContext
 from compiletools.version import __version__, get_package_git_sha
 
@@ -85,8 +89,6 @@ class Cake:
 
         # Backend-specific arguments are registered from lightweight metadata
         # so parser construction does not import every backend module.
-        from compiletools.build_backend import register_backend_cli_arguments
-
         register_backend_cli_arguments(cap)
 
         compiletools.jobs.add_arguments(cap)
