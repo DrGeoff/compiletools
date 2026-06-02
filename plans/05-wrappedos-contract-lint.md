@@ -69,7 +69,7 @@ strings — CLAUDE.md says these are safe-to-skip), `check_venv.py`, `examples_r
 ## Verification
 
 ```
-cd /physical/gpfs/fpip3-lgblk01/fpi_firm03/data_files/perf/gericksson/compiletools/master
+cd <repo-root>
 python -m pytest src/compiletools/test_wrappedos_preference_contract.py -v
 ```
 Green only after every reported site is either comment-justified or allowlisted.
