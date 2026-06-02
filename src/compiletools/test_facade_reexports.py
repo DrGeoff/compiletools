@@ -64,6 +64,21 @@ _add(
 )
 _add(
     "compiletools.apptools",
+    "compiletools.apptools_pkgconfig",
+    [
+        "cached_pkg_config",
+        "filter_pkg_config_cflags",
+        "_setup_pkg_config_overrides",
+        "_setup_pkg_config_overrides_locked",
+        "_add_flags_from_pkg_config",
+        "_batch_pkg_config",
+        "_pkg_config_provenance_label",
+        "_PKG_CONFIG_OVERRIDE_LOCK",  # threading.Lock -- identity is load-bearing
+        "_PkgConfigOrigin",
+    ],
+)
+_add(
+    "compiletools.apptools",
     "compiletools.flag_ops",
     [
         "strip_d_u_tokens",
