@@ -287,8 +287,8 @@ def test_build_graph_is_deterministic(tmp_path):
     # worthless as a regression net.
     types = {r.rule_type for r in graph1.rules}
     assert {"compile", "link", "symlink", "phony", "mkdir"} <= types, (
-        f"pch fixture produced a degenerate graph (types={sorted(types)}); "
-        "the golden would not protect compile/link/precompile structure"
+        f"calculator fixture produced a degenerate graph (types={sorted(types)}); "
+        "the golden would not protect compile/link/symlink structure"
     )
 
 
