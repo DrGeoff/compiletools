@@ -73,7 +73,8 @@ _JUSTIFICATION_MARKERS = (
 _WRAPPEDOS_EXEMPT: frozenset[str] = frozenset(
     {
         # --- #3 / abs: realpath of an absolute string (cache-safe to skip) ---
-        "apptools_argparse.py:625",  # abs: realpath(os.getcwd()) one-off, Caveat #3 documented
+        # (apptools_argparse.py realpath(os.getcwd()) is justified inline via a
+        #  "NOT cached" comment instead of a line-keyed entry -- immune to churn.)
         "apptools_compiler.py:174",  # abs: realpath of absolute install_dir, compiler-introspection one-off
         "apptools_compiler.py:176",  # #3: isfile of derived candidate during compiler introspection
         "apptools_compiler.py:178",  # abs: realpath of absolute resolved compiler path

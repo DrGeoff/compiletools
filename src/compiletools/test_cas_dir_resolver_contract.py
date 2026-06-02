@@ -44,7 +44,7 @@ _RESOLVER_EXEMPT: frozenset[str] = frozenset({"namer.py", "timing_report.py"})
 # apptools itself chains these through _commonsubstitutions, and
 # apptools_argparse.py is where ``add_cas_directory_arguments`` /
 # ``add_output_directory_arguments`` / ``resolve_cas_directory_arguments`` are
-# now DEFINED (extracted from apptools.py in Plan 03e; apptools re-exports them
+# now DEFINED (extracted from apptools.py; apptools re-exports them
 # by binding). The contract is about every OTHER consumer, so both the facade
 # and the definition module are exempt.
 _DEFINITION_FILES = frozenset({"apptools.py", "apptools_argparse.py"})

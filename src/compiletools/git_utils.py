@@ -7,7 +7,7 @@ import compiletools.utils
 import compiletools.wrappedos
 
 # NOTE: ``compiletools.apptools`` is imported *deferred* (in-function), not at
-# module level, to break an import cycle introduced by Plan 03e. apptools now
+# module level, to break an import cycle. apptools now
 # re-exports the CLI argument-registration layer from
 # ``compiletools.apptools_argparse``, and that module imports
 # ``compiletools.configutils`` -> ``compiletools.git_utils`` at load time. A

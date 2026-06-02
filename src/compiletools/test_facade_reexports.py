@@ -105,7 +105,7 @@ _add(
     "compiletools.apptools",
     "compiletools.apptools_argparse",
     [
-        # CLI argument registrars (Plan 03e). Every ct-* entry point reaches
+        # CLI argument registrars. Every ct-* entry point reaches
         # these via the apptools facade, and many tests patch them there.
         "create_parser",
         "parser_has_option",

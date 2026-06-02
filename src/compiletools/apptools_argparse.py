@@ -1,7 +1,6 @@
 """CLI argument registration and the configargparse subclasses for compiletools.
 
-Extracted from :mod:`compiletools.apptools` (Plan 03e — the final and largest
-apptools split). This module owns:
+Extracted from :mod:`compiletools.apptools`. This module owns:
 
 * Every ``add_*`` argument registrar (``add_base_arguments``,
   ``add_common_arguments``, ``add_locking_arguments``, ``add_cas_arguments``,
@@ -34,7 +33,7 @@ Cycle management:
   re-export, so a top-level back-import would form a hard cycle; the deferred
   import is safe because apptools is fully initialised by the time any
   registrar / resolver runs. This mirrors the documented escape hatch used by
-  ``apptools_validate`` in Plan 03d.
+  ``apptools_validate``.
 * ``git_utils`` keeps importing the ``compiletools.apptools`` facade (NOT this
   module) for ``parser_has_option`` / ``create_parser`` — the pre-existing
   cycle, left untouched; those resolve via re-export.
@@ -620,8 +619,8 @@ def resolve_cas_directory_arguments(args):
     #
     # The per-block ``git_root`` is realpath'd via the cached wrappedos wrapper
     # (the same value across all four blocks -> three cache hits); ``cwd_real``
-    # is a one-off direct read. Both inputs are absolute strings, so neither is
-    # subject to the chdir footgun (CLAUDE.md "wrappedos" Caveat #3).
+    # is a one-off direct read, NOT cached. Both inputs are absolute strings, so
+    # neither is subject to the chdir footgun (CLAUDE.md "wrappedos" Caveat #3).
     cwd_real = os.path.realpath(os.getcwd())
 
     # ``find_git_root()`` always returns a usable absolute root: the real git

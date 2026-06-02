@@ -1,7 +1,7 @@
 """Whole-``BuildGraph`` golden + determinism regression net.
 
-This module is the safety net for the upcoming refactor that decomposes
-``BuildBackend.build_graph()`` into phase helpers (see Plan 01). Any change
+This module is the safety net for the decomposition of
+``BuildBackend.build_graph()`` into phase helpers. Any change
 to the *set*, *order*, or *shape* of the rules ``build_graph()`` emits will
 trip one of the two tests here:
 

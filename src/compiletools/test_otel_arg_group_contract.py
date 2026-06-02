@@ -23,7 +23,7 @@ _FLAG_ARG_RE = re.compile(r'add_flag_argument\s*\([^)]*name\s*=\s*["\']otel-[A-Z
 
 # ``add_otel_export_arguments`` is THE registrar; the contract is about every
 # OTHER file. The helper was extracted from ``apptools.py`` into
-# ``apptools_argparse.py`` in Plan 03e (apptools still re-exports it by binding,
+# ``apptools_argparse.py`` (apptools still re-exports it by binding,
 # so callers are unaffected); the actual ``add_argument`` declarations now live
 # in apptools_argparse.py, so that is the file the lint must exempt.
 _DEFINITION_FILES = frozenset({"apptools_argparse.py"})
