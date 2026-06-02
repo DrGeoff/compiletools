@@ -31,6 +31,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import functools
+import hashlib
 import os
 import pathlib
 import shutil
@@ -93,7 +94,8 @@ def _toolchain_supports_stdlib_header_units() -> bool:
             "-std=c++26",
             "-fmodules",
             "-fsyntax-only",
-            "-x", "c++",
+            "-x",
+            "c++",
             src,
         ]
         try:
@@ -157,12 +159,14 @@ _CXX_MODULES_NAMED_BACKENDS_BLOCKED = frozenset()
 # either directly in main.cpp or transitively through a user header
 # that includes a libc++ header. These need the system standard
 # library to be modules-clean (see _toolchain_supports_stdlib_header_units).
-_EXAMPLES_REQUIRING_STDLIB_HEADER_UNITS = frozenset({
-    "cxx_modules_header_units",
-    "cxx_modules_header_unit_isystem",
-    "cxx_modules_header_unit_pkg_config",
-    "cxx_modules_transitive_header_unit",
-})
+_EXAMPLES_REQUIRING_STDLIB_HEADER_UNITS = frozenset(
+    {
+        "cxx_modules_header_units",
+        "cxx_modules_header_unit_isystem",
+        "cxx_modules_header_unit_pkg_config",
+        "cxx_modules_transitive_header_unit",
+    }
+)
 
 _EXAMPLE_PLANS: dict[str, ExamplePlan] = {
     # ----- vanilla --auto, no special setup -----
@@ -379,8 +383,44 @@ def _matrix_params() -> Iterable[tuple[str, str, str]]:
                 yield example, backend, layout
 
 
-_MATRIX = list(_matrix_params())
-_IDS = [_matrix_id(example, backend, layout) for example, backend, layout in _MATRIX]
+# Heavy real-subprocess backends whose e2e cells contend under ``-n auto`` and
+# flake intermittently: on this box ``nproc`` is large (~127), so nearly all of
+# a backend's ~90 cells fire their ``sbatch`` submission / bazel server at once,
+# overwhelming the slurm queue / saturating the box. We bound the concurrency by
+# pinning each backend's cells across ``_HEAVY_E2E_SHARDS`` xdist load-groups
+# (requires ``--dist loadgroup``, set in pyproject addopts): tests in a group run
+# on one worker, so at most ``_HEAVY_E2E_SHARDS`` of a backend's cells run
+# concurrently (down from ~90) while the shards still parallelise. Full
+# serialisation (1 group) would make ~90 cells run back-to-back and dominate
+# wall-clock; sharding keeps the suite time roughly unchanged. The group names
+# (``e2e-<backend>-<shard>``) are shared with
+# test_test_exe_rebuild_on_upstream_change.py so the bound is global across both
+# heavy-e2e files. Sharding is by a stable content hash (NOT ``hash()``, which is
+# per-process salted and would make workers disagree on grouping).
+_HEAVY_E2E_BACKENDS = frozenset({"slurm", "bazel"})
+_HEAVY_E2E_SHARDS = 8
+
+
+def _heavy_e2e_group(backend_name: str, shard_key: str) -> str:
+    shard = int(hashlib.sha1(shard_key.encode()).hexdigest(), 16) % _HEAVY_E2E_SHARDS
+    return f"e2e-{backend_name}-{shard}"
+
+
+def _matrix_param(example_name: str, backend_name: str, cas_layout: str):
+    marks = ()
+    if backend_name in _HEAVY_E2E_BACKENDS:
+        group = _heavy_e2e_group(backend_name, f"{example_name}-{backend_name}-{cas_layout}")
+        marks = (pytest.mark.xdist_group(group),)
+    return pytest.param(
+        example_name,
+        backend_name,
+        cas_layout,
+        id=_matrix_id(example_name, backend_name, cas_layout),
+        marks=marks,
+    )
+
+
+_PARAMS = [_matrix_param(*cell) for cell in _matrix_params()]
 
 
 def _resolve_cas_root(workspace: pathlib.Path, cas_layout: str) -> pathlib.Path:
@@ -491,7 +531,7 @@ def _run_build(
 
 
 @uth.requires_functional_compiler
-@pytest.mark.parametrize(("example_name", "backend_name", "cas_layout"), _MATRIX, ids=_IDS)
+@pytest.mark.parametrize(("example_name", "backend_name", "cas_layout"), _PARAMS)
 def test_example_builds_with_backend(example_name, backend_name, cas_layout, tmp_path):
     """Build *example_name* with *backend_name* under *cas_layout*;
     assert the policy in ``_EXAMPLE_PLANS`` is honoured.

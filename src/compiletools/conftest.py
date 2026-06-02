@@ -4,10 +4,47 @@ This conftest.py provides session-wide fixtures that are automatically
 applied to all tests in src/compiletools/ and subdirectories.
 """
 
+import hashlib
 import os
 import sys
 
 import pytest
+
+# Whole-file heavy real-subprocess e2e modules: every test shells out to
+# ``ct-cake`` / real builds (often across multiple workspaces or every backend).
+# On a many-core host ``-n auto`` spawns ~nproc workers (~127 here), so without
+# bounding, ~all of these fire concurrent builds/locks and contend on the shared
+# filesystem CAS / bazel servers, flaking intermittently (each passes in
+# isolation). Bound their TOTAL concurrency by sharding every test in these
+# modules across a fixed pool of xdist load-groups (requires ``--dist loadgroup``,
+# set in pyproject addopts): at most ``_HEAVY_E2E_POOL`` run at once while the
+# shards still parallelise. Sharding is by a stable content hash of the nodeid
+# (NOT ``hash()``, which is per-process salted and would make xdist workers
+# disagree on grouping). Backend-specific bounding for the slurm/bazel cells of
+# the cross-backend matrix + the rebuild test is done with per-param marks in
+# those two files; this hook covers the modules whose every test is heavy.
+_HEAVY_E2E_MODULES = frozenset(
+    {
+        "test_e2e_cas_reuse_across_workspaces",
+        "test_multiuser_cache",
+        "test_backend_integration",
+    }
+)
+_HEAVY_E2E_POOL = 8
+
+
+def pytest_collection_modifyitems(items):
+    """Assign sharded xdist load-groups to whole-file heavy e2e tests so they
+    don't oversubscribe the box under ``-n auto`` (see ``_HEAVY_E2E_MODULES``)."""
+    for item in items:
+        module = os.path.basename(item.nodeid.split("::", 1)[0]).removesuffix(".py")
+        if module not in _HEAVY_E2E_MODULES:
+            continue
+        if item.get_closest_marker("xdist_group") is not None:
+            continue
+        shard = int(hashlib.sha1(item.nodeid.encode()).hexdigest(), 16) % _HEAVY_E2E_POOL
+        item.add_marker(pytest.mark.xdist_group(f"ct_e2e_{shard}"))
+
 
 # Each compile/link rule fans out to ~4 children (cpp -MM, cc1, as,
 # collect2/ld). The capped_parallel_argv fixture below uses this to derive

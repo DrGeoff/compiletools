@@ -21,6 +21,7 @@ key -> link key -> exe path -> runtests skip predicate) shows up here.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import os
 import pathlib
 from collections.abc import Iterator
@@ -42,6 +43,31 @@ ensure_backends_registered()
 # only meaningful for these two; the rest are skipped (the hard-fail itself
 # is asserted in test_build_backend.py, not re-derived per scenario here).
 _MTIME_HONORING_BACKENDS = frozenset({"make", "ninja"})
+
+# Heavy real-subprocess backends (slurm sbatch / bazel server) contend under
+# ``-n auto`` and flake; bound their concurrency via sharded xdist load-groups
+# (requires ``--dist loadgroup`` in pyproject addopts). Group names
+# (``e2e-<backend>-<shard>``) and shard count match
+# test_examples_end_to_end_cross_backend.py so the bound is GLOBAL across both
+# heavy-e2e files. These ~5-per-backend cells are keyed on the backend alone, so
+# each backend's rebuild cells land in one shard (joining that shard's
+# cross-backend cells) -- negligible imbalance. Other backends are unmarked.
+_HEAVY_E2E_BACKENDS = frozenset({"slurm", "bazel"})
+_HEAVY_E2E_SHARDS = 8
+
+
+def _heavy_e2e_group(backend_name: str) -> str:
+    shard = int(hashlib.sha1(backend_name.encode()).hexdigest(), 16) % _HEAVY_E2E_SHARDS
+    return f"e2e-{backend_name}-{shard}"
+
+
+_BACKEND_PARAMS = [
+    pytest.param(
+        _b,
+        marks=(pytest.mark.xdist_group(_heavy_e2e_group(_b)),) if _b in _HEAVY_E2E_BACKENDS else (),
+    )
+    for _b in available_backends()
+]
 
 
 # Each successful test invocation appends exactly one fixed-length record
@@ -274,7 +300,7 @@ def _build_session(
 
 
 @pytest.mark.parametrize("use_mtime", [False, True], ids=["cas-only", "use-mtime"])
-@pytest.mark.parametrize("backend_name", available_backends())
+@pytest.mark.parametrize("backend_name", _BACKEND_PARAMS)
 @uth.requires_functional_compiler
 @uth.requires_backend_tool()
 def test_test_exe_reruns_when_upstream_header_changes(
@@ -309,7 +335,7 @@ def test_test_exe_reruns_when_upstream_header_changes(
 
 
 @pytest.mark.parametrize("use_mtime", [False, True], ids=["cas-only", "use-mtime"])
-@pytest.mark.parametrize("backend_name", available_backends())
+@pytest.mark.parametrize("backend_name", _BACKEND_PARAMS)
 @uth.requires_functional_compiler
 @uth.requires_backend_tool()
 def test_test_exe_reruns_when_upstream_implied_source_changes(
@@ -338,7 +364,7 @@ def test_test_exe_reruns_when_upstream_implied_source_changes(
 
 
 @pytest.mark.parametrize("use_mtime", [False, True], ids=["cas-only", "use-mtime"])
-@pytest.mark.parametrize("backend_name", available_backends())
+@pytest.mark.parametrize("backend_name", _BACKEND_PARAMS)
 @uth.requires_functional_compiler
 @uth.requires_backend_tool()
 def test_test_exe_reruns_when_3_deep_upstream_header_changes(
@@ -369,7 +395,7 @@ def test_test_exe_reruns_when_3_deep_upstream_header_changes(
 
 
 @pytest.mark.parametrize("use_mtime", [False, True], ids=["cas-only", "use-mtime"])
-@pytest.mark.parametrize("backend_name", available_backends())
+@pytest.mark.parametrize("backend_name", _BACKEND_PARAMS)
 @uth.requires_functional_compiler
 @uth.requires_backend_tool()
 def test_test_exe_reruns_when_3_deep_upstream_implied_source_changes(
@@ -401,7 +427,7 @@ def test_test_exe_reruns_when_3_deep_upstream_implied_source_changes(
         h.expect_marker_records(2, "3-deep impl edit (c.cpp v1 -> v2)")
 
 
-@pytest.mark.parametrize("backend_name", available_backends())
+@pytest.mark.parametrize("backend_name", _BACKEND_PARAMS)
 @uth.requires_functional_compiler
 @uth.requires_backend_tool()
 def test_round_trip_v1_v2_v1_does_not_double_run_v1(backend_name, tmp_path, monkeypatch, capfd, capped_parallel_argv):

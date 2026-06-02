@@ -106,7 +106,11 @@ ct-trim-cache = "compiletools.trim_cache_main:main"
 [tool.pytest.ini_options]
 testpaths = ["src/compiletools"]
 python_files = ["test_*.py"]
-addopts = "-v"
+# --dist loadgroup: tests sharing an @pytest.mark.xdist_group run on one worker
+# (serialised). Used to pin the heavy real-subprocess e2e cells (slurm/bazel) so
+# they don't oversubscribe the box under -n auto and flake. Ungrouped tests are
+# unaffected (each distributes normally); harmless without -n (serial run).
+addopts = "-v --dist loadgroup"
 
 [tool.coverage.run]
 source = ["compiletools"]
