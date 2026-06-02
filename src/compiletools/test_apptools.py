@@ -18,6 +18,7 @@ import pytest
 import stringzilla as sz
 
 import compiletools.apptools as apptools
+import compiletools.apptools_validate as apptools_validate
 import compiletools.compilation_database as cdb
 import compiletools.configutils as cu
 import compiletools.hunter
@@ -2189,7 +2190,7 @@ class TestCompilerSupportsRequestedStandard:
     with no pointer at the variant chain."""
 
     def test_too_old_for_requested_std_raises(self, monkeypatch):
-        monkeypatch.setattr(apptools, "_compiler_major_version", lambda path: ("gcc", 11))
+        monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda path: ("gcc", 11))
         args = _std_check_args(variant="gcc.cxx26.debug", cxxflags="-std=c++26 -O0")
         with pytest.raises(RuntimeError) as excinfo:
             apptools._check_compiler_supports_requested_standard(args)
@@ -2198,19 +2199,19 @@ class TestCompilerSupportsRequestedStandard:
         assert "gcc >= 14" in msg
 
     def test_recent_compiler_passes(self, monkeypatch):
-        monkeypatch.setattr(apptools, "_compiler_major_version", lambda path: ("gcc", 14))
+        monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda path: ("gcc", 14))
         args = _std_check_args(variant="gcc.cxx26.debug", cxxflags="-std=c++26 -O0")
         # 14 >= 14 — passes.
         apptools._check_compiler_supports_requested_standard(args)
 
     def test_unknown_driver_skips_silently(self, monkeypatch):
-        monkeypatch.setattr(apptools, "_compiler_major_version", lambda path: None)
+        monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda path: None)
         args = _std_check_args(cc="some-cross-compiler", cxx="some-cross-compiler", cflags="", cxxflags="-std=c++26")
         # Unknown driver → skip silently rather than false-positive.
         apptools._check_compiler_supports_requested_standard(args)
 
     def test_no_std_flag_skips_silently(self, monkeypatch):
-        monkeypatch.setattr(apptools, "_compiler_major_version", lambda path: ("gcc", 4))
+        monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda path: ("gcc", 4))
         # No -std= in flags → nothing to check.
         args = _std_check_args(variant="blank.debug", cc="gcc", cxxflags="-O0")
         apptools._check_compiler_supports_requested_standard(args)
@@ -2218,7 +2219,7 @@ class TestCompilerSupportsRequestedStandard:
     def test_alt_spelling_cxx2c_normalised_to_cxx26(self, monkeypatch):
         # gcc <14 / clang <18 spelled C++26 as -std=c++2c. The check should
         # normalise that to c++26 for the version lookup.
-        monkeypatch.setattr(apptools, "_compiler_major_version", lambda path: ("gcc", 11))
+        monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda path: ("gcc", 11))
         args = _std_check_args(cflags="", cxxflags="-std=c++2c -O0")
         with pytest.raises(RuntimeError, match=r"does not support -std=c\+\+2c"):
             apptools._check_compiler_supports_requested_standard(args)
@@ -2617,7 +2618,7 @@ def test_check_wild_b_with_bazel_backend_raises(monkeypatch):
 
 def test_check_wild_b_with_make_backend_ok(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
-    monkeypatch.setattr(apptools, "_compiler_major_version", lambda c: ("gcc", 11))
+    monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda c: ("gcc", 11))
     args = _wild_args("g++", "", "gcc.wild-B.release")
     args.backend = "make"
     apptools._check_wild_linker_usable(args)  # no raise
@@ -2659,7 +2660,7 @@ def test_check_wild_usable_missing_wild_raises(monkeypatch):
 
 def test_check_wild_usable_old_gcc_raises(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
-    monkeypatch.setattr(apptools, "_compiler_major_version", lambda c: ("gcc", 15))
+    monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda c: ("gcc", 15))
     args = _wild_args("g++", "-fuse-ld=wild", "gcc.wild.release")
     with pytest.raises(RuntimeError, match="gcc >= 16"):
         apptools._check_wild_linker_usable(args)
@@ -2667,14 +2668,14 @@ def test_check_wild_usable_old_gcc_raises(monkeypatch):
 
 def test_check_wild_usable_gcc16_ok(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
-    monkeypatch.setattr(apptools, "_compiler_major_version", lambda c: ("gcc", 16))
+    monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda c: ("gcc", 16))
     args = _wild_args("g++", "-fuse-ld=wild", "gcc.wild.release")
     apptools._check_wild_linker_usable(args)  # no raise
 
 
 def test_check_wild_usable_clang_ok(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
-    monkeypatch.setattr(apptools, "_compiler_major_version", lambda c: ("clang", 22))
+    monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda c: ("clang", 22))
     # post-rewrite form on clang
     args = _wild_args("clang++", "--ld-path=wild", "clang.wild.release")
     apptools._check_wild_linker_usable(args)  # no raise
@@ -2682,7 +2683,7 @@ def test_check_wild_usable_clang_ok(monkeypatch):
 
 def test_check_wild_b_old_gcc_ok(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
-    monkeypatch.setattr(apptools, "_compiler_major_version", lambda c: ("gcc", 11))
+    monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda c: ("gcc", 11))
     # wild-B has no version gate — that's its whole purpose.
     args = _wild_args("g++", "", "gcc.wild-B.release")
     apptools._check_wild_linker_usable(args)  # no raise

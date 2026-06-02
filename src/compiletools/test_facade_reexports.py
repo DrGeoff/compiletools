@@ -79,6 +79,20 @@ _add(
 )
 _add(
     "compiletools.apptools",
+    "compiletools.apptools_validate",
+    [
+        "_check_resolved_compiler_available",
+        "_check_wild_linker_usable",
+        "_check_compiler_supports_requested_standard",
+        "_check_legacy_variant_config_keys",
+        "_check_legacy_cas_config_keys",
+        "_STD_MIN_COMPILER_VERSION",
+        "_LEGACY_CAS_KEY_RE",  # compiled regex -- identity is load-bearing
+        "_LEGACY_VARIANT_KEY_RE",  # compiled regex -- identity is load-bearing
+    ],
+)
+_add(
+    "compiletools.apptools",
     "compiletools.flag_ops",
     [
         "strip_d_u_tokens",
