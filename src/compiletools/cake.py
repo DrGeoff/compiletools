@@ -87,8 +87,8 @@ class Cake:
         compiletools.namer.Namer.add_arguments(cap)
         compiletools.hunter.add_arguments(cap)
 
-        # Backend-specific arguments are registered from lightweight metadata
-        # so parser construction does not import every backend module.
+        # Adds built-in backend flags via module-local helpers, without
+        # importing the backend implementation modules (kept cold until dispatch).
         register_backend_cli_arguments(cap)
 
         compiletools.jobs.add_arguments(cap)
