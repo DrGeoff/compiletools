@@ -1523,6 +1523,20 @@ class BuildBackend(abc.ABC):
                 )
             )
 
+        library_outputs = self._plan_link_and_publish_rules(graph)
+
+        self._plan_test_rules(graph, library_outputs)
+
+        return graph
+
+    def _plan_link_and_publish_rules(self, graph: BuildGraph) -> list[str]:
+        """Phase J: emit static/shared library, link, publish-symlink, and
+        cas-exedir bucket mkdir rules.
+
+        Returns ``library_outputs`` — the user-facing publish paths (symlink
+        rule output, or legacy direct output) the ``build`` phony depends on.
+        Mutates *graph* in place.
+        """
         # All three artefact-producing helpers (link / static_library /
         # shared_library) now return list[BuildRule]: in CAS-only mode
         # the list is [producer-rule, publish-symlink-rule]; in
@@ -1582,9 +1596,7 @@ class BuildBackend(abc.ABC):
                 )
             )
 
-        self._plan_test_rules(graph, library_outputs)
-
-        return graph
+        return library_outputs
 
     def _plan_test_rules(self, graph: BuildGraph, library_outputs: list[str]) -> None:
         """Phase K: emit the ``build`` phony, per-test execution rules, the
