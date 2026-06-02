@@ -314,7 +314,7 @@ class TestNinjaFileLocking:
         with (
             patch("compiletools.build_backend.check_lock_helper_available", return_value=True),
             patch("compiletools.filesystem_utils.get_filesystem_type", return_value="ext4"),
-            patch("compiletools.build_backend._native_flock_available", return_value=True),
+            patch("compiletools.backend_locking._native_flock_available", return_value=True),
         ):
             buf = io.StringIO()
             backend.generate(_compile_graph(), output=buf)
@@ -332,7 +332,7 @@ class TestNinjaFileLocking:
         with (
             patch("compiletools.build_backend.check_lock_helper_available", return_value=True),
             patch("compiletools.filesystem_utils.get_filesystem_type", return_value="ext4"),
-            patch("compiletools.build_backend._native_flock_available", return_value=False),
+            patch("compiletools.backend_locking._native_flock_available", return_value=False),
         ):
             buf = io.StringIO()
             backend.generate(_compile_graph(), output=buf)

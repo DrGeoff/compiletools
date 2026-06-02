@@ -247,7 +247,7 @@ class TestMakefileBackendFileLocking:
         buf = io.StringIO()
         with (
             patch("compiletools.filesystem_utils.get_lock_strategy", return_value="flock"),
-            patch("compiletools.build_backend._native_flock_available", return_value=True),
+            patch("compiletools.backend_locking._native_flock_available", return_value=True),
         ):
             backend._write_makefile(graph, buf)
         content = buf.getvalue()
@@ -266,7 +266,7 @@ class TestMakefileBackendFileLocking:
         buf = io.StringIO()
         with (
             patch("compiletools.filesystem_utils.get_lock_strategy", return_value="flock"),
-            patch("compiletools.build_backend._native_flock_available", return_value=False),
+            patch("compiletools.backend_locking._native_flock_available", return_value=False),
         ):
             backend._write_makefile(graph, buf)
         content = buf.getvalue()
@@ -345,7 +345,6 @@ class TestWrapLinkWithLock:
     """Test wrap_link_with_lock() function in build_backend."""
 
     def test_wraps_link_with_lockdir(self):
-
         args = _make_args(
             file_locking=True,
             sleep_interval_lockdir=0.05,
@@ -365,7 +364,6 @@ class TestWrapLinkWithLock:
         assert "g++ -o /tmp/test_bin/foo /tmp/test_obj/foo.o" in result
 
     def test_wraps_link_with_flock(self):
-
         args = _make_args(
             file_locking=True,
             sleep_interval_flock_fallback=0.03,
@@ -374,7 +372,7 @@ class TestWrapLinkWithLock:
         )
         with (
             patch("compiletools.filesystem_utils.get_lock_strategy", return_value="flock"),
-            patch("compiletools.build_backend._native_flock_available", return_value=True),
+            patch("compiletools.backend_locking._native_flock_available", return_value=True),
         ):
             result = wrap_link_with_lock(
                 "g++ -o bin/foo obj/foo.o",
@@ -399,7 +397,7 @@ class TestWrapLinkWithLock:
         )
         with (
             patch("compiletools.filesystem_utils.get_lock_strategy", return_value="flock"),
-            patch("compiletools.build_backend._native_flock_available", return_value=False),
+            patch("compiletools.backend_locking._native_flock_available", return_value=False),
         ):
             result = wrap_link_with_lock(
                 "g++ -o bin/foo obj/foo.o",
@@ -412,7 +410,6 @@ class TestWrapLinkWithLock:
         assert "CT_LOCK_SLEEP_INTERVAL_FLOCK=0.03" in result
 
     def test_no_wrap_when_locking_disabled(self):
-
         args = _make_args(file_locking=False)
         result = wrap_link_with_lock(
             "g++ -o bin/foo obj/foo.o",
@@ -798,7 +795,6 @@ def _test_library(static_dynamic):
 
 def test_file_locking_registered_in_apptools():
     """--file-locking is registered centrally in add_locking_arguments(), not per-backend."""
-
 
     cap = configargparse.ArgParser()
     add_locking_arguments(cap)
