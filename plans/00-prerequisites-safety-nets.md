@@ -68,15 +68,19 @@ so post-refactor coverage can be diffed.
    count did not drop. Coverage may legitimately *move* between the facade and its
    submodules — compare the SUM across the facade + new submodules, not the facade alone.
 
-**Baseline (fill in once measured):**
+**Baseline (measured 2026-06-01 at `96c873cd`, `pytest -n auto --cov`; TOTAL 88%):**
 ```
-apptools.py        : __%  (lines), __% (branch)
-build_backend.py   : __%  (lines), __% (branch)
-flags.py           : __%
-magicflags.py      : __%
-hunter.py          : __%
-cake.py            : __%
+apptools.py        : 89%   (1611 stmts, 170 miss)
+build_backend.py   : 91%   (1665 stmts, 154 miss)
+magicflags.py      : 93%   (609 stmts, 45 miss)
+hunter.py          : 90%   (373 stmts, 38 miss)
+cake.py            : 78%   (439 stmts, 98 miss)
+flags.py           : (high; not in skip-covered tail — re-measure per Plan 03/04 diff)
 ```
+Note: the clean `pytest -n auto` (no coverage) run is fully green (3391 passed, 0
+failed). The coverage run shows 3 load-induced flakes (lock-contention, slurm,
+bazel) that pass in isolation — not regressions. Post-split, compare the SUM of
+coverage across the facade + its new submodules against the row above.
 
 ## Exit criteria
 
