@@ -199,6 +199,36 @@ def get_lock_strategy(fstype: str) -> str:
     return "flock"
 
 
+# Filesystems whose per-file ``stat()`` is a high-latency metadata round-trip
+# (cluster / network filesystems) and whose metadata servers service concurrent
+# requests well. On these, fanning the trim scan's stat calls across threads is
+# a large win — ``stat()`` releases the GIL, so threads overlap the network
+# latency. Local-disk filesystems (ext4/xfs/btrfs/tmpfs/zfs/overlay) get no
+# benefit (cheap stat served from the page cache) and pay thread-pool overhead,
+# so they — and any *unknown* filesystem, which is almost always local disk —
+# stay single-threaded.
+_PARALLEL_SCAN_FILESYSTEMS: tuple[str, ...] = ("gpfs", "lustre", "nfs", "cifs", "smb", "panfs", "beegfs")
+
+
+def should_parallelize_scan(fstype: str) -> bool:
+    """Whether a metadata-bound directory scan (e.g. ct-trim-cache) should
+    fan its ``stat()`` calls out across threads on this filesystem.
+
+    True only for high-latency network/cluster filesystems (GPFS, Lustre,
+    NFS, CIFS/SMB, PanFS, BeeGFS), where parallel ``stat()`` overlaps the
+    metadata round-trip. False for local-disk and *unknown* filesystems —
+    the latter are almost always local disk, so staying serial preserves the
+    historical single-threaded behavior with no thread overhead.
+
+    This is only the *gate*: the actual worker count is the caller's
+    ``--parallel`` / ``-j`` value (``jobs.py``), which already honours CPU
+    affinity, cgroups, and slurm allocations. This function never decides a
+    thread count.
+    """
+    fstype_lower = fstype.lower()
+    return any(fs in fstype_lower for fs in _PARALLEL_SCAN_FILESYSTEMS)
+
+
 def supports_mmap_safely(fstype: str) -> bool:
     """Determine if filesystem supports mmap reliably (for file_analyzer.py).
 

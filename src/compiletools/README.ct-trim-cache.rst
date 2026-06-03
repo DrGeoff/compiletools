@@ -14,7 +14,7 @@ Trim stale entries from the object, PCH, PCM, and linker-artefact CAS directorie
 
 SYNOPSIS
 ========
-ct-trim-cache [--dry-run] [--cas-objdir PATH] [--cas-pchdir PATH] [--cas-pcmdir PATH] [--cas-exedir PATH] [--max-age DAYS] [--keep-count N] [-v]
+ct-trim-cache [--dry-run] [--cas-objdir PATH] [--cas-pchdir PATH] [--cas-pcmdir PATH] [--cas-exedir PATH] [--max-age DAYS] [--keep-count N] [-j N] [-v]
 
 DESCRIPTION
 ===========
@@ -282,6 +282,18 @@ Directory Options
 
 General Options
 ---------------
+``-j N, --jobs N, --parallel N``
+    Number of worker threads used to scan the cache directories.
+    The scan is metadata-bound (one ``stat()`` per cached entry), so on a
+    high-latency cluster / network filesystem (GPFS, Lustre, NFS, CIFS/SMB,
+    PanFS, BeeGFS) the per-entry metadata round-trips are fanned out across
+    threads for a large speedup.  On local-disk or unrecognised filesystems
+    the scan stays single-threaded regardless of this value — threads would
+    only add overhead where ``stat()`` is already served from the page cache.
+    Default: the available CPU count (honouring CPU affinity, cgroups, and
+    slurm allocations), the same as every other ``ct-*`` tool.  See
+    PERFORMANCE below.
+
 ``--variant VARIANT``
     Build variant to use for configuration (default: blank).
 
@@ -330,6 +342,31 @@ EXAMPLES
 **Trim only object cache on a custom path**::
 
     ct-trim-cache --cas-objdir-only --cas-objdir=/mnt/shared/build/.objects
+
+PERFORMANCE
+===========
+Trimming a large CAS is dominated by metadata I/O: the tool must ``stat()``
+cached entries to rank them by age.  On a high-latency cluster / network
+filesystem (GPFS, Lustre, NFS, CIFS/SMB, PanFS, BeeGFS) each ``stat()`` is a
+round-trip to the metadata server, so a serial scan of hundreds of thousands
+of entries is slow.  Two measures address this:
+
+- **Parallel scan (filesystem-gated).**  On the filesystems above, the
+  per-shard scans are fanned out across ``--parallel`` / ``-j`` worker
+  threads; ``stat()`` releases the GIL, so the metadata round-trips overlap.
+  On local-disk or unrecognised filesystems the scan stays single-threaded
+  (no benefit, only thread overhead) — behaviour there is unchanged.  The
+  filesystem is detected the same way the locking subsystem picks its lock
+  strategy, so the two always agree.
+
+- **Stat elision for the object CAS.**  Object entries whose content hash
+  still matches a tracked source are kept regardless of age, so they are
+  never ``stat()``-ed at all; only the non-current entries (which must be
+  ranked by mtime) pay a metadata round-trip.  In a healthy cache that is a
+  small minority of the entries.
+
+Both measures are transparent — they change only *how fast* the scan runs,
+never which entries are kept or removed.
 
 MULTI-USER SHARED CACHES
 =========================

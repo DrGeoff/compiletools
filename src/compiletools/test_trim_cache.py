@@ -108,6 +108,7 @@ def _make_args(**overrides):
         "verbose": 0,
         "keep_count": 1,
         "max_age": None,
+        "parallel": 1,
     }
     defaults.update(overrides)
     return types.SimpleNamespace(**defaults)
@@ -170,7 +171,6 @@ class TestTrimObjdir:
         assert stats["noncurrent_kept"] == 1
 
     def test_keeps_newest_noncurrent_per_basename(self, objdir):
-
         _touch_obj(objdir, "foo", "111111111111", age_seconds=3600)
         newest = _touch_obj(objdir, "foo", "222222222222", age_seconds=60)
 
@@ -181,7 +181,6 @@ class TestTrimObjdir:
         assert stats["noncurrent_kept"] == 1
 
     def test_keep_count_2(self, objdir):
-
         oldest = _touch_obj(objdir, "foo", "111111111111", age_seconds=7200)
         middle = _touch_obj(objdir, "foo", "222222222222", age_seconds=3600)
         newest = _touch_obj(objdir, "foo", "333333333333", age_seconds=60)
@@ -196,7 +195,6 @@ class TestTrimObjdir:
         assert stats["noncurrent_kept"] == 2
 
     def test_max_age_interaction(self, objdir):
-
         # 2 days old -- beyond max_age of 1 day
         old = _touch_obj(objdir, "foo", "111111111111", age_seconds=172800)
         # 1 hour old -- within max_age of 1 day
@@ -212,7 +210,6 @@ class TestTrimObjdir:
         assert os.path.exists(newest)  # kept by keep_count
 
     def test_safety_keeps_one_when_all_noncurrent(self, objdir):
-
         old = _touch_obj(objdir, "foo", "111111111111", age_seconds=7200)
         newest = _touch_obj(objdir, "foo", "222222222222", age_seconds=60)
 
@@ -224,7 +221,6 @@ class TestTrimObjdir:
         assert not os.path.exists(old)
 
     def test_dry_run_does_not_remove(self, objdir):
-
         old = _touch_obj(objdir, "foo", "111111111111", age_seconds=3600)
         newer = _touch_obj(objdir, "foo", "222222222222", age_seconds=60)
 
@@ -334,7 +330,6 @@ class TestTrimObjdir:
         assert os.path.isdir(os.path.join(objdir, "AA"))
 
     def test_multiple_basenames_independent(self, objdir):
-
         # foo: one current, one old
         foo_current = _touch_obj(objdir, "foo", "aabbccddeeff")
         foo_old = _touch_obj(objdir, "foo", "111111111111", age_seconds=3600)
@@ -353,7 +348,6 @@ class TestTrimObjdir:
         assert stats["basenames_found"] == 2
 
     def test_bytes_freed_tracked(self, objdir):
-
         _touch_obj(objdir, "foo", "111111111111", age_seconds=3600, size=4096)
         _touch_obj(objdir, "foo", "222222222222", age_seconds=60, size=2048)
 
@@ -361,6 +355,136 @@ class TestTrimObjdir:
         stats = trimmer.trim_objdir(objdir, set())
 
         assert stats["bytes_freed"] == 4096
+
+
+# ── GPFS scan acceleration: worker sourcing, stat-elision, parallelism ─
+
+
+class TestWorkerSourcing:
+    """The scan worker count is sourced from ``--parallel`` (``-j``) and
+    gated by the filesystem: parallel only on high-latency cluster/network
+    filesystems, serial on local disk and unknown filesystems."""
+
+    def test_parallel_filesystem_uses_parallel_arg(self, objdir, monkeypatch):
+        monkeypatch.setattr("compiletools.filesystem_utils.get_filesystem_type", lambda _p: "gpfs")
+        trimmer = CacheTrimmer(_make_args(parallel=8))
+        assert trimmer._workers_for(objdir) == 8
+
+    def test_local_filesystem_stays_serial_regardless_of_parallel(self, objdir, monkeypatch):
+        monkeypatch.setattr("compiletools.filesystem_utils.get_filesystem_type", lambda _p: "ext4")
+        trimmer = CacheTrimmer(_make_args(parallel=8))
+        assert trimmer._workers_for(objdir) == 1
+
+    def test_unknown_filesystem_stays_serial(self, objdir, monkeypatch):
+        monkeypatch.setattr("compiletools.filesystem_utils.get_filesystem_type", lambda _p: "unknown")
+        trimmer = CacheTrimmer(_make_args(parallel=8))
+        assert trimmer._workers_for(objdir) == 1
+
+    def test_missing_parallel_arg_defaults_to_serial(self, objdir, monkeypatch):
+        # A caller that never plumbed --parallel must not crash and must stay serial.
+        monkeypatch.setattr("compiletools.filesystem_utils.get_filesystem_type", lambda _p: "gpfs")
+        args = _make_args()
+        del args.parallel
+        trimmer = CacheTrimmer(args)
+        assert trimmer._workers_for(objdir) == 1
+
+
+class TestObjdirStatElision:
+    """On GPFS every ``stat()`` is a metadata round-trip. Current-hash
+    objects are kept regardless of mtime/size, so they must never be
+    statted; only non-current objects (ranked by mtime) are."""
+
+    def test_current_entries_are_not_statted(self, objdir, monkeypatch):
+        current_hash = "aabbccddeeff"
+        _touch_obj(objdir, "foo", current_hash)  # current  -> must NOT be statted
+        _touch_obj(objdir, "bar", "111111111111")  # noncurrent -> must be statted
+
+        statted = []
+        real = trim_cache._entry_mtime_size
+
+        def spy(entry):
+            statted.append(entry.name)
+            return real(entry)
+
+        monkeypatch.setattr(trim_cache, "_entry_mtime_size", spy)
+
+        trimmer = CacheTrimmer(_make_args(keep_count=1))
+        stats = trimmer.trim_objdir(objdir, {current_hash})
+
+        assert all(not name.startswith("foo_") for name in statted), (
+            f"current-hash object must not be statted; statted={statted}"
+        )
+        assert any(name.startswith("bar_") for name in statted), "non-current object must be statted for mtime ranking"
+        # Behavior unchanged: current kept, both scanned.
+        assert stats["current_kept"] == 1
+        assert stats["total_scanned"] == 2
+
+
+class TestParallelScanCorrectness:
+    """Forcing the parallel code path (workers > 1) on a local tmpdir must
+    produce byte-for-byte the same keep/remove decisions as serial — the
+    per-bucket fan-out only changes *how* entries are discovered, never the
+    policy applied to them."""
+
+    @pytest.fixture
+    def _force_parallel(self, monkeypatch):
+        monkeypatch.setattr("compiletools.filesystem_utils.should_parallelize_scan", lambda _fs: True)
+
+    def test_objdir_parallel_merge_matches_policy(self, objdir, _force_parallel):
+        # Spread objects across several buckets (distinct file_hash prefixes)
+        # so the fan-out has multiple units to merge.
+        keep = []
+        drop = []
+        for i in range(6):
+            fh_new = f"{i:02d}cccccccccc"
+            fh_old = f"{i:02d}dddddddddd"
+            keep.append(_touch_obj(objdir, f"src{i}", fh_new, age_seconds=60))
+            drop.append(_touch_obj(objdir, f"src{i}", fh_old, age_seconds=3600))
+
+        trimmer = CacheTrimmer(_make_args(keep_count=1, parallel=8))
+        stats = trimmer.trim_objdir(objdir, set())
+
+        assert all(os.path.exists(p) for p in keep), "newest per basename must survive"
+        assert not any(os.path.exists(p) for p in drop), "older per basename must be removed"
+        assert stats["removed"] == 6
+        assert stats["basenames_found"] == 6
+
+    def test_pchdir_parallel_merge_matches_policy(self, pchdir, _force_parallel):
+        # Three cmd_hash dirs (>1 fan-out unit) for the same header in the
+        # legacy (manifest-less) global bucket; keep_count=1 keeps newest.
+        oldest = _make_pchdir_entry(pchdir, "a" * 16, ["h.h"], age_seconds=7200)
+        middle = _make_pchdir_entry(pchdir, "b" * 16, ["h.h"], age_seconds=3600)
+        newest = _make_pchdir_entry(pchdir, "c" * 16, ["h.h"], age_seconds=60)
+
+        trimmer = CacheTrimmer(_make_args(keep_count=1, parallel=8))
+        stats = trimmer.trim_pchdir(pchdir)
+
+        assert os.path.isdir(newest)
+        assert not os.path.isdir(oldest) and not os.path.isdir(middle)
+        assert stats["dirs_removed"] == 2
+
+    def test_pcmdir_parallel_merge_matches_policy(self, pcmdir, _force_parallel):
+        old = _make_pcmdir_entry(pcmdir, "a" * 16, ["m.pcm"], age_seconds=3600)
+        new = _make_pcmdir_entry(pcmdir, "b" * 16, ["m.pcm"], age_seconds=60)
+
+        trimmer = CacheTrimmer(_make_args(keep_count=1, parallel=8))
+        trimmer.trim_pcmdir(pcmdir)
+
+        assert os.path.isdir(new) and not os.path.isdir(old)
+
+    def test_exedir_parallel_merge_matches_policy(self, tmp_path, _force_parallel):
+        exedir = str(tmp_path / "cas-exe")
+        # Several buckets (distinct link-key prefixes) of the same basename.
+        new = _touch_exe(exedir, "main", "aa11" * 16, age_seconds=0)
+        old1 = _touch_exe(exedir, "main", "bb22" * 16, age_seconds=86400)
+        old2 = _touch_exe(exedir, "main", "cc33" * 16, age_seconds=2 * 86400)
+
+        trimmer = CacheTrimmer(_make_args(keep_count=1, parallel=8))
+        stats = trimmer.trim_exedir(exedir)
+
+        assert os.path.exists(new)
+        assert not os.path.exists(old1) and not os.path.exists(old2)
+        assert stats["removed"] == 2
 
 
 # ── CacheTrimmer pchdir ──────────────────────────────────────────────
@@ -382,7 +506,6 @@ def _make_pchdir_entry(pchdir, command_hash, headers, *, age_seconds=0, size_per
 
 class TestTrimPchdir:
     def test_keeps_newest_per_header(self, pchdir):
-
         old = _make_pchdir_entry(pchdir, "a" * 16, ["stdafx.h"], age_seconds=3600)
         new = _make_pchdir_entry(pchdir, "b" * 16, ["stdafx.h"], age_seconds=60)
 
@@ -395,7 +518,6 @@ class TestTrimPchdir:
         assert stats["dirs_kept"] == 1
 
     def test_removes_oldest_per_header(self, pchdir):
-
         oldest = _make_pchdir_entry(pchdir, "a" * 16, ["stdafx.h"], age_seconds=7200)
         middle = _make_pchdir_entry(pchdir, "b" * 16, ["stdafx.h"], age_seconds=3600)
         newest = _make_pchdir_entry(pchdir, "c" * 16, ["stdafx.h"], age_seconds=60)
@@ -447,7 +569,6 @@ class TestTrimPchdir:
         assert os.path.isdir(recent2)
 
     def test_dry_run_does_not_remove(self, pchdir):
-
         old = _make_pchdir_entry(pchdir, "a" * 16, ["stdafx.h"], age_seconds=3600)
         _make_pchdir_entry(pchdir, "b" * 16, ["stdafx.h"], age_seconds=60)
 
@@ -472,7 +593,6 @@ class TestTrimPchdir:
         assert stats["total_dirs_scanned"] == 0
 
     def test_bytes_freed_tracked(self, pchdir):
-
         _make_pchdir_entry(pchdir, "a" * 16, ["stdafx.h"], age_seconds=3600, size_per_gch=4096)
         _make_pchdir_entry(pchdir, "b" * 16, ["stdafx.h"], age_seconds=60, size_per_gch=2048)
 
@@ -487,22 +607,18 @@ class TestTrimPchdir:
 
 class TestMainCLI:
     def test_mutual_exclusion_error(self):
-
         rc = main(["--cas-objdir-only", "--cas-pchdir-only"])
         assert rc == 1
 
     def test_dry_run_with_nonexistent_dirs(self):
-
         rc = main(["--dry-run", "--cas-objdir=/nonexistent/obj", "--cas-pchdir=/nonexistent/pch"])
         assert rc == 0
 
     def test_cas_objdir_only_flag(self, objdir):
-
         rc = main(["--dry-run", "--cas-objdir-only", f"--cas-objdir={objdir}"])
         assert rc == 0
 
     def test_cas_pchdir_only_flag(self, pchdir):
-
         rc = main(["--dry-run", "--cas-pchdir-only", f"--cas-pchdir={pchdir}"])
         assert rc == 0
 
@@ -593,7 +709,6 @@ class TestSafeLockedRmtree:
 
 class TestLoadPchManifest:
     def test_returns_dict_when_manifest_present(self, tmp_path):
-
         cmd_hash_dir = tmp_path / "abc1234567890123"
         cmd_hash_dir.mkdir()
         (cmd_hash_dir / "manifest.json").write_text(
@@ -605,13 +720,11 @@ class TestLoadPchManifest:
         assert manifest["transitive_hashes"] == {"/abs/bar.h": "deadbeef"}
 
     def test_returns_none_when_missing(self, tmp_path):
-
         cmd_hash_dir = tmp_path / "abc1234567890123"
         cmd_hash_dir.mkdir()
         assert _load_pch_manifest(str(cmd_hash_dir)) is None
 
     def test_returns_none_on_corrupt_json(self, tmp_path):
-
         cmd_hash_dir = tmp_path / "abc1234567890123"
         cmd_hash_dir.mkdir()
         (cmd_hash_dir / "manifest.json").write_text("{not json")
@@ -644,7 +757,6 @@ class TestPchPerRealpathBucketing:
             os.utime(d, (mtime, mtime))
 
     def test_distinct_realpaths_get_independent_keep_count(self, pchdir):
-
         # Two different headers, each with two cmd_hash variants.
         a1 = _make_pchdir_entry(pchdir, "a" * 16, ["headerA.h"])
         a2 = _make_pchdir_entry(pchdir, "b" * 16, ["headerA.h"])
@@ -797,7 +909,6 @@ class TestPcmTransitiveStaleness:
 
     @staticmethod
     def _git_blob_sha1(content: bytes) -> str:
-
         return hashlib.sha1(f"blob {len(content)}\0".encode() + content).hexdigest()
 
     def test_stale_transitive_hash_evicts_entry(self, tmp_path):

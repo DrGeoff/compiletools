@@ -19,6 +19,7 @@ import sys
 
 import compiletools.apptools
 import compiletools.configutils
+import compiletools.jobs
 import compiletools.trim_cache
 
 
@@ -85,6 +86,9 @@ def main(argv=None):
         cap = compiletools.apptools.create_parser("Trim stale entries from shared build caches", argv=argv)
 
         add_arguments(cap)
+        # --parallel / -j: governs scan fan-out on high-latency filesystems
+        # (GPFS/NFS/Lustre). Default honours CPU affinity / cgroups / slurm.
+        compiletools.jobs.add_arguments(cap)
 
         variant = compiletools.configutils.extract_variant(argv=argv)
         compiletools.apptools.add_base_arguments(cap, argv=argv, variant=variant)

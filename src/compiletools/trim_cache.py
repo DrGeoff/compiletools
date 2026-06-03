@@ -17,6 +17,9 @@ import re
 import shutil
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
+
+import compiletools.filesystem_utils
 
 # Object filename format: {basename}_{file_hash_12}_{dep_hash_14}_{macro_state_hash_16}.o
 # Anchored from the END (the three hash fields have fixed widths) so the
@@ -93,6 +96,155 @@ _load_pch_manifest = _load_cmd_hash_manifest
 _load_pcm_manifest = _load_cmd_hash_manifest
 
 
+def _entry_mtime_size(entry):
+    """Return ``(st_mtime, st_size)`` for a ``DirEntry``, or ``None`` if it
+    vanished / is unreadable mid-scan.
+
+    Centralizes the per-entry ``stat()`` — the single most expensive operation
+    in a cache scan on a high-latency filesystem (one metadata round-trip per
+    call). Routing every scan through this one seam keeps the ``OSError``
+    handling uniform and gives the parallel fan-out a clean unit to spy on.
+    """
+    try:
+        st = entry.stat()
+    except OSError:
+        return None
+    return st.st_mtime, st.st_size
+
+
+def _map_scan(units, scan_one, workers):
+    """Apply ``scan_one`` to each unit, fanning out across ``workers`` threads
+    when ``workers > 1``; otherwise run serially.
+
+    Results are returned in input order. ``scan_one`` runs in a worker thread
+    and MUST return a self-contained partial result — all merging into shared
+    structures happens in the calling thread, so no cross-thread locking is
+    needed. Per-entry ``stat()`` releases the GIL, so the threads overlap the
+    metadata round-trip latency that dominates the scan on GPFS/NFS/Lustre.
+    On local-disk (and unknown) filesystems the caller passes ``workers == 1``
+    and this is a plain serial loop — byte-for-byte the historical behavior.
+    """
+    units = list(units)
+    if workers <= 1 or len(units) <= 1:
+        return [scan_one(u) for u in units]
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        return list(executor.map(scan_one, units))
+
+
+def _scan_one_object_bucket(bucket_path, current_hashes):
+    """Scan one 2-hex object bucket (runs in a worker thread).
+
+    Returns ``(current_counts, noncurrent, scanned)`` where:
+      * ``current_counts`` maps basename → count of current-hash objects.
+        Current objects are kept regardless of mtime/size, so they are NOT
+        statted — this elision removes the bulk of the metadata round-trips
+        in a healthy cache (most entries are current).
+      * ``noncurrent`` maps basename → list of ``(path, mtime, size)``; these
+        are statted because they must be ranked by mtime and sized for the
+        bytes-freed tally.
+      * ``scanned`` counts every parseable ``.o`` (current + non-current),
+        matching the historical ``total_scanned`` semantics.
+
+    ``.lockdir`` siblings are skipped (lock subsystem's, not ours). A bucket
+    that vanishes / is unreadable mid-scan contributes nothing — best-effort.
+    """
+    current_counts = {}
+    noncurrent = {}
+    scanned = 0
+    try:
+        with os.scandir(bucket_path) as bucket_entries:
+            for entry in bucket_entries:
+                if entry.name.endswith(".lockdir"):
+                    continue
+                if not entry.name.endswith(".o"):
+                    continue
+                parsed = parse_object_filename(entry.name)
+                if parsed is None:
+                    continue
+                scanned += 1
+                basename, file_hash, _dep_hash, _macro_hash = parsed
+                if file_hash in current_hashes:
+                    current_counts[basename] = current_counts.get(basename, 0) + 1
+                    continue
+                ms = _entry_mtime_size(entry)
+                if ms is None:
+                    continue
+                noncurrent.setdefault(basename, []).append((entry.path, ms[0], ms[1]))
+    except OSError:
+        pass  # bucket vanished or unreadable; skip and move on
+    return current_counts, noncurrent, scanned
+
+
+def _scan_one_cmd_hash_dir(entry, leaf_suffixes):
+    """Scan one PCH/PCM ``<cmd_hash>/`` directory (runs in a worker thread).
+
+    ``leaf_suffixes`` is the tuple of artefact extensions to total
+    (``(".gch",)`` for PCH, ``(".pcm", ".gcm")`` for PCM). Returns
+    ``(name, path, mtime, total_size, leaves)`` or ``None`` when the dir has
+    no matching leaves or its stat fails (skipped, matching legacy behavior).
+    """
+    leaves = []
+    total_size = 0
+    try:
+        with os.scandir(entry.path) as leaf_entries:
+            for leaf in leaf_entries:
+                if leaf.name.endswith(leaf_suffixes) and leaf.is_file():
+                    leaves.append(leaf.name)
+                    ms = _entry_mtime_size(leaf)
+                    if ms is not None:
+                        total_size += ms[1]
+    except OSError:
+        return None
+    if not leaves:
+        return None
+    ms = _entry_mtime_size(entry)
+    if ms is None:
+        return None
+    return entry.name, entry.path, ms[0], total_size, leaves
+
+
+def _scan_one_exe_bucket(bucket_entry):
+    """Scan one cas-exedir bucket (runs in a worker thread).
+
+    Returns a list of ``(path, bucket_key, mtime, size, nlink)``. Every entry
+    needs mtime + size + nlink, so (unlike the object scan) there is no stat
+    to elide — a single ``stat()`` per artefact is taken. ``bucket_key`` is
+    ``(source_realpath, suffix)`` from the sidecar manifest when present, else
+    ``(basename, suffix)`` (legacy). Non-artefact files (lock sidecars, etc.)
+    and unreadable entries are skipped.
+    """
+    recs = []
+    try:
+        inner = list(os.scandir(bucket_entry.path))
+    except OSError:
+        return recs
+    for leaf in inner:
+        if not leaf.is_file():
+            continue
+        matched_suffix = next((s for s in _CAS_EXE_SUFFIXES if leaf.name.endswith(s)), None)
+        if matched_suffix is None:
+            continue
+        # ``<basename>_<key><suffix>``: split on the LAST underscore so
+        # basenames containing underscores stay intact.
+        stem = leaf.name[: -len(matched_suffix)]
+        sep = stem.rfind("_")
+        if sep <= 0:
+            continue
+        basename = stem[:sep]
+        try:
+            st = leaf.stat()
+        except OSError:
+            continue
+        bucket_id = basename
+        manifest = _load_exe_manifest(leaf.path)
+        if manifest is not None:
+            src = manifest.get("source_realpath")
+            if isinstance(src, str) and src:
+                bucket_id = src
+        recs.append((leaf.path, (bucket_id, matched_suffix), st.st_mtime, st.st_size, st.st_nlink))
+    return recs
+
+
 def parse_object_filename(filename):
     """Parse a content-addressable object filename into its components.
 
@@ -140,6 +292,27 @@ class CacheTrimmer:
         self.keep_count = getattr(args, "keep_count", 1)
         max_age_days = getattr(args, "max_age", None)
         self.max_age_seconds = max_age_days * 86400 if max_age_days is not None else None
+        # Scan parallelism is sourced from --parallel / -j (jobs.py), which
+        # already honours CPU affinity, cgroups, and slurm allocations. A
+        # caller that never plumbed it (or passed 0/None) stays serial.
+        self.parallel = getattr(args, "parallel", 1) or 1
+
+    def _workers_for(self, path):
+        """Worker-thread count for scanning ``path``.
+
+        ``--parallel`` on a filesystem where parallel ``stat()`` overlaps
+        metadata latency (GPFS/NFS/Lustre/CIFS/...), else ``1`` (serial) — on
+        local-disk and unknown filesystems threads only add overhead. The
+        filesystem detection + policy live in ``filesystem_utils`` (shared
+        with the locking-strategy selector), so trim and lock agree on FS
+        classification.
+        """
+        if self.parallel <= 1:
+            return 1
+        fstype = compiletools.filesystem_utils.get_filesystem_type(path)
+        if compiletools.filesystem_utils.should_parallelize_scan(fstype):
+            return self.parallel
+        return 1
 
     # ------------------------------------------------------------------
     # Object directory trimming
@@ -178,18 +351,18 @@ class CacheTrimmer:
             return stats
 
         try:
-            groups = self._scan_object_files(objdir, stats)
+            groups = self._scan_object_files(objdir, current_hashes, stats)
         except OSError as exc:
             print(f"Error scanning {objdir}: {exc}", file=sys.stderr)
             return stats
 
         now = time.time()
-        for _basename, files in groups.items():
-            self._process_basename_group(files, current_hashes, now, stats)
+        for _basename, group in groups.items():
+            self._process_basename_group(group["current"], group["noncurrent"], now, stats)
 
         return stats
 
-    def _scan_object_files(self, objdir, stats):
+    def _scan_object_files(self, objdir, current_hashes, stats):
         """Scan ``objdir`` for parseable ``.o`` entries, grouped by basename.
 
         Walks two levels: ``<objdir>/<bucket>/*.o`` where ``<bucket>`` is
@@ -198,69 +371,64 @@ class CacheTrimmer:
         logs, ``TraceStore/`` dirs, stray pre-sharding ``.o`` leftovers)
         are skipped — they are outside the sharded cache's world.
 
+        Each bucket is scanned by ``_scan_one_object_bucket`` — fanned out
+        across ``self._workers_for(objdir)`` threads on a high-latency
+        filesystem, serial on local disk. Buckets are the natural unit of
+        parallelism (≤256 of them) and ``stat()`` releases the GIL, so the
+        per-file metadata round-trips overlap. Current-hash objects are not
+        statted at all (they are kept regardless of mtime); only non-current
+        objects pay a ``stat()``.
+
         Within each bucket, ``.lockdir`` entries are skipped (they sit
         next to their ``.o`` and are managed by the lock subsystem, not
         the trimmer).
 
-        Mutates ``stats`` in place: increments ``total_scanned`` per
-        successfully-parsed entry and sets ``basenames_found`` to the final
-        number of distinct basenames discovered.
+        Mutates ``stats`` in place: accumulates ``total_scanned`` across
+        buckets and sets ``basenames_found`` to the final number of distinct
+        basenames discovered.
 
-        Returns a dict mapping basename to a list of
-        ``(path, file_hash, mtime, size)`` tuples. May raise ``OSError`` if
-        the initial ``os.scandir`` call fails. Per-bucket ``OSError`` (e.g.
-        a bucket dir vanishes mid-scan) is swallowed and that bucket's
-        contribution is just skipped — best-effort scan.
+        Returns a dict mapping basename to ``{"current": int, "noncurrent":
+        [(path, mtime, size), ...]}``. May raise ``OSError`` if the initial
+        top-level ``os.scandir`` call fails. Per-bucket ``OSError`` (e.g. a
+        bucket dir vanishes mid-scan) is swallowed inside the worker and that
+        bucket's contribution is just skipped — best-effort scan.
         """
-        groups = {}  # basename -> list of (path, file_hash, mtime, size)
         with os.scandir(objdir) as entries:
-            bucket_paths = []
-            for entry in entries:
-                if not _OBJ_BUCKET_RE.match(entry.name):
-                    continue
-                if not entry.is_dir(follow_symlinks=False):
-                    continue
-                bucket_paths.append(entry.path)
+            bucket_paths = [
+                entry.path
+                for entry in entries
+                if _OBJ_BUCKET_RE.match(entry.name) and entry.is_dir(follow_symlinks=False)
+            ]
 
-        for bucket_path in bucket_paths:
-            try:
-                with os.scandir(bucket_path) as bucket_entries:
-                    for entry in bucket_entries:
-                        if entry.name.endswith(".lockdir"):
-                            continue
-                        if not entry.name.endswith(".o"):
-                            continue
-                        parsed = parse_object_filename(entry.name)
-                        if parsed is None:
-                            continue
-                        stats["total_scanned"] += 1
-                        basename, file_hash, _dep_hash, _macro_hash = parsed
-                        try:
-                            st = entry.stat()
-                        except OSError:
-                            continue
-                        groups.setdefault(basename, []).append((entry.path, file_hash, st.st_mtime, st.st_size))
-            except OSError:
-                continue  # bucket vanished or unreadable; skip and move on
+        workers = self._workers_for(objdir)
+        results = _map_scan(bucket_paths, lambda b: _scan_one_object_bucket(b, current_hashes), workers)
+
+        # Merge partial results in the calling thread (no cross-thread locking).
+        groups = {}  # basename -> {"current": int, "noncurrent": [(path, mtime, size)]}
+        for current_counts, noncurrent, scanned in results:
+            stats["total_scanned"] += scanned
+            for basename, count in current_counts.items():
+                groups.setdefault(basename, {"current": 0, "noncurrent": []})["current"] += count
+            for basename, items in noncurrent.items():
+                groups.setdefault(basename, {"current": 0, "noncurrent": []})["noncurrent"].extend(items)
 
         stats["basenames_found"] = len(groups)
         return groups
 
-    def _process_basename_group(self, files, current_hashes, now, stats):
+    def _process_basename_group(self, current_count, noncurrent, now, stats):
         """Apply the keep/remove policy to one basename's object files.
 
-        Mutates ``stats`` in place additively (``current_kept``,
-        ``noncurrent_kept``, ``removed``, ``failed``, ``bytes_freed``) and
-        performs the per-file ``print`` / ``_safe_locked_unlink`` side effects
-        in the order ``files`` was accumulated.
+        ``current_count`` is the number of current-hash objects (kept
+        unconditionally; not statted during the scan). ``noncurrent`` is a
+        list of ``(path, mtime, size)`` for the non-current objects. Mutates
+        ``stats`` in place additively (``current_kept``, ``noncurrent_kept``,
+        ``removed``, ``failed``, ``bytes_freed``) and performs the per-file
+        ``print`` / ``_safe_locked_unlink`` side effects.
         """
-        current = [(p, fh, mt, sz) for p, fh, mt, sz in files if fh in current_hashes]
-        noncurrent = [(p, fh, mt, sz) for p, fh, mt, sz in files if fh not in current_hashes]
-
-        stats["current_kept"] += len(current)
+        stats["current_kept"] += current_count
 
         # Sort non-current by mtime descending (newest first)
-        noncurrent.sort(key=lambda x: x[2], reverse=True)
+        noncurrent = sorted(noncurrent, key=lambda x: x[1], reverse=True)
 
         to_keep = noncurrent[: self.keep_count]
         candidates = noncurrent[self.keep_count :]
@@ -270,19 +438,19 @@ class CacheTrimmer:
         # the basename has zero non-current entries it stays absent (no
         # file to retain — nothing is silently lost, there is nothing
         # to keep).
-        if not current and not to_keep and candidates:
+        if current_count == 0 and not to_keep and candidates:
             to_keep.append(candidates.pop(0))
 
         # Apply max_age filter: only remove candidates older than max_age
         if self.max_age_seconds is not None:
             cutoff = now - self.max_age_seconds
-            to_remove = [f for f in candidates if f[2] < cutoff]
+            to_remove = [f for f in candidates if f[1] < cutoff]
         else:
             to_remove = candidates
 
         stats["noncurrent_kept"] += len(to_keep) + (len(candidates) - len(to_remove))
 
-        for path, _fh, _mt, size in to_remove:
+        for path, _mt, size in to_remove:
             if self.verbose >= 1:
                 action = "Would remove" if self.dry_run else "Removing"
                 print(f"  {action}: {path} ({_format_size(size)})")
@@ -369,36 +537,22 @@ class CacheTrimmer:
             print(f"Error scanning {pchdir}: {exc}", file=sys.stderr)
             return stats
 
-        for entry in entries:
-            if not entry.is_dir():
-                continue
-            if not _PCH_COMMAND_HASH_RE.match(entry.name):
-                continue
-            stats["total_dirs_scanned"] += 1
+        cmd_dirs = [e for e in entries if e.is_dir() and _PCH_COMMAND_HASH_RE.match(e.name)]
+        stats["total_dirs_scanned"] = len(cmd_dirs)
 
-            headers = []
-            total_size = 0
-            try:
-                for gch_entry in os.scandir(entry.path):
-                    if gch_entry.name.endswith(".gch") and gch_entry.is_file():
-                        header_base = gch_entry.name[:-4]  # strip .gch
-                        headers.append(header_base)
-                        try:
-                            total_size += gch_entry.stat().st_size
-                        except OSError:
-                            pass
-            except OSError:
-                continue
+        # Each cmd_hash dir (stat its mtime + sum its .gch sizes) is an
+        # independent unit of metadata work — fan out across threads on a
+        # high-latency filesystem, serial on local disk. ``.gch`` headers
+        # whose ``header_base`` strips the 4-char ".gch" extension.
+        workers = self._workers_for(pchdir)
+        results = _map_scan(cmd_dirs, lambda e: _scan_one_cmd_hash_dir(e, (".gch",)), workers)
 
-            if not headers:
+        for result in results:
+            if result is None:
                 continue
-
-            try:
-                dir_mtime = entry.stat().st_mtime
-            except OSError:
-                continue
-
-            dir_info[entry.name] = (entry.path, dir_mtime, total_size, headers)
+            name, path, dir_mtime, total_size, gch_names = result
+            headers = [n[:-4] for n in gch_names]  # strip .gch
+            dir_info[name] = (path, dir_mtime, total_size, headers)
             unique_headers.update(headers)
 
         stats["headers_found"] = len(unique_headers)
@@ -546,29 +700,19 @@ class CacheTrimmer:
             print(f"Error scanning {pcmdir}: {exc}", file=sys.stderr)
             return stats
 
-        for entry in entries:
-            if not entry.is_dir() or not _PCM_COMMAND_HASH_RE.match(entry.name):
+        cmd_dirs = [e for e in entries if e.is_dir() and _PCM_COMMAND_HASH_RE.match(e.name)]
+        stats["total_dirs_scanned"] = len(cmd_dirs)
+
+        # Same fan-out as pchdir: each cmd_hash dir is an independent unit of
+        # metadata work, parallelised on high-latency filesystems.
+        workers = self._workers_for(pcmdir)
+        results = _map_scan(cmd_dirs, lambda e: _scan_one_cmd_hash_dir(e, (".pcm", ".gcm")), workers)
+
+        for result in results:
+            if result is None:
                 continue
-            stats["total_dirs_scanned"] += 1
-            leaves = []
-            total_size = 0
-            try:
-                for leaf in os.scandir(entry.path):
-                    if leaf.name.endswith((".pcm", ".gcm")) and leaf.is_file():
-                        leaves.append(leaf.name)
-                        try:
-                            total_size += leaf.stat().st_size
-                        except OSError:
-                            pass
-            except OSError:
-                continue
-            if not leaves:
-                continue
-            try:
-                dir_mtime = entry.stat().st_mtime
-            except OSError:
-                continue
-            dir_info[entry.name] = (entry.path, dir_mtime, total_size, leaves)
+            name, path, dir_mtime, total_size, leaves = result
+            dir_info[name] = (path, dir_mtime, total_size, leaves)
 
         # Phase 2: bucket by manifest's bucket_key. Header-unit entries
         # use the token (``<vector>``); named-module entries use the
@@ -711,41 +855,18 @@ class CacheTrimmer:
         # entries that pre-date the sidecar contract (existing caches
         # don't suddenly behave differently after upgrading).
         entry_info: dict[str, tuple] = {}
-        for bucket_entry in os.scandir(exedir):
-            if not bucket_entry.is_dir():
-                continue
-            try:
-                inner = list(os.scandir(bucket_entry.path))
-            except OSError:
-                continue
-            for leaf in inner:
-                if not leaf.is_file():
-                    continue
-                matched_suffix = next(
-                    (s for s in _CAS_EXE_SUFFIXES if leaf.name.endswith(s)),
-                    None,
-                )
-                if matched_suffix is None:
-                    continue
-                # ``<basename>_<key><suffix>``: split on the LAST underscore
-                # so basenames containing underscores stay intact.
-                stem = leaf.name[: -len(matched_suffix)]
-                sep = stem.rfind("_")
-                if sep <= 0:
-                    continue
-                basename = stem[:sep]
-                try:
-                    st = leaf.stat()
-                except OSError:
-                    continue
-                # Prefer source_realpath from sidecar; fall back to basename.
-                bucket_id: str = basename
-                manifest = _load_exe_manifest(leaf.path)
-                if manifest is not None:
-                    src = manifest.get("source_realpath")
-                    if isinstance(src, str) and src:
-                        bucket_id = src
-                entry_info[leaf.path] = ((bucket_id, matched_suffix), st.st_mtime, st.st_size, st.st_nlink)
+        with os.scandir(exedir) as exe_entries:
+            bucket_dirs = [e for e in exe_entries if e.is_dir()]
+
+        # Each top-level bucket is an independent unit of metadata work
+        # (stat + sidecar-manifest read per artefact); fan out on a
+        # high-latency filesystem, serial on local disk.
+        workers = self._workers_for(exedir)
+        results = _map_scan(bucket_dirs, _scan_one_exe_bucket, workers)
+
+        for recs in results:
+            for path, bucket_key, mtime, size, nlink in recs:
+                entry_info[path] = (bucket_key, mtime, size, nlink)
                 stats["total_scanned"] += 1
 
         if not entry_info:

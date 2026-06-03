@@ -18,6 +18,7 @@ from compiletools.filesystem_utils import (
     get_lock_strategy,
     get_lockdir_sleep_interval,
     safe_read_text_file,
+    should_parallelize_scan,
     supports_mmap_safely,
 )
 
@@ -133,6 +134,48 @@ def test_supports_mmap_safely(fstype, expected):
 )
 def test_get_lockdir_sleep_interval(fstype, expected):
     assert get_lockdir_sleep_interval(fstype) == expected
+
+
+@pytest.mark.parametrize(
+    "fstype",
+    [
+        pytest.param("gpfs", id="gpfs"),
+        pytest.param("GPFS", id="gpfs-uppercase"),
+        pytest.param("lustre", id="lustre"),
+        pytest.param("nfs", id="nfs"),
+        pytest.param("nfs4", id="nfs4"),
+        pytest.param("cifs", id="cifs"),
+        pytest.param("smb", id="smb"),
+        pytest.param("smbfs", id="smbfs"),
+        pytest.param("panfs", id="panfs"),
+        pytest.param("beegfs", id="beegfs"),
+    ],
+)
+def test_should_parallelize_scan_true_for_high_latency_filesystems(fstype):
+    """Cluster / network filesystems have high per-stat metadata latency
+    that parallelizes well — the trim scan should fan out across threads."""
+    assert should_parallelize_scan(fstype) is True
+
+
+@pytest.mark.parametrize(
+    "fstype",
+    [
+        pytest.param("ext4", id="ext4"),
+        pytest.param("xfs", id="xfs"),
+        pytest.param("btrfs", id="btrfs"),
+        pytest.param("tmpfs", id="tmpfs"),
+        pytest.param("zfs", id="zfs"),
+        pytest.param("overlay", id="overlay"),
+        # Unknown must stay serial: we can't confirm parallel stat helps, so
+        # preserve the historical single-threaded behavior (no thread overhead
+        # on the overwhelming majority of machines, which are local-disk).
+        pytest.param("unknown", id="unknown"),
+    ],
+)
+def test_should_parallelize_scan_false_for_local_filesystems(fstype):
+    """Local-disk filesystems get no benefit from parallel stat (page cache
+    + low latency) and must stay single-threaded to avoid thread overhead."""
+    assert should_parallelize_scan(fstype) is False
 
 
 def test_atomic_write_basic(tmp_path):
