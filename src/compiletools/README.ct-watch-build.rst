@@ -8,7 +8,7 @@ Continuous rebuild helper that watches sources with inotify
 
 :Author: drgeoffathome@gmail.com
 :Date:   2025-11-26
-:Version: 10.1.4
+:Version: 10.1.5
 :Manual section: 1
 :Manual group: developers
 
