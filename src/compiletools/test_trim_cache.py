@@ -105,6 +105,7 @@ class TestBuildCurrentHashSet:
 def _make_args(**overrides):
     defaults = {
         "dry_run": False,
+        "json": False,
         "verbose": 0,
         "keep_count": 1,
         "max_age": None,
@@ -1316,3 +1317,219 @@ class TestTrimExedir:
             "gained a hardlinked publish reference between scan and unlink"
         )
         assert not os.path.exists(old_b)
+
+
+# ── --json mode ───────────────────────────────────────────────────────
+
+
+class TestJsonMode:
+    """``--json`` routes human text to stderr and emits a single parseable
+    JSON object on stdout with raw integer byte counts per cache."""
+
+    def _run_json(self, argv, capsys):
+        """Run main() with --json prepended; return (rc, stdout_str, stderr_str)."""
+        rc = main(["--json"] + argv)
+        cap = capsys.readouterr()
+        return rc, cap.out, cap.err
+
+    def test_stdout_is_pure_json_dict_with_no_human_text(self, tmp_path, capsys):
+        """Stdout must be a parseable JSON dict and contain no human text.
+
+        A successful json.loads() of the entire stdout buffer is sufficient
+        proof that no human summary lines leaked — any mixed prose would
+        produce a JSONDecodeError.
+        """
+        objdir = str(tmp_path / "obj")
+        os.makedirs(objdir)
+        rc, out, _err = self._run_json(
+            ["--dry-run", "--cas-objdir-only", f"--cas-objdir={objdir}"],
+            capsys,
+        )
+        assert rc == 0
+        parsed = json.loads(out)  # raises if human text leaks to stdout
+        assert isinstance(parsed, dict)
+
+    def test_byte_counts_are_integers(self, tmp_path, capsys):
+        """All byte-count values in the JSON output must be plain integers."""
+        objdir = str(tmp_path / "obj")
+        os.makedirs(objdir)
+        # Plant a couple of fake object files so there is something to scan.
+        _touch_obj(objdir, "foo", "aabbccddeeff", age_seconds=3600)
+        _touch_obj(objdir, "foo", "112233445566", age_seconds=0)
+
+        rc, out, _err = self._run_json(
+            ["--dry-run", "--cas-objdir-only", f"--cas-objdir={objdir}"],
+            capsys,
+        )
+        assert rc == 0
+        parsed = json.loads(out)
+        obj = parsed.get("objdir")
+        assert obj is not None
+        assert isinstance(obj["bytes_freed"], int)
+        assert isinstance(parsed["total_bytes_freed"], int)
+
+    def test_objdir_stats_keys_present(self, tmp_path, capsys):
+        """objdir section carries the exact keys print_summary reports."""
+        objdir = str(tmp_path / "obj")
+        os.makedirs(objdir)
+        _touch_obj(objdir, "bar", "aabbccddeeff", age_seconds=7200)
+
+        rc, out, _err = self._run_json(
+            ["--dry-run", "--cas-objdir-only", f"--cas-objdir={objdir}"],
+            capsys,
+        )
+        assert rc == 0
+        obj = json.loads(out)["objdir"]
+        for key in (
+            "total_scanned",
+            "basenames_found",
+            "current_kept",
+            "noncurrent_kept",
+            "removed",
+            "failed",
+            "bytes_freed",
+        ):
+            assert key in obj, f"missing key: {key}"
+
+    def test_pchdir_stats_keys_present(self, tmp_path, capsys):
+        """pchdir section carries the exact keys print_summary reports."""
+        pchdir = str(tmp_path / "pch")
+        os.makedirs(pchdir)
+
+        rc, out, _err = self._run_json(
+            ["--dry-run", "--cas-pchdir-only", f"--cas-pchdir={pchdir}"],
+            capsys,
+        )
+        assert rc == 0
+        pch = json.loads(out)["pchdir"]
+        for key in ("total_dirs_scanned", "headers_found", "dirs_kept", "dirs_removed", "failed", "bytes_freed"):
+            assert key in pch, f"missing key: {key}"
+
+    def test_pcmdir_stats_keys_present(self, tmp_path, capsys):
+        """pcmdir section carries the exact keys print_summary reports."""
+        pcmdir = str(tmp_path / "pcm")
+        os.makedirs(pcmdir)
+
+        rc, out, _err = self._run_json(
+            ["--dry-run", "--cas-pcmdir-only", f"--cas-pcmdir={pcmdir}"],
+            capsys,
+        )
+        assert rc == 0
+        pcm = json.loads(out)["pcmdir"]
+        for key in ("total_dirs_scanned", "buckets_found", "dirs_kept", "dirs_removed", "failed", "bytes_freed"):
+            assert key in pcm, f"missing key: {key}"
+
+    def test_exedir_stats_keys_present(self, tmp_path, capsys):
+        """exedir section carries the exact keys print_summary reports."""
+        exedir = str(tmp_path / "exe")
+        os.makedirs(exedir)
+
+        rc, out, _err = self._run_json(
+            ["--dry-run", "--cas-exedir-only", f"--cas-exedir={exedir}"],
+            capsys,
+        )
+        assert rc == 0
+        exe = json.loads(out)["exedir"]
+        for key in ("total_scanned", "basenames_found", "kept", "removed", "failed", "bytes_freed"):
+            assert key in exe, f"missing key: {key}"
+
+    def test_top_level_total_bytes_freed_is_integer(self, tmp_path, capsys):
+        """top-level total_bytes_freed must be an integer (sum across caches)."""
+        objdir = str(tmp_path / "obj")
+        os.makedirs(objdir)
+
+        rc, out, _err = self._run_json(
+            ["--dry-run", "--cas-objdir-only", f"--cas-objdir={objdir}"],
+            capsys,
+        )
+        assert rc == 0
+        parsed = json.loads(out)
+        assert "total_bytes_freed" in parsed
+        assert isinstance(parsed["total_bytes_freed"], int)
+
+    def test_omitted_cache_absent_from_json(self, tmp_path, capsys):
+        """Caches that were not run should be absent (or null) in the JSON."""
+        objdir = str(tmp_path / "obj")
+        os.makedirs(objdir)
+
+        rc, out, _err = self._run_json(
+            ["--dry-run", "--cas-objdir-only", f"--cas-objdir={objdir}"],
+            capsys,
+        )
+        assert rc == 0
+        parsed = json.loads(out)
+        # --cas-objdir-only: pchdir/pcmdir/exedir should be absent or null
+        for key in ("pchdir", "pcmdir", "exedir"):
+            assert parsed.get(key) is None, f"{key} should be absent/null when not run"
+
+    def test_non_json_mode_prints_human_summary_to_stdout(self, tmp_path, capsys):
+        """Without --json, human summary still goes to stdout (regression guard)."""
+        objdir = str(tmp_path / "obj")
+        os.makedirs(objdir)
+
+        rc = main(["--dry-run", "--cas-objdir-only", f"--cas-objdir={objdir}"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "Cache trim complete" in out
+
+    def test_verbose_progress_goes_to_stderr_in_json_mode(self, tmp_path, capsys):
+        """In --json mode, verbose progress lines must not appear on stdout."""
+        objdir = str(tmp_path / "obj")
+        os.makedirs(objdir)
+        _touch_obj(objdir, "baz", "aabbccddeeff", age_seconds=3600)
+
+        rc, out, err = self._run_json(
+            ["--dry-run", "--cas-objdir-only", f"--cas-objdir={objdir}", "-v"],
+            capsys,
+        )
+        assert rc == 0
+        # stdout must still be pure JSON
+        json.loads(out)
+        # The verbose "Trimming object directory" line must be on stderr
+        assert "Trimming object directory" in err
+
+    def test_summary_json_method_returns_correct_structure(self, tmp_path):
+        """CacheTrimmer.summary_json() returns the expected dict directly."""
+        trimmer = CacheTrimmer(_make_args())
+        objdir_stats = {
+            "total_scanned": 10,
+            "basenames_found": 3,
+            "current_kept": 5,
+            "noncurrent_kept": 2,
+            "removed": 3,
+            "failed": 0,
+            "bytes_freed": 4096,
+        }
+        result = trimmer.summary_json(objdir_stats=objdir_stats)
+        assert isinstance(result, dict)
+        assert result["objdir"]["bytes_freed"] == 4096
+        assert isinstance(result["objdir"]["bytes_freed"], int)
+        assert result["total_bytes_freed"] == 4096
+        assert isinstance(result["total_bytes_freed"], int)
+        assert result.get("pchdir") is None
+        assert result.get("pcmdir") is None
+        assert result.get("exedir") is None
+
+    def test_total_bytes_freed_sums_per_cache_values(self):
+        """total_bytes_freed equals the sum of per-cache bytes_freed values."""
+        trimmer = CacheTrimmer(_make_args())
+        objdir_stats = {
+            "total_scanned": 5,
+            "basenames_found": 2,
+            "current_kept": 2,
+            "noncurrent_kept": 1,
+            "removed": 2,
+            "failed": 0,
+            "bytes_freed": 1024,
+        }
+        pchdir_stats = {
+            "total_dirs_scanned": 3,
+            "headers_found": 1,
+            "dirs_kept": 1,
+            "dirs_removed": 2,
+            "failed": 0,
+            "bytes_freed": 2048,
+        }
+        result = trimmer.summary_json(objdir_stats=objdir_stats, pchdir_stats=pchdir_stats)
+        assert result["total_bytes_freed"] == objdir_stats["bytes_freed"] + pchdir_stats["bytes_freed"]
+        assert result["total_bytes_freed"] == 3072

@@ -296,6 +296,9 @@ class CacheTrimmer:
         # already honours CPU affinity, cgroups, and slurm allocations. A
         # caller that never plumbed it (or passed 0/None) stays serial.
         self.parallel = getattr(args, "parallel", 1) or 1
+        # When --json is set, human/progress text goes to stderr so stdout
+        # stays pure JSON. Default: stdout (non-JSON human mode).
+        self._human = sys.stderr if getattr(args, "json", False) else sys.stdout
 
     def _workers_for(self, path):
         """Worker-thread count for scanning ``path``.
@@ -347,7 +350,7 @@ class CacheTrimmer:
 
         if not os.path.isdir(objdir):
             if self.verbose >= 1:
-                print(f"Object directory does not exist: {objdir}")
+                print(f"Object directory does not exist: {objdir}", file=self._human)
             return stats
 
         try:
@@ -453,7 +456,7 @@ class CacheTrimmer:
         for path, _mt, size in to_remove:
             if self.verbose >= 1:
                 action = "Would remove" if self.dry_run else "Removing"
-                print(f"  {action}: {path} ({_format_size(size)})")
+                print(f"  {action}: {path} ({_format_size(size)})", file=self._human)
             if not self.dry_run:
                 if _safe_locked_unlink(path):
                     stats["removed"] += 1
@@ -523,7 +526,7 @@ class CacheTrimmer:
 
         if not os.path.isdir(pchdir):
             if self.verbose >= 1:
-                print(f"PCH directory does not exist: {pchdir}")
+                print(f"PCH directory does not exist: {pchdir}", file=self._human)
             return stats
 
         # Phase 1: scan command_hash directories
@@ -602,7 +605,7 @@ class CacheTrimmer:
                 current = hashlib.sha1(f"blob {len(content)}\0".encode() + content).hexdigest()
                 if current != expected_hash:
                     if self.verbose >= 1:
-                        print(f"  Pre-evicting {path} (transitive {h_realpath} changed)")
+                        print(f"  Pre-evicting {path} (transitive {h_realpath} changed)", file=self._human)
                     needed_dirs.discard(cmd_hash)
                     break
 
@@ -614,7 +617,7 @@ class CacheTrimmer:
 
             if self.verbose >= 1:
                 action = "Would remove" if self.dry_run else "Removing"
-                print(f"  {action}: {path} ({_format_size(total_size)})")
+                print(f"  {action}: {path} ({_format_size(total_size)})", file=self._human)
 
             if not self.dry_run:
                 # Lock each .gch file before removing the cmd_hash
@@ -687,7 +690,7 @@ class CacheTrimmer:
 
         if not os.path.isdir(pcmdir):
             if self.verbose >= 1:
-                print(f"PCM directory does not exist: {pcmdir}")
+                print(f"PCM directory does not exist: {pcmdir}", file=self._human)
             return stats
 
         # Phase 1: scan command_hash directories.
@@ -754,7 +757,7 @@ class CacheTrimmer:
                 current = hashlib.sha1(f"blob {len(content)}\0".encode() + content).hexdigest()
                 if current != expected_hash:
                     if self.verbose >= 1:
-                        print(f"  Pre-evicting {path} (transitive {h_realpath} changed)")
+                        print(f"  Pre-evicting {path} (transitive {h_realpath} changed)", file=self._human)
                     needed_dirs.discard(cmd_hash)
                     break
 
@@ -766,7 +769,7 @@ class CacheTrimmer:
 
             if self.verbose >= 1:
                 action = "Would remove" if self.dry_run else "Removing"
-                print(f"  {action}: {path} ({_format_size(total_size)})")
+                print(f"  {action}: {path} ({_format_size(total_size)})", file=self._human)
 
             if not self.dry_run:
                 if _safe_locked_rmtree(path):
@@ -844,7 +847,7 @@ class CacheTrimmer:
 
         if not os.path.isdir(exedir):
             if self.verbose >= 1:
-                print(f"Executable directory does not exist: {exedir}")
+                print(f"Executable directory does not exist: {exedir}", file=self._human)
             return stats
 
         # entry_info: {full_path: (bucket_key, mtime, size, st_nlink)}
@@ -903,7 +906,7 @@ class CacheTrimmer:
                 continue
             if self.dry_run:
                 if self.verbose >= 1:
-                    print(f"  Would remove: {path}")
+                    print(f"  Would remove: {path}", file=self._human)
                 stats["removed"] += 1
                 stats["bytes_freed"] += size
                 continue
@@ -933,68 +936,107 @@ class CacheTrimmer:
     def print_summary(self, objdir_stats=None, pchdir_stats=None, pcmdir_stats=None, exedir_stats=None):
         """Print a formatted summary of trimming results."""
         total_freed = 0
-        print()
-        print("=" * 60)
-        print("Cache trim complete")
+        print(file=self._human)
+        print("=" * 60, file=self._human)
+        print("Cache trim complete", file=self._human)
 
         if objdir_stats is not None:
             total_freed += objdir_stats["bytes_freed"]
-            print("  Object files:")
-            print(f"    Total scanned:   {objdir_stats['total_scanned']}")
-            print(f"    Basenames found: {objdir_stats['basenames_found']}")
-            print(f"    Current (kept):  {objdir_stats['current_kept']}")
-            print(f"    Non-current kept:{objdir_stats['noncurrent_kept']}")
+            print("  Object files:", file=self._human)
+            print(f"    Total scanned:   {objdir_stats['total_scanned']}", file=self._human)
+            print(f"    Basenames found: {objdir_stats['basenames_found']}", file=self._human)
+            print(f"    Current (kept):  {objdir_stats['current_kept']}", file=self._human)
+            print(f"    Non-current kept:{objdir_stats['noncurrent_kept']}", file=self._human)
             removed_str = f"    Removed:         {objdir_stats['removed']}"
             if objdir_stats["bytes_freed"]:
                 removed_str += f" ({_format_size(objdir_stats['bytes_freed'])} freed)"
-            print(removed_str)
+            print(removed_str, file=self._human)
             if objdir_stats["failed"]:
-                print(f"    Failed:          {objdir_stats['failed']}")
+                print(f"    Failed:          {objdir_stats['failed']}", file=self._human)
 
         if pchdir_stats is not None:
             total_freed += pchdir_stats["bytes_freed"]
-            print("  PCH directories:")
-            print(f"    Total scanned:   {pchdir_stats['total_dirs_scanned']}")
-            print(f"    Headers found:   {pchdir_stats['headers_found']}")
-            print(f"    Kept:            {pchdir_stats['dirs_kept']}")
+            print("  PCH directories:", file=self._human)
+            print(f"    Total scanned:   {pchdir_stats['total_dirs_scanned']}", file=self._human)
+            print(f"    Headers found:   {pchdir_stats['headers_found']}", file=self._human)
+            print(f"    Kept:            {pchdir_stats['dirs_kept']}", file=self._human)
             removed_str = f"    Removed:         {pchdir_stats['dirs_removed']}"
             if pchdir_stats["bytes_freed"]:
                 removed_str += f" ({_format_size(pchdir_stats['bytes_freed'])} freed)"
-            print(removed_str)
+            print(removed_str, file=self._human)
             if pchdir_stats["failed"]:
-                print(f"    Failed:          {pchdir_stats['failed']}")
+                print(f"    Failed:          {pchdir_stats['failed']}", file=self._human)
 
         if pcmdir_stats is not None:
             total_freed += pcmdir_stats["bytes_freed"]
-            print("  PCM directories:")
-            print(f"    Total scanned:   {pcmdir_stats['total_dirs_scanned']}")
-            print(f"    Buckets found:   {pcmdir_stats['buckets_found']}")
-            print(f"    Kept:            {pcmdir_stats['dirs_kept']}")
+            print("  PCM directories:", file=self._human)
+            print(f"    Total scanned:   {pcmdir_stats['total_dirs_scanned']}", file=self._human)
+            print(f"    Buckets found:   {pcmdir_stats['buckets_found']}", file=self._human)
+            print(f"    Kept:            {pcmdir_stats['dirs_kept']}", file=self._human)
             removed_str = f"    Removed:         {pcmdir_stats['dirs_removed']}"
             if pcmdir_stats["bytes_freed"]:
                 removed_str += f" ({_format_size(pcmdir_stats['bytes_freed'])} freed)"
-            print(removed_str)
+            print(removed_str, file=self._human)
             if pcmdir_stats["failed"]:
-                print(f"    Failed:          {pcmdir_stats['failed']}")
+                print(f"    Failed:          {pcmdir_stats['failed']}", file=self._human)
 
         if exedir_stats is not None:
             total_freed += exedir_stats["bytes_freed"]
-            print("  Executable cache:")
-            print(f"    Total scanned:   {exedir_stats['total_scanned']}")
-            print(f"    Basenames found: {exedir_stats['basenames_found']}")
-            print(f"    Kept:            {exedir_stats['kept']}")
+            print("  Executable cache:", file=self._human)
+            print(f"    Total scanned:   {exedir_stats['total_scanned']}", file=self._human)
+            print(f"    Basenames found: {exedir_stats['basenames_found']}", file=self._human)
+            print(f"    Kept:            {exedir_stats['kept']}", file=self._human)
             removed_str = f"    Removed:         {exedir_stats['removed']}"
             if exedir_stats["bytes_freed"]:
                 removed_str += f" ({_format_size(exedir_stats['bytes_freed'])} freed)"
-            print(removed_str)
+            print(removed_str, file=self._human)
             if exedir_stats["failed"]:
-                print(f"    Failed:          {exedir_stats['failed']}")
+                print(f"    Failed:          {exedir_stats['failed']}", file=self._human)
 
         # The summary line aggregates whatever was actually scanned.
         scanned = sum(s is not None for s in (objdir_stats, pchdir_stats, pcmdir_stats, exedir_stats))
         if scanned >= 2:
-            print(f"  Total space freed: {_format_size(total_freed)}")
-        print("=" * 60)
+            print(f"  Total space freed: {_format_size(total_freed)}", file=self._human)
+        print("=" * 60, file=self._human)
+
+    def summary_json(self, objdir_stats=None, pchdir_stats=None, pcmdir_stats=None, exedir_stats=None):
+        """Return a dict with raw integer counts/bytes per cache that ran.
+
+        Keys ``objdir`` / ``pchdir`` / ``pcmdir`` / ``exedir`` are omitted
+        (present as ``None``) for caches that did not run. Top-level
+        ``total_bytes_freed`` is always present (even when only a single
+        cache ran) and equals the sum of ``bytes_freed`` across all caches
+        that ran. Note: ``print_summary`` only prints a "Total space freed"
+        line when two or more caches ran; ``summary_json`` always includes
+        ``total_bytes_freed`` because machine consumers benefit from a
+        stable key regardless of how many caches were trimmed.
+        """
+        total_bytes_freed = 0
+        result: dict = {
+            "objdir": None,
+            "pchdir": None,
+            "pcmdir": None,
+            "exedir": None,
+        }
+
+        if objdir_stats is not None:
+            result["objdir"] = dict(objdir_stats)
+            total_bytes_freed += objdir_stats["bytes_freed"]
+
+        if pchdir_stats is not None:
+            result["pchdir"] = dict(pchdir_stats)
+            total_bytes_freed += pchdir_stats["bytes_freed"]
+
+        if pcmdir_stats is not None:
+            result["pcmdir"] = dict(pcmdir_stats)
+            total_bytes_freed += pcmdir_stats["bytes_freed"]
+
+        if exedir_stats is not None:
+            result["exedir"] = dict(exedir_stats)
+            total_bytes_freed += exedir_stats["bytes_freed"]
+
+        result["total_bytes_freed"] = total_bytes_freed
+        return result
 
 
 def _safe_locked_unlink(path, *, skip_if_nlink_above=None):

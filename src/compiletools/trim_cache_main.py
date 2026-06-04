@@ -15,6 +15,7 @@ The tool will:
 4. Remove the oldest non-current entries, keeping at least --keep-count per basename
 """
 
+import json
 import sys
 
 import compiletools.apptools
@@ -72,6 +73,16 @@ def add_arguments(cap):
         action="store_true",
         default=False,
         help="Only trim the executable CAS (cas-exedir), skip objects, PCH, and PCM",
+    )
+    cap.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help=(
+            "Emit a single JSON object to stdout with raw integer byte counts and "
+            "file counts per cache; route all human/progress text to stderr so "
+            "stdout stays pure JSON for machine consumption."
+        ),
     )
 
 
@@ -136,26 +147,39 @@ def main(argv=None):
             current_hashes = compiletools.trim_cache.build_current_hash_set(context)
 
             if args.verbose >= 1:
-                print(f"Loaded {len(current_hashes)} current file hashes from git")
-                print(f"Trimming object directory: {args.cas_objdir}")
+                print(f"Loaded {len(current_hashes)} current file hashes from git", file=trimmer._human)
+                print(f"Trimming object directory: {args.cas_objdir}", file=trimmer._human)
             objdir_stats = trimmer.trim_objdir(args.cas_objdir, current_hashes)
 
         if do_pchdir:
             if args.verbose >= 1:
-                print(f"Trimming PCH directory: {args.cas_pchdir}")
+                print(f"Trimming PCH directory: {args.cas_pchdir}", file=trimmer._human)
             pchdir_stats = trimmer.trim_pchdir(args.cas_pchdir)
 
         if do_pcmdir:
             if args.verbose >= 1:
-                print(f"Trimming PCM directory: {args.cas_pcmdir}")
+                print(f"Trimming PCM directory: {args.cas_pcmdir}", file=trimmer._human)
             pcmdir_stats = trimmer.trim_pcmdir(args.cas_pcmdir)
 
         if do_exedir:
             if args.verbose >= 1:
-                print(f"Trimming executable cache: {args.cas_exedir}")
+                print(f"Trimming executable cache: {args.cas_exedir}", file=trimmer._human)
             exedir_stats = trimmer.trim_exedir(args.cas_exedir)
 
-        trimmer.print_summary(objdir_stats, pchdir_stats, pcmdir_stats, exedir_stats)
+        if args.json:
+            print(
+                json.dumps(
+                    trimmer.summary_json(
+                        objdir_stats=objdir_stats,
+                        pchdir_stats=pchdir_stats,
+                        pcmdir_stats=pcmdir_stats,
+                        exedir_stats=exedir_stats,
+                    ),
+                    indent=2,
+                )
+            )
+        else:
+            trimmer.print_summary(objdir_stats, pchdir_stats, pcmdir_stats, exedir_stats)
 
         any_failed = (
             (objdir_stats or {}).get("failed", 0)
