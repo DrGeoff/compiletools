@@ -349,8 +349,6 @@ class CacheTrimmer:
         }
 
         if not os.path.isdir(objdir):
-            if self.verbose >= 1:
-                print(f"Object directory does not exist: {objdir}", file=self._human)
             return stats
 
         try:
@@ -525,8 +523,6 @@ class CacheTrimmer:
         }
 
         if not os.path.isdir(pchdir):
-            if self.verbose >= 1:
-                print(f"PCH directory does not exist: {pchdir}", file=self._human)
             return stats
 
         # Phase 1: scan command_hash directories
@@ -689,8 +685,6 @@ class CacheTrimmer:
         }
 
         if not os.path.isdir(pcmdir):
-            if self.verbose >= 1:
-                print(f"PCM directory does not exist: {pcmdir}", file=self._human)
             return stats
 
         # Phase 1: scan command_hash directories.
@@ -846,8 +840,6 @@ class CacheTrimmer:
         }
 
         if not os.path.isdir(exedir):
-            if self.verbose >= 1:
-                print(f"Executable directory does not exist: {exedir}", file=self._human)
             return stats
 
         # entry_info: {full_path: (bucket_key, mtime, size, st_nlink)}
@@ -1205,6 +1197,70 @@ def _safe_locked_rmtree(dir_path):
             return True
         except OSError:
             return False
+
+
+def warn_if_suspicious_cas_dir(path, kind, variant, *, verbose, stream=None):
+    """Warn when a CAS directory is missing or has no entries in a suspicious way.
+
+    Fires at ``verbose >= 0`` (i.e. by default), written to *stream* (stderr
+    by default) so it never pollutes ``--json`` stdout.
+
+    Logic:
+    - ``verbose < 0``: return silently (quiet mode).
+    - Path is not an existing directory: print a warning naming *variant*.  If
+      the parent directory contains sibling subdirectories whose names differ
+      from the missing dir's basename, append a hint listing a few of them and
+      naming *variant* to suggest the user may have meant a different
+      ``--variant`` or bare pool path.
+    - Path is an existing directory (caller guarantees scanned-count is 0) AND
+      the parent has sibling variant subdirectories: print a "did you mean"
+      warning naming *variant*.
+    - Path exists, no siblings: stay silent (a legitimately empty cache must
+      not generate noise).
+
+    Args:
+        path: The variant-suffixed CAS directory path (absolute).
+        kind: Human-readable label for the cache type (e.g. ``"objdir"``).
+        variant: The effective variant string, interpolated into warning text.
+        verbose: Current verbosity level.
+        stream: Output stream for warnings (default: ``sys.stderr`` resolved at
+            call time, not at import time, so pytest capsys patching works).
+    """
+    if stream is None:
+        stream = sys.stderr
+    if verbose < 0:
+        return
+
+    parent = os.path.dirname(path)
+    basename = os.path.basename(path)
+
+    def _sibling_names():
+        """Return names of sibling subdirectories in parent (up to 5)."""
+        try:
+            return sorted(e.name for e in os.scandir(parent) if e.is_dir() and e.name != basename)[:5]
+        except OSError:
+            return []
+
+    if not os.path.isdir(path):
+        print(f"warning: {kind} cache dir not found: {path} (variant '{variant}')", file=stream)
+        siblings = _sibling_names()
+        if siblings:
+            sib_str = ", ".join(siblings)
+            print(
+                f"  sibling variant dirs present ({sib_str}); '{variant}' may be the wrong"
+                f" --variant for this pool, or pass a bare pool path",
+                file=stream,
+            )
+    else:
+        # Caller guarantees scanned-count == 0 when this is invoked.
+        siblings = _sibling_names()
+        if siblings:
+            sib_str = ", ".join(siblings)
+            print(
+                f"warning: {kind} cache dir {path} has no entries to trim but sibling variant "
+                f"dirs exist ({sib_str}); '{variant}' may be the wrong --variant",
+                file=stream,
+            )
 
 
 def _format_size(size_bytes):

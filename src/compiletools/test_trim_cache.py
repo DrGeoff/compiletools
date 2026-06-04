@@ -1,8 +1,10 @@
 """Tests for trim_cache module."""
 
 import hashlib
+import io
 import json
 import os
+import re
 import time
 import types
 
@@ -14,6 +16,7 @@ from compiletools.trim_cache import (
     _load_pch_manifest,
     build_current_hash_set,
     parse_object_filename,
+    warn_if_suspicious_cas_dir,
 )
 from compiletools.trim_cache_main import main
 
@@ -1533,3 +1536,180 @@ class TestJsonMode:
         result = trimmer.summary_json(objdir_stats=objdir_stats, pchdir_stats=pchdir_stats)
         assert result["total_bytes_freed"] == objdir_stats["bytes_freed"] + pchdir_stats["bytes_freed"]
         assert result["total_bytes_freed"] == 3072
+
+
+# ── warn_if_suspicious_cas_dir ────────────────────────────────────────
+
+
+class TestWarnIfSuspiciousCasDir:
+    """``warn_if_suspicious_cas_dir`` emits targeted warnings to stderr (or the
+    supplied stream) when a CAS directory is missing or empty in a way that
+    suggests a wrong-path / wrong-variant mistake.  It must stay completely
+    silent for legitimately empty-and-clean caches."""
+
+    def _pool(self, tmp_path, variant="gcc.debug"):
+        """Return a pool directory with ``variant`` as a subdirectory."""
+        pool = tmp_path / "cas-pool"
+        pool.mkdir()
+        target = pool / variant
+        target.mkdir()
+        return pool, str(target)
+
+    # ── (a) missing dir + siblings present → warning + hint ──────────
+
+    def test_missing_dir_with_siblings_warns_with_hint(self, tmp_path):
+        """Missing target dir, pool has sibling variant dirs → warning with hint."""
+        pool = tmp_path / "cas-pool"
+        pool.mkdir()
+        (pool / "gcc.release").mkdir()
+        (pool / "clang.debug").mkdir()
+        target = str(pool / "gcc.debug")  # does NOT exist
+
+        stream = io.StringIO()
+        warn_if_suspicious_cas_dir(target, "objdir", "gcc.debug", verbose=0, stream=stream)
+        out = stream.getvalue()
+
+        assert "warning:" in out
+        assert "not found" in out
+        assert target in out
+        assert "'gcc.debug'" in out
+        assert "sibling variant dirs present" in out
+        assert "may be the wrong" in out
+
+    # ── (b) missing dir + NO siblings → warning only, no hint ────────
+
+    def test_missing_dir_no_siblings_warns_without_hint(self, tmp_path):
+        """Missing target dir with no siblings → short warning, no hint line."""
+        pool = tmp_path / "cas-pool"
+        pool.mkdir()
+        target = str(pool / "gcc.debug")  # does NOT exist, pool is otherwise empty
+
+        stream = io.StringIO()
+        warn_if_suspicious_cas_dir(target, "objdir", "gcc.debug", verbose=0, stream=stream)
+        out = stream.getvalue()
+
+        assert "warning:" in out
+        assert "not found" in out
+        assert "'gcc.debug'" in out
+        # No hint because there are no siblings.
+        assert "sibling variant dirs present" not in out
+        assert "may be the wrong" not in out
+
+    # ── (c) dir exists, scanned zero, NO siblings → silent ───────────
+
+    def test_empty_dir_no_siblings_is_silent(self, tmp_path):
+        """Existing but empty dir with no siblings (a clean cache) → no output."""
+        pool = tmp_path / "cas-pool"
+        pool.mkdir()
+        target = pool / "gcc.debug"
+        target.mkdir()
+
+        stream = io.StringIO()
+        warn_if_suspicious_cas_dir(str(target), "objdir", "gcc.debug", verbose=0, stream=stream)
+
+        assert stream.getvalue() == "", "a legitimately empty cache must be silent"
+
+    # ── (d) dir exists, scanned zero, siblings present → "did you mean" ─
+
+    def test_empty_dir_with_siblings_warns_did_you_mean(self, tmp_path):
+        """Existing but empty dir, pool has sibling variant dirs → wrong-variant hint."""
+        pool = tmp_path / "cas-pool"
+        pool.mkdir()
+        (pool / "gcc.release").mkdir()
+        target = pool / "gcc.debug"
+        target.mkdir()  # exists but is empty (caller guarantees scanned==0)
+
+        stream = io.StringIO()
+        warn_if_suspicious_cas_dir(str(target), "pchdir", "gcc.debug", verbose=0, stream=stream)
+        out = stream.getvalue()
+
+        assert "warning:" in out
+        assert "has no entries to trim" in out
+        assert "sibling variant dirs" in out
+        assert "'gcc.debug'" in out
+        assert "may be the wrong" in out
+
+    # ── quiet mode: verbose < 0 suppresses everything ─────────────────
+
+    def test_quiet_mode_suppresses_warning(self, tmp_path):
+        """verbose < 0 → no output regardless of path state."""
+        pool = tmp_path / "cas-pool"
+        pool.mkdir()
+        (pool / "gcc.release").mkdir()
+        target = str(pool / "gcc.debug")  # missing + siblings
+
+        stream = io.StringIO()
+        warn_if_suspicious_cas_dir(target, "objdir", "gcc.debug", verbose=-1, stream=stream)
+
+        assert stream.getvalue() == ""
+
+    # ── sibling listing is capped at 5 entries ─────────────────────────
+
+    def test_sibling_listing_capped_at_five(self, tmp_path):
+        """With more than 5 sibling dirs, the warning shows at most 5 names."""
+        pool = tmp_path / "cas-pool"
+        pool.mkdir()
+        siblings = [f"variant{i:02d}" for i in range(10)]
+        for s in siblings:
+            (pool / s).mkdir()
+        target = str(pool / "missing")
+
+        stream = io.StringIO()
+        warn_if_suspicious_cas_dir(target, "objdir", "missing", verbose=0, stream=stream)
+        out = stream.getvalue()
+
+        # Count commas in the sibling-list portion; 5 names → at most 4 commas.
+        # Extract the parenthesised list between "(" and ")".
+        m = re.search(r"\(([^)]+)\)", out)
+        assert m is not None, f"expected a parenthesised sibling list in: {out!r}"
+        listed = [s.strip() for s in m.group(1).split(",")]
+        assert len(listed) <= 5, f"must list at most 5 siblings; got {listed}"
+
+    # ── stderr routing: warning goes to stderr, not stdout ─────────────
+
+    def test_warning_goes_to_stderr_not_stdout(self, tmp_path, capsys):
+        """Without an explicit stream, the warning should land on stderr."""
+        pool = tmp_path / "cas-pool"
+        pool.mkdir()
+        target = str(pool / "gcc.debug")  # missing
+
+        warn_if_suspicious_cas_dir(target, "objdir", "gcc.debug", verbose=0)
+        cap = capsys.readouterr()
+
+        assert "warning:" in cap.err
+        assert cap.out == ""
+
+    # ── integration: main() emits warnings to stderr in --json mode ────
+
+    def test_main_json_mode_warning_on_stderr_not_stdout(self, tmp_path, capsys):
+        """In --json mode, a missing-dir warning must go to stderr, not stdout.
+
+        We pass an absolute path that cannot exist so ``resolve_cas_directory_arguments``
+        leaves it unchanged (it only appends a variant suffix to *unsupplied*
+        dirs, not to absolute user-supplied ones) and the warning fires for
+        the exact missing path.
+        """
+        # Build a pool so the parent contains siblings (triggers the hint path).
+        pool = tmp_path / "cas-pool"
+        pool.mkdir()
+        existing_variant = pool / "gcc.release"
+        existing_variant.mkdir()
+        missing_variant = pool / "gcc.debug"
+        # Do NOT create missing_variant — it must be absent.
+
+        rc = main(
+            [
+                "--json",
+                "--dry-run",
+                "--cas-objdir-only",
+                f"--cas-objdir={missing_variant}",
+                "--variant=gcc.debug",
+            ]
+        )
+        cap = capsys.readouterr()
+
+        assert rc == 0
+        # stdout must still parse as JSON (no warning bleed)
+        json.loads(cap.out)
+        # warning on stderr
+        assert "warning:" in cap.err

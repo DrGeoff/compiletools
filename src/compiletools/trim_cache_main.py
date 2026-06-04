@@ -150,21 +150,37 @@ def main(argv=None):
                 print(f"Loaded {len(current_hashes)} current file hashes from git", file=trimmer._human)
                 print(f"Trimming object directory: {args.cas_objdir}", file=trimmer._human)
             objdir_stats = trimmer.trim_objdir(args.cas_objdir, current_hashes)
+            if objdir_stats["total_scanned"] == 0:
+                compiletools.trim_cache.warn_if_suspicious_cas_dir(
+                    args.cas_objdir, "objdir", args.variant, verbose=args.verbose
+                )
 
         if do_pchdir:
             if args.verbose >= 1:
                 print(f"Trimming PCH directory: {args.cas_pchdir}", file=trimmer._human)
             pchdir_stats = trimmer.trim_pchdir(args.cas_pchdir)
+            if pchdir_stats["total_dirs_scanned"] == 0:
+                compiletools.trim_cache.warn_if_suspicious_cas_dir(
+                    args.cas_pchdir, "pchdir", args.variant, verbose=args.verbose
+                )
 
         if do_pcmdir:
             if args.verbose >= 1:
                 print(f"Trimming PCM directory: {args.cas_pcmdir}", file=trimmer._human)
             pcmdir_stats = trimmer.trim_pcmdir(args.cas_pcmdir)
+            if pcmdir_stats["total_dirs_scanned"] == 0:
+                compiletools.trim_cache.warn_if_suspicious_cas_dir(
+                    args.cas_pcmdir, "pcmdir", args.variant, verbose=args.verbose
+                )
 
         if do_exedir:
             if args.verbose >= 1:
                 print(f"Trimming executable cache: {args.cas_exedir}", file=trimmer._human)
             exedir_stats = trimmer.trim_exedir(args.cas_exedir)
+            if exedir_stats["total_scanned"] == 0:
+                compiletools.trim_cache.warn_if_suspicious_cas_dir(
+                    args.cas_exedir, "exedir", args.variant, verbose=args.verbose
+                )
 
         if args.json:
             print(
