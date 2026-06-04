@@ -7,14 +7,18 @@ Trim stale entries from the object, PCH, PCM, and linker-artefact CAS directorie
 ----------------------------------------------------------------------------------
 
 :Author: drgeoffathome@gmail.com
-:Date:   2026-05-09
+:Date:   2026-06-04
 :Version: 10.1.5
 :Manual section: 1
 :Manual group: developers
 
 SYNOPSIS
 ========
-ct-trim-cache [--dry-run] [--cas-objdir PATH] [--cas-pchdir PATH] [--cas-pcmdir PATH] [--cas-exedir PATH] [--max-age DAYS] [--keep-count N] [-j N] [-v]
+ct-trim-cache [--dry-run] [--cas-objdir PATH] [--cas-pchdir PATH] [--cas-pcmdir PATH] [--cas-exedir PATH] [--max-age DAYS] [--keep-count N] [--json] [-j N] [-v]
+
+ct-trim-cache --list-unresolvable [--json] [--cas-\*dir PATH] [-v]
+
+ct-trim-cache --purge-unresolvable --max-age DAYS [--dry-run] [--json] [--cas-\*dir PATH] [-v]
 
 DESCRIPTION
 ===========
@@ -25,6 +29,14 @@ executables, static libraries, and shared libraries). The tool
 identifies which entries still match the current git working tree
 and removes the oldest non-current entries while preserving a
 configurable safety margin.
+
+Object-cache currency is **relative to the invoking checkout's git HEAD**:
+an entry is "current" only if its embedded ``file_hash`` matches a blob the
+*current* working tree tracks. On a shared, multi-branch, or multi-user pool
+this means another checkout's entries look non-current here, so a naive run can
+over-evict them — see `MULTI-USER SHARED CACHES`_ for why ``--max-age`` is the
+right primary control there, and `ORPHANED-VARIANT CELLS`_ for reclaiming whole
+cells whose variant no longer exists in this checkout.
 
 Object files use the naming scheme
 ``{basename}_{file_hash}_{dep_hash}_{macro_state_hash}.o``.  The embedded
@@ -145,6 +157,16 @@ USAGE
     ct-trim-cache --cas-objdir=/shared/build/objects --cas-pchdir=/shared/build/pch \
                   --cas-pcmdir=/shared/build/pcm --cas-exedir=/shared/build/exe
 
+    # Machine-readable summary (JSON to stdout, all human text to stderr)
+    ct-trim-cache --max-age 14 --json
+
+    # List orphaned cells (variants that no longer resolve here) -- read-only
+    ct-trim-cache --list-unresolvable
+
+    # Reclaim orphaned cells that are also cold (untouched for >= 30 days)
+    ct-trim-cache --purge-unresolvable --max-age 30 --dry-run   # preview first
+    ct-trim-cache --purge-unresolvable --max-age 30             # then for real
+
 HOW IT WORKS
 ============
 
@@ -229,6 +251,55 @@ Identical algorithm to PCH trimming, with one bucketing twist:
 5. Removes (or reports in ``--dry-run`` mode) every cmd_hash directory
    not in the kept set.
 
+ORPHANED-VARIANT CELLS
+======================
+Each CAS is laid out ``<pool>/<variant>/<entries>``; one ``<pool>/<variant>/``
+directory is a *cell*. The normal trim only reaches the cell whose variant
+resolves from the current checkout's ``ct.conf.d`` hierarchy. When an axis conf
+is removed (a retired toolchain or product line), every cached cell for that
+variant becomes **unreachable** by the variant-driven trim — its bytes can never
+be reclaimed by the normal mode. Two pool-level modes address this:
+
+``--list-unresolvable`` (read-only)
+    For each cache pool, report the immediate ``<variant>/`` cells whose variant
+    name no longer resolves here, with each cell's size and the age of its newest
+    file. Deletes nothing.
+
+``--purge-unresolvable`` (destructive, requires ``--max-age``)
+    Remove cells that are **both** unresolvable here **and** cold (newest file
+    older than ``--max-age``).
+
+**"Unresolvable here" is not, by itself, an orphan signal.** On a shared pool a
+cell unresolvable from this checkout may be *another* checkout's or branch's live
+cache (confs are git-tracked, so a variant valid on one branch is unresolvable
+from another). The purge therefore layers two guards:
+
+* **Coldness gate (mandatory).** ``--purge-unresolvable`` requires
+  ``--max-age > 0`` and SPARES any unresolvable cell whose newest file is within
+  the cutoff — a warm cell is most likely a peer's live cache. ``--max-age``
+  values ``<= 0`` are rejected (a zero cutoff would defeat this guard).
+* **Leaf-level lock safety.** Removal descends into each cell and takes the same
+  per-artefact ``<path>.lock`` the producer rules use; it never recursively
+  deletes a cell root unlocked. A cell whose artefacts a peer build is mid-write
+  to (or that a peer repopulates during the sweep) is left intact and reported
+  **deferred** to the next run, never hard-failed.
+
+Only cells that are unresolvable AND structurally a real cache cell are touched;
+stray top-level buckets, ``TraceStore/``, and other non-cell directories are
+classified ``UNKNOWN`` and never purged. A single ``--cas-*-only`` flag scopes
+either mode to one cache. The two modes are mutually exclusive with each other.
+Run ``--list-unresolvable`` first; it is the safe way to see exactly what
+``--purge-unresolvable`` would consider.
+
+MACHINE-READABLE OUTPUT
+=======================
+``--json`` emits a single JSON object on **stdout** (all human/progress/warning
+text is routed to **stderr**, so stdout stays pure JSON) with raw integer byte
+counts and per-cache counts. Every payload carries a ``"schema": 1`` version
+marker and a ``"mode"`` discriminator — ``"trim"`` for the normal trim,
+``"list-unresolvable"`` and ``"purge-unresolvable"`` for the pool modes — so a
+consumer can tell the three shapes apart. ``--json`` composes with any mode.
+
 OPTIONS
 =======
 
@@ -238,8 +309,14 @@ Trim Options
     Show what would be removed without actually removing files.
 
 ``--max-age DAYS``
-    Only remove non-current files older than this many days.
-    Default: no age limit (removal controlled by ``--keep-count`` only).
+    Only remove non-current files older than this many days ("older" means
+    "written more than N days ago" by mtime, not "not accessed in N days" —
+    atime is unreliable on ``noatime`` mounts). Default: no age limit (removal
+    controlled by ``--keep-count`` only). On a shared, multi-branch, or
+    multi-user pool this is the **primary control**: because currency is
+    checkout-relative, ``--max-age`` is what stops a run from one checkout
+    over-evicting another's recent entries. It is **required** by
+    ``--purge-unresolvable`` (which rejects values ``<= 0``).
 
 ``--keep-count N``
     Keep at least N non-current files per basename/header.
@@ -258,6 +335,29 @@ Trim Options
 ``--cas-exedir-only``
     Only trim the linker-artefact CAS (executables, static libraries,
     shared libraries), skip object, PCH, and PCM trimming.
+
+Orphan-cell Modes
+-----------------
+``--list-unresolvable``
+    Read-only. List the per-variant cells (``<pool>/<variant>/``) whose variant
+    no longer resolves against this checkout's conf hierarchy, with each cell's
+    size and newest-file age. Deletes nothing. See `ORPHANED-VARIANT CELLS`_.
+
+``--purge-unresolvable``
+    Destructive. Remove cells that are both unresolvable here and cold (newest
+    file older than ``--max-age``). **Requires ``--max-age > 0``.** Warm
+    unresolvable cells are spared (likely another live checkout's cache);
+    removal is leaf-level and lock-safe (contended cells are deferred, not
+    hard-failed). Mutually exclusive with ``--list-unresolvable``; a single
+    ``--cas-*-only`` flag scopes it to one cache. Honours ``--dry-run``.
+
+Output Options
+--------------
+``--json``
+    Emit a single JSON object on stdout (all human/progress/warning text goes to
+    stderr) with raw integer byte/entry counts per cache, a ``"schema"`` version
+    marker, and a ``"mode"`` discriminator. Composes with any mode. See
+    `MACHINE-READABLE OUTPUT`_.
 
 Directory Options
 -----------------
@@ -316,12 +416,19 @@ General Options
 EXIT CODES
 ==========
 0
-    Success -- all targeted files removed (or none to remove).
+    Success -- all targeted files removed (or none to remove). Deferred cells
+    (left for a later run because a peer build was active) are not failures.
 1
-    Failure -- some files could not be removed (check permissions),
-    or more than one of ``--cas-objdir-only`` / ``--cas-pchdir-only``
-    / ``--cas-pcmdir-only`` / ``--cas-exedir-only`` was specified
-    (they are mutually exclusive).
+    Failure, or invalid invocation. Causes include:
+
+    - some files could not be removed (check permissions);
+    - more than one of ``--cas-objdir-only`` / ``--cas-pchdir-only`` /
+      ``--cas-pcmdir-only`` / ``--cas-exedir-only`` was specified (mutually
+      exclusive);
+    - both ``--list-unresolvable`` and ``--purge-unresolvable`` were specified
+      (mutually exclusive);
+    - ``--purge-unresolvable`` was given without ``--max-age``, or with
+      ``--max-age <= 0``.
 
 EXAMPLES
 ========
@@ -370,10 +477,33 @@ never which entries are kept or removed.
 
 MULTI-USER SHARED CACHES
 =========================
-Safe for multi-user environments.  The tool only removes files that are
-no longer current (stale content hashes) and skips lock directories.
-Ongoing builds targeting current source files will not be affected because
-their content-addressed filenames will not match the stale entries.
+Removal is concurrency-safe: the tool takes the producer's per-target lock
+before unlinking and skips lock directories, so an in-flight build's files are
+never deleted mid-write. The subtlety on a shared pool is *which* entries it
+considers stale, not whether deletion races.
+
+**Currency is checkout-relative.** "Non-current" means "not tracked by the
+*invoking* checkout's git HEAD". Entries that are current for another branch,
+worktree, or user look non-current here. A naive run (default ``--keep-count 1``,
+no ``--max-age``) from one checkout can therefore evict other checkouts' recent
+entries down to one per basename. On a shared pool:
+
+- Use ``--max-age`` as the primary control. Age is checkout-independent, so it
+  preserves other branches' entries as long as they are actively rebuilt
+  (e.g. a nightly ``ct-trim-cache --max-age 14``).
+- Running with no ``--max-age`` from the wrong checkout is the classic footgun
+  (it can show a huge "would remove" set that is really another branch's live
+  cache). On a network filesystem the tool emits a wrong-checkout warning when a
+  non-empty object scan finds zero current entries and no ``--max-age`` was
+  given.
+- To reclaim whole cells for variants that no longer exist anywhere in this
+  checkout, use the ``--list-unresolvable`` / ``--purge-unresolvable`` modes
+  described under `ORPHANED-VARIANT CELLS`_ rather than a bare trim.
+
+Pointed at a bare pool path with the default variant, the tool also warns when
+the resolved ``<pool>/<variant>/`` directory does not exist but sibling variant
+directories do — the usual sign the wrong ``--variant`` (or a bare pool path)
+was given, which would otherwise read as an empty "nothing to do".
 
 For lock cleanup, use ``ct-cleanup-locks``.
 
