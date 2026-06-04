@@ -1241,6 +1241,10 @@ def warn_if_suspicious_cas_dir(path, kind, variant, *, verbose, stream=None):
         except OSError:
             return []
 
+    # NOT wrappedos / NOT cached: post-build diagnostic existence check. This
+    # runs after the trim pass to explain a zero-scan result; the cas dir's
+    # existence may differ from any earlier cached answer, so use the uncached
+    # os.path.isdir directly (same documented skip case as the trim_* methods).
     if not os.path.isdir(path):
         print(f"warning: {kind} cache dir not found: {path} (variant '{variant}')", file=stream)
         siblings = _sibling_names()
