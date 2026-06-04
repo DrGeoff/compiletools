@@ -2635,6 +2635,90 @@ class TestPurgeUnresolvable:
         assert result["objdir"]["bytes_freed"] == 0  # empty cell has no files to count
         assert not os.path.exists(os.path.join(pool, "empty.variant"))
 
+    def test_peer_adds_fresh_bucket_between_sweep_and_rmdir(self, tmp_path, monkeypatch):
+        """A4: peer-creates-fresh-bucket race → ENOTEMPTY → DEFERRED (not a hard failure).
+
+        ``_purge_one_cell`` sweeps all immediate children (bucket dirs via
+        ``_safe_locked_rmtree``), then calls ``os.rmdir(cell_path)``.  Between
+        those two steps a peer build can land a NEW bucket in the now-empty cell,
+        leaving it non-empty again.  ``os.rmdir`` then raises ``ENOTEMPTY``; the
+        production code catches that and returns ``"deferred"``.
+
+        We inject the race by wrapping ``os.rmdir``: when called on the target
+        cell directory we FIRST create a fresh bucket (``bb/``) containing a
+        real ``.o`` file, THEN delegate to the real ``os.rmdir`` — which now
+        sees a non-empty directory and raises ``ENOTEMPTY`` for real.
+
+        Assertions:
+          1. ``cells_deferred == 1`` and ``cells_purged == 0`` for the objdir cache.
+          2. The cell directory still exists (not force-removed).
+          3. The injected fresh bucket's file still exists on disk.
+          4. The call did NOT raise and did NOT count a hard failure.
+        """
+        pool, _paths = _make_purge_pool(tmp_path, monkeypatch, warm_age_seconds=86400, cold_age_seconds=30 * 86400)
+        cell_dir = os.path.join(pool, "cold.variant")
+
+        # The fresh bucket and its sentinel file — planted by the injected rmdir
+        # wrapper to simulate the peer-build race.  Named "bb" (a valid 2-hex
+        # bucket name); "aa" is already used by _make_purge_pool, so we pick a
+        # distinct peer-realistic name.  Created post-sweep, so it was never
+        # enumerated by the scan.
+        fresh_bucket = os.path.join(cell_dir, "bb")
+        fresh_file = os.path.join(fresh_bucket, "new_aabbccddeeff_11223344556677_0011223344556677.o")
+
+        real_rmdir = os.rmdir
+
+        def _racing_rmdir(path, *, dir_fd=None):
+            # Only inject the race for the bare (no dir_fd) call on the target
+            # cell directory.  shutil.rmtree internally uses os.rmdir(...,
+            # dir_fd=<fd>) for its FD-based walk; those calls must pass through
+            # unchanged so the bucket-level rmtrees inside _safe_locked_rmtree
+            # work normally.  The production-code call site in _purge_one_cell
+            # is ``os.rmdir(cell_path)`` with no keyword arguments — that is the
+            # one we intercept.
+            if dir_fd is None and os.path.realpath(path) == os.path.realpath(cell_dir):
+                # Peer lands a brand-new bucket between our sweep and rmdir.
+                os.makedirs(fresh_bucket, exist_ok=True)
+                with open(fresh_file, "wb") as fh:
+                    # 100 bytes matches the fixture size; deferred cells
+                    # contribute 0 bytes_freed regardless of actual size.
+                    fh.write(b"\0" * 100)
+            # Delegate to the real os.rmdir; it will raise ENOTEMPTY when the
+            # cell dir is no longer empty (because the fresh bucket was just
+            # created above).
+            if dir_fd is None:
+                real_rmdir(path)
+            else:
+                real_rmdir(path, dir_fd=dir_fd)
+
+        monkeypatch.setattr(os, "rmdir", _racing_rmdir)
+
+        args = _make_args(
+            variant="gcc.debug",
+            max_age=7,
+            cas_objdir=os.path.join(pool, "gcc.debug"),
+            cas_objdir_only=True,
+        )
+        result = trim_cache.purge_unresolvable_cells(args)
+
+        obj = result["objdir"]
+        # (1) Reported as DEFERRED, not purged and not a hard failure.
+        assert obj["cells_deferred"] == 1, f"expected cells_deferred=1, got {obj}"
+        assert obj["cells_purged"] == 0, f"expected cells_purged=0, got {obj}"
+        # (2) The cell directory still exists.
+        assert os.path.isdir(cell_dir), "cell must still exist after ENOTEMPTY deferral"
+        # (3) The peer-injected file survives (it was never in our removal list).
+        assert os.path.exists(fresh_file), "fresh bucket file planted by the simulated peer must still exist"
+        # (4) No exception propagated (the call returned normally) and nothing
+        # was freed — deferred cells contribute 0 bytes_freed because the cell
+        # is left intact for the next run.  There is no cells_failed field in
+        # the stats dict; the meaningful guard is that bytes_freed is zero and
+        # the full counter vector matches expectations, proving ENOTEMPTY is
+        # DEFERRED not FAILED and no storage was silently reclaimed.
+        # cells_skipped_warm==1 accounts for warm.variant planted by the fixture.
+        assert obj["bytes_freed"] == 0, "deferred cell must not contribute to bytes_freed"
+        assert obj["cells_skipped_warm"] == 1, f"unexpected warm-skip count: {obj}"
+
     def test_lock_safety_defers_locked_artifact_leaf_level(self, tmp_path, monkeypatch, capsys):
         """CRITICAL lock-safety proof.
 
