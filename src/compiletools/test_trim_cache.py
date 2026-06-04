@@ -2239,8 +2239,9 @@ class TestListUnresolvableMode:
         assert rc == 0
         parsed = json.loads(cap.out)
         assert isinstance(parsed, dict)
-        # Schema marker.
+        # Schema marker and mode field.
         assert parsed.get("schema") == 1
+        assert parsed.get("mode") == "list-unresolvable"
         # The obj cache section is present and lists cells with labels/sizes.
         obj = parsed.get("objdir")
         assert obj is not None
@@ -2334,3 +2335,401 @@ class TestListUnresolvableMode:
         assert cap.err != ""
         # ...but the pch section was still produced (no whole-run abort).
         assert result.get("pchdir") is not None
+
+
+# ── --purge-unresolvable: DESTRUCTIVE orphan reclamation ───────────────────
+
+
+def _make_purge_pool(tmp_path, monkeypatch, *, warm_age_seconds, cold_age_seconds):
+    """Build an obj pool with the full classification matrix for purge tests.
+
+    Returns ``(pool, paths)`` where ``paths`` maps a logical role to the artefact
+    path planted under that cell, so callers can assert presence/absence after a
+    purge. ``trim_cache._variant_resolvable`` is patched so ONLY ``gcc.debug``
+    resolves (matching the resolvable cell used by the CLI's real parse-time
+    resolver).
+
+    Cells planted (all obj-shaped except where noted):
+      * ``gcc.debug``       — RESOLVABLE, cold      → never purged.
+      * ``cold.variant``    — UNRESOLVABLE + cold   → THE purge target.
+      * ``warm.variant``    — UNRESOLVABLE + warm   → spared (peer-owned guard).
+      * ``odd.variant``     — empty dir → UNKNOWN   → never purged.
+      * ``ab``              — stray 2-hex pool bucket → never a cell.
+      * ``TraceStore``      — known non-cell dir    → never touched.
+    """
+    pool = str(tmp_path / "pool")
+    os.makedirs(pool)
+    paths = {}
+
+    def _plant_obj(cell_name, *, age_seconds, role):
+        cell_dir = os.path.join(pool, cell_name)
+        bucket = os.path.join(cell_dir, "aa")
+        os.makedirs(bucket)
+        artefact = os.path.join(bucket, "foo_aabbccddeeff_11223344556677_0011223344556677.o")
+        with open(artefact, "wb") as f:
+            f.write(b"\0" * 100)
+        if age_seconds:
+            mtime = time.time() - age_seconds
+            os.utime(artefact, (mtime, mtime))
+        paths[role] = artefact
+        return cell_dir
+
+    _plant_obj("gcc.debug", age_seconds=cold_age_seconds, role="resolvable_cold")
+    _plant_obj("cold.variant", age_seconds=cold_age_seconds, role="cold_target")
+    _plant_obj("warm.variant", age_seconds=warm_age_seconds, role="warm_spared")
+
+    # Empty UNKNOWN cell (no obj-shaped inner structure).
+    os.makedirs(os.path.join(pool, "odd.variant"))
+    paths["unknown_cell"] = os.path.join(pool, "odd.variant")
+
+    # Stray 2-hex pool bucket (never a cell).
+    os.makedirs(os.path.join(pool, "ab"))
+    stray = os.path.join(pool, "ab", "stray.o")
+    with open(stray, "wb") as f:
+        f.write(b"\0" * 10)
+    paths["stray_bucket_file"] = stray
+
+    # TraceStore non-cell dir.
+    os.makedirs(os.path.join(pool, "TraceStore"))
+    trace_file = os.path.join(pool, "TraceStore", "trace.bin")
+    with open(trace_file, "wb") as f:
+        f.write(b"\0" * 10)
+    paths["tracestore_file"] = trace_file
+
+    resolvable = {"gcc.debug"}
+    monkeypatch.setattr(trim_cache, "_variant_resolvable", lambda name: name in resolvable)
+
+    return pool, paths
+
+
+class TestPurgeUnresolvable:
+    """``--purge-unresolvable`` reclaims UNRESOLVABLE + COLD cells ONLY, with a
+    mandatory coldness gate and leaf-level lock-safe removal."""
+
+    def _objdir(self, pool):
+        # cas-objdir points at the resolvable cell; --variant matches its
+        # basename so cell_pool_root climbs to the pool.
+        return os.path.join(pool, "gcc.debug")
+
+    def test_purges_only_cold_unresolvable_cell(self, tmp_path, monkeypatch, capsys):
+        # warm = 1 day old, cold = 30 days old, cutoff = 7 days.
+        pool, paths = _make_purge_pool(tmp_path, monkeypatch, warm_age_seconds=86400, cold_age_seconds=30 * 86400)
+        rc = main(
+            [
+                "--purge-unresolvable",
+                "--max-age=7",
+                "--cas-objdir-only",
+                f"--cas-objdir={self._objdir(pool)}",
+                "--variant=gcc.debug",
+            ]
+        )
+        capsys.readouterr()
+        assert rc == 0
+        # The cold unresolvable cell is GONE (cell dir removed).
+        assert not os.path.exists(os.path.join(pool, "cold.variant"))
+        # Everything else survives.
+        assert os.path.exists(paths["resolvable_cold"]), "RESOLVABLE cell must never be purged"
+        assert os.path.exists(paths["warm_spared"]), "warm UNRESOLVABLE cell must be spared"
+        assert os.path.exists(paths["unknown_cell"]), "UNKNOWN cell must never be purged"
+        assert os.path.exists(paths["stray_bucket_file"]), "stray 2-hex pool bucket must never be touched"
+        assert os.path.exists(paths["tracestore_file"]), "TraceStore must never be touched"
+
+    def test_warm_unresolvable_reported_skipped(self, tmp_path, monkeypatch, capsys):
+        pool, _paths = _make_purge_pool(tmp_path, monkeypatch, warm_age_seconds=86400, cold_age_seconds=30 * 86400)
+        rc = main(
+            [
+                "--json",
+                "--purge-unresolvable",
+                "--max-age=7",
+                "--cas-objdir-only",
+                f"--cas-objdir={self._objdir(pool)}",
+                "--variant=gcc.debug",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert rc == 0
+        parsed = json.loads(out)
+        assert parsed.get("schema") == 1
+        assert parsed.get("mode") == "purge-unresolvable"
+        obj = parsed["objdir"]
+        assert obj["cells_purged"] == 1
+        assert obj["cells_skipped_warm"] == 1
+        assert obj["cells_deferred"] == 0
+        assert isinstance(obj["bytes_freed"], int)
+        assert parsed["total_bytes_freed"] == obj["bytes_freed"]
+
+    def test_hard_error_without_max_age(self, tmp_path, monkeypatch, capsys):
+        pool, paths = _make_purge_pool(tmp_path, monkeypatch, warm_age_seconds=86400, cold_age_seconds=30 * 86400)
+        rc = main(
+            [
+                "--purge-unresolvable",
+                "--cas-objdir-only",
+                f"--cas-objdir={self._objdir(pool)}",
+                "--variant=gcc.debug",
+            ]
+        )
+        cap = capsys.readouterr()
+        assert rc == 1
+        assert "max-age" in cap.err.lower()
+        # Nothing removed — the cold cell still exists.
+        assert os.path.exists(paths["cold_target"])
+        assert os.path.exists(os.path.join(pool, "cold.variant"))
+
+    def test_dry_run_reports_but_removes_nothing(self, tmp_path, monkeypatch, capsys):
+        pool, paths = _make_purge_pool(tmp_path, monkeypatch, warm_age_seconds=86400, cold_age_seconds=30 * 86400)
+
+        def _snapshot(root):
+            out = set()
+            for dirpath, _dirs, files in os.walk(root):
+                for f in files:
+                    out.add(os.path.join(dirpath, f))
+            return out
+
+        before = _snapshot(pool)
+        rc = main(
+            [
+                "--json",
+                "--dry-run",
+                "--purge-unresolvable",
+                "--max-age=7",
+                "--cas-objdir-only",
+                f"--cas-objdir={self._objdir(pool)}",
+                "--variant=gcc.debug",
+            ]
+        )
+        out = capsys.readouterr().out
+        after = _snapshot(pool)
+        assert rc == 0
+        assert before == after, "--dry-run must remove nothing"
+        parsed = json.loads(out)
+        # The candidate is still REPORTED as a (would-be) purge.
+        assert parsed["objdir"]["cells_purged"] == 1
+        assert parsed["objdir"]["bytes_freed"] == 100
+        # ...but the bytes are still on disk.
+        assert os.path.exists(paths["cold_target"])
+
+    def test_coldness_boundary_at_and_past_cutoff(self, tmp_path, monkeypatch):
+        """A cell newer than the cutoff is warm (spared); a cell at/just past
+        the cutoff is cold (purged)."""
+        # cutoff = 7 days. just_warm = 6 days (newer than cutoff → spared),
+        # just_cold = 8 days (older than cutoff → purged).
+        pool = str(tmp_path / "pool")
+        os.makedirs(pool)
+
+        def _plant(cell_name, age_days):
+            bucket = os.path.join(pool, cell_name, "aa")
+            os.makedirs(bucket)
+            art = os.path.join(bucket, "foo_aabbccddeeff_11223344556677_0011223344556677.o")
+            with open(art, "wb") as f:
+                f.write(b"\0" * 10)
+            mt = time.time() - age_days * 86400
+            os.utime(art, (mt, mt))
+
+        _plant("justwarm.variant", 6)
+        _plant("justcold.variant", 8)
+        monkeypatch.setattr(trim_cache, "_variant_resolvable", lambda name: False)
+
+        args = _make_args(
+            variant="justwarm.variant",
+            max_age=7,
+            cas_objdir=os.path.join(pool, "justwarm.variant"),
+            cas_objdir_only=True,
+        )
+        result = trim_cache.purge_unresolvable_cells(args)
+        obj = result["objdir"]
+        assert obj["cells_purged"] == 1
+        assert obj["cells_skipped_warm"] == 1
+        # justcold purged, justwarm spared.
+        assert not os.path.exists(os.path.join(pool, "justcold.variant"))
+        assert os.path.exists(os.path.join(pool, "justwarm.variant"))
+
+    def test_empty_unresolvable_cell_is_cold(self, tmp_path, monkeypatch):
+        """An UNRESOLVABLE cell with no artefacts (newest_mtime is None) is
+        treated as cold and purged — but only if it is cell-shaped. An empty
+        dir is UNKNOWN, not UNRESOLVABLE, so it is NOT purged; this asserts the
+        cold-by-None rule on a *shaped* cell whose single artefact we delete
+        first to leave newest_mtime None."""
+        pool = str(tmp_path / "pool")
+        os.makedirs(pool)
+        # Cell-shaped but the bucket directory is empty (shape predicate only
+        # needs a 2-hex subdir to exist for obj). newest_mtime → None.
+        bucket = os.path.join(pool, "empty.variant", "aa")
+        os.makedirs(bucket)
+        monkeypatch.setattr(trim_cache, "_variant_resolvable", lambda name: False)
+
+        args = _make_args(
+            variant="empty.variant",
+            max_age=7,
+            cas_objdir=os.path.join(pool, "empty.variant"),
+            cas_objdir_only=True,
+        )
+        result = trim_cache.purge_unresolvable_cells(args)
+        assert result["objdir"]["cells_purged"] == 1
+        assert result["objdir"]["bytes_freed"] == 0  # empty cell has no files to count
+        assert not os.path.exists(os.path.join(pool, "empty.variant"))
+
+    def test_lock_safety_defers_locked_artifact_leaf_level(self, tmp_path, monkeypatch, capsys):
+        """CRITICAL lock-safety proof.
+
+        An artefact TWO LEVELS DOWN (inside a bucket, not at the cell top) is
+        held by a peer. We simulate the peer by making the leaf-level removal
+        helper refuse (return False) for THAT bucket only — exactly what the
+        real ``_safe_locked_rmtree`` returns when it cannot acquire the lock on
+        the bucket's contained sidecar.
+
+        This proves:
+          1. Leaf-level descent: the helper is invoked with the BUCKET path
+             (cell/<2hex>), NEVER the cell root. If the production code wrongly
+             called ``_safe_locked_rmtree`` on the cell root, the spy below
+             would record the cell path and the assertion would fail.
+          2. The locked artefact still exists afterward (refused removal).
+          3. The cell is NOT rmtree'd as a root — it survives, partially
+             populated.
+          4. The run reports the cell as DEFERRED, not as a hard failure.
+        """
+        pool = str(tmp_path / "pool")
+        os.makedirs(pool)
+        cell_dir = os.path.join(pool, "cold.variant")
+        bucket = os.path.join(cell_dir, "aa")
+        os.makedirs(bucket)
+        artefact = os.path.join(bucket, "foo_aabbccddeeff_11223344556677_0011223344556677.o")
+        with open(artefact, "wb") as f:
+            f.write(b"\0" * 100)
+        mt = time.time() - 30 * 86400
+        os.utime(artefact, (mt, mt))
+        monkeypatch.setattr(trim_cache, "_variant_resolvable", lambda name: False)
+
+        # Spy on the leaf-level rmtree: record every path it is asked to remove,
+        # and refuse (return False) for the locked bucket — the peer-active
+        # signal. The cell root must NEVER appear in seen_paths.
+        seen_paths = []
+        real_rmtree = trim_cache._safe_locked_rmtree
+
+        def _spy_rmtree(dir_path):
+            seen_paths.append(dir_path)
+            if os.path.realpath(dir_path) == os.path.realpath(bucket):
+                return False  # peer holds the lock on the contained sidecar
+            return real_rmtree(dir_path)
+
+        monkeypatch.setattr(trim_cache, "_safe_locked_rmtree", _spy_rmtree)
+
+        args = _make_args(
+            variant="cold.variant",
+            max_age=7,
+            cas_objdir=cell_dir,
+            cas_objdir_only=True,
+        )
+        result = trim_cache.purge_unresolvable_cells(args)
+        capsys.readouterr()
+
+        # (1) Leaf-level descent: helper saw the BUCKET, never the cell root.
+        assert any(os.path.realpath(p) == os.path.realpath(bucket) for p in seen_paths)
+        assert all(os.path.realpath(p) != os.path.realpath(cell_dir) for p in seen_paths), (
+            "_safe_locked_rmtree must NEVER be called on a cell root"
+        )
+        # (2) The locked artefact still exists.
+        assert os.path.exists(artefact)
+        # (3) The cell was not rmtree'd as a root — it survives.
+        assert os.path.isdir(cell_dir)
+        # (4) Deferred, NOT a hard failure.
+        obj = result["objdir"]
+        assert obj["cells_deferred"] == 1
+        assert obj["cells_purged"] == 0
+
+
+class TestPurgeUnresolvableModeExclusivity:
+    """Mode-exclusivity contract for the two standalone pool-level modes.
+
+    The authoritative decision:
+      * The four ``--cas-*-only`` flags are still "at most one" (existing guard).
+      * A single ``--cas-*-only`` flag MAY be combined with ``--list-unresolvable``
+        OR ``--purge-unresolvable``; it SCOPES that pool mode to the one selected
+        cache. This combination is ALLOWED.
+      * ``--list-unresolvable`` and ``--purge-unresolvable`` are MUTUALLY
+        EXCLUSIVE WITH EACH OTHER (the only NEW guard).
+    """
+
+    def test_list_and_purge_together_error(self):
+        """The one NEW guard: the two pool modes cannot run in the same call."""
+        rc = main(["--list-unresolvable", "--purge-unresolvable", "--max-age=7"])
+        assert rc == 1
+
+    def test_purge_with_single_cas_only_is_allowed(self, tmp_path, monkeypatch, capsys):
+        """``--purge-unresolvable --cas-objdir-only`` is ALLOWED — the
+        ``--cas-objdir-only`` flag SCOPES the purge to the object pool."""
+        pool, _paths = _make_purge_pool(tmp_path, monkeypatch, warm_age_seconds=86400, cold_age_seconds=30 * 86400)
+        rc = main(
+            [
+                "--json",
+                "--purge-unresolvable",
+                "--max-age=7",
+                "--cas-objdir-only",
+                f"--cas-objdir={os.path.join(pool, 'gcc.debug')}",
+                "--variant=gcc.debug",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert rc == 0, "purge + a single --cas-*-only scope flag must be allowed"
+        parsed = json.loads(out)
+        # Scoped to obj: obj ran, the other caches did not.
+        assert parsed["objdir"] is not None
+        assert parsed["pchdir"] is None
+        assert parsed["pcmdir"] is None
+        assert parsed["exedir"] is None
+
+    def test_purge_scoped_to_objdir_only_purges_obj_orphans(self, tmp_path, monkeypatch, capsys):
+        """``--purge-unresolvable --cas-objdir-only`` purges only obj orphans
+        and never touches a sibling pcm pool."""
+        pool, _paths = _make_purge_pool(tmp_path, monkeypatch, warm_age_seconds=86400, cold_age_seconds=30 * 86400)
+        # A separate pcm pool with a cold unresolvable cell that MUST be spared
+        # because the purge is scoped to objdir only.
+        pcm_pool = str(tmp_path / "pcmpool")
+        pcm_cell = os.path.join(pcm_pool, "cold.variant")
+        pcm_inner = os.path.join(pcm_cell, "b" * 16)
+        os.makedirs(pcm_inner)
+        pcm_art = os.path.join(pcm_inner, "mod.pcm")
+        with open(pcm_art, "wb") as f:
+            f.write(b"\0" * 100)
+        mt = time.time() - 30 * 86400
+        os.utime(pcm_art, (mt, mt))
+        # cell_pool_root needs a resolvable cell at <pcm_pool>/<variant>; reuse
+        # gcc.debug as the suffix target.
+        os.makedirs(os.path.join(pcm_pool, "gcc.debug"))
+
+        rc = main(
+            [
+                "--purge-unresolvable",
+                "--max-age=7",
+                "--cas-objdir-only",
+                f"--cas-objdir={os.path.join(pool, 'gcc.debug')}",
+                f"--cas-pcmdir={os.path.join(pcm_pool, 'gcc.debug')}",
+                "--variant=gcc.debug",
+            ]
+        )
+        capsys.readouterr()
+        assert rc == 0
+        # obj orphan purged.
+        assert not os.path.exists(os.path.join(pool, "cold.variant"))
+        # pcm orphan untouched — purge was scoped to objdir only.
+        assert os.path.exists(pcm_art)
+
+    def test_list_with_single_cas_only_is_allowed(self, tmp_path, monkeypatch, capsys):
+        """``--list-unresolvable --cas-objdir-only`` is ALLOWED — it scopes the
+        listing to the object pool (matches the committed Task-4 list tests)."""
+        pool = str(tmp_path / "pool")
+        os.makedirs(os.path.join(pool, "gcc.debug", "aa"))
+        monkeypatch.setattr(trim_cache, "_variant_resolvable", lambda name: name == "gcc.debug")
+        rc = main(
+            [
+                "--json",
+                "--list-unresolvable",
+                "--cas-objdir-only",
+                f"--cas-objdir={os.path.join(pool, 'gcc.debug')}",
+                "--variant=gcc.debug",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert rc == 0, "list + a single --cas-*-only scope flag must be allowed"
+        parsed = json.loads(out)
+        assert parsed["objdir"] is not None
+        assert parsed["pchdir"] is None

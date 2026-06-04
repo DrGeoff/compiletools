@@ -1343,6 +1343,35 @@ def warn_if_wrong_checkout(objdir, objdir_stats, max_age, *, verbose, stream=Non
 # a recognisable cell of the requested kind is labelled UNKNOWN and is never a
 # purge candidate.
 
+
+def _active_cache_sections(args):
+    """Return the list of ``(section_key, kind, cas_dir, active)`` tuples for
+    the two pool-level modes (``list_unresolvable_cells`` and
+    ``purge_unresolvable_cells``).
+
+    Each cache runs unless any OTHER ``--cas-*-only`` flag is set. This is the
+    single source of truth for pool-mode cache selection; both functions
+    delegate here so they can never drift from each other.
+
+    ``section_key`` is one of ``"objdir"`` / ``"pchdir"`` / ``"pcmdir"`` /
+    ``"exedir"``.  ``kind`` is the matching ``enumerate_cells`` kind string
+    (``"obj"`` / ``"pch"`` / ``"pcm"`` / ``"exe"``).  ``cas_dir`` is the
+    resolved CAS directory (may be ``None`` when not configured).  ``active``
+    is ``True`` when this cache should run under the current ``--cas-*-only``
+    scope.
+    """
+    objdir_only = getattr(args, "cas_objdir_only", False)
+    pchdir_only = getattr(args, "cas_pchdir_only", False)
+    pcmdir_only = getattr(args, "cas_pcmdir_only", False)
+    exedir_only = getattr(args, "cas_exedir_only", False)
+    return [
+        ("objdir", "obj", getattr(args, "cas_objdir", None), not (pchdir_only or pcmdir_only or exedir_only)),
+        ("pchdir", "pch", getattr(args, "cas_pchdir", None), not (objdir_only or pcmdir_only or exedir_only)),
+        ("pcmdir", "pcm", getattr(args, "cas_pcmdir", None), not (objdir_only or pchdir_only or exedir_only)),
+        ("exedir", "exe", getattr(args, "cas_exedir", None), not (objdir_only or pchdir_only or pcmdir_only)),
+    ]
+
+
 # Known non-cell child names that may legitimately sit beside variant cells in
 # a pool root. Skipped during cell enumeration.
 _NON_CELL_POOL_CHILDREN: frozenset[str] = frozenset({"TraceStore", "diagnostics"})
@@ -1599,22 +1628,17 @@ def list_unresolvable_cells(args, stream=None):
     if stream is None:
         stream = sys.stderr
 
-    objdir_only = getattr(args, "cas_objdir_only", False)
-    pchdir_only = getattr(args, "cas_pchdir_only", False)
-    pcmdir_only = getattr(args, "cas_pcmdir_only", False)
-    exedir_only = getattr(args, "cas_exedir_only", False)
-
-    # Same selection logic as the trim path: each cache runs unless any OTHER
-    # "only" flag is set.
-    caches = [
-        ("objdir", "obj", getattr(args, "cas_objdir", None), not (pchdir_only or pcmdir_only or exedir_only)),
-        ("pchdir", "pch", getattr(args, "cas_pchdir", None), not (objdir_only or pcmdir_only or exedir_only)),
-        ("pcmdir", "pcm", getattr(args, "cas_pcmdir", None), not (objdir_only or pchdir_only or exedir_only)),
-        ("exedir", "exe", getattr(args, "cas_exedir", None), not (objdir_only or pchdir_only or pcmdir_only)),
-    ]
+    caches = _active_cache_sections(args)
 
     variant = getattr(args, "variant", None)
-    result: dict = {"schema": 1, "objdir": None, "pchdir": None, "pcmdir": None, "exedir": None}
+    result: dict = {
+        "schema": 1,
+        "mode": "list-unresolvable",
+        "objdir": None,
+        "pchdir": None,
+        "pcmdir": None,
+        "exedir": None,
+    }
     enumerated: dict[tuple[str, str], list] = {}  # (pool, kind) -> records
 
     for section, kind, cas_dir, active in caches:
@@ -1639,6 +1663,228 @@ def list_unresolvable_cells(args, stream=None):
         }
 
     return result
+
+
+def _purge_one_cell(cell_path, *, dry_run):
+    """Leaf-level lock-safe removal of one purgeable cell.
+
+    **NEVER ``_safe_locked_rmtree`` the cell root.** ``_safe_locked_rmtree``
+    only locks the cell's TOP-LEVEL files before rmtree'ing the whole subtree;
+    a cell root's immediate children are DIRS (2-hex buckets / 16-hex cmd-hash
+    dirs), so it would lock NOTHING and rmtree the artefacts unlocked —
+    clobbering a peer build mid-write. So we descend ONE level and dispatch each
+    immediate child:
+
+    * dir  → ``_safe_locked_rmtree(child)`` (locks the artefacts INSIDE the
+      bucket, then rmtree's it);
+    * file → ``_safe_locked_unlink(child)``.
+
+    Then ``os.rmdir(cell_path)``. If a child could not be removed (peer holds a
+    lock → the helper returned False) the cell stays non-empty and ``os.rmdir``
+    raises ``OSError`` (ENOTEMPTY); we LEAVE the cell for the next run and report
+    DEFERRED. ENOTEMPTY from a peer creating a fresh bucket mid-purge lands here
+    too — same deferred outcome, never a hard failure.
+
+    Returns one of ``"purged"`` / ``"deferred"``. In ``dry_run`` mode nothing is
+    touched and ``"purged"`` is returned (the candidate is reported as a
+    would-be purge).
+
+    Note on ``bytes_freed`` lower bound: when a cell is only PARTIALLY removed
+    (a locked artefact or a peer-created bucket leaves the cell non-empty →
+    ENOTEMPTY → DEFERRED), the bytes freed for already-removed children are NOT
+    counted in the caller's ``bytes_freed`` tally — the cell is retried next
+    run. ``bytes_freed`` is therefore a LOWER BOUND on actual reclamation when
+    any cells are deferred.
+    """
+    if dry_run:
+        return "purged"
+
+    try:
+        children = list(os.scandir(cell_path))
+    except OSError:
+        # Cell vanished mid-purge (a peer reclaimed it) — nothing to do.
+        return "purged"
+
+    all_removed = True
+    for child in children:
+        if child.is_dir(follow_symlinks=False):
+            if not _safe_locked_rmtree(child.path):
+                all_removed = False
+        else:
+            if not _safe_locked_unlink(child.path):
+                all_removed = False
+
+    try:
+        os.rmdir(cell_path)
+    except OSError:
+        # Non-empty (a child was left because its lock could not be acquired, or
+        # a peer created a fresh bucket between our scan and rmdir) — defer to
+        # the next run rather than hard-failing.
+        return "deferred"
+    return "purged" if all_removed else "deferred"
+
+
+def purge_unresolvable_cells(args, stream=None):
+    """Run the DESTRUCTIVE ``--purge-unresolvable`` reclamation across the caches.
+
+    Pool-level standalone mode (mirrors ``list_unresolvable_cells`` for cache
+    selection and ``(pool, kind)`` enumeration): for each active cache, climb to
+    its pool root via ``cell_pool_root`` and ``enumerate_cells`` it, then purge
+    every cell that is BOTH:
+
+    * ``label == "UNRESOLVABLE"`` — a real, orphaned cell of this kind. RESOLVABLE
+      and UNKNOWN cells are NEVER purge candidates; a stray 2-hex pool bucket and
+      ``TraceStore/`` are skipped by ``enumerate_cells`` itself.
+    * **COLD** — ``newest_mtime is None`` OR ``newest_mtime < (now - max_age)``.
+      A WARM unresolvable cell (newest file within ``max_age``) is SPARED and
+      reported as ``cells_skipped_warm`` — it is most likely another live
+      checkout's cache, not a dead variant.
+
+    Removal is strictly leaf-level (see ``_purge_one_cell``); ``--dry-run``
+    reports candidates and removes nothing.
+
+    Caller contract: ``main`` HARD-ERRORS before calling this when
+    ``args.max_age is None`` — there is no safe age cutoff without it. This
+    function assumes ``args.max_age`` is set.
+
+    This function honours a single ``--cas-*-only`` flag as a SCOPE filter (same
+    selection list as ``list_unresolvable_cells``); it never mutates a cache the
+    scope excludes.
+
+    Args:
+        args: Parsed args namespace (needs ``cas_objdir`` / ``cas_pchdir`` /
+            ``cas_pcmdir`` / ``cas_exedir``, ``variant``, ``max_age``,
+            ``dry_run``, and the four ``cas_*_only`` flags).
+        stream: Diagnostic stream (default ``sys.stderr`` resolved at call time
+            so pytest ``capsys`` patching works).
+
+    Returns:
+        A dict with ``schema`` plus keys ``objdir`` / ``pchdir`` / ``pcmdir`` /
+        ``exedir`` (each ``None`` when that cache was not run, else a per-cache
+        stats dict with ``cells_purged`` / ``cells_skipped_warm`` /
+        ``cells_deferred`` / ``bytes_freed`` / ``pool``) and a top-level
+        ``total_bytes_freed``.
+    """
+    if stream is None:
+        stream = sys.stderr
+
+    dry_run = getattr(args, "dry_run", False)
+    verbose = getattr(args, "verbose", 1)
+    human = sys.stderr if getattr(args, "json", False) else sys.stdout
+    max_age_days = getattr(args, "max_age", None)
+    max_age_seconds = max_age_days * 86400 if max_age_days is not None else None
+
+    caches = _active_cache_sections(args)
+
+    variant = getattr(args, "variant", None)
+    result: dict = {
+        "schema": 1,
+        "mode": "purge-unresolvable",
+        "objdir": None,
+        "pchdir": None,
+        "pcmdir": None,
+        "exedir": None,
+    }
+    enumerated: dict[tuple[str, str], list] = {}  # (pool, kind) -> records
+    now = time.time()
+    cutoff = now - max_age_seconds if max_age_seconds is not None else None
+    total_bytes_freed = 0
+
+    for section, kind, cas_dir, active in caches:
+        if not active or not cas_dir:
+            continue
+        try:
+            pool = cell_pool_root(cas_dir, variant)
+        except ValueError as exc:
+            print(f"warning: cannot purge unresolvable cells for {section}: {exc}", file=stream)
+            continue
+        key = (pool, kind)
+        if key not in enumerated:
+            enumerated[key] = enumerate_cells(pool, kind)
+        cells = enumerated[key]
+
+        stats = {
+            "pool": pool,
+            "cells_purged": 0,
+            "cells_skipped_warm": 0,
+            "cells_deferred": 0,
+            "bytes_freed": 0,
+        }
+
+        for cell in cells:
+            if cell["label"] != _CELL_UNRESOLVABLE:
+                continue  # never purge RESOLVABLE / UNKNOWN
+            newest = cell["newest_mtime"]
+            is_cold = newest is None or (cutoff is not None and newest < cutoff)
+            if not is_cold:
+                stats["cells_skipped_warm"] += 1
+                if verbose >= 1:
+                    print(
+                        f"  Skipping warm unresolvable cell (peer-owned?): {cell['path']}"
+                        f" (age {_format_age_days(newest, now)})",
+                        file=human,
+                    )
+                continue
+
+            if verbose >= 1:
+                action = "Would purge" if dry_run else "Purging"
+                print(f"  {action}: {cell['path']} ({_format_size(cell['total_bytes'])})", file=human)
+
+            outcome = _purge_one_cell(cell["path"], dry_run=dry_run)
+            if outcome == "purged":
+                stats["cells_purged"] += 1
+                stats["bytes_freed"] += cell["total_bytes"]
+            else:  # deferred
+                # bytes_freed is a LOWER BOUND: partially-removed children
+                # are not counted; the cell is retried on the next run.
+                stats["cells_deferred"] += 1
+                if verbose >= 1:
+                    print(
+                        f"  Deferred (peer build active or lock unavailable): {cell['path']}",
+                        file=human,
+                    )
+
+        total_bytes_freed += stats["bytes_freed"]
+        result[section] = stats
+
+    result["total_bytes_freed"] = total_bytes_freed
+    return result
+
+
+def print_purge_report(result, *, stream=None):
+    """Print a human-readable per-kind summary of the purge ``result``.
+
+    Written to *stream* (stdout by default — the purge summary is the tool's
+    primary output in ``--purge-unresolvable`` non-JSON mode).
+    """
+    if stream is None:
+        stream = sys.stdout
+    sections = (
+        ("objdir", "Object CAS"),
+        ("pchdir", "PCH CAS"),
+        ("pcmdir", "PCM CAS"),
+        ("exedir", "Executable CAS"),
+    )
+    print("=" * 60, file=stream)
+    print("Unresolvable-cell purge complete", file=stream)
+    for section, title in sections:
+        info = result.get(section)
+        if info is None:
+            continue
+        print(f"  {title} (pool: {info['pool']}):", file=stream)
+        print(f"    Cells purged:       {info['cells_purged']}", file=stream)
+        print(f"    Cells skipped warm: {info['cells_skipped_warm']}", file=stream)
+        print(f"    Cells deferred:     {info['cells_deferred']}", file=stream)
+        print(f"    Bytes freed:        {_format_size(info['bytes_freed'])} (lower bound)", file=stream)
+    total_deferred = sum((result.get(s) or {}).get("cells_deferred", 0) for s, _t in sections)
+    if total_deferred:
+        print(
+            "  Note: deferred cells are retried on the next run; "
+            "nonzero 'Cells deferred' with low 'Bytes freed' is expected under contention.",
+            file=stream,
+        )
+    print(f"  Total space freed: {_format_size(result.get('total_bytes_freed', 0))} (lower bound)", file=stream)
+    print("=" * 60, file=stream)
 
 
 def _format_age_days(newest_mtime, now=None):

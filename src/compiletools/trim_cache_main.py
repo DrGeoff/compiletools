@@ -106,6 +106,21 @@ def add_arguments(cap):
             "checkout's or branch's live cache; the reported age helps tell them apart."
         ),
     )
+    cap.add_argument(
+        "--purge-unresolvable",
+        action="store_true",
+        default=False,
+        help=(
+            "DESTRUCTIVE: purge cache cells (per-variant <pool>/<variant>/ dirs) whose "
+            "variant name no longer resolves against this checkout's conf hierarchy AND "
+            "whose newest file is older than --max-age (COLD). REQUIRES --max-age — a "
+            "warm unresolvable cell is most likely another live checkout's cache and is "
+            "SPARED. Removal is leaf-level and lock-safe; a cell whose artefacts a peer "
+            "build is mid-write to is deferred to the next run, not hard-failed. "
+            "Mutually exclusive with --list-unresolvable. A single --cas-*-only flag "
+            "scopes the purge to that one cache. Honours --dry-run."
+        ),
+    )
 
 
 def main(argv=None):
@@ -143,16 +158,46 @@ def main(argv=None):
             )
             return 1
 
+        # --list-unresolvable and --purge-unresolvable are the two standalone
+        # pool-level modes. They are MUTUALLY EXCLUSIVE WITH EACH OTHER (the
+        # one mode-exclusivity guard). A single --cas-*-only flag is NOT
+        # forbidden here — it scopes either pool mode to the one selected cache
+        # (handled by the selection logic inside list_/purge_unresolvable_cells).
+        if args.list_unresolvable and args.purge_unresolvable:
+            print(
+                "Error: --list-unresolvable and --purge-unresolvable are mutually exclusive (pick one)",
+                file=sys.stderr,
+            )
+            return 1
+
         # --list-unresolvable is a standalone READ-ONLY mode: run the orphan
-        # listing and return without touching the normal trim path. (The formal
-        # mutual-exclusivity guard against --cas-*-only and the future purge
-        # flag is a later task; for now we simply early-return after listing.)
+        # listing and return without touching the normal trim path.
         if args.list_unresolvable:
             result = compiletools.trim_cache.list_unresolvable_cells(args)
             if args.json:
                 print(json.dumps(result, indent=2))
             else:
                 compiletools.trim_cache.print_unresolvable_report(result)
+            return 0
+
+        # --purge-unresolvable is a standalone DESTRUCTIVE pool-level mode. It
+        # HARD-ERRORS without --max-age (there is no safe age cutoff to tell a
+        # dead variant from another checkout's live cache without one), then
+        # runs the purge and returns without the normal cell-level trim.
+        if args.purge_unresolvable:
+            if args.max_age is None:
+                print(
+                    "Error: --purge-unresolvable requires --max-age=N (only cells "
+                    "whose newest file is older than N days are purged; a warm cell "
+                    "may be another checkout's live cache)",
+                    file=sys.stderr,
+                )
+                return 1
+            result = compiletools.trim_cache.purge_unresolvable_cells(args)
+            if args.json:
+                print(json.dumps(result, indent=2))
+            else:
+                compiletools.trim_cache.print_purge_report(result)
             return 0
 
         # ``--cas-X-only`` flags select a single cache; with none set we
