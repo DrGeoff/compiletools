@@ -114,6 +114,16 @@ def _make_args(**overrides):
         "keep_count": 1,
         "max_age": None,
         "parallel": 1,
+        "list_unresolvable": False,
+        "variant": "gcc.debug",
+        "cas_objdir": None,
+        "cas_pchdir": None,
+        "cas_pcmdir": None,
+        "cas_exedir": None,
+        "cas_objdir_only": False,
+        "cas_pchdir_only": False,
+        "cas_pcmdir_only": False,
+        "cas_exedir_only": False,
     }
     defaults.update(overrides)
     return types.SimpleNamespace(**defaults)
@@ -1893,3 +1903,434 @@ class TestWarnIfWrongCheckout:
         cap = capsys.readouterr()
         assert "warning:" in cap.err
         assert cap.out == ""
+
+
+# ── cell_pool_root: trusted pool-root resolver ─────────────────────────────
+
+
+class TestCellPoolRoot:
+    """``cell_pool_root`` climbs from a variant-suffixed cas dir to the pool
+    root, but ONLY when the resolved path's basename actually equals the
+    variant. Anything else (empty variant, basename != variant — the
+    ``_ensure_variant_suffix`` no-op case) is refused with ValueError so a
+    later pool-level walk can never climb above the pool it was handed."""
+
+    def test_returns_parent_when_basename_matches_variant(self):
+        pool = trim_cache.cell_pool_root("/pool/gcc.debug", "gcc.debug")
+        assert pool == "/pool"
+
+    def test_strips_trailing_separator_before_match(self):
+        pool = trim_cache.cell_pool_root("/pool/gcc.debug/", "gcc.debug")
+        assert pool == "/pool"
+
+    def test_raises_when_basename_differs_from_variant(self):
+        # The _ensure_variant_suffix no-op case: a bare pool path whose
+        # basename already equalled the variant means the suffix was never
+        # appended, so climbing one level would land ABOVE the pool.
+        with pytest.raises(ValueError):
+            trim_cache.cell_pool_root("/pool/other", "gcc.debug")
+
+    def test_raises_on_empty_variant(self):
+        with pytest.raises(ValueError):
+            trim_cache.cell_pool_root("/pool/gcc.debug", "")
+
+    def test_raises_on_none_variant(self):
+        with pytest.raises(ValueError):
+            trim_cache.cell_pool_root("/pool/gcc.debug", None)
+
+
+# ── enumerate_cells: pool enumeration + classification ─────────────────────
+
+
+def _make_synthetic_pool(tmp_path, kind):
+    """Build a synthetic pool with one of every classification case for ``kind``.
+
+    Returns ``(pool_path, expected)`` where ``expected`` maps cell-name →
+    label for the names that MUST appear in the enumeration. Names that must
+    NOT appear (the stray top-level bucket, the TraceStore dir, dotfiles) are
+    asserted separately by the caller.
+
+    Layout (kind-specific inner structure so cell_shape_ok is exercised):
+      * ``good.variant``  — a properly shaped cell of THIS kind (RESOLVABLE
+        once resolve_variant is monkeypatched to accept it).
+      * ``bogus.variant`` — a properly shaped cell of THIS kind whose name
+        does NOT resolve (→ UNRESOLVABLE).
+      * ``odd.variant``   — an empty dir: not resolvable, not cell-shaped
+        (→ UNKNOWN).
+      * ``ab``            — a stray 2-hex bucket directly under the POOL
+        (must be SKIPPED, never a cell).
+      * ``TraceStore``    — a known non-cell dir (must be SKIPPED).
+      * ``.hidden``       — a dotfile dir (must be SKIPPED).
+    """
+    pool = tmp_path / "pool"
+    pool.mkdir()
+
+    def _shape(cell_dir):
+        """Plant THIS kind's valid inner structure inside cell_dir."""
+        if kind == "obj":
+            bucket = cell_dir / "aa"
+            bucket.mkdir()
+            (bucket / "foo_aabbccddeeff_11223344556677_0011223344556677.o").write_bytes(b"\0" * 100)
+        elif kind == "pch":
+            inner = cell_dir / ("a" * 16)
+            inner.mkdir()
+            (inner / "foo.gch").write_bytes(b"\0" * 100)
+        elif kind == "pcm":
+            inner = cell_dir / ("b" * 16)
+            inner.mkdir()
+            (inner / "foo.pcm").write_bytes(b"\0" * 100)
+        elif kind == "exe":
+            bucket = cell_dir / "cc"
+            bucket.mkdir()
+            (bucket / "foo_deadbeef.exe").write_bytes(b"\0" * 100)
+        else:  # pragma: no cover - guard
+            raise AssertionError(kind)
+
+    good = pool / "good.variant"
+    good.mkdir()
+    _shape(good)
+
+    bogus = pool / "bogus.variant"
+    bogus.mkdir()
+    _shape(bogus)
+
+    odd = pool / "odd.variant"
+    odd.mkdir()  # empty: no kind-specific inner structure
+
+    # Stray top-level 2-hex bucket — must be skipped (NOT a cell).
+    (pool / "ab").mkdir()
+    (pool / "ab" / "anything.o").write_bytes(b"\0" * 10)
+
+    # Known non-cell dirs.
+    (pool / "TraceStore").mkdir()
+    (pool / ".hidden").mkdir()
+
+    expected = {
+        "good.variant": "RESOLVABLE",
+        "bogus.variant": "UNRESOLVABLE",
+        "odd.variant": "UNKNOWN",
+    }
+    return str(pool), expected
+
+
+def _patch_resolver(monkeypatch, resolvable_names):
+    """Monkeypatch resolve_variant so only ``resolvable_names`` resolve.
+
+    Deterministic regardless of which bundled axis confs exist on disk:
+    a name in the set returns normally; anything else raises
+    VariantResolutionError (the exact exception enumerate_cells catches to
+    label a cell UNRESOLVABLE). Other exceptions are intentionally NOT
+    simulated here — the contract is that they propagate.
+    """
+    import compiletools.configutils as cu
+
+    def _fake_resolve(name=None, argv=None, **kwargs):
+        if name in resolvable_names:
+            return object()  # a non-None resolution stand-in
+        raise cu.VariantResolutionError(f"no such variant: {name}")
+
+    monkeypatch.setattr(cu, "resolve_variant", _fake_resolve)
+
+
+class TestEnumerateCells:
+    """``enumerate_cells(pool, kind)`` returns one record per candidate cell,
+    correctly classified, conservatively skipping non-cell children."""
+
+    @pytest.mark.parametrize("kind", ["obj", "pch", "pcm", "exe"])
+    def test_classification_labels(self, tmp_path, kind, monkeypatch):
+        pool, expected = _make_synthetic_pool(tmp_path, kind)
+        _patch_resolver(monkeypatch, {"good.variant"})
+
+        records = trim_cache.enumerate_cells(pool, kind)
+        by_name = {r["name"]: r for r in records}
+
+        for name, label in expected.items():
+            assert name in by_name, f"{name} missing from enumeration for kind={kind}"
+            assert by_name[name]["label"] == label, (
+                f"kind={kind} cell {name}: expected {label}, got {by_name[name]['label']}"
+            )
+
+    @pytest.mark.parametrize("kind", ["obj", "pch", "pcm", "exe"])
+    def test_stray_bucket_and_tracestore_skipped(self, tmp_path, kind, monkeypatch):
+        pool, _expected = _make_synthetic_pool(tmp_path, kind)
+        _patch_resolver(monkeypatch, {"good.variant"})
+
+        names = {r["name"] for r in trim_cache.enumerate_cells(pool, kind)}
+        # The stray 2-hex top-level bucket must NEVER be treated as a cell.
+        assert "ab" not in names
+        # Known non-cell dirs must be skipped.
+        assert "TraceStore" not in names
+        assert ".hidden" not in names
+
+    def test_per_cell_bytes_and_newest_mtime(self, tmp_path, monkeypatch):
+        pool, _expected = _make_synthetic_pool(tmp_path, "obj")
+        _patch_resolver(monkeypatch, {"good.variant"})
+
+        records = {r["name"]: r for r in trim_cache.enumerate_cells(pool, "obj")}
+        good = records["good.variant"]
+        # The single planted .o is 100 bytes.
+        assert good["total_bytes"] == 100
+        assert isinstance(good["newest_mtime"], float)
+
+        # The empty UNKNOWN cell has zero bytes and no files → newest None.
+        odd = records["odd.variant"]
+        assert odd["total_bytes"] == 0
+        assert odd["newest_mtime"] is None
+
+    def test_dotted_composite_name_round_trips_via_own_name(self, tmp_path, monkeypatch):
+        """A cell named like a composite variant (with dots) classifies by its
+        OWN directory name — the classification primitive is the cell name, not
+        any ambient --variant."""
+        pool = tmp_path / "pool"
+        pool.mkdir()
+        cell = pool / "gcc.debug.asan"
+        cell.mkdir()
+        bucket = cell / "aa"
+        bucket.mkdir()
+        (bucket / "foo_aabbccddeeff_11223344556677_0011223344556677.o").write_bytes(b"\0" * 50)
+
+        seen = {}
+
+        import compiletools.configutils as cu
+
+        def _fake_resolve(name=None, argv=None, **kwargs):
+            seen["name"] = name
+            return object()
+
+        monkeypatch.setattr(cu, "resolve_variant", _fake_resolve)
+
+        records = {r["name"]: r for r in trim_cache.enumerate_cells(str(pool), "obj")}
+        assert "gcc.debug.asan" in records
+        assert records["gcc.debug.asan"]["label"] == "RESOLVABLE"
+        # The cell's OWN name was the resolution input.
+        assert seen["name"] == "gcc.debug.asan"
+
+    def test_unrelated_exception_propagates(self, tmp_path, monkeypatch):
+        """Only VariantResolutionError is caught as 'unresolvable'; any other
+        exception from resolve_variant must propagate (never silently
+        misclassified as a purge candidate)."""
+        pool = tmp_path / "pool"
+        pool.mkdir()
+        cell = pool / "boom.variant"
+        cell.mkdir()
+        bucket = cell / "aa"
+        bucket.mkdir()
+        (bucket / "foo_aabbccddeeff_11223344556677_0011223344556677.o").write_bytes(b"\0" * 50)
+
+        import compiletools.configutils as cu
+
+        def _fake_resolve(name=None, argv=None, **kwargs):
+            raise RuntimeError("unexpected")
+
+        monkeypatch.setattr(cu, "resolve_variant", _fake_resolve)
+
+        with pytest.raises(RuntimeError):
+            trim_cache.enumerate_cells(str(pool), "obj")
+
+    def test_exe_shape_requires_artefact_suffix_in_bucket(self, tmp_path, monkeypatch):
+        """For exe kind a 2-hex bucket alone is not enough — it must contain a
+        file with a CAS exe suffix. A bucket of non-artefact files leaves an
+        unresolvable cell UNKNOWN, not UNRESOLVABLE."""
+        pool = tmp_path / "pool"
+        pool.mkdir()
+        cell = pool / "bogus.variant"
+        cell.mkdir()
+        bucket = cell / "cc"
+        bucket.mkdir()
+        # A file that is NOT a CAS exe artefact.
+        (bucket / "notanexe.txt").write_bytes(b"\0" * 10)
+        _patch_resolver(monkeypatch, set())  # nothing resolves
+
+        records = {r["name"]: r for r in trim_cache.enumerate_cells(str(pool), "exe")}
+        assert records["bogus.variant"]["label"] == "UNKNOWN"
+
+
+# ── _format_age_days ────────────────────────────────────────────────────────
+
+
+class TestFormatAgeDays:
+    """Unit tests for ``_format_age_days``."""
+
+    def test_none_mtime_renders_dash(self):
+        assert trim_cache._format_age_days(None) == "-"
+
+    def test_past_mtime_renders_age(self):
+        now = 1_000_000.0
+        mtime = now - 5 * 86400  # 5 days ago
+        assert trim_cache._format_age_days(mtime, now=now) == "5d"
+
+    def test_zero_age(self):
+        now = 1_000_000.0
+        assert trim_cache._format_age_days(now, now=now) == "0d"
+
+    def test_future_mtime_clamped_to_zero(self):
+        """Clock skew on a shared FS can yield a future mtime; age must not go negative."""
+        now = 1_000_000.0
+        future_mtime = now + 86400  # 1 day in the future
+        assert trim_cache._format_age_days(future_mtime, now=now) == "0d"
+
+
+# ── --list-unresolvable read-only listing mode ─────────────────────────────
+
+
+class TestListUnresolvableMode:
+    """``--list-unresolvable`` runs a standalone READ-ONLY listing and returns
+    0 without trimming anything."""
+
+    def _build_pool(self, tmp_path, monkeypatch):
+        """Build an obj pool with a known set of cells; classify only gcc.debug as resolvable.
+
+        Uses ``gcc.debug`` as the resolvable cell because that variant resolves
+        against the checkout's real conf hierarchy at parse time (``main`` calls
+        ``apptools.parseargs`` which calls the real ``resolve_variant``).
+        Classification inside ``enumerate_cells`` is controlled separately by
+        patching ``trim_cache._variant_resolvable``, so parse-time resolution
+        stays unaffected.
+
+        Pool layout (obj-shaped inner structure):
+          * ``gcc.debug``   — valid obj cell → RESOLVABLE (patched classifier)
+          * ``bogus.variant`` — valid obj cell → UNRESOLVABLE
+          * ``odd.variant``   — empty dir → UNKNOWN
+        """
+        pool = str(tmp_path / "pool")
+        os.makedirs(pool)
+
+        def _obj_shape(cell_dir):
+            bucket = os.path.join(cell_dir, "aa")
+            os.makedirs(bucket)
+            open(
+                os.path.join(bucket, "foo_aabbccddeeff_11223344556677_0011223344556677.o"),
+                "wb",
+            ).close()
+
+        for cell_name in ("gcc.debug", "bogus.variant"):
+            cell_dir = os.path.join(pool, cell_name)
+            os.makedirs(cell_dir)
+            _obj_shape(cell_dir)
+
+        os.makedirs(os.path.join(pool, "odd.variant"))  # empty → UNKNOWN
+
+        # Patch only the CLASSIFICATION helper inside trim_cache, not the
+        # parse-time configutils.resolve_variant path.  gcc.debug resolves for
+        # real at parse time; bogus.variant and odd.variant do not, but they
+        # never reach apptools.parseargs — they are cells in the pool, not the
+        # active variant.
+        resolvable = {"gcc.debug"}
+        monkeypatch.setattr(trim_cache, "_variant_resolvable", lambda name: name in resolvable)
+
+        return pool
+
+    def test_json_output_shape(self, tmp_path, monkeypatch, capsys):
+        pool = self._build_pool(tmp_path, monkeypatch)
+        # cas-objdir points at the resolvable cell; --variant matches its
+        # basename so _ensure_variant_suffix is a no-op and cell_pool_root
+        # climbs to the pool.
+        objdir = os.path.join(pool, "gcc.debug")
+        rc = main(
+            [
+                "--json",
+                "--list-unresolvable",
+                "--cas-objdir-only",
+                f"--cas-objdir={objdir}",
+                "--variant=gcc.debug",
+            ]
+        )
+        cap = capsys.readouterr()
+        assert rc == 0
+        parsed = json.loads(cap.out)
+        assert isinstance(parsed, dict)
+        # Schema marker.
+        assert parsed.get("schema") == 1
+        # The obj cache section is present and lists cells with labels/sizes.
+        obj = parsed.get("objdir")
+        assert obj is not None
+        cells = {c["name"]: c for c in obj["cells"]}
+        assert cells["gcc.debug"]["label"] == "RESOLVABLE"
+        assert cells["bogus.variant"]["label"] == "UNRESOLVABLE"
+        assert cells["odd.variant"]["label"] == "UNKNOWN"
+        # Raw int bytes in JSON mode.
+        assert isinstance(cells["gcc.debug"]["total_bytes"], int)
+        # Per-label byte rollups are integers.
+        assert isinstance(obj["unresolvable_bytes"], int)
+        assert isinstance(obj["unknown_bytes"], int)
+        # bogus.variant (UNRESOLVABLE) and odd.variant (UNKNOWN) both have
+        # 0-byte files in _build_pool, so rollups are 0.
+        assert obj["unresolvable_bytes"] == sum(c["total_bytes"] for c in obj["cells"] if c["label"] == "UNRESOLVABLE")
+        assert obj["unknown_bytes"] == sum(c["total_bytes"] for c in obj["cells"] if c["label"] == "UNKNOWN")
+
+    def test_human_table_to_stdout(self, tmp_path, monkeypatch, capsys):
+        pool = self._build_pool(tmp_path, monkeypatch)
+        objdir = os.path.join(pool, "gcc.debug")
+        rc = main(
+            [
+                "--list-unresolvable",
+                "--cas-objdir-only",
+                f"--cas-objdir={objdir}",
+                "--variant=gcc.debug",
+            ]
+        )
+        cap = capsys.readouterr()
+        assert rc == 0
+        # Human report on stdout names each label and cell.
+        assert "UNRESOLVABLE" in cap.out
+        assert "bogus.variant" in cap.out
+        assert "gcc.debug" in cap.out
+
+    def test_is_read_only_deletes_nothing(self, tmp_path, monkeypatch, capsys):
+        pool = self._build_pool(tmp_path, monkeypatch)
+        objdir = os.path.join(pool, "gcc.debug")
+
+        # Snapshot every file under the pool before the listing.
+        def _snapshot(root):
+            out = set()
+            for dirpath, _dirs, files in os.walk(root):
+                for f in files:
+                    out.add(os.path.join(dirpath, f))
+            return out
+
+        before = _snapshot(pool)
+        rc = main(
+            [
+                "--list-unresolvable",
+                "--cas-objdir-only",
+                f"--cas-objdir={objdir}",
+                "--variant=gcc.debug",
+            ]
+        )
+        capsys.readouterr()
+        after = _snapshot(pool)
+        assert rc == 0
+        assert before == after, "--list-unresolvable must not delete or create any files"
+
+    def test_untrusted_pool_root_diagnostic_does_not_abort(self, tmp_path, monkeypatch, capsys):
+        """If cell_pool_root refuses for one cache (basename != variant or
+        empty variant), a diagnostic goes to stderr and the listing continues
+        across the OTHER caches without aborting the whole run.
+
+        We drive ``list_unresolvable_cells`` directly with an args namespace
+        whose objdir basename disagrees with the variant (untrusted → refused)
+        while the pchdir is trusted, and assert: a stderr diagnostic for objdir,
+        no exception, and the pchdir section still produced.
+        """
+        pool, _expected = _make_synthetic_pool(tmp_path, "pch")
+        _patch_resolver(monkeypatch, {"good.variant"})
+
+        args = _make_args(
+            list_unresolvable=True,
+            variant="good.variant",
+            # objdir basename ('mismatch') != variant → cell_pool_root refuses.
+            cas_objdir=os.path.join(pool, "mismatch"),
+            cas_pchdir=os.path.join(pool, "good.variant"),  # trusted
+            cas_pcmdir=os.path.join(pool, "good.variant"),
+            cas_exedir=os.path.join(pool, "good.variant"),
+            cas_objdir_only=False,
+            cas_pchdir_only=False,
+            cas_pcmdir_only=False,
+            cas_exedir_only=False,
+        )
+        result = trim_cache.list_unresolvable_cells(args)
+        cap = capsys.readouterr()
+        # A diagnostic for the untrusted objdir went to stderr.
+        assert cap.err != ""
+        # ...but the pch section was still produced (no whole-run abort).
+        assert result.get("pchdir") is not None

@@ -93,6 +93,19 @@ def add_arguments(cap):
             "stdout stays pure JSON for machine consumption."
         ),
     )
+    cap.add_argument(
+        "--list-unresolvable",
+        action="store_true",
+        default=False,
+        help=(
+            "READ-ONLY: list cache cells (per-variant <pool>/<variant>/ dirs) whose "
+            "variant name no longer resolves against this checkout's conf hierarchy. "
+            "Such cells are unreachable by the normal variant-driven trim. Deletes "
+            "nothing. NOTE: 'unresolvable from this checkout' is NOT a durable orphan "
+            "signal on a shared pool — a cell unresolvable here may be another "
+            "checkout's or branch's live cache; the reported age helps tell them apart."
+        ),
+    )
 
 
 def main(argv=None):
@@ -129,6 +142,18 @@ def main(argv=None):
                 file=sys.stderr,
             )
             return 1
+
+        # --list-unresolvable is a standalone READ-ONLY mode: run the orphan
+        # listing and return without touching the normal trim path. (The formal
+        # mutual-exclusivity guard against --cas-*-only and the future purge
+        # flag is a later task; for now we simply early-return after listing.)
+        if args.list_unresolvable:
+            result = compiletools.trim_cache.list_unresolvable_cells(args)
+            if args.json:
+                print(json.dumps(result, indent=2))
+            else:
+                compiletools.trim_cache.print_unresolvable_report(result)
+            return 0
 
         # ``--cas-X-only`` flags select a single cache; with none set we
         # trim all four. Each cache runs unless any *other* "only" flag is on.

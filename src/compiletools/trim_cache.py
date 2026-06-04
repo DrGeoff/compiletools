@@ -1323,6 +1323,372 @@ def warn_if_wrong_checkout(objdir, objdir_stats, max_age, *, verbose, stream=Non
     )
 
 
+# ----------------------------------------------------------------------------
+# Unresolvable-cell discovery (read-only orphan finder; --list-unresolvable)
+# ----------------------------------------------------------------------------
+#
+# A CAS is laid out ``<pool>/<variant>/<inner>``. ``resolve_cas_directory_
+# arguments`` appends ``/<variant>`` to each ``--cas-*dir``, so the resolved
+# path ends in ``/<variant>`` and a cache "cell" is one ``<pool>/<variant>/``
+# directory. When a variant's axis conf is removed from the checkout, its cell
+# becomes UNREACHABLE by the normal (variant-resolving) trim path — those bytes
+# can never be reclaimed by the variant-driven trimmer.
+#
+# SAFETY: "unresolvable from this checkout" is NOT a durable orphan signal on a
+# shared pool — a cell unresolvable here may be another checkout's or branch's
+# LIVE cache. This discovery path is strictly READ-ONLY; it exists so an
+# operator can SEE candidates (with age, so a dead variant can be told apart
+# from someone else's live one). The destructive purge is a separate, later
+# concern. The classification here must stay conservative: a child that is not
+# a recognisable cell of the requested kind is labelled UNKNOWN and is never a
+# purge candidate.
+
+# Known non-cell child names that may legitimately sit beside variant cells in
+# a pool root. Skipped during cell enumeration.
+_NON_CELL_POOL_CHILDREN: frozenset[str] = frozenset({"TraceStore", "diagnostics"})
+
+# Cell classification labels.
+_CELL_RESOLVABLE = "RESOLVABLE"
+_CELL_UNRESOLVABLE = "UNRESOLVABLE"
+_CELL_UNKNOWN = "UNKNOWN"
+
+
+def cell_pool_root(resolved_cas_dir, variant):
+    """Return the trusted pool root for a variant-suffixed cas directory.
+
+    A resolved ``--cas-*dir`` is ``<pool>/<variant>``; the pool root is its
+    parent. We only trust that climb when the resolved path's basename is
+    EXACTLY ``variant`` — proof that ``resolve_cas_directory_arguments`` really
+    appended the ``/<variant>`` suffix and that ``os.path.dirname`` therefore
+    lands on the pool and not above it.
+
+    Two cases break that assumption and are refused with ``ValueError`` rather
+    than risking a walk above the pool:
+
+    * **empty / falsy ``variant``** — there is no suffix to have been appended.
+    * **``basename != variant``** — this is the ``_ensure_variant_suffix``
+      no-op case: the user pointed ``--cas-*dir`` at a bare pool path whose
+      basename already equalled the variant, so the suffix was never appended
+      and the given path IS the cell, not ``<pool>/<variant>``. Climbing one
+      level would land above the pool.
+
+    Args:
+        resolved_cas_dir: A post-``resolve_cas_directory_arguments`` cas dir.
+        variant: The effective ``args.variant``.
+
+    Returns:
+        The pool-root path (``os.path.dirname`` of the cas dir).
+
+    Raises:
+        ValueError: when the path's shape cannot be trusted for a pool walk.
+    """
+    if not variant:
+        raise ValueError(
+            f"cannot derive a trusted pool root from {resolved_cas_dir!r}: "
+            "variant is empty, so no '/<variant>' suffix is present to climb above"
+        )
+    normalised = resolved_cas_dir.rstrip(os.sep) or resolved_cas_dir
+    if os.path.basename(normalised) != variant:
+        raise ValueError(
+            f"cannot derive a trusted pool root from {resolved_cas_dir!r}: its basename "
+            f"is not the variant {variant!r} (the cas dir was given as a bare pool path, "
+            "or already pointed at a cell) — refusing to climb above the pool"
+        )
+    return os.path.dirname(normalised)
+
+
+def _cell_size_and_newest_mtime(cell_path):
+    """Return ``(total_bytes, newest_mtime)`` for everything under ``cell_path``.
+
+    Single ``os.walk``. ``total_bytes`` sums every file's size; ``newest_mtime``
+    is the max file mtime (``None`` when the cell contains no files). Files that
+    vanish or become unreadable mid-walk are skipped (best-effort), consistent
+    with the rest of the trimmer's scan semantics.
+    """
+    total = 0
+    newest = None
+    for dirpath, _dirs, files in os.walk(cell_path):
+        for name in files:
+            try:
+                st = os.stat(os.path.join(dirpath, name))
+            except OSError:
+                continue  # vanished/unreadable mid-walk — best-effort
+            total += st.st_size
+            if newest is None or st.st_mtime > newest:
+                newest = st.st_mtime
+    return total, newest
+
+
+def _has_immediate_subdir_matching(cell_path, regex):
+    """True if ``cell_path`` has at least one immediate subdir whose name
+    matches ``regex``. Best-effort: an unreadable cell returns False."""
+    try:
+        with os.scandir(cell_path) as it:
+            for entry in it:
+                if regex.match(entry.name) and entry.is_dir(follow_symlinks=False):
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def _exe_cell_shape_ok(cell_path):
+    """True if ``cell_path`` looks like a cas-exedir cell.
+
+    Stricter than the obj/pch/pcm bucket-name check: an exe cell must have at
+    least one 2-hex bucket that CONTAINS a file ending in one of
+    ``_CAS_EXE_SUFFIXES``. A bare 2-hex bucket of non-artefact files is NOT a
+    cell — this keeps a stray top-level bucket (or a mislabelled dir) from
+    being mistaken for an exe cell. Best-effort on unreadable dirs.
+    """
+    try:
+        with os.scandir(cell_path) as it:
+            buckets = [e.path for e in it if _OBJ_BUCKET_RE.match(e.name) and e.is_dir(follow_symlinks=False)]
+    except OSError:
+        return False
+    for bucket in buckets:
+        try:
+            with os.scandir(bucket) as inner:
+                for leaf in inner:
+                    if leaf.name.endswith(_CAS_EXE_SUFFIXES) and leaf.is_file():
+                        return True
+        except OSError:
+            continue
+    return False
+
+
+# Per-kind cell-shape predicate. Each answers "does this child look like a real
+# cell of THIS kind?" — the obj/exe kinds key off 2-hex buckets, pch/pcm off
+# 16-hex command-hash dirs (exe additionally requires an artefact inside).
+_CELL_SHAPE_PREDICATES = {
+    "obj": lambda p: _has_immediate_subdir_matching(p, _OBJ_BUCKET_RE),
+    "pch": lambda p: _has_immediate_subdir_matching(p, _PCH_COMMAND_HASH_RE),
+    "pcm": lambda p: _has_immediate_subdir_matching(p, _PCM_COMMAND_HASH_RE),
+    "exe": _exe_cell_shape_ok,
+}
+
+
+def _variant_resolvable(name):
+    """True if ``name`` resolves against the checkout's conf hierarchy.
+
+    Uses ``configutils.resolve_variant(name)`` with ``argv=None`` so the
+    classification reads the conf files directly (no BuildContext / git state
+    needed). Catches ONLY ``VariantResolutionError`` as "unresolvable"; any
+    other exception is deliberately allowed to propagate — a cell must never be
+    silently misclassified because of an unexpected error.
+    """
+    import compiletools.configutils
+
+    try:
+        compiletools.configutils.resolve_variant(name)
+        return True
+    except compiletools.configutils.VariantResolutionError:
+        return False
+
+
+def enumerate_cells(pool, kind):
+    """Enumerate and classify candidate cells under a pool root.
+
+    Scans the pool's IMMEDIATE children. Conservatively skips children that are
+    not cells:
+
+    * non-directories;
+    * dotfiles (names starting with ``.``);
+    * known non-cell names (``TraceStore``, ``diagnostics``);
+    * a 2-hex name (``_OBJ_BUCKET_RE``) — a 2-hex direct child of the POOL is a
+      stray top-level bucket, NOT a cell (critical: prevents treating a stray
+      bucket as an orphan cell).
+
+    Each remaining child is classified:
+
+    * ``resolvable`` — via ``resolve_variant(child_name)`` (only
+      ``VariantResolutionError`` counts as unresolvable).
+    * ``cell_shape_ok`` — KIND-SPECIFIC: the child must look like a real cell
+      of ``kind`` (obj/pch/pcm: a matching command-hash/bucket subdir; exe: a
+      2-hex bucket containing a CAS exe artefact).
+    * ``total_bytes`` / ``newest_mtime`` — one ``os.walk`` per cell.
+
+    Derived ``label``:
+
+    * ``RESOLVABLE``   — resolvable (regardless of shape);
+    * ``UNRESOLVABLE`` — not resolvable AND cell_shape_ok (a real, orphaned
+      cell of this kind — the only purge-candidate class);
+    * ``UNKNOWN``      — not resolvable AND NOT cell_shape_ok (reported for
+      visibility but NEVER a purge candidate).
+
+    Args:
+        pool: Pool-root path (from ``cell_pool_root``).
+        kind: One of ``"obj"``, ``"pch"``, ``"pcm"``, ``"exe"``.
+
+    Returns:
+        A list of per-cell record dicts with keys ``name``, ``path``,
+        ``resolvable``, ``cell_shape_ok``, ``total_bytes``, ``newest_mtime``,
+        ``label``.
+    """
+    shape_ok = _CELL_SHAPE_PREDICATES[kind]  # KeyError on unknown kind is intentional
+    records = []
+    try:
+        with os.scandir(pool) as _it:
+            children = sorted(_it, key=lambda e: e.name)
+    except OSError:
+        return records
+
+    for child in children:
+        name = child.name
+        if not child.is_dir(follow_symlinks=False):
+            continue
+        if name.startswith("."):
+            continue
+        if name in _NON_CELL_POOL_CHILDREN:
+            continue
+        # A 2-hex direct child of the POOL is a stray top-level bucket, never a
+        # cell — variant names are never 2 hex chars.
+        if _OBJ_BUCKET_RE.match(name):
+            continue
+
+        resolvable = _variant_resolvable(name)
+        cell_shape_ok = bool(shape_ok(child.path))
+        total_bytes, newest_mtime = _cell_size_and_newest_mtime(child.path)
+
+        if resolvable:
+            label = _CELL_RESOLVABLE
+        elif cell_shape_ok:
+            label = _CELL_UNRESOLVABLE
+        else:
+            label = _CELL_UNKNOWN
+
+        records.append(
+            {
+                "name": name,
+                "path": child.path,
+                "resolvable": resolvable,
+                "cell_shape_ok": cell_shape_ok,
+                "total_bytes": total_bytes,
+                "newest_mtime": newest_mtime,
+                "label": label,
+            }
+        )
+    return records
+
+
+def list_unresolvable_cells(args, stream=None):
+    """Run the read-only ``--list-unresolvable`` discovery across the caches.
+
+    For each active cache (honouring the ``--cas-*-only`` selection, same as the
+    trim path), derive its ``(pool, kind)`` via ``cell_pool_root`` and
+    ``enumerate_cells`` it. Identical ``(pool, kind)`` pairs are enumerated once
+    and the same record list is reused. A cache whose pool root cannot be
+    trusted (``cell_pool_root`` raises ``ValueError``) emits a diagnostic to
+    *stream* (stderr by default) and is skipped — the listing continues across
+    the other caches rather than aborting the whole run.
+
+    This function NEVER mutates the filesystem.
+
+    Args:
+        args: Parsed args namespace (needs ``cas_objdir`` / ``cas_pchdir`` /
+            ``cas_pcmdir`` / ``cas_exedir``, ``variant``, and the four
+            ``cas_*_only`` flags).
+        stream: Diagnostic stream (default ``sys.stderr`` resolved at call time
+            so pytest ``capsys`` patching works).
+
+    Returns:
+        A dict with keys ``objdir`` / ``pchdir`` / ``pcmdir`` / ``exedir``;
+        each is ``None`` when that cache was not run, else
+        ``{"pool": str, "cells": [<record>, ...]}``.
+    """
+    if stream is None:
+        stream = sys.stderr
+
+    objdir_only = getattr(args, "cas_objdir_only", False)
+    pchdir_only = getattr(args, "cas_pchdir_only", False)
+    pcmdir_only = getattr(args, "cas_pcmdir_only", False)
+    exedir_only = getattr(args, "cas_exedir_only", False)
+
+    # Same selection logic as the trim path: each cache runs unless any OTHER
+    # "only" flag is set.
+    caches = [
+        ("objdir", "obj", getattr(args, "cas_objdir", None), not (pchdir_only or pcmdir_only or exedir_only)),
+        ("pchdir", "pch", getattr(args, "cas_pchdir", None), not (objdir_only or pcmdir_only or exedir_only)),
+        ("pcmdir", "pcm", getattr(args, "cas_pcmdir", None), not (objdir_only or pchdir_only or exedir_only)),
+        ("exedir", "exe", getattr(args, "cas_exedir", None), not (objdir_only or pchdir_only or pcmdir_only)),
+    ]
+
+    variant = getattr(args, "variant", None)
+    result: dict = {"schema": 1, "objdir": None, "pchdir": None, "pcmdir": None, "exedir": None}
+    enumerated: dict[tuple[str, str], list] = {}  # (pool, kind) -> records
+
+    for section, kind, cas_dir, active in caches:
+        if not active or not cas_dir:
+            continue
+        try:
+            pool = cell_pool_root(cas_dir, variant)
+        except ValueError as exc:
+            print(f"warning: cannot list unresolvable cells for {section}: {exc}", file=stream)
+            continue
+        key = (pool, kind)
+        if key not in enumerated:
+            enumerated[key] = enumerate_cells(pool, kind)
+        cells = enumerated[key]
+        unresolvable_bytes = sum(c["total_bytes"] for c in cells if c["label"] == _CELL_UNRESOLVABLE)
+        unknown_bytes = sum(c["total_bytes"] for c in cells if c["label"] == _CELL_UNKNOWN)
+        result[section] = {
+            "pool": pool,
+            "cells": cells,
+            "unresolvable_bytes": unresolvable_bytes,
+            "unknown_bytes": unknown_bytes,
+        }
+
+    return result
+
+
+def _format_age_days(newest_mtime, now=None):
+    """Format a cell's newest-file mtime as an age string in days.
+
+    ``None`` (an empty cell with no files) renders as ``"-"``. Otherwise the
+    age is ``(now - newest_mtime)`` in whole days, e.g. ``"12d"``.
+    """
+    if newest_mtime is None:
+        return "-"
+    if now is None:
+        now = time.time()
+    age_days = max(0, int((now - newest_mtime) // 86400))
+    return f"{age_days}d"
+
+
+def print_unresolvable_report(result, *, stream=None):
+    """Print a human-readable per-kind table of the discovery ``result``.
+
+    Written to *stream* (stdout by default — this report is the tool's primary
+    output in ``--list-unresolvable`` mode). For each cell shows its label,
+    name, human size, and age-in-days of the newest file (so an operator can
+    tell a dead variant from someone else's live one).
+    """
+    if stream is None:
+        stream = sys.stdout
+    now = time.time()
+    sections = (
+        ("objdir", "Object CAS"),
+        ("pchdir", "PCH CAS"),
+        ("pcmdir", "PCM CAS"),
+        ("exedir", "Executable CAS"),
+    )
+    for section, title in sections:
+        info = result.get(section)
+        if info is None:
+            continue
+        print(f"{title} (pool: {info['pool']}):", file=stream)
+        cells = info["cells"]
+        if not cells:
+            print("  (no cells)", file=stream)
+            continue
+        for cell in cells:
+            print(
+                f"  {cell['label']:<12} {cell['name']}"
+                f"  ({_format_size(cell['total_bytes'])}, age {_format_age_days(cell['newest_mtime'], now)})",
+                file=stream,
+            )
+
+
 def _format_size(size_bytes):
     """Format a byte count as a human-readable string."""
     if size_bytes < 1024:
