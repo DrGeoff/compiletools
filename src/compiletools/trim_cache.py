@@ -1748,8 +1748,10 @@ def purge_unresolvable_cells(args, stream=None):
     reports candidates and removes nothing.
 
     Caller contract: ``main`` HARD-ERRORS before calling this when
-    ``args.max_age is None`` — there is no safe age cutoff without it. This
-    function assumes ``args.max_age`` is set.
+    ``args.max_age is None or args.max_age <= 0`` — there is no safe age
+    cutoff without a strictly positive value (zero would classify every cell
+    as COLD and defeat the WARM-cache safety gate). This function assumes
+    ``args.max_age`` is set and > 0 (the CLI enforces this).
 
     This function honours a single ``--cas-*-only`` flag as a SCOPE filter (same
     selection list as ``list_unresolvable_cells``); it never mutates a cache the

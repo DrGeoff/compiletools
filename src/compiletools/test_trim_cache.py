@@ -2282,14 +2282,7 @@ class TestListUnresolvableMode:
         objdir = os.path.join(pool, "gcc.debug")
 
         # Snapshot every file under the pool before the listing.
-        def _snapshot(root):
-            out = set()
-            for dirpath, _dirs, files in os.walk(root):
-                for f in files:
-                    out.add(os.path.join(dirpath, f))
-            return out
-
-        before = _snapshot(pool)
+        before = _all_files_under(pool)
         rc = main(
             [
                 "--list-unresolvable",
@@ -2299,7 +2292,7 @@ class TestListUnresolvableMode:
             ]
         )
         capsys.readouterr()
-        after = _snapshot(pool)
+        after = _all_files_under(pool)
         assert rc == 0
         assert before == after, "--list-unresolvable must not delete or create any files"
 
@@ -2335,6 +2328,15 @@ class TestListUnresolvableMode:
         assert cap.err != ""
         # ...but the pch section was still produced (no whole-run abort).
         assert result.get("pchdir") is not None
+
+
+def _all_files_under(root):
+    """Return the set of all file paths under *root* (for FS-mutation assertions)."""
+    out = set()
+    for dirpath, _dirs, files in os.walk(root):
+        for f in files:
+            out.add(os.path.join(dirpath, f))
+    return out
 
 
 # ── --purge-unresolvable: DESTRUCTIVE orphan reclamation ───────────────────
@@ -2475,17 +2477,78 @@ class TestPurgeUnresolvable:
         assert os.path.exists(paths["cold_target"])
         assert os.path.exists(os.path.join(pool, "cold.variant"))
 
+    def test_hard_error_with_max_age_zero(self, tmp_path, monkeypatch, capsys):
+        """``--purge-unresolvable --max-age=0`` must be rejected (rc=1, error to
+        stderr mentioning max-age, no filesystem mutation).
+
+        max_age=0 sets the cold cutoff to *now*, so every cell not touched in
+        the last instant is classified COLD — defeating the WARM-cache safety
+        gate that protects another checkout's live cache.  The guard must fire
+        for any value <= 0.
+        """
+        pool, _paths = _make_purge_pool(tmp_path, monkeypatch, warm_age_seconds=86400, cold_age_seconds=30 * 86400)
+
+        before = _all_files_under(pool)
+        rc = main(
+            [
+                "--purge-unresolvable",
+                "--max-age=0",
+                "--cas-objdir-only",
+                f"--cas-objdir={self._objdir(pool)}",
+                "--variant=gcc.debug",
+            ]
+        )
+        cap = capsys.readouterr()
+        assert rc == 1
+        assert "max-age" in cap.err.lower()
+        # Nothing removed — pool is byte-for-byte unchanged.
+        assert _all_files_under(pool) == before, "--max-age=0 must remove nothing"
+
+    def test_hard_error_with_max_age_negative(self, tmp_path, monkeypatch, capsys):
+        """``--purge-unresolvable --max-age=-1`` must be rejected (rc=1, error to
+        stderr mentioning max-age, no filesystem mutation).
+        """
+        pool, _paths = _make_purge_pool(tmp_path, monkeypatch, warm_age_seconds=86400, cold_age_seconds=30 * 86400)
+
+        before = _all_files_under(pool)
+        rc = main(
+            [
+                "--purge-unresolvable",
+                "--max-age=-1",
+                "--cas-objdir-only",
+                f"--cas-objdir={self._objdir(pool)}",
+                "--variant=gcc.debug",
+            ]
+        )
+        cap = capsys.readouterr()
+        assert rc == 1
+        assert "max-age" in cap.err.lower()
+        # Nothing removed — pool is byte-for-byte unchanged.
+        assert _all_files_under(pool) == before, "--max-age=-1 must remove nothing"
+
+    def test_valid_max_age_positive_still_works(self, tmp_path, monkeypatch, capsys):
+        """Regression: a valid ``--max-age=7`` must still purge the cold cell
+        (the new guard must not inadvertently block legitimate usage)."""
+        pool, paths = _make_purge_pool(tmp_path, monkeypatch, warm_age_seconds=86400, cold_age_seconds=30 * 86400)
+        rc = main(
+            [
+                "--purge-unresolvable",
+                "--max-age=7",
+                "--cas-objdir-only",
+                f"--cas-objdir={self._objdir(pool)}",
+                "--variant=gcc.debug",
+            ]
+        )
+        capsys.readouterr()
+        assert rc == 0
+        # The cold unresolvable cell is GONE and the warm one is spared.
+        assert not os.path.exists(os.path.join(pool, "cold.variant")), "cold cell must be purged"
+        assert os.path.exists(paths["warm_spared"]), "warm cell must be spared"
+
     def test_dry_run_reports_but_removes_nothing(self, tmp_path, monkeypatch, capsys):
         pool, paths = _make_purge_pool(tmp_path, monkeypatch, warm_age_seconds=86400, cold_age_seconds=30 * 86400)
 
-        def _snapshot(root):
-            out = set()
-            for dirpath, _dirs, files in os.walk(root):
-                for f in files:
-                    out.add(os.path.join(dirpath, f))
-            return out
-
-        before = _snapshot(pool)
+        before = _all_files_under(pool)
         rc = main(
             [
                 "--json",
@@ -2498,7 +2561,7 @@ class TestPurgeUnresolvable:
             ]
         )
         out = capsys.readouterr().out
-        after = _snapshot(pool)
+        after = _all_files_under(pool)
         assert rc == 0
         assert before == after, "--dry-run must remove nothing"
         parsed = json.loads(out)

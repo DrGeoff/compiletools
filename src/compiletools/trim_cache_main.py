@@ -113,12 +113,13 @@ def add_arguments(cap):
         help=(
             "DESTRUCTIVE: purge cache cells (per-variant <pool>/<variant>/ dirs) whose "
             "variant name no longer resolves against this checkout's conf hierarchy AND "
-            "whose newest file is older than --max-age (COLD). REQUIRES --max-age — a "
-            "warm unresolvable cell is most likely another live checkout's cache and is "
-            "SPARED. Removal is leaf-level and lock-safe; a cell whose artefacts a peer "
-            "build is mid-write to is deferred to the next run, not hard-failed. "
-            "Mutually exclusive with --list-unresolvable. A single --cas-*-only flag "
-            "scopes the purge to that one cache. Honours --dry-run."
+            "whose newest file is older than --max-age (COLD). REQUIRES --max-age > 0 — "
+            "a warm unresolvable cell is most likely another live checkout's cache and is "
+            "SPARED; zero or negative values are rejected. Removal is leaf-level and "
+            "lock-safe; a cell whose artefacts a peer build is mid-write to is deferred "
+            "to the next run, not hard-failed. Mutually exclusive with "
+            "--list-unresolvable. A single --cas-*-only flag scopes the purge to that "
+            "one cache. Honours --dry-run."
         ),
     )
 
@@ -185,11 +186,12 @@ def main(argv=None):
         # dead variant from another checkout's live cache without one), then
         # runs the purge and returns without the normal cell-level trim.
         if args.purge_unresolvable:
-            if args.max_age is None:
+            if args.max_age is None or args.max_age <= 0:
                 print(
-                    "Error: --purge-unresolvable requires --max-age=N (only cells "
-                    "whose newest file is older than N days are purged; a warm cell "
-                    "may be another checkout's live cache)",
+                    f"Error: --purge-unresolvable requires --max-age > 0 (a positive "
+                    f"number of days; only cells whose newest file is older than that "
+                    f"are purged — a warm cell may be another checkout's live cache); "
+                    f"got {args.max_age!r}",
                     file=sys.stderr,
                 )
                 return 1
