@@ -1362,6 +1362,8 @@ class TestJsonMode:
         assert rc == 0
         parsed = json.loads(out)  # raises if human text leaks to stdout
         assert isinstance(parsed, dict)
+        assert parsed["schema"] == 1
+        assert parsed["mode"] == "trim"
 
     def test_byte_counts_are_integers(self, tmp_path, capsys):
         """All byte-count values in the JSON output must be plain integers."""
@@ -1516,6 +1518,8 @@ class TestJsonMode:
         }
         result = trimmer.summary_json(objdir_stats=objdir_stats)
         assert isinstance(result, dict)
+        assert result["schema"] == 1
+        assert result["mode"] == "trim"
         assert result["objdir"]["bytes_freed"] == 4096
         assert isinstance(result["objdir"]["bytes_freed"], int)
         assert result["total_bytes_freed"] == 4096

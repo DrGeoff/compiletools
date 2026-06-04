@@ -994,6 +994,8 @@ class CacheTrimmer:
     def summary_json(self, objdir_stats=None, pchdir_stats=None, pcmdir_stats=None, exedir_stats=None):
         """Return a dict with raw integer counts/bytes per cache that ran.
 
+        Top-level ``schema`` (always ``1``) and ``mode`` (always
+        ``"trim"``) identify the payload shape for machine consumers.
         Keys ``objdir`` / ``pchdir`` / ``pcmdir`` / ``exedir`` are omitted
         (present as ``None``) for caches that did not run. Top-level
         ``total_bytes_freed`` is always present (even when only a single
@@ -1005,6 +1007,8 @@ class CacheTrimmer:
         """
         total_bytes_freed = 0
         result: dict = {
+            "schema": 1,
+            "mode": "trim",
             "objdir": None,
             "pchdir": None,
             "pcmdir": None,
