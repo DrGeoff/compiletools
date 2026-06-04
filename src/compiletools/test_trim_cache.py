@@ -17,6 +17,7 @@ from compiletools.trim_cache import (
     build_current_hash_set,
     parse_object_filename,
     warn_if_suspicious_cas_dir,
+    warn_if_wrong_checkout,
 )
 from compiletools.trim_cache_main import main
 
@@ -1713,3 +1714,182 @@ class TestWarnIfSuspiciousCasDir:
         json.loads(cap.out)
         # warning on stderr
         assert "warning:" in cap.err
+
+
+# ── warn_if_wrong_checkout ────────────────────────────────────────────────
+
+
+class TestWarnIfWrongCheckout:
+    """``warn_if_wrong_checkout`` warns on stderr when the object trim was
+    almost certainly run from the wrong checkout against a shared network
+    pool: no ``--max-age``, network FS, non-empty scan, zero current objects.
+
+    The guard must stay silent in every other combination."""
+
+    # ── helper: build an objdir_stats dict ───────────────────────────────
+
+    @staticmethod
+    def _stats(current_kept=0, total_scanned=0):
+        return {
+            "total_scanned": total_scanned,
+            "basenames_found": 0,
+            "current_kept": current_kept,
+            "noncurrent_kept": 0,
+            "removed": 0,
+            "failed": 0,
+            "bytes_freed": 0,
+        }
+
+    # ── guard fires ───────────────────────────────────────────────────────
+
+    def test_fires_on_network_fs_zero_current_no_max_age(self, tmp_path, monkeypatch):
+        """All four conditions met → warning emitted to the stream."""
+        monkeypatch.setattr("compiletools.filesystem_utils.get_filesystem_type", lambda _p: "gpfs")
+        monkeypatch.setattr("compiletools.filesystem_utils.should_parallelize_scan", lambda _fs: True)
+
+        stream = io.StringIO()
+        warn_if_wrong_checkout(
+            str(tmp_path),
+            self._stats(current_kept=0, total_scanned=10),
+            max_age=None,
+            verbose=0,
+            stream=stream,
+        )
+        out = stream.getvalue()
+        assert out, "expected a warning but got none"
+        assert "warning:" in out
+
+    def test_warning_mentions_checkout_and_max_age(self, tmp_path, monkeypatch):
+        """The warning text must explain checkout-relative currency and recommend --max-age."""
+        monkeypatch.setattr("compiletools.filesystem_utils.get_filesystem_type", lambda _p: "nfs")
+        monkeypatch.setattr("compiletools.filesystem_utils.should_parallelize_scan", lambda _fs: True)
+
+        stream = io.StringIO()
+        warn_if_wrong_checkout(
+            str(tmp_path),
+            self._stats(current_kept=0, total_scanned=5),
+            max_age=None,
+            verbose=0,
+            stream=stream,
+        )
+        out = stream.getvalue()
+        # Must mention the checkout-relative nature and the --max-age remedy.
+        assert "checkout" in out.lower()
+        assert "--max-age" in out
+
+    # ── guard does NOT fire: max_age set ─────────────────────────────────
+
+    def test_silent_when_max_age_set(self, tmp_path, monkeypatch):
+        """``--max-age`` was given → the guard must stay silent (user is aware)."""
+        monkeypatch.setattr("compiletools.filesystem_utils.get_filesystem_type", lambda _p: "gpfs")
+        monkeypatch.setattr("compiletools.filesystem_utils.should_parallelize_scan", lambda _fs: True)
+
+        stream = io.StringIO()
+        warn_if_wrong_checkout(
+            str(tmp_path),
+            self._stats(current_kept=0, total_scanned=10),
+            max_age=30,
+            verbose=0,
+            stream=stream,
+        )
+        assert stream.getvalue() == ""
+
+    # ── guard does NOT fire: current_kept > 0 ────────────────────────────
+
+    def test_silent_when_current_kept_nonzero(self, tmp_path, monkeypatch):
+        """Objects current for this checkout exist → not a wrong-checkout situation."""
+        monkeypatch.setattr("compiletools.filesystem_utils.get_filesystem_type", lambda _p: "gpfs")
+        monkeypatch.setattr("compiletools.filesystem_utils.should_parallelize_scan", lambda _fs: True)
+
+        stream = io.StringIO()
+        warn_if_wrong_checkout(
+            str(tmp_path),
+            self._stats(current_kept=1, total_scanned=10),
+            max_age=None,
+            verbose=0,
+            stream=stream,
+        )
+        assert stream.getvalue() == ""
+
+    # ── guard does NOT fire: total_scanned == 0 ───────────────────────────
+
+    def test_silent_when_total_scanned_zero(self, tmp_path, monkeypatch):
+        """Empty scan → nothing to warn about (warn_if_suspicious_cas_dir handles that)."""
+        monkeypatch.setattr("compiletools.filesystem_utils.get_filesystem_type", lambda _p: "gpfs")
+        monkeypatch.setattr("compiletools.filesystem_utils.should_parallelize_scan", lambda _fs: True)
+
+        stream = io.StringIO()
+        warn_if_wrong_checkout(
+            str(tmp_path),
+            self._stats(current_kept=0, total_scanned=0),
+            max_age=None,
+            verbose=0,
+            stream=stream,
+        )
+        assert stream.getvalue() == ""
+
+    # ── guard does NOT fire: local (non-network) FS ───────────────────────
+
+    def test_silent_on_local_filesystem(self, tmp_path, monkeypatch):
+        """Local-disk FS (ext4) → guard stays silent even with all other conditions met."""
+        monkeypatch.setattr("compiletools.filesystem_utils.get_filesystem_type", lambda _p: "ext4")
+        monkeypatch.setattr("compiletools.filesystem_utils.should_parallelize_scan", lambda _fs: False)
+
+        stream = io.StringIO()
+        warn_if_wrong_checkout(
+            str(tmp_path),
+            self._stats(current_kept=0, total_scanned=10),
+            max_age=None,
+            verbose=0,
+            stream=stream,
+        )
+        assert stream.getvalue() == ""
+
+    def test_silent_on_unknown_filesystem(self, tmp_path, monkeypatch):
+        """Unknown FS → treated as local; guard stays silent."""
+        monkeypatch.setattr("compiletools.filesystem_utils.get_filesystem_type", lambda _p: "unknown")
+        monkeypatch.setattr("compiletools.filesystem_utils.should_parallelize_scan", lambda _fs: False)
+
+        stream = io.StringIO()
+        warn_if_wrong_checkout(
+            str(tmp_path),
+            self._stats(current_kept=0, total_scanned=10),
+            max_age=None,
+            verbose=0,
+            stream=stream,
+        )
+        assert stream.getvalue() == ""
+
+    # ── quiet mode (verbose < 0) silences the guard ───────────────────────
+
+    def test_quiet_mode_suppresses_warning(self, tmp_path, monkeypatch):
+        """verbose < 0 → no output regardless of conditions."""
+        monkeypatch.setattr("compiletools.filesystem_utils.get_filesystem_type", lambda _p: "gpfs")
+        monkeypatch.setattr("compiletools.filesystem_utils.should_parallelize_scan", lambda _fs: True)
+
+        stream = io.StringIO()
+        warn_if_wrong_checkout(
+            str(tmp_path),
+            self._stats(current_kept=0, total_scanned=10),
+            max_age=None,
+            verbose=-1,
+            stream=stream,
+        )
+        assert stream.getvalue() == ""
+
+    # ── default stream goes to stderr, not stdout ─────────────────────────
+
+    def test_default_stream_is_stderr(self, tmp_path, monkeypatch, capsys):
+        """Without an explicit stream kwarg, the warning must land on stderr."""
+        monkeypatch.setattr("compiletools.filesystem_utils.get_filesystem_type", lambda _p: "gpfs")
+        monkeypatch.setattr("compiletools.filesystem_utils.should_parallelize_scan", lambda _fs: True)
+
+        warn_if_wrong_checkout(
+            str(tmp_path),
+            self._stats(current_kept=0, total_scanned=5),
+            max_age=None,
+            verbose=0,
+        )
+        cap = capsys.readouterr()
+        assert "warning:" in cap.err
+        assert cap.out == ""

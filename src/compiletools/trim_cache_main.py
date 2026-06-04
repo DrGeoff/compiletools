@@ -13,6 +13,12 @@ The tool will:
 2. Scan cas-objdir for .o files whose file hash no longer matches any tracked source
 3. Scan cas-pchdir for command-hash directories with old precompiled headers
 4. Remove the oldest non-current entries, keeping at least --keep-count per basename
+
+Note on shared / multi-user caches: object currency is relative to the invoking
+checkout's git HEAD. On a shared pool used by multiple branches or users, objects
+built from other checkouts will appear non-current here. Use ``--max-age`` as the
+primary eviction control on shared pools to limit removal by age rather than by
+checkout-relative currency.
 """
 
 import json
@@ -41,7 +47,10 @@ def add_arguments(cap):
             "(default: no age limit). 'Older' means 'written more than N days ago' "
             "(mtime), NOT 'not accessed in N days' — atime is unreliable on "
             "noatime-mounted filesystems, so a hot-but-old cache entry will "
-            "still be evicted."
+            "still be evicted. On a shared multi-branch or multi-user pool, "
+            "this is the recommended primary eviction control: it removes only "
+            "entries that have not been rebuilt recently, regardless of which "
+            "checkout considers them current."
         ),
     )
     cap.add_argument(
@@ -154,6 +163,9 @@ def main(argv=None):
                 compiletools.trim_cache.warn_if_suspicious_cas_dir(
                     args.cas_objdir, "objdir", args.variant, verbose=args.verbose
                 )
+            compiletools.trim_cache.warn_if_wrong_checkout(
+                args.cas_objdir, objdir_stats, args.max_age, verbose=args.verbose
+            )
 
         if do_pchdir:
             if args.verbose >= 1:

@@ -1263,6 +1263,66 @@ def warn_if_suspicious_cas_dir(path, kind, variant, *, verbose, stream=None):
             )
 
 
+def warn_if_wrong_checkout(objdir, objdir_stats, max_age, *, verbose, stream=None):
+    """Warn when a no-age-limit object trim of a network pool found zero current objects.
+
+    Zero current objects across a non-empty scan, without ``--max-age``, on a
+    network filesystem is a strong signal that the trim was invoked from the
+    wrong checkout (or against a foreign shared pool). Object currency is
+    checkout-relative: ``build_current_hash_set`` reads *this* checkout's git
+    HEAD, so objects built from another branch or by another user will all look
+    non-current here and will be evicted down to ``--keep-count`` per basename.
+
+    On a shared, multi-branch or multi-user pool, prefer ``--max-age`` as the
+    primary eviction control — it keeps objects regardless of which checkout
+    considers them current, removing only entries that have not been rebuilt
+    recently enough.
+
+    Fires at ``verbose >= 0`` (default), written to *stream* (``sys.stderr`` by
+    default) so it never pollutes ``--json`` stdout.
+
+    Condition (all must hold):
+    - ``max_age is None`` — no age-limit guard already in effect.
+    - ``objdir_stats["total_scanned"] > 0`` — the scan was non-empty (a
+      legitimately empty pool is already handled by
+      ``warn_if_suspicious_cas_dir``).
+    - ``objdir_stats["current_kept"] == 0`` — not a single object is current
+      for this checkout.
+    - ``objdir`` is on a network/cluster filesystem (``should_parallelize_scan``
+      returns ``True`` for the detected filesystem type).
+
+    Args:
+        objdir: Path to the object CAS directory that was scanned.
+        objdir_stats: Stats dict returned by ``CacheTrimmer.trim_objdir``.
+        max_age: Value of ``args.max_age`` (``None`` when ``--max-age`` was not
+            supplied).
+        verbose: Current verbosity level.
+        stream: Output stream for the warning (default: ``sys.stderr`` resolved
+            at call time, so pytest ``capsys`` patching works).
+    """
+    if stream is None:
+        stream = sys.stderr
+    if verbose < 0:
+        return
+    if max_age is not None:
+        return
+    if objdir_stats["total_scanned"] == 0:
+        return
+    if objdir_stats["current_kept"] > 0:
+        return
+    fstype = compiletools.filesystem_utils.get_filesystem_type(objdir)
+    if not compiletools.filesystem_utils.should_parallelize_scan(fstype):
+        return
+    print(
+        f"warning: object trim of {objdir} found 0 current objects across "
+        f"{objdir_stats['total_scanned']} scanned — object currency is relative "
+        f"to the invoking checkout's git HEAD. On a shared multi-branch pool this "
+        f"can over-evict objects built by other checkouts. Consider using "
+        f"--max-age to limit eviction by age instead of by currency.",
+        file=stream,
+    )
+
+
 def _format_size(size_bytes):
     """Format a byte count as a human-readable string."""
     if size_bytes < 1024:
