@@ -8,7 +8,7 @@ Dump the inputs that drive a C++20 module BMI's ``<cas-pcmdir>/<cmd_hash>/`` pat
 
 :Author: drgeoffathome@gmail.com
 :Date:   2026-05-31
-:Version: 10.1.5
+:Version: 10.1.6
 :Manual section: 1
 :Manual group: developers
 
