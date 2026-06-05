@@ -5,6 +5,25 @@ Scans cas-objdir, cas-pchdir, cas-pcmdir, and cas-exedir for stale entries
 and removes them, keeping entries that match the current git state and
 preserving a configurable number of recent non-current entries per source
 file or per module/header/linker-artefact bucket.
+
+Three size-control behaviours layer on top of that per-bucket policy
+(``--keep-count`` + ``--max-age``):
+
+* ``--max-size`` (``enforce_budget``): a per-pool byte budget. After the
+  per-bucket policy runs, additional NON-protected entries are evicted
+  oldest-first until the pool is under the budget. Peer-safe -- current
+  objects and hard-linked (published) artefacts are never evicted, so the
+  budget may be left unmet (reported as ``budget_unmet_bytes``) rather than
+  violating safety. It MAY evict non-current entries below ``--keep-count``
+  (they are rebuildable -- the point of an explicit budget).
+* Orphan-temp reclamation (``reclaim_orphan_temps``): removes producer temp
+  files the artefact scanners ignore (``*.compiletools.tmp[.<pid>]`` and
+  ``*.publish.tmp``) once older than ``_ORPHAN_TEMP_MIN_AGE_SECONDS`` (so a
+  removal cannot race an in-flight build), lock-safe.
+* Retry-once (``retry_failed``): a removal that cannot take its lock on the
+  first pass is queued and retried once just before the summary; only a
+  SECOND failure counts as ``failed`` (left in place -- an intentional leak a
+  peer is presumably still using).
 """
 
 from __future__ import annotations
