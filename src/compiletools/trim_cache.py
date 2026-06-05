@@ -132,6 +132,10 @@ def _parse_size(s: str) -> int:
     body = body.strip()
     if not body:
         raise ValueError(f"invalid size {s!r}: no numeric magnitude")
+    # Fast-path for plain integers: int() is exact for arbitrarily large values,
+    # whereas float() loses precision above 2^53 (e.g. 2^53+1 rounds to 2^53).
+    if body.isdigit():
+        return int(body) * multiplier
     try:
         magnitude = float(body)
     except ValueError:
@@ -1126,6 +1130,12 @@ class CacheTrimmer:
                 # retry sites (objdir, pchdir, pcmdir, exedir) omit bytes_key.
                 if entry.get("bytes_key"):
                     stats[entry["bytes_key"]] += size
+                # Reconcile budget_unmet_bytes: a failed budget removal was
+                # conservatively left in the unmet tally.  On retry success the
+                # bytes are gone, so reduce the unmet counter by the entry's
+                # size (floor at 0 to guard against double-crediting).
+                if entry.get("unmet_key"):
+                    stats[entry["unmet_key"]] = max(0, stats[entry["unmet_key"]] - size)
                 if self.verbose >= 1:
                     print(f"  Retry succeeded: {path}", file=self._human)
                 # Best-effort sidecar cleanup for exedir entries (flagged
@@ -1374,6 +1384,10 @@ class CacheTrimmer:
                     "stats": stats,
                     "removed_key": "budget_removed",
                     "bytes_key": "budget_bytes_freed",
+                    # On retry success, budget_unmet_bytes must be decremented by
+                    # this entry's size — a successfully-retried budget eviction
+                    # was conservatively left in the unmet tally at queue time.
+                    "unmet_key": "budget_unmet_bytes",
                     "unlink_kwargs": unlink_kwargs,
                 }
                 if cleanup_sidecars:
@@ -1404,8 +1418,6 @@ class CacheTrimmer:
                 continue
             for entry in inner:
                 name = entry.name
-                if name.endswith((".lockdir", ".lock", ".lock.excl")):
-                    continue
                 if not name.endswith(".o"):
                     continue
                 if _COMPILETOOLS_TMP_RE.search(name) or name.endswith(_PUBLISH_TMP_SUFFIX):

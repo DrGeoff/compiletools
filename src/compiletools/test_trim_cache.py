@@ -3524,6 +3524,14 @@ class TestParseSize:
         with pytest.raises(ValueError):
             trim_cache._parse_size("-1G")
 
+    def test_large_exact_integer_no_precision_loss(self):
+        # float() loses precision for integers above 2^53; the isdigit() fast-path
+        # must return the exact value via int() for plain byte counts.
+        large = 2**53 + 1  # 9007199254740993 — rounds to 2^53 via float()
+        assert trim_cache._parse_size(str(large)) == large
+        # Sanity: confirm float() would have lost precision here.
+        assert int(float(str(large))) != large, "float precision loss expected"
+
 
 # ── enforce_budget ───────────────────────────────────────────────────
 
@@ -3798,6 +3806,47 @@ class TestEnforceBudgetRetry:
         assert stats["budget_bytes_freed"] == 4096
         assert stats["bytes_freed"] == 4096
         assert len(trimmer._retry) == 0
+
+    def test_budget_unmet_bytes_reconciled_to_zero_after_retry(self, objdir, monkeypatch):
+        # Scenario: a single non-current object (4096 bytes) is the ONLY reason
+        # the budget (1024 bytes) is exceeded.  Its first unlink fails, so
+        # budget_unmet_bytes is set to 4096 - 1024 = 3072 at queue time.
+        # After retry_failed() succeeds, budget_unmet_bytes must drop to 0
+        # (not stay at 3072, which would falsely report "protected entries alone
+        # exceed --max-size").
+        _touch_obj(objdir, "foo", "111111111111", age_seconds=3 * 86400, size=4096)
+
+        call_count = {"n": 0}
+        real_unlink = trim_cache._safe_locked_unlink
+
+        def _flaky_unlink(path, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return False  # first attempt fails
+            return real_unlink(path, **kwargs)  # retry succeeds
+
+        monkeypatch.setattr(trim_cache, "_safe_locked_unlink", _flaky_unlink)
+
+        trimmer = CacheTrimmer(_make_args(max_size_bytes=1024))
+        stats = {
+            "bytes_freed": 0,
+            "budget_removed": 0,
+            "budget_bytes_freed": 0,
+            "budget_unmet_bytes": 0,
+        }
+        trimmer.enforce_budget(objdir, stats, kind="obj", current_hashes=set())
+
+        # After the first (failed) pass, unmet is conservatively set.
+        assert stats["budget_unmet_bytes"] == 3072, "unmet before retry"
+        assert len(trimmer._retry) == 1
+
+        trimmer.retry_failed()
+
+        # The only overflow entry succeeded on retry → budget is now met.
+        assert stats["budget_unmet_bytes"] == 0, "budget_unmet_bytes must be reconciled to 0 after retry"
+        assert stats["budget_removed"] == 1
+        assert stats["budget_bytes_freed"] == 4096
+        assert stats["bytes_freed"] == 4096
 
 
 class TestMaxSizeCLI:
