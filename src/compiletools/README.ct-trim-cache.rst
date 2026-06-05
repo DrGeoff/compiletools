@@ -14,7 +14,7 @@ Trim stale entries from the object, PCH, PCM, and linker-artefact CAS directorie
 
 SYNOPSIS
 ========
-ct-trim-cache [--dry-run] [--cas-objdir PATH] [--cas-pchdir PATH] [--cas-pcmdir PATH] [--cas-exedir PATH] [--max-age DAYS] [--keep-count N] [--json] [-j N] [-v]
+ct-trim-cache [--dry-run] [--cas-objdir PATH] [--cas-pchdir PATH] [--cas-pcmdir PATH] [--cas-exedir PATH] [--max-age DAYS] [--keep-count N] [--max-size SIZE] [--json] [-j N] [-v]
 
 ct-trim-cache --list-unresolvable [--json] [--cas-\*dir PATH] [-v]
 
@@ -124,6 +124,12 @@ WHEN TO USE
 - Periodic maintenance of shared build caches (cron)
 - After major branch switches that invalidate many cache entries
 - After refactoring that renames or removes many source files
+
+**No built-in scheduler (A8).** ``ct-trim-cache`` has no daemon mode or
+internal timer — it is a run-once tool.  Periodic cache bounding is the
+job of cron (or a cluster scheduler), using ``--max-age`` to bound
+retention by recency and (now) ``--max-size`` to cap the absolute pool
+size.  See the cron EXAMPLES_ below for a combined invocation.
 
 USAGE
 =====
@@ -251,6 +257,97 @@ Identical algorithm to PCH trimming, with one bucketing twist:
 5. Removes (or reports in ``--dry-run`` mode) every cmd_hash directory
    not in the kept set.
 
+Note on PCH/PCM/exe size control (A10)
+---------------------------------------
+Unlike the object cache, PCH, PCM, and exe cache entries have no separate
+"current"-entry protection signal that is tied to git HEAD. Only object
+files embed a ``file_hash`` that is compared against the invoking checkout's
+tracked files to mark an entry as current and protect it unconditionally.
+For PCH and PCM, ``--keep-count`` / ``--max-age`` / ``--max-size`` are the
+primary size controls; transitive-staleness pre-eviction (described above)
+provides early removal of stale entries but is not the same as currency
+protection. For exe entries, hard-linked (``st_nlink > 1``) artefacts are
+protected as "still published", but entries without a live hard link are
+candidates for eviction by all three controls. Operators managing large
+PCH/PCM/exe pools should set ``--max-age`` to bound retention by recency, and
+``--max-size`` to cap absolute pool size; there is no mechanism to pin a
+particular PCH or PCM entry as "current" the way object files are pinned.
+
+Orphaned temp reclamation
+--------------------------
+After the normal keep/remove pass, each cache pool's orphaned producer
+temp files are reclaimed.  Two patterns are matched:
+
+* ``*.compiletools.tmp`` and ``*.compiletools.tmp.<pid>`` — temps left by
+  PCH/PCM precompile rules in ``cas-pchdir`` / ``cas-pcmdir`` when a build
+  is killed between the compiler write and the ``mv -f`` rename.
+* ``*.publish.tmp`` — temps left by ``ct-cas-publish``'s atomic-replace
+  writes.  Note: ``cas-publish`` writes these into the **published**
+  ``bin/<variant>/`` directory, which ``ct-trim-cache`` does **not** scan.
+  This matcher is therefore defensive — it reclaims nothing in production
+  but would catch any future layout where a publish temp lands inside a CAS
+  bucket directory.
+
+**Safety properties:**
+
+* **Age floor.** Only temps older than one day (86 400 s) are removed.
+  No build invocation legitimately holds a temp open for a day, so no
+  removal can race an in-flight write.
+* **Lock-aware unlink.** ``_safe_locked_unlink`` acquires the same build
+  lock the producer uses.  A temp that a peer has re-acquired mid-trim is
+  left safely in place.
+* **One-level descent.** The scan descends exactly one level into each
+  immediate subdirectory (bucket or cmd_hash dir) and never recurses
+  further, so it cannot accidentally walk into unrelated directory trees.
+
+New JSON/summary stats: ``orphan_temps_removed``, ``orphan_temp_bytes_freed``
+(per pool; also included in the pool's ``bytes_freed`` total).
+
+Retry behaviour (A7)
+---------------------
+Every removal — from the normal trim pass, the orphan-temp reclaim, and
+the budget pass — that fails to acquire the build lock on the first attempt
+is **not immediately counted as a failure**.  Instead, it is queued and
+retried exactly once after all four cache pools have been trimmed.  Only a
+second failure increments ``failed``; entries left in place after a second
+failure are intentional leaks, not hard errors (a peer build is likely
+holding the lock and will clean up on its own exit).  The retry pass runs
+*before* the summary, so reported counts already reflect the final
+post-retry state.
+
+Size budget pass (--max-size)
+------------------------------
+After the normal keep/remove pass and orphan-temp reclamation, if
+``--max-size`` was supplied the tool re-scans each pool and evicts
+non-protected entries **oldest-first** until the pool's total on-disk size
+falls at or below the budget, or no more non-protected units remain.
+
+**Per-pool semantics.** The budget is applied to each pool independently —
+it is *not* an aggregate across all four caches.
+
+**Peer safety.** A "protected" unit is never evicted, regardless of the
+budget:
+
+* ``obj`` pool — an object whose ``file_hash`` is in the current checkout's
+  tracked-file set.
+* ``exe`` pool — an artefact with ``st_nlink > 1`` (a published /
+  hard-linked reference is still live).
+* ``pch`` / ``pcm`` pools — no per-unit protection signal exists at this
+  layer; all cmd_hash directories are eviction candidates (the compiler
+  re-precompiles on the next build).
+
+If protected entries alone exceed the budget the overflow is reported via
+``budget_unmet_bytes`` and the pool is left over budget rather than
+violating safety.
+
+**Below ``--keep-count``.** The budget pass is the only control that may
+evict non-current entries below ``--keep-count``.  That is deliberate: an
+explicit size budget means those entries are rebuildable and space is the
+binding constraint.
+
+New JSON/summary stats: ``budget_removed``, ``budget_bytes_freed``,
+``budget_unmet_bytes`` (per pool).
+
 ORPHANED-VARIANT CELLS
 ======================
 Each CAS is laid out ``<pool>/<variant>/<entries>``; one ``<pool>/<variant>/``
@@ -300,6 +397,23 @@ marker and a ``"mode"`` discriminator — ``"trim"`` for the normal trim,
 ``"list-unresolvable"`` and ``"purge-unresolvable"`` for the pool modes — so a
 consumer can tell the three shapes apart. ``--json`` composes with any mode.
 
+In ``"mode": "trim"`` output the per-pool dicts (``objdir``, ``pchdir``,
+``pcmdir``, ``exedir``) include the following new keys (always present,
+zero when the feature did not fire):
+
+``orphan_temps_removed``
+    Number of orphaned producer temp files removed from this pool.
+``orphan_temp_bytes_freed``
+    Bytes reclaimed by orphan-temp removal (subset of ``bytes_freed``).
+``budget_removed``
+    Number of units evicted by the ``--max-size`` budget pass.
+``budget_bytes_freed``
+    Bytes reclaimed by the budget pass (subset of ``bytes_freed``).
+``budget_unmet_bytes``
+    Bytes by which the pool still exceeds ``--max-size`` after the budget
+    pass, because protected (current/hard-linked) entries cannot be evicted.
+    Zero when the budget was met or ``--max-size`` was not supplied.
+
 OPTIONS
 =======
 
@@ -322,6 +436,38 @@ Trim Options
     Keep at least N non-current files per basename/header.
     Default: 1.  Set to 0 to remove all non-current entries (the safety
     invariant still preserves at least one file per basename).
+
+``--max-size SIZE``
+    Optional per-pool total size budget, applied independently to each cache
+    pool (not an aggregate across all four pools).  After the normal
+    keep/remove pass and orphan-temp reclamation, the oldest rebuildable
+    (non-protected) entries are evicted until the pool fits within the
+    budget.
+
+    *Accepted forms* (1024-based binary; case-insensitive; trailing ``B``
+    optional; decimals allowed):
+
+    - Plain integer bytes: ``1073741824``
+    - With suffix: ``10G``, ``512M``, ``500MB``, ``2g``, ``1.5T``
+    - Suffixes: ``K`` (1024), ``M`` (1024²), ``G`` (1024³), ``T`` (1024⁴)
+
+    *Peer safety.*  Current objects (``file_hash`` in the git-tracked set)
+    and hard-linked (published) exe artefacts are **never** evicted.  If
+    protected entries alone exceed the budget, the overflow is reported as
+    ``budget_unmet_bytes`` and the pool is left over budget rather than
+    violating safety.
+
+    *Relationship to* ``--keep-count``.  This is the only control that may
+    evict non-current entries below ``--keep-count``: an explicit budget
+    means the entries are rebuildable and space is the binding constraint.
+    Without ``--max-size`` the keep-count floor is unconditional.
+
+    New JSON/summary stats: ``budget_removed``, ``budget_bytes_freed``,
+    ``budget_unmet_bytes`` (present in each pool's stats dict under
+    ``--json`` regardless of whether any budget eviction occurred).
+
+    Default: no budget (only ``--keep-count`` / ``--max-age`` govern
+    eviction).
 
 ``--cas-objdir-only``
     Only trim the object CAS, skip PCH, PCM, and linker-artefact trimming.
@@ -416,31 +562,58 @@ General Options
 EXIT CODES
 ==========
 0
-    Success -- all targeted files removed (or none to remove). Deferred cells
-    (left for a later run because a peer build was active) are not failures.
+    Success — all targeted files removed (or none to remove).
+
+    The following outcomes do **not** count as failures and return 0:
+
+    - Deferred cells (``--purge-unresolvable`` mode) left for a later run
+      because a peer build was active.
+    - Entries that could not be removed on the **first** attempt but
+      succeeded on the **single automatic retry** (A7: every first-attempt
+      failure is retried once before the summary is printed).
+    - Pools that still exceed ``--max-size`` because protected (current or
+      hard-linked) entries cannot be evicted (reported as
+      ``budget_unmet_bytes`` but not a failure).
+
 1
     Failure, or invalid invocation. Causes include:
 
-    - some files could not be removed (check permissions);
-    - more than one of ``--cas-objdir-only`` / ``--cas-pchdir-only`` /
+    - Some files could not be removed even after the automatic retry — only
+      genuine **second-attempt** failures increment the ``failed`` counter and
+      trigger exit code 1 (the entry is intentionally left in place; a peer
+      build is most likely holding the lock).
+    - More than one of ``--cas-objdir-only`` / ``--cas-pchdir-only`` /
       ``--cas-pcmdir-only`` / ``--cas-exedir-only`` was specified (mutually
-      exclusive);
-    - both ``--list-unresolvable`` and ``--purge-unresolvable`` were specified
-      (mutually exclusive);
+      exclusive).
+    - Both ``--list-unresolvable`` and ``--purge-unresolvable`` were specified
+      (mutually exclusive).
     - ``--purge-unresolvable`` was given without ``--max-age``, or with
       ``--max-age <= 0``.
+    - ``--max-size`` was given an unrecognised value (not a valid integer or
+      decimal with optional K/M/G/T suffix).
 
 EXAMPLES
 ========
-**Daily cron job for shared cache maintenance**::
+**Daily cron job for shared cache maintenance (age + size budget)**::
 
     #!/bin/bash
-    # Run at 2 AM -- remove non-current entries older than 14 days
+    # Run at 2 AM -- remove non-current entries older than 14 days,
+    # and cap each cache pool at 50 GiB regardless of age.
+    ct-trim-cache --max-age 14 --max-size 50G
+
+**Daily cron job (age only, no size cap)**::
+
+    #!/bin/bash
+    # Remove non-current entries older than 14 days
     ct-trim-cache --max-age 14
 
 **Aggressive cleanup before a release**::
 
     ct-trim-cache --keep-count 0 --max-age 1
+
+**Preview what the budget pass would remove**::
+
+    ct-trim-cache --max-age 14 --max-size 50G --dry-run
 
 **Preview only, for a specific variant**::
 
