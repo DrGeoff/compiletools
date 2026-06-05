@@ -266,6 +266,12 @@ def main(argv=None):
                     args.cas_exedir, "exedir", args.variant, verbose=args.verbose
                 )
 
+        # Retry any first-attempt failures exactly once. Must run AFTER all four
+        # trim blocks so each cache's trim_* method has had a chance to queue its
+        # failures, and BEFORE the summary/JSON output so reported numbers reflect
+        # the final post-retry state.
+        trimmer.retry_failed()
+
         if args.json:
             print(
                 json.dumps(

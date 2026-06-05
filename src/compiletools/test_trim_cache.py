@@ -2884,3 +2884,243 @@ class TestPurgeUnresolvableModeExclusivity:
         parsed = json.loads(out)
         assert parsed["objdir"] is not None
         assert parsed["pchdir"] is None
+
+
+# ── A7: retry list ────────────────────────────────────────────────────────────
+
+
+class TestRetryList:
+    """A7: first-attempt removal failures are queued and retried once after all
+    caches finish.  On retry success the entry counts as ``removed``; on second
+    failure it counts as ``failed``.  Dry-run mode must be completely unaffected
+    (the retry list stays empty because dry-run never calls the unlink helpers).
+    """
+
+    # ── objdir: unlink fails first, succeeds on retry ────────────────────────
+
+    def test_objdir_retry_success_counted_in_removed(self, objdir, monkeypatch):
+        """First _safe_locked_unlink returns False; retry returns True.
+        Result: removed=1, failed=0, bytes_freed=size, _retry is empty.
+        """
+        # Two non-current objects; keep newest (keep_count=1), so only the
+        # older one is a candidate for removal.
+        _touch_obj(objdir, "foo", "111111111111", age_seconds=3600, size=4096)
+        _touch_obj(objdir, "foo", "222222222222", age_seconds=60, size=1024)
+
+        call_count = {"n": 0}
+        real_unlink = trim_cache._safe_locked_unlink
+
+        def _flaky_unlink(path, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return False  # first attempt fails
+            return real_unlink(path, **kwargs)  # retry succeeds
+
+        monkeypatch.setattr(trim_cache, "_safe_locked_unlink", _flaky_unlink)
+
+        trimmer = CacheTrimmer(_make_args(keep_count=1))
+        stats = trimmer.trim_objdir(objdir, set())
+
+        assert stats["failed"] == 0, "first failure must NOT count as failed yet"
+        assert stats["removed"] == 0, "first failure must NOT count as removed yet"
+        assert len(trimmer._retry) == 1, "one entry must be queued for retry"
+
+        trimmer.retry_failed()
+
+        assert stats["removed"] == 1, "retry success must count as removed"
+        assert stats["bytes_freed"] == 4096
+        assert stats["failed"] == 0
+        assert len(trimmer._retry) == 0, "retry list must be cleared after retry_failed()"
+
+    # ── objdir: unlink fails both times ──────────────────────────────────────
+
+    def test_objdir_retry_double_failure_counts_failed(self, objdir, monkeypatch):
+        """Both attempts fail → failed=1, removed=0, bytes_freed=0."""
+        _touch_obj(objdir, "foo", "111111111111", age_seconds=3600, size=4096)
+        _touch_obj(objdir, "foo", "222222222222", age_seconds=60, size=1024)
+
+        monkeypatch.setattr(trim_cache, "_safe_locked_unlink", lambda *a, **kw: False)
+
+        trimmer = CacheTrimmer(_make_args(keep_count=1))
+        stats = trimmer.trim_objdir(objdir, set())
+
+        assert stats["failed"] == 0, "first failure must not be counted yet"
+        assert len(trimmer._retry) == 1
+
+        trimmer.retry_failed()
+
+        assert stats["failed"] == 1, "second failure must count as failed"
+        assert stats["removed"] == 0
+        assert stats["bytes_freed"] == 0
+        assert len(trimmer._retry) == 0
+
+    # ── no failures: _retry stays empty, counts unchanged ────────────────────
+
+    def test_no_failures_retry_list_stays_empty(self, objdir, monkeypatch):
+        """When nothing fails the retry list is empty and stats are unchanged."""
+        _touch_obj(objdir, "foo", "111111111111", age_seconds=3600, size=4096)
+        _touch_obj(objdir, "foo", "222222222222", age_seconds=60, size=1024)
+
+        # Allow the real unlink to proceed (no monkeypatching of the helper).
+        trimmer = CacheTrimmer(_make_args(keep_count=1))
+        stats = trimmer.trim_objdir(objdir, set())
+
+        assert len(trimmer._retry) == 0, "_retry must be empty when nothing failed"
+        # The removal happened on the first pass.
+        assert stats["removed"] == 1
+        assert stats["failed"] == 0
+        assert stats["bytes_freed"] == 4096
+
+        # Calling retry_failed on an empty list is a no-op.
+        trimmer.retry_failed()
+        assert stats["removed"] == 1
+        assert stats["failed"] == 0
+
+    # ── pchdir: rmtree fails first, succeeds on retry ────────────────────────
+
+    def test_pchdir_retry_success_counted_in_dirs_removed(self, pchdir, monkeypatch):
+        """pchdir uses dirs_removed; retry success must increment that key."""
+        _make_pchdir_entry(pchdir, "a" * 16, ["stdafx.h"], age_seconds=3600, size_per_gch=2048)
+        _make_pchdir_entry(pchdir, "b" * 16, ["stdafx.h"], age_seconds=60, size_per_gch=1024)
+
+        call_count = {"n": 0}
+        real_rmtree = trim_cache._safe_locked_rmtree
+
+        def _flaky_rmtree(path):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return False
+            return real_rmtree(path)
+
+        monkeypatch.setattr(trim_cache, "_safe_locked_rmtree", _flaky_rmtree)
+
+        trimmer = CacheTrimmer(_make_args(keep_count=1))
+        stats = trimmer.trim_pchdir(pchdir)
+
+        assert stats["failed"] == 0
+        assert stats["dirs_removed"] == 0
+        assert len(trimmer._retry) == 1
+
+        trimmer.retry_failed()
+
+        assert stats["dirs_removed"] == 1, "retry success must increment dirs_removed"
+        assert stats["bytes_freed"] == 2048
+        assert stats["failed"] == 0
+        assert len(trimmer._retry) == 0
+
+    # ── exedir: unlink fails first, succeeds on retry + sidecar cleanup ──────
+
+    def test_exedir_retry_success_cleans_sidecars(self, tmp_path, monkeypatch):
+        """exedir retry success must also best-effort-remove .manifest/.result sidecars.
+
+        Both entries share the same source_realpath in their sidecar manifests so
+        they bucket together under keep_count=1 (oldest is the eviction candidate).
+        """
+        exedir = str(tmp_path / "cas-exe")
+        old = _touch_exe(exedir, "main", "aa11" * 16, age_seconds=30 * 86400, size=2048)
+        new = _touch_exe(exedir, "main", "bb22" * 16, age_seconds=0, size=1024)
+        # Write manifests with the SAME source_realpath so both entries bucket
+        # together; keep_count=1 will then evict the older one (old).
+        for path in (old, new):
+            with open(path + ".manifest", "w") as f:
+                f.write('{"source_realpath": "/repo/main.cpp"}')
+        # Also plant a .result sidecar on the stale entry.
+        with open(old + ".result", "wb") as f:
+            f.write(b"\0")
+
+        call_count = {"n": 0}
+        real_unlink = trim_cache._safe_locked_unlink
+
+        def _flaky_unlink(path, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return False
+            return real_unlink(path, **kwargs)
+
+        monkeypatch.setattr(trim_cache, "_safe_locked_unlink", _flaky_unlink)
+
+        trimmer = CacheTrimmer(_make_args(keep_count=1))
+        stats = trimmer.trim_exedir(exedir)
+
+        assert stats["failed"] == 0
+        assert len(trimmer._retry) == 1
+
+        trimmer.retry_failed()
+
+        assert stats["removed"] == 1
+        assert stats["bytes_freed"] == 2048
+        assert stats["failed"] == 0
+        # Sidecars should be cleaned up on retry success.
+        assert not os.path.exists(old + ".manifest"), ".manifest sidecar must be removed on retry success"
+        assert not os.path.exists(old + ".result"), ".result sidecar must be removed on retry success"
+
+    # ── dry-run: retry list stays empty ──────────────────────────────────────
+
+    def test_dry_run_retry_list_stays_empty(self, objdir):
+        """In dry-run mode the unlink helpers are never called, so _retry is
+        always empty and retry_failed() is a harmless no-op."""
+        _touch_obj(objdir, "foo", "111111111111", age_seconds=3600, size=4096)
+        _touch_obj(objdir, "foo", "222222222222", age_seconds=60, size=1024)
+
+        trimmer = CacheTrimmer(_make_args(keep_count=1, dry_run=True))
+        stats = trimmer.trim_objdir(objdir, set())
+
+        assert len(trimmer._retry) == 0, "dry-run must never populate _retry"
+        # Dry-run reports the would-be removal but keeps files.
+        assert stats["removed"] == 1
+        assert stats["failed"] == 0
+
+        trimmer.retry_failed()
+        assert len(trimmer._retry) == 0
+
+    # ── main() wires retry_failed() between trim blocks and summary ───────────
+
+    def test_main_calls_retry_failed_before_summary(self, tmp_path, monkeypatch, capsys):
+        """Integration: main() calls retry_failed() so a first-pass failure
+        that succeeds on retry shows up as removed=1 (not failed=1) in the
+        JSON summary.
+
+        resolve_cas_directory_arguments appends the active variant as a suffix
+        to an "unsupplied" cas-objdir path. We sidestep that by supplying the
+        objects inside a pool/<variant>/ layout and passing the variant-suffixed
+        path explicitly as --cas-objdir so the suffix is NOT re-appended (the
+        resolver recognises the basename already equals the variant and is a
+        no-op).
+        """
+        import compiletools.configutils as cu
+
+        variant = cu.extract_variant(argv=None)  # the repo's default variant
+        # Build pool/<variant>/objects so the explicit path matches exactly.
+        pool = str(tmp_path / "pool")
+        variant_dir = os.path.join(pool, variant)
+        os.makedirs(variant_dir)
+        _touch_obj(variant_dir, "foo", "111111111111", age_seconds=3600, size=4096)
+        _touch_obj(variant_dir, "foo", "222222222222", age_seconds=60, size=1024)
+
+        call_count = {"n": 0}
+        real_unlink = trim_cache._safe_locked_unlink
+
+        def _flaky_unlink(path, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return False
+            return real_unlink(path, **kwargs)
+
+        monkeypatch.setattr(trim_cache, "_safe_locked_unlink", _flaky_unlink)
+
+        rc = main(
+            [
+                "--json",
+                "--cas-objdir-only",
+                f"--cas-objdir={variant_dir}",
+                f"--variant={variant}",
+            ]
+        )
+        out = capsys.readouterr().out
+        parsed = json.loads(out)
+
+        assert rc == 0, "exit code must be 0 when retry succeeds"
+        obj = parsed["objdir"]
+        assert obj["removed"] == 1, "post-retry removed count must appear in JSON"
+        assert obj["failed"] == 0, "no genuine failures after successful retry"
+        assert obj["bytes_freed"] == 4096

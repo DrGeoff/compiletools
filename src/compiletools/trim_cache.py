@@ -299,6 +299,15 @@ class CacheTrimmer:
         # When --json is set, human/progress text goes to stderr so stdout
         # stays pure JSON. Default: stdout (non-JSON human mode).
         self._human = sys.stderr if getattr(args, "json", False) else sys.stdout
+        # Retry list: entries that failed their first removal attempt are queued
+        # here and retried once in retry_failed() after all caches have been
+        # trimmed. Each entry is a dict with keys: "path" (str), "is_dir"
+        # (bool), "size" (int), "stats" (the per-cache stats dict, by reference
+        # so retry mutations land in the same dict main() will print),
+        # "removed_key" (str — "removed" for objdir/exedir, "dirs_removed" for
+        # pchdir/pcmdir), and "unlink_kwargs" (dict, e.g.
+        # {"skip_if_nlink_above": 1} for exedir).
+        self._retry: list[dict] = []
 
     def _workers_for(self, path):
         """Worker-thread count for scanning ``path``.
@@ -460,9 +469,18 @@ class CacheTrimmer:
                     stats["removed"] += 1
                     stats["bytes_freed"] += size
                 else:
-                    stats["failed"] += 1
                     if self.verbose >= 1:
-                        print(f"  Failed to remove {path}", file=sys.stderr)
+                        print(f"  Failed to remove {path} (will retry)", file=sys.stderr)
+                    self._retry.append(
+                        {
+                            "path": path,
+                            "is_dir": False,
+                            "size": size,
+                            "stats": stats,
+                            "removed_key": "removed",
+                            "unlink_kwargs": {},
+                        }
+                    )
             else:
                 stats["removed"] += 1
                 stats["bytes_freed"] += size
@@ -627,9 +645,18 @@ class CacheTrimmer:
                     stats["dirs_removed"] += 1
                     stats["bytes_freed"] += total_size
                 else:
-                    stats["failed"] += 1
                     if self.verbose >= 1:
-                        print(f"  Failed to remove {path}", file=sys.stderr)
+                        print(f"  Failed to remove {path} (will retry)", file=sys.stderr)
+                    self._retry.append(
+                        {
+                            "path": path,
+                            "is_dir": True,
+                            "size": total_size,
+                            "stats": stats,
+                            "removed_key": "dirs_removed",
+                            "unlink_kwargs": {},
+                        }
+                    )
             else:
                 stats["dirs_removed"] += 1
                 stats["bytes_freed"] += total_size
@@ -770,9 +797,18 @@ class CacheTrimmer:
                     stats["dirs_removed"] += 1
                     stats["bytes_freed"] += total_size
                 else:
-                    stats["failed"] += 1
                     if self.verbose >= 1:
-                        print(f"  Failed to remove {path}", file=sys.stderr)
+                        print(f"  Failed to remove {path} (will retry)", file=sys.stderr)
+                    self._retry.append(
+                        {
+                            "path": path,
+                            "is_dir": True,
+                            "size": total_size,
+                            "stats": stats,
+                            "removed_key": "dirs_removed",
+                            "unlink_kwargs": {},
+                        }
+                    )
             else:
                 stats["dirs_removed"] += 1
                 stats["bytes_freed"] += total_size
@@ -917,9 +953,75 @@ class CacheTrimmer:
                     except OSError:
                         pass
             else:
-                stats["failed"] += 1
+                if self.verbose >= 1:
+                    print(f"  Failed to remove {path} (will retry)", file=sys.stderr)
+                self._retry.append(
+                    {
+                        "path": path,
+                        "is_dir": False,
+                        "size": size,
+                        "stats": stats,
+                        "removed_key": "removed",
+                        "unlink_kwargs": {"skip_if_nlink_above": 1},
+                    }
+                )
 
         return stats
+
+    # ------------------------------------------------------------------
+    # Retry pass
+    # ------------------------------------------------------------------
+
+    def retry_failed(self):
+        """Retry every queued removal exactly once and clear the retry list.
+
+        Called by ``main()`` after ALL four trim passes and BEFORE the summary
+        is printed, so reported numbers reflect the final post-retry state.
+
+        On retry success: increment ``removed`` and ``bytes_freed`` in the
+        per-cache stats dict (stored by reference in each retry entry), and
+        for exedir entries also best-effort-remove the ``.manifest``/``.result``
+        sidecars.
+
+        On retry failure: increment ``failed`` — the path is intentionally left
+        in place (a peer build is holding it; it will be retried on the next
+        trim run).
+
+        At ``verbose >= 1`` a one-line note per retry outcome is written to
+        ``self._human``.
+        """
+        for entry in self._retry:
+            path = entry["path"]
+            is_dir = entry["is_dir"]
+            size = entry["size"]
+            stats = entry["stats"]
+            removed_key = entry["removed_key"]
+            unlink_kwargs = entry["unlink_kwargs"]
+
+            if is_dir:
+                success = _safe_locked_rmtree(path)
+            else:
+                success = _safe_locked_unlink(path, **unlink_kwargs)
+
+            if success:
+                stats[removed_key] += 1
+                stats["bytes_freed"] += size
+                if self.verbose >= 1:
+                    print(f"  Retry succeeded: {path}", file=self._human)
+                # Best-effort sidecar cleanup for exedir entries (identified by
+                # the presence of "skip_if_nlink_above" in unlink_kwargs).
+                if not is_dir and "skip_if_nlink_above" in unlink_kwargs:
+                    for sidecar_suffix in (".manifest", ".result"):
+                        try:
+                            os.remove(path + sidecar_suffix)
+                        except OSError:
+                            pass
+            else:
+                stats["failed"] += 1
+                if self.verbose >= 1:
+                    print(f"  Retry failed (leaving in place): {path}", file=self._human)
+
+        self._retry.clear()
 
     # ------------------------------------------------------------------
     # Summary
