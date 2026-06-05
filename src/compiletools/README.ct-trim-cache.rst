@@ -8,7 +8,7 @@ Trim stale entries from the object, PCH, PCM, and linker-artefact CAS directorie
 
 :Author: drgeoffathome@gmail.com
 :Date:   2026-06-04
-:Version: 10.1.6
+:Version: 10.1.7
 :Manual section: 1
 :Manual group: developers
 
