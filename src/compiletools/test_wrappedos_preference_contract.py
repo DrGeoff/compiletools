@@ -159,6 +159,8 @@ _WRAPPEDOS_EXEMPT: frozenset[tuple[str, str]] = frozenset(
         ("trim_cache.py", "if not os.path.isdir(pchdir):"),  # #2: trim walk of cas-pchdir
         ("trim_cache.py", "if not os.path.isdir(pcmdir):"),  # #2: trim walk of cas-pcmdir
         ("trim_cache.py", "if not os.path.isdir(exedir):"),  # #2: trim walk of cas-exedir
+        ("trim_cache.py", "if not os.path.isdir(cache_root):"),  # #2: orphan-temp walk of cas dir
+        ("trim_cache.py", "if not os.path.isdir(cache_dir):"),  # #2: budget walk of cas dir
         ("timing_report.py", "if not os.path.isdir(diagnostics_dir):"),  # #2: diagnostic scan of diagnostics_dir
         (
             "timing_report.py",
