@@ -58,6 +58,29 @@ _PCM_COMMAND_HASH_RE = re.compile(r"^[0-9a-f]{16}$")
 # must never be enumerated as trim or report candidates.
 _CAS_EXE_SUFFIXES: tuple[str, ...] = (".exe", ".a", ".so")
 
+# Suffixes that identify orphaned producer temp files inside CAS bucket / cmd_hash
+# dirs. Two sources:
+#   • ``build_backend`` PCH/PCM precompile temp: ``<artefact>.compiletools.tmp``
+#     (gcc header-unit mini-mapper temp+rename; if the build crashes or is killed
+#     between the compiler write and the ``mv -f``, the temp is orphaned in the
+#     cas-pchdir / cas-pcmdir cmd_hash dir).
+#   • ``cas_publish`` atomic-replace temp: ``<user_path_base>.<rand>.publish.tmp``
+#     (hardlink-then-rename; crash between link and rename leaves the hardlink
+#     orphaned in the bin/<variant> dir or, on EXDEV, as a dangling symlink — but
+#     the suffix is distinctive enough to catch it wherever it lands).
+# NOT included: locking.py compile/link temps ``<target>.{pid}.{rand}.tmp``, which
+# end with a plain ``.tmp`` suffix shared with many unrelated temporaries;  the
+# one-day age floor already makes accidental false-positives safe, but those temps
+# are cleaned up by ``_temp_under_lock`` on normal or crashed exit, so orphaning
+# them requires a SIGKILL mid-write — rare enough that the broad ``.tmp`` suffix
+# is not worth the risk of accidentally matching unrelated files.
+_ORPHAN_TEMP_SUFFIXES: tuple[str, ...] = (".compiletools.tmp", ".publish.tmp")
+
+# A temp file untouched for this many seconds cannot be an in-flight write — no
+# build invocation legitimately holds a temp open for more than a day. Removing a
+# file older than this age cannot race a live producer.
+_ORPHAN_TEMP_MIN_AGE_SECONDS: int = 86400  # 1 day
+
 
 def _load_exe_manifest(cas_path: str) -> dict | None:
     """Read a cas-exedir entry's sidecar manifest at ``<cas_path>.manifest``.
@@ -358,6 +381,8 @@ class CacheTrimmer:
             "removed": 0,
             "failed": 0,
             "bytes_freed": 0,
+            "orphan_temps_removed": 0,
+            "orphan_temp_bytes_freed": 0,
         }
 
         if not os.path.isdir(objdir):
@@ -541,6 +566,8 @@ class CacheTrimmer:
             "dirs_removed": 0,
             "failed": 0,
             "bytes_freed": 0,
+            "orphan_temps_removed": 0,
+            "orphan_temp_bytes_freed": 0,
         }
 
         if not os.path.isdir(pchdir):
@@ -712,6 +739,8 @@ class CacheTrimmer:
             "dirs_removed": 0,
             "failed": 0,
             "bytes_freed": 0,
+            "orphan_temps_removed": 0,
+            "orphan_temp_bytes_freed": 0,
         }
 
         if not os.path.isdir(pcmdir):
@@ -876,6 +905,8 @@ class CacheTrimmer:
             "removed": 0,
             "failed": 0,
             "bytes_freed": 0,
+            "orphan_temps_removed": 0,
+            "orphan_temp_bytes_freed": 0,
         }
 
         if not os.path.isdir(exedir):
@@ -1028,6 +1059,107 @@ class CacheTrimmer:
         self._retry.clear()
 
     # ------------------------------------------------------------------
+    # Orphan temp reclamation
+    # ------------------------------------------------------------------
+
+    def reclaim_orphan_temps(self, cache_root: str, stats: dict) -> None:
+        """Remove orphaned producer temp files from a CAS directory.
+
+        Walks one level into each immediate subdirectory of ``cache_root`` (the
+        bucket / cmd_hash dirs). For every file whose name ends with one of
+        ``_ORPHAN_TEMP_SUFFIXES`` AND whose mtime is older than
+        ``now - _ORPHAN_TEMP_MIN_AGE_SECONDS``, the file is removed via
+        ``_safe_locked_unlink`` (so a temp that is somehow still locked by a peer
+        is left in place and queued on ``self._retry`` for a single retry after
+        all four caches finish).
+
+        Safety properties:
+
+        * **Age floor** (``_ORPHAN_TEMP_MIN_AGE_SECONDS = 86400``): a temp
+          untouched for one day cannot be an in-flight write — no build stays
+          alive across a day.  Removing it cannot race a live producer.
+        * **Lock-aware unlink**: ``_safe_locked_unlink`` acquires the build lock
+          before unlinking, so a temp that a peer has re-acquired mid-trim is
+          left safely in place.
+        * **One-level descent only**: never recurses beyond the immediate
+          subdirectory layer (bucket / cmd_hash dir), so this path cannot
+          accidentally walk into unrelated directory trees.
+
+        Skips ``*.lock`` / ``*.lock.excl`` / ``*.lockdir`` entries (lock sidecar
+        files managed by the locking subsystem, not build outputs).
+
+        Honours ``dry_run``: in dry-run mode the counts are accumulated as
+        would-be removals but no unlink is performed and ``self._retry`` is never
+        populated.
+
+        Args:
+            cache_root: Path to one CAS root directory (e.g. ``args.cas_objdir``).
+                If not an existing directory the function is a no-op.
+            stats: The per-cache stats dict to accumulate into. Must contain
+                ``"orphan_temps_removed"`` and ``"orphan_temp_bytes_freed"`` keys
+                (initialised by each ``trim_*`` method).
+        """
+        if not os.path.isdir(cache_root):
+            return
+
+        now = time.time()
+        cutoff = now - _ORPHAN_TEMP_MIN_AGE_SECONDS
+
+        try:
+            with os.scandir(cache_root) as top_it:
+                subdirs = [e.path for e in top_it if e.is_dir(follow_symlinks=False)]
+        except OSError:
+            return  # cache_root became unreadable mid-scan; best-effort
+
+        for subdir_path in subdirs:
+            try:
+                with os.scandir(subdir_path) as inner_it:
+                    entries = list(inner_it)
+            except OSError:
+                continue  # subdir vanished mid-scan; best-effort
+
+            for entry in entries:
+                name = entry.name
+                # Skip lock sidecar files managed by the locking subsystem.
+                if name.endswith((".lock", ".lock.excl", ".lockdir")):
+                    continue
+                if not name.endswith(_ORPHAN_TEMP_SUFFIXES):
+                    continue
+                try:
+                    st = entry.stat()
+                except OSError:
+                    continue  # file vanished mid-scan; best-effort
+                if st.st_mtime >= cutoff:
+                    continue  # too fresh — might be an in-flight write
+                size = st.st_size
+                path = entry.path
+                if self.verbose >= 1:
+                    action = "Would remove orphan temp" if self.dry_run else "Removing orphan temp"
+                    print(f"  {action}: {path} ({_format_size(size)})", file=self._human)
+                if self.dry_run:
+                    stats["orphan_temps_removed"] += 1
+                    stats["orphan_temp_bytes_freed"] += size
+                    stats["bytes_freed"] += size
+                else:
+                    if _safe_locked_unlink(path):
+                        stats["orphan_temps_removed"] += 1
+                        stats["orphan_temp_bytes_freed"] += size
+                        stats["bytes_freed"] += size
+                    else:
+                        if self.verbose >= 1:
+                            print(f"  Failed to remove orphan temp {path} (will retry)", file=self._human)
+                        self._retry.append(
+                            {
+                                "path": path,
+                                "is_dir": False,
+                                "size": size,
+                                "stats": stats,
+                                "removed_key": "orphan_temps_removed",
+                                "unlink_kwargs": {},
+                            }
+                        )
+
+    # ------------------------------------------------------------------
     # Summary
     # ------------------------------------------------------------------
 
@@ -1051,6 +1183,11 @@ class CacheTrimmer:
             print(removed_str, file=self._human)
             if objdir_stats["failed"]:
                 print(f"    Failed:          {objdir_stats['failed']}", file=self._human)
+            if objdir_stats["orphan_temps_removed"]:
+                orphan_str = f"    Orphan temps:    {objdir_stats['orphan_temps_removed']}"
+                if objdir_stats["orphan_temp_bytes_freed"]:
+                    orphan_str += f" ({_format_size(objdir_stats['orphan_temp_bytes_freed'])} freed)"
+                print(orphan_str, file=self._human)
 
         if pchdir_stats is not None:
             total_freed += pchdir_stats["bytes_freed"]
@@ -1064,6 +1201,11 @@ class CacheTrimmer:
             print(removed_str, file=self._human)
             if pchdir_stats["failed"]:
                 print(f"    Failed:          {pchdir_stats['failed']}", file=self._human)
+            if pchdir_stats["orphan_temps_removed"]:
+                orphan_str = f"    Orphan temps:    {pchdir_stats['orphan_temps_removed']}"
+                if pchdir_stats["orphan_temp_bytes_freed"]:
+                    orphan_str += f" ({_format_size(pchdir_stats['orphan_temp_bytes_freed'])} freed)"
+                print(orphan_str, file=self._human)
 
         if pcmdir_stats is not None:
             total_freed += pcmdir_stats["bytes_freed"]
@@ -1077,6 +1219,11 @@ class CacheTrimmer:
             print(removed_str, file=self._human)
             if pcmdir_stats["failed"]:
                 print(f"    Failed:          {pcmdir_stats['failed']}", file=self._human)
+            if pcmdir_stats["orphan_temps_removed"]:
+                orphan_str = f"    Orphan temps:    {pcmdir_stats['orphan_temps_removed']}"
+                if pcmdir_stats["orphan_temp_bytes_freed"]:
+                    orphan_str += f" ({_format_size(pcmdir_stats['orphan_temp_bytes_freed'])} freed)"
+                print(orphan_str, file=self._human)
 
         if exedir_stats is not None:
             total_freed += exedir_stats["bytes_freed"]
@@ -1090,6 +1237,11 @@ class CacheTrimmer:
             print(removed_str, file=self._human)
             if exedir_stats["failed"]:
                 print(f"    Failed:          {exedir_stats['failed']}", file=self._human)
+            if exedir_stats["orphan_temps_removed"]:
+                orphan_str = f"    Orphan temps:    {exedir_stats['orphan_temps_removed']}"
+                if exedir_stats["orphan_temp_bytes_freed"]:
+                    orphan_str += f" ({_format_size(exedir_stats['orphan_temp_bytes_freed'])} freed)"
+                print(orphan_str, file=self._human)
 
         # The summary line aggregates whatever was actually scanned.
         scanned = sum(s is not None for s in (objdir_stats, pchdir_stats, pcmdir_stats, exedir_stats))

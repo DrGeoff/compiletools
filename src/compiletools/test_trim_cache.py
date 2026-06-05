@@ -3156,3 +3156,271 @@ class TestRetryList:
         assert obj["removed"] == 1, "post-retry removed count must appear in JSON"
         assert obj["failed"] == 0, "no genuine failures after successful retry"
         assert obj["bytes_freed"] == 4096
+
+
+# ── A6: orphan temp reclamation ────────────────────────────────────────────────
+
+
+def _touch_temp(bucket_dir, name, *, age_seconds=0, size=512):
+    """Create a fake orphan temp file inside ``bucket_dir``, with controlled mtime/size.
+
+    ``bucket_dir`` must already exist (mirrors bucket/cmd_hash dirs in a CAS root).
+    """
+    os.makedirs(bucket_dir, exist_ok=True)
+    path = os.path.join(bucket_dir, name)
+    with open(path, "wb") as f:
+        f.write(b"\0" * size)
+    if age_seconds:
+        mtime = time.time() - age_seconds
+        os.utime(path, (mtime, mtime))
+    return path
+
+
+class TestReclaimOrphanTemps:
+    """A6: ``CacheTrimmer.reclaim_orphan_temps`` reclaims orphaned producer temp
+    files from CAS bucket / cmd_hash dirs, age-floored and lock-safe.
+
+    Layout under test: each helper creates a top-level ``cache_root/`` dir with
+    one immediate subdirectory (``bucket/``), matching the real CAS layout where
+    the scanner descends exactly one level.
+    """
+
+    # ── basic removal: old .compiletools.tmp ──────────────────────────────────
+
+    def test_old_compiletools_tmp_is_removed(self, tmp_path):
+        """A temp older than _ORPHAN_TEMP_MIN_AGE_SECONDS is removed and counted."""
+        cache_root = str(tmp_path / "objdir")
+        bucket = os.path.join(cache_root, "ab")
+        # Older than 1 day
+        tmp = _touch_temp(bucket, "foo.o.compiletools.tmp", age_seconds=2 * 86400, size=512)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = {"orphan_temps_removed": 0, "orphan_temp_bytes_freed": 0, "bytes_freed": 0, "failed": 0}
+        trimmer.reclaim_orphan_temps(cache_root, stats)
+
+        assert not os.path.exists(tmp), "old .compiletools.tmp must be removed"
+        assert stats["orphan_temps_removed"] == 1
+        assert stats["orphan_temp_bytes_freed"] == 512
+        assert stats["bytes_freed"] == 512
+
+    # ── basic removal: old .publish.tmp ──────────────────────────────────────
+
+    def test_old_publish_tmp_is_removed(self, tmp_path):
+        """A .publish.tmp older than the age floor is removed and counted."""
+        cache_root = str(tmp_path / "exedir")
+        bucket = os.path.join(cache_root, "aa")
+        tmp = _touch_temp(bucket, "main_key.exe.publish.tmp", age_seconds=2 * 86400, size=1024)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = {"orphan_temps_removed": 0, "orphan_temp_bytes_freed": 0, "bytes_freed": 0, "failed": 0}
+        trimmer.reclaim_orphan_temps(cache_root, stats)
+
+        assert not os.path.exists(tmp), "old .publish.tmp must be removed"
+        assert stats["orphan_temps_removed"] == 1
+        assert stats["orphan_temp_bytes_freed"] == 1024
+
+    # ── age floor: fresh temp is kept ─────────────────────────────────────────
+
+    def test_fresh_temp_is_kept(self, tmp_path):
+        """A temp whose mtime is now (or very recent) must NOT be removed."""
+        cache_root = str(tmp_path / "objdir")
+        bucket = os.path.join(cache_root, "ab")
+        # mtime = now (age_seconds=0)
+        tmp = _touch_temp(bucket, "foo.o.compiletools.tmp", age_seconds=0, size=512)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = {"orphan_temps_removed": 0, "orphan_temp_bytes_freed": 0, "bytes_freed": 0, "failed": 0}
+        trimmer.reclaim_orphan_temps(cache_root, stats)
+
+        assert os.path.exists(tmp), "fresh temp must be kept (age floor)"
+        assert stats["orphan_temps_removed"] == 0
+        assert stats["orphan_temp_bytes_freed"] == 0
+        assert stats["bytes_freed"] == 0
+
+    # ── real artefacts are never touched ─────────────────────────────────────
+
+    def test_real_artefacts_not_touched(self, tmp_path):
+        """A .o or .exe file in a bucket must never be removed by reclaim_orphan_temps."""
+        cache_root = str(tmp_path / "cache")
+        bucket = os.path.join(cache_root, "ab")
+        # Real .o object
+        obj = _touch_temp(
+            bucket, "foo_aabbccddeeff_11223344556677_0011223344556677.o", age_seconds=10 * 86400, size=2048
+        )
+        # Real .exe
+        exe = _touch_temp(bucket, "main_deadbeef.exe", age_seconds=10 * 86400, size=4096)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = {"orphan_temps_removed": 0, "orphan_temp_bytes_freed": 0, "bytes_freed": 0, "failed": 0}
+        trimmer.reclaim_orphan_temps(cache_root, stats)
+
+        assert os.path.exists(obj), "real .o must not be touched"
+        assert os.path.exists(exe), "real .exe must not be touched"
+        assert stats["orphan_temps_removed"] == 0
+        assert stats["orphan_temp_bytes_freed"] == 0
+
+    # ── dry_run: counts but does not unlink ───────────────────────────────────
+
+    def test_dry_run_counts_would_be_removals(self, tmp_path):
+        """In dry-run mode the would-be removal is counted but the file is kept."""
+        cache_root = str(tmp_path / "pchdir")
+        bucket = os.path.join(cache_root, "a" * 16)
+        tmp = _touch_temp(bucket, "stdafx.h.gch.compiletools.tmp", age_seconds=2 * 86400, size=8192)
+
+        trimmer = CacheTrimmer(_make_args(dry_run=True))
+        stats = {"orphan_temps_removed": 0, "orphan_temp_bytes_freed": 0, "bytes_freed": 0, "failed": 0}
+        trimmer.reclaim_orphan_temps(cache_root, stats)
+
+        assert os.path.exists(tmp), "dry_run must not unlink the file"
+        assert stats["orphan_temps_removed"] == 1, "dry_run must count the would-be removal"
+        assert stats["orphan_temp_bytes_freed"] == 8192
+        assert stats["bytes_freed"] == 8192
+
+    # ── non-existent cache root is a no-op ────────────────────────────────────
+
+    def test_missing_cache_root_is_no_op(self, tmp_path):
+        """If cache_root does not exist, the function returns immediately."""
+        trimmer = CacheTrimmer(_make_args())
+        stats = {"orphan_temps_removed": 0, "orphan_temp_bytes_freed": 0, "bytes_freed": 0, "failed": 0}
+        trimmer.reclaim_orphan_temps(str(tmp_path / "nonexistent"), stats)
+        assert stats["orphan_temps_removed"] == 0
+        assert stats["orphan_temp_bytes_freed"] == 0
+
+    # ── lock sidecar files are skipped ────────────────────────────────────────
+
+    def test_lock_sidecars_skipped(self, tmp_path):
+        """Lock sidecar files (.lock, .lock.excl, .lockdir) must never be removed."""
+        cache_root = str(tmp_path / "objdir")
+        bucket = os.path.join(cache_root, "ab")
+        lock = _touch_temp(bucket, "foo.o.lock", age_seconds=10 * 86400, size=64)
+        lock_excl = _touch_temp(bucket, "foo.o.lock.excl", age_seconds=10 * 86400, size=64)
+        # .lockdir is normally a directory, but its NAME as a file still tests the name-skip.
+        # Create it as a file to exercise the endswith(".lockdir") check.
+        lockdir = _touch_temp(bucket, "foo.o.lockdir", age_seconds=10 * 86400, size=64)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = {"orphan_temps_removed": 0, "orphan_temp_bytes_freed": 0, "bytes_freed": 0, "failed": 0}
+        trimmer.reclaim_orphan_temps(cache_root, stats)
+
+        assert os.path.exists(lock), ".lock sidecar must not be removed"
+        assert os.path.exists(lock_excl), ".lock.excl sidecar must not be removed"
+        assert os.path.exists(lockdir), ".lockdir must not be removed"
+        assert stats["orphan_temps_removed"] == 0
+
+    # ── retry integration: failed unlink queued on self._retry ───────────────
+
+    def test_failed_unlink_queued_for_retry(self, tmp_path, monkeypatch):
+        """When _safe_locked_unlink returns False the entry is queued on _retry
+        (not counted as failed immediately) and retry_failed() resolves it.
+        """
+        cache_root = str(tmp_path / "objdir")
+        bucket = os.path.join(cache_root, "ab")
+        tmp = _touch_temp(bucket, "foo.o.compiletools.tmp", age_seconds=2 * 86400, size=256)
+
+        call_count = {"n": 0}
+        real_unlink = trim_cache._safe_locked_unlink
+
+        def _flaky_unlink(path, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return False  # first attempt fails
+            return real_unlink(path, **kwargs)
+
+        monkeypatch.setattr(trim_cache, "_safe_locked_unlink", _flaky_unlink)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = {"orphan_temps_removed": 0, "orphan_temp_bytes_freed": 0, "bytes_freed": 0, "failed": 0}
+        trimmer.reclaim_orphan_temps(cache_root, stats)
+
+        # First attempt failed: nothing counted yet, queued for retry.
+        assert stats["orphan_temps_removed"] == 0
+        assert stats["orphan_temp_bytes_freed"] == 0
+        assert stats["failed"] == 0
+        assert len(trimmer._retry) == 1
+        assert trimmer._retry[0]["removed_key"] == "orphan_temps_removed"
+
+        trimmer.retry_failed()
+
+        # Retry succeeded: orphan_temps_removed incremented; bytes_freed via retry path.
+        assert stats["orphan_temps_removed"] == 1
+        assert stats["failed"] == 0
+        assert len(trimmer._retry) == 0
+        assert not os.path.exists(tmp)
+
+    # ── stats keys are always present in each cache's stats dict ─────────────
+
+    def test_stats_keys_present_in_all_caches(self, tmp_path):
+        """trim_objdir / trim_pchdir / trim_pcmdir / trim_exedir all initialise
+        orphan_temps_removed and orphan_temp_bytes_freed to 0."""
+        trimmer = CacheTrimmer(_make_args())
+        nonexistent = str(tmp_path / "none")
+        obj_stats = trimmer.trim_objdir(nonexistent, set())
+        pch_stats = trimmer.trim_pchdir(nonexistent)
+        pcm_stats = trimmer.trim_pcmdir(nonexistent)
+        exe_stats = trimmer.trim_exedir(nonexistent)
+
+        for label, stats in (
+            ("objdir", obj_stats),
+            ("pchdir", pch_stats),
+            ("pcmdir", pcm_stats),
+            ("exedir", exe_stats),
+        ):
+            assert "orphan_temps_removed" in stats, f"{label} stats must have orphan_temps_removed"
+            assert "orphan_temp_bytes_freed" in stats, f"{label} stats must have orphan_temp_bytes_freed"
+            assert stats["orphan_temps_removed"] == 0
+            assert stats["orphan_temp_bytes_freed"] == 0
+
+    # ── summary_json always includes orphan keys ──────────────────────────────
+
+    def test_summary_json_includes_orphan_keys(self, tmp_path):
+        """summary_json must always include orphan_temps_removed and
+        orphan_temp_bytes_freed in each cache's sub-dict, even when zero."""
+        trimmer = CacheTrimmer(_make_args())
+        nonexistent = str(tmp_path / "none")
+        obj_stats = trimmer.trim_objdir(nonexistent, set())
+        pch_stats = trimmer.trim_pchdir(nonexistent)
+        pcm_stats = trimmer.trim_pcmdir(nonexistent)
+        exe_stats = trimmer.trim_exedir(nonexistent)
+
+        result = trimmer.summary_json(
+            objdir_stats=obj_stats,
+            pchdir_stats=pch_stats,
+            pcmdir_stats=pcm_stats,
+            exedir_stats=exe_stats,
+        )
+        for section in ("objdir", "pchdir", "pcmdir", "exedir"):
+            assert result[section] is not None
+            assert "orphan_temps_removed" in result[section], f"{section} JSON must have orphan_temps_removed"
+            assert "orphan_temp_bytes_freed" in result[section], f"{section} JSON must have orphan_temp_bytes_freed"
+
+    # ── integration: main() calls reclaim_orphan_temps ───────────────────────
+
+    def test_main_json_includes_orphan_keys_after_trim(self, tmp_path, monkeypatch, capsys):
+        """Integration: main() with --json output includes orphan stats in each
+        cache's dict (even when zero — additive backward-compatible schema 1 keys)."""
+        import compiletools.configutils as cu
+
+        variant = cu.extract_variant(argv=None)
+        pool = str(tmp_path / "pool")
+        variant_dir = os.path.join(pool, variant)
+        os.makedirs(variant_dir)
+        # Plant an old orphan temp in an objdir bucket.
+        bucket = os.path.join(variant_dir, "ab")
+        _touch_temp(bucket, "foo.o.compiletools.tmp", age_seconds=2 * 86400, size=256)
+
+        rc = main(
+            [
+                "--json",
+                "--cas-objdir-only",
+                f"--cas-objdir={variant_dir}",
+                f"--variant={variant}",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert rc == 0
+        parsed = json.loads(out)
+        obj = parsed["objdir"]
+        assert "orphan_temps_removed" in obj
+        assert "orphan_temp_bytes_freed" in obj
+        assert obj["orphan_temps_removed"] == 1
+        assert obj["orphan_temp_bytes_freed"] == 256
