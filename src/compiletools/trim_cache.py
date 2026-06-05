@@ -58,23 +58,25 @@ _PCM_COMMAND_HASH_RE = re.compile(r"^[0-9a-f]{16}$")
 # must never be enumerated as trim or report candidates.
 _CAS_EXE_SUFFIXES: tuple[str, ...] = (".exe", ".a", ".so")
 
-# Suffixes that identify orphaned producer temp files inside CAS bucket / cmd_hash
+# Matchers that identify orphaned producer temp files inside CAS bucket / cmd_hash
 # dirs. Two sources:
-#   • ``build_backend`` PCH/PCM precompile temp: ``<artefact>.compiletools.tmp``
-#     (gcc header-unit mini-mapper temp+rename; if the build crashes or is killed
+#   • ``build_backend`` PCH/PCM precompile temp: ``<artefact>.compiletools.tmp.<pid>``
+#     (build_backend.py emits ``f"{artefact_path}.compiletools.tmp.{unique}"`` where
+#     ``unique`` is a PID/random integer suffix; if the build crashes or is killed
 #     between the compiler write and the ``mv -f``, the temp is orphaned in the
-#     cas-pchdir / cas-pcmdir cmd_hash dir).
-#   • ``cas_publish`` atomic-replace temp: ``<user_path_base>.<rand>.publish.tmp``
-#     (hardlink-then-rename; crash between link and rename leaves the hardlink
-#     orphaned in the bin/<variant> dir or, on EXDEV, as a dangling symlink — but
-#     the suffix is distinctive enough to catch it wherever it lands).
+#     cas-pchdir / cas-pcmdir cmd_hash dir).  The pid suffix is optional in the
+#     regex so bare ``.compiletools.tmp`` (no trailing digits) is also matched.
+#   • ``cas_publish`` atomic-replace temp: ``<base><rand>.publish.tmp``
+#     (``tempfile.mkstemp(suffix=".publish.tmp")`` — names end exactly in
+#     ``.publish.tmp``, so a plain ``endswith`` is sufficient and correct).
 # NOT included: locking.py compile/link temps ``<target>.{pid}.{rand}.tmp``, which
 # end with a plain ``.tmp`` suffix shared with many unrelated temporaries;  the
 # one-day age floor already makes accidental false-positives safe, but those temps
 # are cleaned up by ``_temp_under_lock`` on normal or crashed exit, so orphaning
 # them requires a SIGKILL mid-write — rare enough that the broad ``.tmp`` suffix
 # is not worth the risk of accidentally matching unrelated files.
-_ORPHAN_TEMP_SUFFIXES: tuple[str, ...] = (".compiletools.tmp", ".publish.tmp")
+_COMPILETOOLS_TMP_RE = re.compile(r"\.compiletools\.tmp(\.\d+)?$")
+_PUBLISH_TMP_SUFFIX: str = ".publish.tmp"
 
 # A temp file untouched for this many seconds cannot be an in-flight write — no
 # build invocation legitimately holds a temp open for more than a day. Removing a
@@ -1066,8 +1068,8 @@ class CacheTrimmer:
         """Remove orphaned producer temp files from a CAS directory.
 
         Walks one level into each immediate subdirectory of ``cache_root`` (the
-        bucket / cmd_hash dirs). For every file whose name ends with one of
-        ``_ORPHAN_TEMP_SUFFIXES`` AND whose mtime is older than
+        bucket / cmd_hash dirs). For every file matched by ``_COMPILETOOLS_TMP_RE``
+        or ending with ``_PUBLISH_TMP_SUFFIX``, AND whose mtime is older than
         ``now - _ORPHAN_TEMP_MIN_AGE_SECONDS``, the file is removed via
         ``_safe_locked_unlink`` (so a temp that is somehow still locked by a peer
         is left in place and queued on ``self._retry`` for a single retry after
@@ -1123,7 +1125,7 @@ class CacheTrimmer:
                 # Skip lock sidecar files managed by the locking subsystem.
                 if name.endswith((".lock", ".lock.excl", ".lockdir")):
                     continue
-                if not name.endswith(_ORPHAN_TEMP_SUFFIXES):
+                if not (_COMPILETOOLS_TMP_RE.search(name) or name.endswith(_PUBLISH_TMP_SUFFIX)):
                     continue
                 try:
                     st = entry.stat()

@@ -3185,31 +3185,56 @@ class TestReclaimOrphanTemps:
     the scanner descends exactly one level.
     """
 
-    # ── basic removal: old .compiletools.tmp ──────────────────────────────────
+    # ── basic removal: old .compiletools.tmp.<pid> (real producer shape) ────────
 
-    def test_old_compiletools_tmp_is_removed(self, tmp_path):
-        """A temp older than _ORPHAN_TEMP_MIN_AGE_SECONDS is removed and counted."""
+    def test_old_compiletools_tmp_with_pid_is_removed(self, tmp_path):
+        """Real build_backend temps have a trailing .<pid> after .compiletools.tmp.
+
+        Verifies the regex catches the actual production filename shape
+        (e.g. ``stdafx.h.gch.compiletools.tmp.48213``).
+        """
+        cache_root = str(tmp_path / "pchdir")
+        bucket = os.path.join(cache_root, "ab")
+        # Real producer shape: <artefact>.compiletools.tmp.<pid>
+        tmp = _touch_temp(bucket, "foo.gch.compiletools.tmp.12345", age_seconds=2 * 86400, size=512)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = {"orphan_temps_removed": 0, "orphan_temp_bytes_freed": 0, "bytes_freed": 0, "failed": 0}
+        trimmer.reclaim_orphan_temps(cache_root, stats)
+
+        assert not os.path.exists(tmp), "old .compiletools.tmp.<pid> must be removed"
+        assert stats["orphan_temps_removed"] == 1
+        assert stats["orphan_temp_bytes_freed"] == 512
+        assert stats["bytes_freed"] == 512
+
+    def test_old_compiletools_tmp_bare_is_removed(self, tmp_path):
+        """Bare .compiletools.tmp (no trailing pid) is also matched by the regex."""
         cache_root = str(tmp_path / "objdir")
         bucket = os.path.join(cache_root, "ab")
-        # Older than 1 day
+        # Bare suffix shape (pid group is optional in the regex)
         tmp = _touch_temp(bucket, "foo.o.compiletools.tmp", age_seconds=2 * 86400, size=512)
 
         trimmer = CacheTrimmer(_make_args())
         stats = {"orphan_temps_removed": 0, "orphan_temp_bytes_freed": 0, "bytes_freed": 0, "failed": 0}
         trimmer.reclaim_orphan_temps(cache_root, stats)
 
-        assert not os.path.exists(tmp), "old .compiletools.tmp must be removed"
+        assert not os.path.exists(tmp), "old bare .compiletools.tmp must be removed"
         assert stats["orphan_temps_removed"] == 1
         assert stats["orphan_temp_bytes_freed"] == 512
         assert stats["bytes_freed"] == 512
 
-    # ── basic removal: old .publish.tmp ──────────────────────────────────────
+    # ── basic removal: old .publish.tmp (mkstemp shape) ─────────────────────
 
     def test_old_publish_tmp_is_removed(self, tmp_path):
-        """A .publish.tmp older than the age floor is removed and counted."""
+        """A .publish.tmp (tempfile.mkstemp suffix) older than the age floor is removed.
+
+        cas_publish uses ``tempfile.mkstemp(suffix=".publish.tmp")`` so the file
+        name ends exactly in ``.publish.tmp`` — the endswith check is sufficient.
+        """
         cache_root = str(tmp_path / "exedir")
         bucket = os.path.join(cache_root, "aa")
-        tmp = _touch_temp(bucket, "main_key.exe.publish.tmp", age_seconds=2 * 86400, size=1024)
+        # mkstemp shape: tmp<random>.publish.tmp
+        tmp = _touch_temp(bucket, "tmpABCDEF.publish.tmp", age_seconds=2 * 86400, size=1024)
 
         trimmer = CacheTrimmer(_make_args())
         stats = {"orphan_temps_removed": 0, "orphan_temp_bytes_freed": 0, "bytes_freed": 0, "failed": 0}
@@ -3225,8 +3250,8 @@ class TestReclaimOrphanTemps:
         """A temp whose mtime is now (or very recent) must NOT be removed."""
         cache_root = str(tmp_path / "objdir")
         bucket = os.path.join(cache_root, "ab")
-        # mtime = now (age_seconds=0)
-        tmp = _touch_temp(bucket, "foo.o.compiletools.tmp", age_seconds=0, size=512)
+        # mtime = now (age_seconds=0); use the real producer shape with pid suffix
+        tmp = _touch_temp(bucket, "foo.o.compiletools.tmp.99999", age_seconds=0, size=512)
 
         trimmer = CacheTrimmer(_make_args())
         stats = {"orphan_temps_removed": 0, "orphan_temp_bytes_freed": 0, "bytes_freed": 0, "failed": 0}
@@ -3265,7 +3290,8 @@ class TestReclaimOrphanTemps:
         """In dry-run mode the would-be removal is counted but the file is kept."""
         cache_root = str(tmp_path / "pchdir")
         bucket = os.path.join(cache_root, "a" * 16)
-        tmp = _touch_temp(bucket, "stdafx.h.gch.compiletools.tmp", age_seconds=2 * 86400, size=8192)
+        # Real producer shape with trailing pid
+        tmp = _touch_temp(bucket, "stdafx.h.gch.compiletools.tmp.48213", age_seconds=2 * 86400, size=8192)
 
         trimmer = CacheTrimmer(_make_args(dry_run=True))
         stats = {"orphan_temps_removed": 0, "orphan_temp_bytes_freed": 0, "bytes_freed": 0, "failed": 0}
@@ -3315,7 +3341,8 @@ class TestReclaimOrphanTemps:
         """
         cache_root = str(tmp_path / "objdir")
         bucket = os.path.join(cache_root, "ab")
-        tmp = _touch_temp(bucket, "foo.o.compiletools.tmp", age_seconds=2 * 86400, size=256)
+        # Use the real producer shape: <artefact>.compiletools.tmp.<pid>
+        tmp = _touch_temp(bucket, "foo.o.compiletools.tmp.7777", age_seconds=2 * 86400, size=256)
 
         call_count = {"n": 0}
         real_unlink = trim_cache._safe_locked_unlink
