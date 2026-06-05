@@ -3008,6 +3008,38 @@ class TestRetryList:
         assert stats["failed"] == 0
         assert len(trimmer._retry) == 0
 
+    # ── pcmdir: rmtree fails first, succeeds on retry ────────────────────────
+
+    def test_pcmdir_retry_success_counted_in_dirs_removed(self, pcmdir, monkeypatch):
+        """pcmdir uses dirs_removed; retry success must increment that key."""
+        _make_pcmdir_entry(pcmdir, "a" * 16, ["math.pcm"], age_seconds=3600, size_per_leaf=2048)
+        _make_pcmdir_entry(pcmdir, "b" * 16, ["math.pcm"], age_seconds=60, size_per_leaf=1024)
+
+        call_count = {"n": 0}
+        real_rmtree = trim_cache._safe_locked_rmtree
+
+        def _flaky_rmtree(path):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return False
+            return real_rmtree(path)
+
+        monkeypatch.setattr(trim_cache, "_safe_locked_rmtree", _flaky_rmtree)
+
+        trimmer = CacheTrimmer(_make_args(keep_count=1))
+        stats = trimmer.trim_pcmdir(pcmdir)
+
+        assert stats["failed"] == 0
+        assert stats["dirs_removed"] == 0
+        assert len(trimmer._retry) == 1
+
+        trimmer.retry_failed()
+
+        assert stats["dirs_removed"] == 1, "retry success must increment dirs_removed"
+        assert stats["bytes_freed"] == 2048
+        assert stats["failed"] == 0
+        assert len(trimmer._retry) == 0
+
     # ── exedir: unlink fails first, succeeds on retry + sidecar cleanup ──────
 
     def test_exedir_retry_success_cleans_sidecars(self, tmp_path, monkeypatch):

@@ -305,8 +305,11 @@ class CacheTrimmer:
         # (bool), "size" (int), "stats" (the per-cache stats dict, by reference
         # so retry mutations land in the same dict main() will print),
         # "removed_key" (str — "removed" for objdir/exedir, "dirs_removed" for
-        # pchdir/pcmdir), and "unlink_kwargs" (dict, e.g.
-        # {"skip_if_nlink_above": 1} for exedir).
+        # pchdir/pcmdir), "unlink_kwargs" (dict, e.g.
+        # {"skip_if_nlink_above": 1} for exedir), and "cleanup_sidecars" (bool,
+        # True for exedir entries — instructs retry_failed() to also remove the
+        # .manifest/.result sidecars on success; omitted or False for
+        # objdir/pchdir/pcmdir entries that have no sidecars to clean up).
         self._retry: list[dict] = []
 
     def _workers_for(self, path):
@@ -470,7 +473,7 @@ class CacheTrimmer:
                     stats["bytes_freed"] += size
                 else:
                     if self.verbose >= 1:
-                        print(f"  Failed to remove {path} (will retry)", file=sys.stderr)
+                        print(f"  Failed to remove {path} (will retry)", file=self._human)
                     self._retry.append(
                         {
                             "path": path,
@@ -646,7 +649,7 @@ class CacheTrimmer:
                     stats["bytes_freed"] += total_size
                 else:
                     if self.verbose >= 1:
-                        print(f"  Failed to remove {path} (will retry)", file=sys.stderr)
+                        print(f"  Failed to remove {path} (will retry)", file=self._human)
                     self._retry.append(
                         {
                             "path": path,
@@ -798,7 +801,7 @@ class CacheTrimmer:
                     stats["bytes_freed"] += total_size
                 else:
                     if self.verbose >= 1:
-                        print(f"  Failed to remove {path} (will retry)", file=sys.stderr)
+                        print(f"  Failed to remove {path} (will retry)", file=self._human)
                     self._retry.append(
                         {
                             "path": path,
@@ -954,7 +957,7 @@ class CacheTrimmer:
                         pass
             else:
                 if self.verbose >= 1:
-                    print(f"  Failed to remove {path} (will retry)", file=sys.stderr)
+                    print(f"  Failed to remove {path} (will retry)", file=self._human)
                 self._retry.append(
                     {
                         "path": path,
@@ -963,6 +966,7 @@ class CacheTrimmer:
                         "stats": stats,
                         "removed_key": "removed",
                         "unlink_kwargs": {"skip_if_nlink_above": 1},
+                        "cleanup_sidecars": True,
                     }
                 )
 
@@ -980,8 +984,8 @@ class CacheTrimmer:
 
         On retry success: increment ``removed`` and ``bytes_freed`` in the
         per-cache stats dict (stored by reference in each retry entry), and
-        for exedir entries also best-effort-remove the ``.manifest``/``.result``
-        sidecars.
+        for exedir entries (``"cleanup_sidecars": True``) also best-effort-remove
+        the ``.manifest``/``.result`` sidecars.
 
         On retry failure: increment ``failed`` — the path is intentionally left
         in place (a peer build is holding it; it will be retried on the next
@@ -1008,9 +1012,9 @@ class CacheTrimmer:
                 stats["bytes_freed"] += size
                 if self.verbose >= 1:
                     print(f"  Retry succeeded: {path}", file=self._human)
-                # Best-effort sidecar cleanup for exedir entries (identified by
-                # the presence of "skip_if_nlink_above" in unlink_kwargs).
-                if not is_dir and "skip_if_nlink_above" in unlink_kwargs:
+                # Best-effort sidecar cleanup for exedir entries (flagged
+                # explicitly via "cleanup_sidecars": True in the retry entry).
+                if entry.get("cleanup_sidecars"):
                     for sidecar_suffix in (".manifest", ".result"):
                         try:
                             os.remove(path + sidecar_suffix)
