@@ -84,6 +84,65 @@ _PUBLISH_TMP_SUFFIX: str = ".publish.tmp"
 _ORPHAN_TEMP_MIN_AGE_SECONDS: int = 86400  # 1 day
 
 
+# Size-suffix multipliers for --max-size (1024-based / binary). Case-insensitive
+# and an optional trailing 'B' is tolerated (e.g. "500MB" == "500M").
+_SIZE_SUFFIX_MULTIPLIERS: dict[str, int] = {
+    "K": 1024,
+    "M": 1024**2,
+    "G": 1024**3,
+    "T": 1024**4,
+}
+
+
+def _parse_size(s: str) -> int:
+    """Parse a human-readable size string into a byte count.
+
+    Accepts a plain integer (bytes) or an integer/decimal magnitude with a
+    1024-based binary suffix ``K``/``M``/``G``/``T`` (case-insensitive), with an
+    optional trailing ``B`` (so ``"10G"``, ``"500MB"``, ``"2g"``, ``"1024"`` all
+    work). Whitespace around the value is ignored.
+
+    Args:
+        s: The size string (e.g. ``"10G"``, ``"512M"``, ``"1024"``).
+
+    Returns:
+        The size in bytes as an ``int``.
+
+    Raises:
+        ValueError: when *s* is not a recognised size (junk text, an empty
+            value, or a negative magnitude).
+    """
+    if s is None:
+        raise ValueError("size value is required")
+    text = s.strip()
+    if not text:
+        raise ValueError("size value is empty")
+
+    # Strip a single optional trailing 'B' (bytes marker) unless the whole
+    # token is just "B" (which is junk: no magnitude).
+    body = text
+    if len(body) > 1 and body[-1] in ("B", "b"):
+        body = body[:-1]
+
+    multiplier = 1
+    if body and body[-1].upper() in _SIZE_SUFFIX_MULTIPLIERS:
+        multiplier = _SIZE_SUFFIX_MULTIPLIERS[body[-1].upper()]
+        body = body[:-1]
+
+    body = body.strip()
+    if not body:
+        raise ValueError(f"invalid size {s!r}: no numeric magnitude")
+    try:
+        magnitude = float(body)
+    except ValueError:
+        raise ValueError(
+            f"invalid size {s!r}: expected an integer optionally followed by K/M/G/T (e.g. '10G', '512M', '1024')"
+        ) from None
+    if magnitude < 0:
+        raise ValueError(f"invalid size {s!r}: must not be negative")
+    return int(magnitude * multiplier)
+
+
 def _load_exe_manifest(cas_path: str) -> dict | None:
     """Read a cas-exedir entry's sidecar manifest at ``<cas_path>.manifest``.
 
@@ -317,6 +376,10 @@ class CacheTrimmer:
         self.keep_count = getattr(args, "keep_count", 1)
         max_age_days = getattr(args, "max_age", None)
         self.max_age_seconds = max_age_days * 86400 if max_age_days is not None else None
+        # --max-size: an optional per-pool TOTAL size budget in bytes, already
+        # parsed (via _parse_size) by main() into args.max_size_bytes. None means
+        # "no budget" (the historical behaviour — keep_count/max_age only).
+        self.max_size_bytes = getattr(args, "max_size_bytes", None)
         # Scan parallelism is sourced from --parallel / -j (jobs.py), which
         # already honours CPU affinity, cgroups, and slurm allocations. A
         # caller that never plumbed it (or passed 0/None) stays serial.
@@ -385,6 +448,9 @@ class CacheTrimmer:
             "bytes_freed": 0,
             "orphan_temps_removed": 0,
             "orphan_temp_bytes_freed": 0,
+            "budget_removed": 0,
+            "budget_bytes_freed": 0,
+            "budget_unmet_bytes": 0,
         }
 
         if not os.path.isdir(objdir):
@@ -570,6 +636,9 @@ class CacheTrimmer:
             "bytes_freed": 0,
             "orphan_temps_removed": 0,
             "orphan_temp_bytes_freed": 0,
+            "budget_removed": 0,
+            "budget_bytes_freed": 0,
+            "budget_unmet_bytes": 0,
         }
 
         if not os.path.isdir(pchdir):
@@ -743,6 +812,9 @@ class CacheTrimmer:
             "bytes_freed": 0,
             "orphan_temps_removed": 0,
             "orphan_temp_bytes_freed": 0,
+            "budget_removed": 0,
+            "budget_bytes_freed": 0,
+            "budget_unmet_bytes": 0,
         }
 
         if not os.path.isdir(pcmdir):
@@ -909,6 +981,9 @@ class CacheTrimmer:
             "bytes_freed": 0,
             "orphan_temps_removed": 0,
             "orphan_temp_bytes_freed": 0,
+            "budget_removed": 0,
+            "budget_bytes_freed": 0,
+            "budget_unmet_bytes": 0,
         }
 
         if not os.path.isdir(exedir):
@@ -1177,8 +1252,266 @@ class CacheTrimmer:
                         )
 
     # ------------------------------------------------------------------
+    # Per-pool size budget (--max-size)
+    # ------------------------------------------------------------------
+
+    def enforce_budget(self, cache_dir, stats, *, kind, current_hashes=None):
+        """Evict non-protected (rebuildable) units oldest-first until the pool's
+        total on-disk size is at or below ``self.max_size_bytes``.
+
+        Runs AFTER the normal variant-driven trim and orphan-temp reclaim, so it
+        RE-SCANS whatever survived those passes. No-op when ``--max-size`` was
+        not supplied (``self.max_size_bytes is None``) or ``cache_dir`` is not an
+        existing directory.
+
+        Floor semantics: the default ``--keep-count`` (objects/exes) and
+        ``keep >= 1`` (pch/pcm cmd_hash dirs) floors are UNCHANGED for the normal
+        trim path. ONLY this explicit ``--max-size`` path may evict below those
+        floors, and ONLY for non-protected (rebuildable) units — that is the
+        deliberate purpose of a size budget on a space-constrained pool.
+
+        PEER SAFETY: a *protected* unit is NEVER evicted, regardless of the
+        budget. Protection is kind-specific:
+
+        * ``obj`` — an object whose ``file_hash`` is in ``current_hashes`` (a
+          current object for the invoking checkout).
+        * ``exe`` — an artefact with ``st_nlink > 1`` (a published / hard-linked
+          reference is still live).
+        * ``pch`` / ``pcm`` — no per-unit protection signal exists at this layer,
+          so all cmd_hash dirs are eviction candidates (``protected=False``);
+          the compiler re-precompiles on the next build.
+
+        If protected units alone exceed the budget, the overflow is reported via
+        ``stats["budget_unmet_bytes"]`` and the budget is left UNMET rather than
+        violated.
+
+        Units and their (path, mtime, size, protected) records by kind:
+
+        * ``obj`` — each parseable ``.o`` in a 2-hex bucket.
+        * ``exe`` — each artefact (``_CAS_EXE_SUFFIXES``) in a ``key[:2]`` bucket.
+        * ``pch`` / ``pcm`` — each ``cmd_hash`` directory as a whole unit (newest
+          leaf mtime, total dir size).
+
+        Args:
+            cache_dir: The resolved CAS directory for this pool.
+            stats: The per-cache stats dict (mutated in place: ``budget_removed``,
+                ``budget_bytes_freed``, ``budget_unmet_bytes``, ``bytes_freed``).
+            kind: One of ``"obj"`` / ``"pch"`` / ``"pcm"`` / ``"exe"``.
+            current_hashes: Set of current 12-char file-hash prefixes; only used
+                (and only required) for ``kind == "obj"`` to mark protected
+                objects. Ignored for the other kinds.
+        """
+        if self.max_size_bytes is None:
+            return
+        if not os.path.isdir(cache_dir):
+            return
+
+        if kind == "obj":
+            units = self._budget_scan_obj(cache_dir, current_hashes or set())
+        elif kind == "exe":
+            units = self._budget_scan_exe(cache_dir)
+        elif kind in ("pch", "pcm"):
+            units = self._budget_scan_cmd_hash_dirs(cache_dir, kind)
+        else:  # pragma: no cover - guarded by the caller's fixed kind set
+            raise ValueError(f"enforce_budget: unknown kind {kind!r}")
+
+        # total includes BOTH protected and non-protected units — the budget is
+        # a statement about the whole pool, and protected bytes count against it
+        # (they are simply not eligible for eviction).
+        total = sum(size for _path, _mtime, size, _protected in units)
+        if total <= self.max_size_bytes:
+            stats["budget_unmet_bytes"] = 0
+            return
+
+        # Evict non-protected units oldest-first (mtime ascending).
+        candidates = sorted(
+            (u for u in units if not u[3]),
+            key=lambda u: u[1],
+        )
+        for path, _mtime, size, _protected in candidates:
+            if total <= self.max_size_bytes:
+                break
+            is_dir = kind in ("pch", "pcm")
+            cleanup_sidecars = kind == "exe"
+            unlink_kwargs = {"skip_if_nlink_above": 1} if kind == "exe" else {}
+
+            if self.verbose >= 1:
+                action = "Would remove (budget)" if self.dry_run else "Removing (budget)"
+                print(f"  {action}: {path} ({_format_size(size)})", file=self._human)
+
+            if self.dry_run:
+                # Count would-be removals and subtract from the running total so
+                # the unmet calc reflects what a real run would reclaim, but
+                # touch nothing on disk and never populate the retry list.
+                stats["budget_removed"] += 1
+                stats["budget_bytes_freed"] += size
+                total -= size
+                continue
+
+            removed = _safe_locked_rmtree(path) if is_dir else _safe_locked_unlink(path, **unlink_kwargs)
+            if removed:
+                total -= size
+                stats["budget_removed"] += 1
+                stats["budget_bytes_freed"] += size
+                stats["bytes_freed"] += size
+                if cleanup_sidecars:
+                    for sidecar_suffix in (".manifest", ".result"):
+                        try:
+                            os.remove(path + sidecar_suffix)
+                        except OSError:
+                            pass
+            else:
+                # Failed removal — queue for the single post-pass retry exactly
+                # like every other site. Do NOT decrement total: for the unmet
+                # calc we conservatively assume it stays (it may be reclaimed on
+                # retry, but we must not under-report the overflow).
+                if self.verbose >= 1:
+                    print(f"  Failed to remove {path} (will retry)", file=self._human)
+                retry_entry = {
+                    "path": path,
+                    "is_dir": is_dir,
+                    "size": size,
+                    "stats": stats,
+                    "removed_key": "budget_removed",
+                    "bytes_key": "budget_bytes_freed",
+                    "unlink_kwargs": unlink_kwargs,
+                }
+                if cleanup_sidecars:
+                    retry_entry["cleanup_sidecars"] = True
+                self._retry.append(retry_entry)
+
+        stats["budget_unmet_bytes"] = max(0, total - self.max_size_bytes)
+
+    def _budget_scan_obj(self, objdir, current_hashes):
+        """Re-scan ``objdir`` for the budget pass: one record per parseable ``.o``.
+
+        Returns ``[(path, mtime, size, protected), ...]`` where ``protected`` is
+        ``True`` when the object's ``file_hash`` is in ``current_hashes``. Skips
+        ``.lockdir`` / lock sidecars and orphan temps (matching the trim scan).
+        """
+        units: list[tuple[str, float, int, bool]] = []
+        try:
+            with os.scandir(objdir) as top_it:
+                bucket_paths = [
+                    e.path for e in top_it if _OBJ_BUCKET_RE.match(e.name) and e.is_dir(follow_symlinks=False)
+                ]
+        except OSError:
+            return units
+        for bucket_path in bucket_paths:
+            try:
+                inner = list(os.scandir(bucket_path))
+            except OSError:
+                continue
+            for entry in inner:
+                name = entry.name
+                if name.endswith((".lockdir", ".lock", ".lock.excl")):
+                    continue
+                if not name.endswith(".o"):
+                    continue
+                if _COMPILETOOLS_TMP_RE.search(name) or name.endswith(_PUBLISH_TMP_SUFFIX):
+                    continue
+                parsed = parse_object_filename(name)
+                if parsed is None:
+                    continue
+                _basename, file_hash, _dep_hash, _macro_hash = parsed
+                ms = _entry_mtime_size(entry)
+                if ms is None:
+                    continue
+                units.append((entry.path, ms[0], ms[1], file_hash in current_hashes))
+        return units
+
+    def _budget_scan_exe(self, exedir):
+        """Re-scan ``exedir`` for the budget pass: one record per CAS artefact.
+
+        Returns ``[(path, mtime, size, protected), ...]`` where ``protected`` is
+        ``True`` when ``st_nlink > 1`` (a published / hard-linked reference is
+        still live). Non-artefact files (lock sidecars, ``.manifest``/``.result``)
+        are skipped via the suffix match.
+        """
+        units: list[tuple[str, float, int, bool]] = []
+        try:
+            with os.scandir(exedir) as top_it:
+                bucket_paths = [e.path for e in top_it if e.is_dir(follow_symlinks=False)]
+        except OSError:
+            return units
+        for bucket_path in bucket_paths:
+            try:
+                inner = list(os.scandir(bucket_path))
+            except OSError:
+                continue
+            for entry in inner:
+                if not entry.is_file():
+                    continue
+                if not entry.name.endswith(_CAS_EXE_SUFFIXES):
+                    continue
+                try:
+                    st = entry.stat()
+                except OSError:
+                    continue
+                units.append((entry.path, st.st_mtime, st.st_size, st.st_nlink > 1))
+        return units
+
+    def _budget_scan_cmd_hash_dirs(self, cache_dir, kind):
+        """Re-scan a PCH/PCM pool for the budget pass: one record per cmd_hash dir.
+
+        Returns ``[(dir_path, newest_mtime, total_dir_size, False), ...]`` — each
+        cmd_hash dir is one unit and none are protected at this layer (the
+        compiler re-precompiles on the next build). ``newest_mtime`` is the max
+        leaf mtime (falling back to the dir's own mtime when it has no leaves).
+        """
+        hash_re = _PCH_COMMAND_HASH_RE if kind == "pch" else _PCM_COMMAND_HASH_RE
+        leaf_suffixes = (".gch",) if kind == "pch" else (".pcm", ".gcm")
+        units: list[tuple[str, float, int, bool]] = []
+        try:
+            with os.scandir(cache_dir) as top_it:
+                cmd_dirs = [e for e in top_it if e.is_dir() and hash_re.match(e.name)]
+        except OSError:
+            return units
+        for entry in cmd_dirs:
+            total_size = 0
+            newest = None
+            try:
+                with os.scandir(entry.path) as leaf_it:
+                    for leaf in leaf_it:
+                        if not leaf.name.endswith(leaf_suffixes) or not leaf.is_file():
+                            continue
+                        ms = _entry_mtime_size(leaf)
+                        if ms is None:
+                            continue
+                        total_size += ms[1]
+                        if newest is None or ms[0] > newest:
+                            newest = ms[0]
+            except OSError:
+                continue
+            if newest is None:
+                ms = _entry_mtime_size(entry)
+                newest = ms[0] if ms is not None else 0.0
+            units.append((entry.path, newest, total_size, False))
+        return units
+
+    # ------------------------------------------------------------------
     # Summary
     # ------------------------------------------------------------------
+
+    def _print_budget_lines(self, cache_stats):
+        """Print the ``--max-size`` budget lines for one cache (no-op when no
+        budget eviction occurred and the budget was met).
+
+        Always surfaces a nonzero ``budget_unmet_bytes`` — the operator needs to
+        know when protected (current / hard-linked) entries alone exceed the
+        budget, since that is reported but never violated.
+        """
+        if cache_stats["budget_removed"]:
+            budget_str = f"    Budget evicted:  {cache_stats['budget_removed']}"
+            if cache_stats["budget_bytes_freed"]:
+                budget_str += f" ({_format_size(cache_stats['budget_bytes_freed'])} freed)"
+            print(budget_str, file=self._human)
+        if cache_stats["budget_unmet_bytes"]:
+            print(
+                f"    Budget unmet:    {_format_size(cache_stats['budget_unmet_bytes'])} over "
+                "(protected/current entries alone exceed --max-size)",
+                file=self._human,
+            )
 
     def print_summary(self, objdir_stats=None, pchdir_stats=None, pcmdir_stats=None, exedir_stats=None):
         """Print a formatted summary of trimming results."""
@@ -1205,6 +1538,7 @@ class CacheTrimmer:
                 if objdir_stats["orphan_temp_bytes_freed"]:
                     orphan_str += f" ({_format_size(objdir_stats['orphan_temp_bytes_freed'])} freed)"
                 print(orphan_str, file=self._human)
+            self._print_budget_lines(objdir_stats)
 
         if pchdir_stats is not None:
             total_freed += pchdir_stats["bytes_freed"]
@@ -1223,6 +1557,7 @@ class CacheTrimmer:
                 if pchdir_stats["orphan_temp_bytes_freed"]:
                     orphan_str += f" ({_format_size(pchdir_stats['orphan_temp_bytes_freed'])} freed)"
                 print(orphan_str, file=self._human)
+            self._print_budget_lines(pchdir_stats)
 
         if pcmdir_stats is not None:
             total_freed += pcmdir_stats["bytes_freed"]
@@ -1241,6 +1576,7 @@ class CacheTrimmer:
                 if pcmdir_stats["orphan_temp_bytes_freed"]:
                     orphan_str += f" ({_format_size(pcmdir_stats['orphan_temp_bytes_freed'])} freed)"
                 print(orphan_str, file=self._human)
+            self._print_budget_lines(pcmdir_stats)
 
         if exedir_stats is not None:
             total_freed += exedir_stats["bytes_freed"]
@@ -1259,6 +1595,7 @@ class CacheTrimmer:
                 if exedir_stats["orphan_temp_bytes_freed"]:
                     orphan_str += f" ({_format_size(exedir_stats['orphan_temp_bytes_freed'])} freed)"
                 print(orphan_str, file=self._human)
+            self._print_budget_lines(exedir_stats)
 
         # The summary line aggregates whatever was actually scanned.
         scanned = sum(s is not None for s in (objdir_stats, pchdir_stats, pcmdir_stats, exedir_stats))

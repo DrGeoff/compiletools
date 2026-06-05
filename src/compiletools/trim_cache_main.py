@@ -60,6 +60,22 @@ def add_arguments(cap):
         help="Keep at least this many non-current files per basename/header (default: 1)",
     )
     cap.add_argument(
+        "--max-size",
+        type=str,
+        default=None,
+        help=(
+            "Optional per-pool TOTAL size budget. Accepts a plain integer (bytes) "
+            "or a 1024-based suffix K/M/G/T (case-insensitive, optional trailing "
+            "'B'): e.g. '10G', '512M', '500MB', '1024'. After the normal trim, if "
+            "a pool still exceeds this size, the OLDEST rebuildable (non-current, "
+            "non-hard-linked) entries are evicted until it fits — this is the only "
+            "control that can go below --keep-count, and it NEVER evicts a current "
+            "object or a published (hard-linked) artefact. If those protected "
+            "entries alone exceed the budget, the overflow is reported "
+            "(budget_unmet_bytes) but never violated. Default: no budget."
+        ),
+    )
+    cap.add_argument(
         "--cas-objdir-only",
         action="store_true",
         default=False,
@@ -147,6 +163,18 @@ def main(argv=None):
         compiletools.apptools.resolve_cas_directory_arguments(args)
         args.verbose -= args.quiet
 
+        # Parse --max-size once here (str → int bytes) and stash the result as
+        # args.max_size_bytes; CacheTrimmer.__init__ reads that already-parsed
+        # attribute. None means "no budget".
+        if args.max_size is not None:
+            try:
+                args.max_size_bytes = compiletools.trim_cache._parse_size(args.max_size)
+            except ValueError as exc:
+                print(f"Error: invalid --max-size: {exc}", file=sys.stderr)
+                return 1
+        else:
+            args.max_size_bytes = None
+
         only_flags = sum(
             bool(getattr(args, name))
             for name in ("cas_objdir_only", "cas_pchdir_only", "cas_pcmdir_only", "cas_exedir_only")
@@ -232,6 +260,7 @@ def main(argv=None):
                 print(f"Trimming object directory: {args.cas_objdir}", file=trimmer._human)
             objdir_stats = trimmer.trim_objdir(args.cas_objdir, current_hashes)
             trimmer.reclaim_orphan_temps(args.cas_objdir, objdir_stats)
+            trimmer.enforce_budget(args.cas_objdir, objdir_stats, kind="obj", current_hashes=current_hashes)
             if objdir_stats["total_scanned"] == 0:
                 compiletools.trim_cache.warn_if_suspicious_cas_dir(
                     args.cas_objdir, "objdir", args.variant, verbose=args.verbose
@@ -245,6 +274,7 @@ def main(argv=None):
                 print(f"Trimming PCH directory: {args.cas_pchdir}", file=trimmer._human)
             pchdir_stats = trimmer.trim_pchdir(args.cas_pchdir)
             trimmer.reclaim_orphan_temps(args.cas_pchdir, pchdir_stats)
+            trimmer.enforce_budget(args.cas_pchdir, pchdir_stats, kind="pch")
             if pchdir_stats["total_dirs_scanned"] == 0:
                 compiletools.trim_cache.warn_if_suspicious_cas_dir(
                     args.cas_pchdir, "pchdir", args.variant, verbose=args.verbose
@@ -255,6 +285,7 @@ def main(argv=None):
                 print(f"Trimming PCM directory: {args.cas_pcmdir}", file=trimmer._human)
             pcmdir_stats = trimmer.trim_pcmdir(args.cas_pcmdir)
             trimmer.reclaim_orphan_temps(args.cas_pcmdir, pcmdir_stats)
+            trimmer.enforce_budget(args.cas_pcmdir, pcmdir_stats, kind="pcm")
             if pcmdir_stats["total_dirs_scanned"] == 0:
                 compiletools.trim_cache.warn_if_suspicious_cas_dir(
                     args.cas_pcmdir, "pcmdir", args.variant, verbose=args.verbose
@@ -265,6 +296,7 @@ def main(argv=None):
                 print(f"Trimming executable cache: {args.cas_exedir}", file=trimmer._human)
             exedir_stats = trimmer.trim_exedir(args.cas_exedir)
             trimmer.reclaim_orphan_temps(args.cas_exedir, exedir_stats)
+            trimmer.enforce_budget(args.cas_exedir, exedir_stats, kind="exe")
             if exedir_stats["total_scanned"] == 0:
                 compiletools.trim_cache.warn_if_suspicious_cas_dir(
                     args.cas_exedir, "exedir", args.variant, verbose=args.verbose

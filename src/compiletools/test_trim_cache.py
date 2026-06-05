@@ -113,6 +113,7 @@ def _make_args(**overrides):
         "verbose": 0,
         "keep_count": 1,
         "max_age": None,
+        "max_size_bytes": None,
         "parallel": 1,
         "list_unresolvable": False,
         "variant": "gcc.debug",
@@ -3488,3 +3489,353 @@ class TestReclaimOrphanTemps:
         assert "orphan_temp_bytes_freed" in obj
         assert obj["orphan_temps_removed"] == 1
         assert obj["orphan_temp_bytes_freed"] == 256
+
+
+# ── _parse_size ──────────────────────────────────────────────────────
+
+
+class TestParseSize:
+    """`trim_cache._parse_size` parses byte counts with optional 1024-based suffix."""
+
+    def test_round_trips(self):
+        assert trim_cache._parse_size("1024") == 1024
+        assert trim_cache._parse_size("10G") == 10 * 1024**3
+        assert trim_cache._parse_size("512M") == 512 * 1024**2
+        assert trim_cache._parse_size("2g") == 2 * 1024**3
+        assert trim_cache._parse_size("500MB") == 500 * 1024**2
+
+    def test_lowercase_and_trailing_b(self):
+        assert trim_cache._parse_size("1k") == 1024
+        assert trim_cache._parse_size("1kb") == 1024
+        assert trim_cache._parse_size("3TB") == 3 * 1024**4
+
+    def test_plain_integer_no_suffix(self):
+        assert trim_cache._parse_size("0") == 0
+        assert trim_cache._parse_size("  42  ") == 42
+
+    def test_junk_raises(self):
+        for bad in ("", "   ", "abc", "G", "B", "10X", "1.2.3", "M5", "ten"):
+            with pytest.raises(ValueError):
+                trim_cache._parse_size(bad)
+
+    def test_negative_raises(self):
+        with pytest.raises(ValueError):
+            trim_cache._parse_size("-5")
+        with pytest.raises(ValueError):
+            trim_cache._parse_size("-1G")
+
+
+# ── enforce_budget ───────────────────────────────────────────────────
+
+
+class TestEnforceBudgetObj:
+    """`enforce_budget(kind='obj')`: oldest non-current evicted; current never."""
+
+    def test_no_budget_is_noop(self, objdir):
+        _touch_obj(objdir, "foo", "111111111111", age_seconds=3600, size=4096)
+        trimmer = CacheTrimmer(_make_args(max_size_bytes=None))
+        stats = {
+            "bytes_freed": 0,
+            "budget_removed": 0,
+            "budget_bytes_freed": 0,
+            "budget_unmet_bytes": 0,
+        }
+        trimmer.enforce_budget(objdir, stats, kind="obj", current_hashes=set())
+        assert stats["budget_removed"] == 0
+        assert stats["budget_unmet_bytes"] == 0
+
+    def test_evicts_oldest_noncurrent_until_under(self, objdir):
+        # Three non-current objects of 1024 each = 3072 total. Budget 2048
+        # → must evict the single oldest (1024) to land at 2048.
+        _touch_obj(objdir, "foo", "111111111111", age_seconds=3 * 86400, size=1024)  # oldest
+        mid = _touch_obj(objdir, "foo", "222222222222", age_seconds=2 * 86400, size=1024)
+        new = _touch_obj(objdir, "foo", "333333333333", age_seconds=1 * 86400, size=1024)
+
+        trimmer = CacheTrimmer(_make_args(max_size_bytes=2048))
+        stats = {
+            "bytes_freed": 0,
+            "budget_removed": 0,
+            "budget_bytes_freed": 0,
+            "budget_unmet_bytes": 0,
+        }
+        trimmer.enforce_budget(objdir, stats, kind="obj", current_hashes=set())
+
+        assert stats["budget_removed"] == 1
+        assert stats["budget_bytes_freed"] == 1024
+        assert stats["bytes_freed"] == 1024
+        assert stats["budget_unmet_bytes"] == 0
+        # oldest gone, mid + new survive
+        assert os.path.exists(mid) and os.path.exists(new)
+
+    def test_current_objects_never_evicted_even_over_budget(self, objdir):
+        # Two CURRENT objects of 1024 each = 2048; budget 1024. Current
+        # objects are protected, so nothing is evicted and the overflow
+        # (1024) is reported via budget_unmet_bytes.
+        cur1 = _touch_obj(objdir, "foo", "aaaaaaaaaaaa", age_seconds=10 * 86400, size=1024)
+        cur2 = _touch_obj(objdir, "foo", "bbbbbbbbbbbb", age_seconds=9 * 86400, size=1024)
+        current = {"aaaaaaaaaaaa", "bbbbbbbbbbbb"}
+
+        trimmer = CacheTrimmer(_make_args(max_size_bytes=1024))
+        stats = {
+            "bytes_freed": 0,
+            "budget_removed": 0,
+            "budget_bytes_freed": 0,
+            "budget_unmet_bytes": 0,
+        }
+        trimmer.enforce_budget(objdir, stats, kind="obj", current_hashes=current)
+
+        assert stats["budget_removed"] == 0
+        assert stats["budget_unmet_bytes"] == 1024
+        assert os.path.exists(cur1) and os.path.exists(cur2)
+
+    def test_evicts_noncurrent_first_keeps_current(self, objdir):
+        # One current (protected) + two non-current, 1024 each = 3072.
+        # Budget 1024 → evict both non-current (oldest first), keep current,
+        # land at 1024, unmet 0.
+        cur = _touch_obj(objdir, "foo", "cccccccccccc", age_seconds=1 * 86400, size=1024)
+        old_nc = _touch_obj(objdir, "foo", "111111111111", age_seconds=5 * 86400, size=1024)
+        new_nc = _touch_obj(objdir, "foo", "222222222222", age_seconds=2 * 86400, size=1024)
+        current = {"cccccccccccc"}
+
+        trimmer = CacheTrimmer(_make_args(max_size_bytes=1024))
+        stats = {
+            "bytes_freed": 0,
+            "budget_removed": 0,
+            "budget_bytes_freed": 0,
+            "budget_unmet_bytes": 0,
+        }
+        trimmer.enforce_budget(objdir, stats, kind="obj", current_hashes=current)
+
+        assert stats["budget_removed"] == 2
+        assert stats["budget_unmet_bytes"] == 0
+        assert os.path.exists(cur)
+        assert not os.path.exists(old_nc) and not os.path.exists(new_nc)
+
+
+class TestEnforceBudgetExe:
+    """`enforce_budget(kind='exe')`: nlink>1 protected; oldest nlink==1 first."""
+
+    @pytest.mark.skipif(
+        not hasattr(os, "link"),
+        reason="platform lacks os.link; hard-link protection inapplicable",
+    )
+    def test_hardlinked_entry_never_evicted(self, tmp_path):
+        exedir = str(tmp_path / "cas-exe")
+        bindir = tmp_path / "bin"
+        bindir.mkdir()
+        # Two artefacts, 1024 each = 2048. The OLDEST is hard-linked (nlink>1)
+        # and must survive; budget 1024 → the newer nlink==1 entry is evicted.
+        live = _touch_exe(exedir, "main", "aa11" * 16, age_seconds=30 * 86400, size=1024)
+        rival = _touch_exe(exedir, "main", "bb22" * 16, age_seconds=0, size=1024)
+        os.link(live, str(bindir / "main"))
+
+        trimmer = CacheTrimmer(_make_args(max_size_bytes=1024))
+        stats = {
+            "bytes_freed": 0,
+            "budget_removed": 0,
+            "budget_bytes_freed": 0,
+            "budget_unmet_bytes": 0,
+        }
+        trimmer.enforce_budget(exedir, stats, kind="exe")
+
+        assert os.path.exists(live), "hard-linked artefact must survive budget eviction"
+        assert not os.path.exists(rival), "newer nlink==1 artefact must be evicted"
+        assert stats["budget_removed"] == 1
+        assert stats["budget_bytes_freed"] == 1024
+        assert stats["budget_unmet_bytes"] == 0
+
+    def test_oldest_nlink1_evicted_first(self, tmp_path):
+        exedir = str(tmp_path / "cas-exe")
+        # Three nlink==1 artefacts, 1024 each = 3072. Budget 2048 → evict the
+        # single oldest.
+        old = _touch_exe(exedir, "main", "aa11" * 16, age_seconds=3 * 86400, size=1024)
+        mid = _touch_exe(exedir, "main", "bb22" * 16, age_seconds=2 * 86400, size=1024)
+        new = _touch_exe(exedir, "main", "cc33" * 16, age_seconds=1 * 86400, size=1024)
+
+        trimmer = CacheTrimmer(_make_args(max_size_bytes=2048))
+        stats = {
+            "bytes_freed": 0,
+            "budget_removed": 0,
+            "budget_bytes_freed": 0,
+            "budget_unmet_bytes": 0,
+        }
+        trimmer.enforce_budget(exedir, stats, kind="exe")
+
+        assert not os.path.exists(old)
+        assert os.path.exists(mid) and os.path.exists(new)
+        assert stats["budget_removed"] == 1
+
+    def test_sidecars_removed_on_budget_eviction(self, tmp_path):
+        exedir = str(tmp_path / "cas-exe")
+        old = _touch_exe(exedir, "main", "aa11" * 16, age_seconds=3 * 86400, size=1024)
+        _touch_exe(exedir, "main", "bb22" * 16, age_seconds=0, size=1024)
+        with open(old + ".manifest", "w") as f:
+            f.write("{}")
+        with open(old + ".result", "w") as f:
+            f.write("ok")
+
+        trimmer = CacheTrimmer(_make_args(max_size_bytes=1024))
+        stats = {
+            "bytes_freed": 0,
+            "budget_removed": 0,
+            "budget_bytes_freed": 0,
+            "budget_unmet_bytes": 0,
+        }
+        trimmer.enforce_budget(exedir, stats, kind="exe")
+
+        assert not os.path.exists(old)
+        assert not os.path.exists(old + ".manifest")
+        assert not os.path.exists(old + ".result")
+
+
+class TestEnforceBudgetCmdHashDirs:
+    """`enforce_budget(kind='pch'/'pcm')`: oldest cmd_hash dir evicted first."""
+
+    def test_pcm_oldest_dir_evicted_first(self, pcmdir):
+        # Three cmd_hash dirs, 1024 each = 3072. Budget 2048 → evict oldest.
+        old = _make_pcmdir_entry(pcmdir, "a" * 16, ["m.pcm"], age_seconds=3 * 86400, size_per_leaf=1024)
+        mid = _make_pcmdir_entry(pcmdir, "b" * 16, ["m.pcm"], age_seconds=2 * 86400, size_per_leaf=1024)
+        new = _make_pcmdir_entry(pcmdir, "c" * 16, ["m.pcm"], age_seconds=1 * 86400, size_per_leaf=1024)
+
+        trimmer = CacheTrimmer(_make_args(max_size_bytes=2048))
+        stats = {
+            "bytes_freed": 0,
+            "budget_removed": 0,
+            "budget_bytes_freed": 0,
+            "budget_unmet_bytes": 0,
+        }
+        trimmer.enforce_budget(pcmdir, stats, kind="pcm")
+
+        assert not os.path.isdir(old)
+        assert os.path.isdir(mid) and os.path.isdir(new)
+        assert stats["budget_removed"] == 1
+        assert stats["budget_bytes_freed"] == 1024
+        assert stats["bytes_freed"] == 1024
+        assert stats["budget_unmet_bytes"] == 0
+
+    def test_pch_oldest_dir_evicted_first(self, pchdir):
+        old = _make_pchdir_entry(pchdir, "a" * 16, ["stdafx.h"], age_seconds=3 * 86400, size_per_gch=1024)
+        new = _make_pchdir_entry(pchdir, "b" * 16, ["stdafx.h"], age_seconds=1 * 86400, size_per_gch=1024)
+
+        trimmer = CacheTrimmer(_make_args(max_size_bytes=1024))
+        stats = {
+            "bytes_freed": 0,
+            "budget_removed": 0,
+            "budget_bytes_freed": 0,
+            "budget_unmet_bytes": 0,
+        }
+        trimmer.enforce_budget(pchdir, stats, kind="pch")
+
+        assert not os.path.isdir(old)
+        assert os.path.isdir(new)
+        assert stats["budget_removed"] == 1
+
+
+class TestEnforceBudgetDryRun:
+    """Dry-run budget counts the would-be evictions but touches nothing."""
+
+    def test_dry_run_counts_but_keeps_files(self, objdir):
+        f_old = _touch_obj(objdir, "foo", "111111111111", age_seconds=3 * 86400, size=1024)
+        f_new = _touch_obj(objdir, "foo", "222222222222", age_seconds=1 * 86400, size=1024)
+
+        trimmer = CacheTrimmer(_make_args(dry_run=True, max_size_bytes=1024))
+        stats = {
+            "bytes_freed": 0,
+            "budget_removed": 0,
+            "budget_bytes_freed": 0,
+            "budget_unmet_bytes": 0,
+        }
+        trimmer.enforce_budget(objdir, stats, kind="obj", current_hashes=set())
+
+        assert stats["budget_removed"] == 1
+        assert stats["budget_bytes_freed"] == 1024
+        assert stats["budget_unmet_bytes"] == 0
+        assert stats["bytes_freed"] == 0, "dry-run must not credit bytes_freed"
+        assert os.path.exists(f_old) and os.path.exists(f_new), "dry-run must not unlink"
+        assert len(trimmer._retry) == 0, "dry-run must never populate the retry list"
+
+
+class TestEnforceBudgetRetry:
+    """A failed budget unlink is queued on _retry and credited on retry success."""
+
+    def test_failed_budget_unlink_credited_via_retry(self, objdir, monkeypatch):
+        # One CURRENT (protected, 1024) + one NON-CURRENT (4096). Total 5120.
+        # Budget 1024 → only the single non-current is an eviction candidate.
+        # Its first unlink fails (queued for retry); there are no further
+        # candidates, so budget_removed stays 0 until retry_failed() runs.
+        _touch_obj(objdir, "foo", "aaaaaaaaaaaa", age_seconds=1 * 86400, size=1024)
+        _touch_obj(objdir, "foo", "111111111111", age_seconds=3 * 86400, size=4096)
+        current = {"aaaaaaaaaaaa"}
+
+        call_count = {"n": 0}
+        real_unlink = trim_cache._safe_locked_unlink
+
+        def _flaky_unlink(path, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return False  # first attempt fails
+            return real_unlink(path, **kwargs)  # retry succeeds
+
+        monkeypatch.setattr(trim_cache, "_safe_locked_unlink", _flaky_unlink)
+
+        trimmer = CacheTrimmer(_make_args(max_size_bytes=1024))
+        stats = {
+            "bytes_freed": 0,
+            "budget_removed": 0,
+            "budget_bytes_freed": 0,
+            "budget_unmet_bytes": 0,
+        }
+        trimmer.enforce_budget(objdir, stats, kind="obj", current_hashes=current)
+
+        assert stats["budget_removed"] == 0, "first failure must not count yet"
+        assert len(trimmer._retry) == 1
+        # total not decremented on failed removal → unmet reflects 5120-1024.
+        assert stats["budget_unmet_bytes"] == 4096
+
+        trimmer.retry_failed()
+
+        assert stats["budget_removed"] == 1, "retry success credits budget_removed"
+        assert stats["budget_bytes_freed"] == 4096
+        assert stats["bytes_freed"] == 4096
+        assert len(trimmer._retry) == 0
+
+
+class TestMaxSizeCLI:
+    """End-to-end `main()` wiring of --max-size."""
+
+    def test_invalid_max_size_returns_1(self, capsys):
+        rc = main(["--max-size=notasize", "--dry-run"])
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "invalid --max-size" in err
+
+    def test_main_evicts_below_keep_count_via_budget(self, tmp_path, capsys):
+        import compiletools.configutils as cu
+
+        variant = cu.extract_variant(argv=None)
+        pool = str(tmp_path / "pool")
+        variant_dir = os.path.join(pool, variant)
+        os.makedirs(variant_dir)
+        # Two non-current objects, 1024 each. keep_count=1 keeps the newest;
+        # the older is removed by the normal trim. Then a 512-byte budget
+        # forces the surviving newest (non-current) out too — below keep_count.
+        new = _touch_obj(variant_dir, "foo", "111111111111", age_seconds=1 * 86400, size=1024)
+        _touch_obj(variant_dir, "foo", "112222222222", age_seconds=3 * 86400, size=1024)
+
+        rc = main(
+            [
+                "--json",
+                "--cas-objdir-only",
+                f"--cas-objdir={variant_dir}",
+                f"--variant={variant}",
+                "--max-size=512",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert rc == 0
+        parsed = json.loads(out)
+        obj = parsed["objdir"]
+        # normal trim removed 1 (keep_count=1), budget removed the surviving 1.
+        assert obj["removed"] == 1
+        assert obj["budget_removed"] == 1
+        assert not os.path.exists(new), "budget eviction goes below keep_count for rebuildables"
