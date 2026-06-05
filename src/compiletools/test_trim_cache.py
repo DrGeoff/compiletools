@@ -3370,9 +3370,46 @@ class TestReclaimOrphanTemps:
 
         # Retry succeeded: orphan_temps_removed incremented; bytes_freed via retry path.
         assert stats["orphan_temps_removed"] == 1
+        # bytes_key must be present and orphan_temp_bytes_freed credited on retry.
+        assert stats["orphan_temp_bytes_freed"] == 256, (
+            "retry_failed() must credit orphan_temp_bytes_freed via bytes_key"
+        )
         assert stats["failed"] == 0
         assert len(trimmer._retry) == 0
         assert not os.path.exists(tmp)
+
+    # ── exact age-boundary: mtime == cutoff is kept; one second older is removed ──
+
+    def test_exact_age_boundary(self, tmp_path, monkeypatch):
+        """A temp with mtime == cutoff (now - 86400) is KEPT (>= cutoff semantics);
+        one second older (mtime == cutoff - 1) is removed.
+
+        Validates the ``st.st_mtime >= cutoff`` guard in reclaim_orphan_temps.
+        Time is frozen via monkeypatching so the mtime-to-cutoff comparison is
+        exact and not subject to wall-clock drift during the test.
+        """
+        fixed_now = 1_700_000_000.0  # arbitrary fixed timestamp
+        monkeypatch.setattr(trim_cache.time, "time", lambda: fixed_now)
+
+        cache_root = str(tmp_path / "objdir")
+        bucket = os.path.join(cache_root, "ab")
+
+        # Exactly at the cutoff (mtime == now - 86400): must be KEPT.
+        kept = _touch_temp(bucket, "at_cutoff.compiletools.tmp", size=128)
+        os.utime(kept, (fixed_now - 86400, fixed_now - 86400))
+
+        # One second beyond the cutoff (mtime == now - 86401): must be REMOVED.
+        removed = _touch_temp(bucket, "beyond_cutoff.compiletools.tmp", size=64)
+        os.utime(removed, (fixed_now - 86401, fixed_now - 86401))
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = {"orphan_temps_removed": 0, "orphan_temp_bytes_freed": 0, "bytes_freed": 0, "failed": 0}
+        trimmer.reclaim_orphan_temps(cache_root, stats)
+
+        assert os.path.exists(kept), "temp at exactly the cutoff mtime must be kept"
+        assert not os.path.exists(removed), "temp one second past the cutoff must be removed"
+        assert stats["orphan_temps_removed"] == 1
+        assert stats["orphan_temp_bytes_freed"] == 64
 
     # ── stats keys are always present in each cache's stats dict ─────────────
 

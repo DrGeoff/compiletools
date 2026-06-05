@@ -1015,10 +1015,13 @@ class CacheTrimmer:
         Called by ``main()`` after ALL four trim passes and BEFORE the summary
         is printed, so reported numbers reflect the final post-retry state.
 
-        On retry success: increment ``removed`` and ``bytes_freed`` in the
-        per-cache stats dict (stored by reference in each retry entry), and
-        for exedir entries (``"cleanup_sidecars": True``) also best-effort-remove
-        the ``.manifest``/``.result`` sidecars.
+        On retry success: increment ``removed`` (or the entry's ``removed_key``)
+        and ``bytes_freed`` in the per-cache stats dict (stored by reference in
+        each retry entry).  When the entry carries an optional ``"bytes_key"``
+        (e.g. ``"orphan_temp_bytes_freed"`` for orphan-temp retries), that
+        per-category counter is also incremented so it stays consistent with the
+        direct-success path.  For exedir entries (``"cleanup_sidecars": True``)
+        also best-effort-remove the ``.manifest``/``.result`` sidecars.
 
         On retry failure: increment ``failed`` — the path is intentionally left
         in place (a peer build is holding it; it will be retried on the next
@@ -1043,6 +1046,11 @@ class CacheTrimmer:
             if success:
                 stats[removed_key] += 1
                 stats["bytes_freed"] += size
+                # Credit the per-category byte counter when provided (e.g.
+                # orphan_temp_bytes_freed for orphan-temp retries).  Other
+                # retry sites (objdir, pchdir, pcmdir, exedir) omit bytes_key.
+                if entry.get("bytes_key"):
+                    stats[entry["bytes_key"]] += size
                 if self.verbose >= 1:
                     print(f"  Retry succeeded: {path}", file=self._human)
                 # Best-effort sidecar cleanup for exedir entries (flagged
@@ -1125,6 +1133,12 @@ class CacheTrimmer:
                 # Skip lock sidecar files managed by the locking subsystem.
                 if name.endswith((".lock", ".lock.excl", ".lockdir")):
                     continue
+                # _PUBLISH_TMP_SUFFIX arm: cas_publish writes *.publish.tmp into
+                # dirname(user_path) = the published bin/<variant>/ dir, which
+                # ct-trim-cache does NOT scan (it only owns the cas-*dir roots).
+                # This arm is therefore defensive — it reclaims nothing in
+                # production but will catch any future layout where a publish
+                # temp lands inside a CAS bucket dir.
                 if not (_COMPILETOOLS_TMP_RE.search(name) or name.endswith(_PUBLISH_TMP_SUFFIX)):
                     continue
                 try:
@@ -1157,6 +1171,7 @@ class CacheTrimmer:
                                 "size": size,
                                 "stats": stats,
                                 "removed_key": "orphan_temps_removed",
+                                "bytes_key": "orphan_temp_bytes_freed",
                                 "unlink_kwargs": {},
                             }
                         )
