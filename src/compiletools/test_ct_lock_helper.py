@@ -329,6 +329,11 @@ class TestPidReuseGuard:
     """
 
     def test_child_gone_detects_pid_reuse(self):
+        # This verifies the start-time *comparison* in _child_gone via a
+        # fabricated mismatch on a live pid — not a real reincarnation (the
+        # actual pid-reuse race is un-forceable). A matching start time means
+        # same incarnation (not gone); a mismatched one means the number was
+        # recycled (gone).
         live = os.getpid()  # this test process — definitely alive
         real = _proc_start_ticks(live)
         if real is None:
