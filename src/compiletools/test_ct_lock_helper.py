@@ -11,6 +11,55 @@ import pytest
 from compiletools.ct_lock_helper import create_args_from_env
 
 
+def _proc_start_ticks(pid):
+    """Return field 22 (starttime, in clock ticks since boot) of
+    ``/proc/<pid>/stat`` as a string. Together with the pid this uniquely
+    identifies a process *incarnation*, so it distinguishes "the original
+    child is still alive" from "the pid was recycled by an unrelated process".
+
+    Returns None when unreadable — the process is gone, or we're not on a
+    /proc platform (e.g. macOS) — in which case callers fall back to a bare
+    liveness probe.
+    """
+    try:
+        with open(f"/proc/{pid}/stat") as fh:
+            data = fh.read()
+    except OSError:
+        return None
+    # Field 2 (comm) is parenthesised and may itself contain spaces/parens;
+    # everything after the final ')' is space-delimited starting at field 3,
+    # so starttime (field 22) is index 19 of that tail.
+    try:
+        tail = data[data.rindex(")") + 2 :].split()
+        return tail[19]
+    except (ValueError, IndexError):
+        return None
+
+
+def _child_gone(pid, start_ticks):
+    """True if the original child incarnation is gone.
+
+    Robust against PID reuse: a *live* pid whose start time no longer matches
+    the value recorded while the child was running is a different process that
+    recycled the number, so the original child is gone. When ``start_ticks``
+    is None (no /proc on this platform) this degrades to a bare liveness probe.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        # EPERM: the pid is owned by another user, so it cannot be our
+        # same-user child — the number was recycled. (A zombie of our own
+        # child yields success from os.kill, not EPERM.) Only trust this when
+        # /proc identity checking is available; otherwise stay conservative.
+        return start_ticks is not None
+    # pid is alive — it is the same incarnation only if its start time matches.
+    if start_ticks is None:
+        return False
+    return _proc_start_ticks(pid) != start_ticks
+
+
 @pytest.fixture
 def temp_target(tmp_path):
     """Create temporary target file for lock testing.
@@ -225,6 +274,9 @@ class TestGracefulExitSignalStack:
             assert child_pid_file.exists(), "Child shell never recorded its pid"
             child_pid = int(child_pid_file.read_text().strip())
             assert child_pid > 0
+            # Record the child's start time while it is definitely alive so we
+            # can tell "still our child" from "this pid was recycled" later.
+            child_start_ticks = _proc_start_ticks(child_pid)
 
             # Send SIGTERM to helper
             proc.send_signal(_signal.SIGTERM)
@@ -238,20 +290,20 @@ class TestGracefulExitSignalStack:
                 proc.wait()
                 pytest.fail("Helper did not exit after SIGTERM")
 
-            # Give the kernel a moment to reap the child
-            _time.sleep(0.5)
-
-            # Child should no longer exist (kernel reaped it because the
-            # session leader / parent forwarded SIGTERM and waited).
-            try:
-                os.kill(child_pid, 0)
-                child_alive = True
-            except ProcessLookupError:
-                child_alive = False
-            except PermissionError:
-                # On some systems we get EPERM rather than ESRCH for a
-                # zombie; treat as still-around for the purposes of this test.
-                child_alive = True
+            # The helper reaps its child before exiting (the _forward path
+            # reaps via proc.wait(); the finally clause unconditionally
+            # killpg(SIGKILL)s + reaps), so the child should already be gone.
+            # Poll rather than sample once, and verify process *identity* via
+            # start time: on a heavily-loaded runner the child's pid can be
+            # recycled by an unrelated process within this window, and a bare
+            # os.kill(pid, 0) would misread that as the child surviving.
+            child_alive = True
+            deadline = _time.time() + 3
+            while _time.time() < deadline:
+                if _child_gone(child_pid, child_start_ticks):
+                    child_alive = False
+                    break
+                _time.sleep(0.05)
             assert not child_alive, (
                 f"Child pid {child_pid} survived helper SIGTERM — signal "
                 f"forwarding / reaping in atomic_compile is broken"
@@ -263,3 +315,35 @@ class TestGracefulExitSignalStack:
                 except (OSError, ProcessLookupError):
                     pass
                 proc.wait()
+
+
+class TestPidReuseGuard:
+    """The PID-reuse guard that keeps test_sigterm_reaps_child from flaking.
+
+    On a slow, heavily-loaded runner (the symptom was pypy-3.11 CI only) the
+    reaped child's pid number can be recycled by an unrelated process before
+    the liveness check runs, making a bare os.kill(pid, 0) report the child as
+    "survived". _child_gone defeats that by checking process *identity* via
+    /proc start time. This is the deterministic stand-in for the un-forceable
+    real PID-reuse race.
+    """
+
+    def test_child_gone_detects_pid_reuse(self):
+        live = os.getpid()  # this test process — definitely alive
+        real = _proc_start_ticks(live)
+        if real is None:
+            pytest.skip("no /proc starttime available on this platform")
+        # Same pid, matching start time => same incarnation => NOT gone.
+        assert _child_gone(live, real) is False
+        # Same pid, mismatched start time => the number was recycled by a
+        # different process => the original incarnation is treated as gone.
+        assert _child_gone(live, str(int(real) + 1)) is True
+
+    def test_child_gone_true_for_dead_pid(self):
+        # A pid that never maps to a live process reads as gone regardless of
+        # the recorded start time (None: no /proc fallback path).
+        import subprocess as _sp
+
+        p = _sp.Popen(["true"])
+        p.wait()
+        assert _child_gone(p.pid, None) is True
