@@ -2236,9 +2236,10 @@ class TestListUnresolvableMode:
         stays unaffected.
 
         Pool layout (obj-shaped inner structure):
-          * ``gcc.debug``   — valid obj cell → RESOLVABLE (patched classifier)
-          * ``bogus.variant`` — valid obj cell → UNRESOLVABLE
-          * ``odd.variant``   — empty dir → UNKNOWN
+          * ``gcc.debug``        — valid obj cell → RESOLVABLE (patched classifier)
+          * ``bogus.variant``    — valid obj cell → UNRESOLVABLE
+          * ``gcc.gcc.debug.debug`` — valid obj cell → NON_CANONICAL (patched canonical name)
+          * ``odd.variant``      — empty dir → UNKNOWN
         """
         pool = str(tmp_path / "pool")
         os.makedirs(pool)
@@ -2251,7 +2252,7 @@ class TestListUnresolvableMode:
                 "wb",
             ).close()
 
-        for cell_name in ("gcc.debug", "bogus.variant"):
+        for cell_name in ("gcc.debug", "bogus.variant", "gcc.gcc.debug.debug"):
             cell_dir = os.path.join(pool, cell_name)
             os.makedirs(cell_dir)
             _obj_shape(cell_dir)
@@ -2263,8 +2264,11 @@ class TestListUnresolvableMode:
         # real at parse time; bogus.variant and odd.variant do not, but they
         # never reach apptools.parseargs — they are cells in the pool, not the
         # active variant.
-        resolvable = {"gcc.debug"}
+        resolvable = {"gcc.debug", "gcc.gcc.debug.debug"}
         monkeypatch.setattr(trim_cache, "_variant_resolvable", lambda name: name in resolvable)
+        # gcc.gcc.debug.debug resolves but is not a canonicalization fixed point.
+        noncanonical = {"gcc.gcc.debug.debug": "gcc.debug"}
+        monkeypatch.setattr(trim_cache, "_variant_canonical_name", lambda name: noncanonical.get(name, name))
 
         return pool
 
@@ -2377,6 +2381,28 @@ class TestListUnresolvableMode:
         # ...but the pch section was still produced (no whole-run abort).
         assert result.get("pchdir") is not None
 
+    def test_non_canonical_bytes_rolled_up(self, tmp_path, monkeypatch, capsys):
+        """``list_unresolvable_cells`` must emit a ``non_canonical_bytes`` rollup
+        that equals the sum of ``total_bytes`` for all NON_CANONICAL cells."""
+        pool = self._build_pool(tmp_path, monkeypatch)
+        objdir = os.path.join(pool, "gcc.debug")
+        rc = main(
+            [
+                "--json",
+                "--list-unresolvable",
+                "--cas-objdir-only",
+                f"--cas-objdir={objdir}",
+                "--variant=gcc.debug",
+            ]
+        )
+        cap = capsys.readouterr()
+        assert rc == 0
+        obj = json.loads(cap.out)["objdir"]
+        assert "non_canonical_bytes" in obj, "non_canonical_bytes rollup must be present"
+        assert obj["non_canonical_bytes"] == sum(
+            c["total_bytes"] for c in obj["cells"] if c["label"] == "NON_CANONICAL"
+        )
+
 
 def _all_files_under(root):
     """Return the set of all file paths under *root* (for FS-mutation assertions)."""
@@ -2395,17 +2421,20 @@ def _make_purge_pool(tmp_path, monkeypatch, *, warm_age_seconds, cold_age_second
 
     Returns ``(pool, paths)`` where ``paths`` maps a logical role to the artefact
     path planted under that cell, so callers can assert presence/absence after a
-    purge. ``trim_cache._variant_resolvable`` is patched so ONLY ``gcc.debug``
-    resolves (matching the resolvable cell used by the CLI's real parse-time
-    resolver).
+    purge. ``trim_cache._variant_resolvable`` is patched so ``gcc.debug``,
+    ``gcc.gcc.debug.debug``, and ``clang.clang.debug.debug`` resolve (the latter
+    two are non-canonical doubled-token names). ``trim_cache._variant_canonical_name``
+    is patched to report the doubled cells as NON_CANONICAL.
 
     Cells planted (all obj-shaped except where noted):
-      * ``gcc.debug``       — RESOLVABLE, cold      → never purged.
-      * ``cold.variant``    — UNRESOLVABLE + cold   → THE purge target.
-      * ``warm.variant``    — UNRESOLVABLE + warm   → spared (peer-owned guard).
-      * ``odd.variant``     — empty dir → UNKNOWN   → never purged.
-      * ``ab``              — stray 2-hex pool bucket → never a cell.
-      * ``TraceStore``      — known non-cell dir    → never touched.
+      * ``gcc.debug``              — RESOLVABLE, cold           → never purged.
+      * ``cold.variant``           — UNRESOLVABLE + cold        → THE purge target.
+      * ``warm.variant``           — UNRESOLVABLE + warm        → spared (peer-owned guard).
+      * ``gcc.gcc.debug.debug``    — NON_CANONICAL + cold       → purge candidate.
+      * ``clang.clang.debug.debug``— NON_CANONICAL + warm       → spared (warm gate).
+      * ``odd.variant``            — empty dir → UNKNOWN        → never purged.
+      * ``ab``                     — stray 2-hex pool bucket    → never a cell.
+      * ``TraceStore``             — known non-cell dir         → never touched.
     """
     pool = str(tmp_path / "pool")
     os.makedirs(pool)
@@ -2427,6 +2456,8 @@ def _make_purge_pool(tmp_path, monkeypatch, *, warm_age_seconds, cold_age_second
     _plant_obj("gcc.debug", age_seconds=cold_age_seconds, role="resolvable_cold")
     _plant_obj("cold.variant", age_seconds=cold_age_seconds, role="cold_target")
     _plant_obj("warm.variant", age_seconds=warm_age_seconds, role="warm_spared")
+    _plant_obj("gcc.gcc.debug.debug", age_seconds=cold_age_seconds, role="noncanonical_cold")
+    _plant_obj("clang.clang.debug.debug", age_seconds=warm_age_seconds, role="noncanonical_warm")
 
     # Empty UNKNOWN cell (no obj-shaped inner structure).
     os.makedirs(os.path.join(pool, "odd.variant"))
@@ -2446,8 +2477,13 @@ def _make_purge_pool(tmp_path, monkeypatch, *, warm_age_seconds, cold_age_second
         f.write(b"\0" * 10)
     paths["tracestore_file"] = trace_file
 
-    resolvable = {"gcc.debug"}
+    resolvable = {"gcc.debug", "gcc.gcc.debug.debug", "clang.clang.debug.debug"}
     monkeypatch.setattr(trim_cache, "_variant_resolvable", lambda name: name in resolvable)
+    noncanonical = {
+        "gcc.gcc.debug.debug": "gcc.debug",
+        "clang.clang.debug.debug": "clang.debug",
+    }
+    monkeypatch.setattr(trim_cache, "_variant_canonical_name", lambda name: noncanonical.get(name, name))
 
     return pool, paths
 
@@ -2502,8 +2538,10 @@ class TestPurgeUnresolvable:
         assert parsed.get("schema") == 1
         assert parsed.get("mode") == "purge-unresolvable"
         obj = parsed["objdir"]
-        assert obj["cells_purged"] == 1
-        assert obj["cells_skipped_warm"] == 1
+        # cold.variant (UNRESOLVABLE) + gcc.gcc.debug.debug (NON_CANONICAL, cold)
+        assert obj["cells_purged"] == 2
+        # warm.variant (UNRESOLVABLE) + clang.clang.debug.debug (NON_CANONICAL, warm)
+        assert obj["cells_skipped_warm"] == 2
         assert obj["cells_deferred"] == 0
         assert isinstance(obj["bytes_freed"], int)
         assert parsed["total_bytes_freed"] == obj["bytes_freed"]
@@ -2613,9 +2651,10 @@ class TestPurgeUnresolvable:
         assert rc == 0
         assert before == after, "--dry-run must remove nothing"
         parsed = json.loads(out)
-        # The candidate is still REPORTED as a (would-be) purge.
-        assert parsed["objdir"]["cells_purged"] == 1
-        assert parsed["objdir"]["bytes_freed"] == 100
+        # cold.variant (UNRESOLVABLE) + gcc.gcc.debug.debug (NON_CANONICAL, cold)
+        # are both would-be purge candidates in dry-run mode.
+        assert parsed["objdir"]["cells_purged"] == 2
+        assert parsed["objdir"]["bytes_freed"] == 200
         # ...but the bytes are still on disk.
         assert os.path.exists(paths["cold_target"])
 
@@ -2746,22 +2785,21 @@ class TestPurgeUnresolvable:
         result = trim_cache.purge_unresolvable_cells(args)
 
         obj = result["objdir"]
-        # (1) Reported as DEFERRED, not purged and not a hard failure.
+        # (1) cold.variant is DEFERRED (race); gcc.gcc.debug.debug (NON_CANONICAL, cold)
+        # is successfully purged — the race injection only fires on cell_dir (cold.variant).
         assert obj["cells_deferred"] == 1, f"expected cells_deferred=1, got {obj}"
-        assert obj["cells_purged"] == 0, f"expected cells_purged=0, got {obj}"
-        # (2) The cell directory still exists.
-        assert os.path.isdir(cell_dir), "cell must still exist after ENOTEMPTY deferral"
+        assert obj["cells_purged"] == 1, f"expected cells_purged=1 (non_canonical cold), got {obj}"
+        # (2) The deferred cell directory still exists.
+        assert os.path.isdir(cell_dir), "cold.variant must still exist after ENOTEMPTY deferral"
         # (3) The peer-injected file survives (it was never in our removal list).
         assert os.path.exists(fresh_file), "fresh bucket file planted by the simulated peer must still exist"
-        # (4) No exception propagated (the call returned normally) and nothing
-        # was freed — deferred cells contribute 0 bytes_freed because the cell
-        # is left intact for the next run.  There is no cells_failed field in
-        # the stats dict; the meaningful guard is that bytes_freed is zero and
-        # the full counter vector matches expectations, proving ENOTEMPTY is
-        # DEFERRED not FAILED and no storage was silently reclaimed.
-        # cells_skipped_warm==1 accounts for warm.variant planted by the fixture.
-        assert obj["bytes_freed"] == 0, "deferred cell must not contribute to bytes_freed"
-        assert obj["cells_skipped_warm"] == 1, f"unexpected warm-skip count: {obj}"
+        # (4) No exception propagated; bytes_freed reflects only the successfully
+        # purged NON_CANONICAL cold cell (100 bytes); the deferred cold.variant
+        # contributes 0 bytes_freed — it is left intact for the next run.
+        # cells_skipped_warm==2: warm.variant (UNRESOLVABLE) + clang.clang.debug.debug
+        # (NON_CANONICAL, warm) — both spared by the warm-cache safety gate.
+        assert obj["bytes_freed"] == 100, "only the successfully purged non_canonical cell is counted"
+        assert obj["cells_skipped_warm"] == 2, f"unexpected warm-skip count: {obj}"
 
     def test_lock_safety_defers_locked_artifact_leaf_level(self, tmp_path, monkeypatch, capsys):
         """CRITICAL lock-safety proof.
@@ -2830,6 +2868,41 @@ class TestPurgeUnresolvable:
         obj = result["objdir"]
         assert obj["cells_deferred"] == 1
         assert obj["cells_purged"] == 0
+
+    def test_purges_cold_non_canonical_cell(self, tmp_path, monkeypatch, capsys):
+        """A cold NON_CANONICAL cell (resolvable but not a canonicalization fixed
+        point) must be purged under the same cold gate as UNRESOLVABLE."""
+        pool, paths = _make_purge_pool(tmp_path, monkeypatch, warm_age_seconds=86400, cold_age_seconds=30 * 86400)
+        rc = main(
+            [
+                "--purge-unresolvable",
+                "--max-age=7",
+                "--cas-objdir-only",
+                f"--cas-objdir={self._objdir(pool)}",
+                "--variant=gcc.debug",
+            ]
+        )
+        capsys.readouterr()
+        assert rc == 0
+        assert not os.path.exists(paths["noncanonical_cold"]), "cold NON_CANONICAL cell must be purged"
+        assert os.path.exists(paths["noncanonical_warm"]), "warm NON_CANONICAL cell must be spared"
+        assert os.path.exists(paths["resolvable_cold"]), "RESOLVABLE cell must never be purged"
+
+    def test_warm_non_canonical_cell_spared(self, tmp_path, monkeypatch, capsys):
+        """A warm NON_CANONICAL cell must NOT be purged (peer-active safety gate)."""
+        pool, paths = _make_purge_pool(tmp_path, monkeypatch, warm_age_seconds=86400, cold_age_seconds=30 * 86400)
+        rc = main(
+            [
+                "--purge-unresolvable",
+                "--max-age=7",
+                "--cas-objdir-only",
+                f"--cas-objdir={self._objdir(pool)}",
+                "--variant=gcc.debug",
+            ]
+        )
+        capsys.readouterr()
+        assert rc == 0
+        assert os.path.exists(paths["noncanonical_warm"]), "warm NON_CANONICAL cell must be spared"
 
 
 class TestPurgeUnresolvableModeExclusivity:

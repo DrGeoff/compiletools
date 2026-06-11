@@ -2336,11 +2336,13 @@ def list_unresolvable_cells(args, stream=None):
         cells = enumerated[key]
         unresolvable_bytes = sum(c["total_bytes"] for c in cells if c["label"] == _CELL_UNRESOLVABLE)
         unknown_bytes = sum(c["total_bytes"] for c in cells if c["label"] == _CELL_UNKNOWN)
+        non_canonical_bytes = sum(c["total_bytes"] for c in cells if c["label"] == _CELL_NON_CANONICAL)
         result[section] = {
             "pool": pool,
             "cells": cells,
             "unresolvable_bytes": unresolvable_bytes,
             "unknown_bytes": unknown_bytes,
+            "non_canonical_bytes": non_canonical_bytes,
         }
 
     return result
@@ -2413,9 +2415,13 @@ def purge_unresolvable_cells(args, stream=None):
     its pool root via ``cell_pool_root`` and ``enumerate_cells`` it, then purge
     every cell that is BOTH:
 
-    * ``label == "UNRESOLVABLE"`` — a real, orphaned cell of this kind. RESOLVABLE
-      and UNKNOWN cells are NEVER purge candidates; a stray 2-hex pool bucket and
-      ``TraceStore/`` are skipped by ``enumerate_cells`` itself.
+    * ``label`` is ``"UNRESOLVABLE"`` OR ``"NON_CANONICAL"`` — UNRESOLVABLE is a
+      real orphaned cell whose variant no longer resolves from this checkout;
+      NON_CANONICAL is a resolvable but doubled-token / non-fixed-point name a
+      current build will never write (e.g. ``gcc.gcc.debug.debug`` canonicalises
+      to ``gcc.debug``). RESOLVABLE and UNKNOWN cells are NEVER purge candidates;
+      a stray 2-hex pool bucket and ``TraceStore/`` are skipped by
+      ``enumerate_cells`` itself.
     * **COLD** — ``newest_mtime is None`` OR ``newest_mtime < (now - max_age)``.
       A WARM unresolvable cell (newest file within ``max_age``) is SPARED and
       reported as ``cells_skipped_warm`` — it is most likely another live
@@ -2495,7 +2501,7 @@ def purge_unresolvable_cells(args, stream=None):
         }
 
         for cell in cells:
-            if cell["label"] != _CELL_UNRESOLVABLE:
+            if cell["label"] not in (_CELL_UNRESOLVABLE, _CELL_NON_CANONICAL):
                 continue  # never purge RESOLVABLE / UNKNOWN
             newest = cell["newest_mtime"]
             is_cold = newest is None or (cutoff is not None and newest < cutoff)
