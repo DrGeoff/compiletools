@@ -190,3 +190,35 @@ uv build
 # Publish to PyPI using uv (check PyPI Simple API to avoid re-upload conflicts)
 uv publish --token "$PYPI_API_TOKEN" --check-url https://pypi.org/simple
 popd >/dev/null
+
+# Verify the release actually landed on PyPI.
+# `uv publish` can fail (or be silently skipped) in ways that are easy to miss
+# scrolling past, leaving the repo tagged + GitHub-released but absent from PyPI.
+# We poll the version-specific JSON endpoint, which returns 200 once the release
+# is registered. We deliberately do NOT use the "latest"/Simple views here: those
+# are aggregated pages fronted by Fastly and can lag the upload by minutes, which
+# would produce false failures.
+if command -v curl >/dev/null 2>&1; then
+    verify_url="https://pypi.org/pypi/compiletools/${version}/json"
+    published=false
+    for attempt in 1 2 3 4 5 6; do
+        http_code=$(curl -s -o /dev/null -w '%{http_code}' "$verify_url" || echo "000")
+        if [[ "$http_code" == "200" ]]; then
+            published=true
+            break
+        fi
+        echo "Verifying PyPI publish (attempt ${attempt}/6): not visible yet (HTTP ${http_code}), retrying..." >&2
+        sleep 10
+    done
+    if [[ "$published" == "true" ]]; then
+        echo "PyPI publish OK: compiletools ${version} is live (${verify_url})"
+    else
+        echo "Error: compiletools ${version} did not appear on PyPI after publishing." >&2
+        echo "       The dist artifacts are in dist/. Re-run the publish step:" >&2
+        echo "         uv publish --token \"\$PYPI_API_TOKEN\" --check-url https://pypi.org/simple" >&2
+        exit 1
+    fi
+else
+    echo "Warning: 'curl' not found; cannot verify the PyPI publish landed." >&2
+    echo "         Check manually: https://pypi.org/pypi/compiletools/${version}/json" >&2
+fi
