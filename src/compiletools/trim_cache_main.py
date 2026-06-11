@@ -271,16 +271,10 @@ def main(argv=None):
         do_pcmdir = not (args.cas_objdir_only or args.cas_pchdir_only or args.cas_exedir_only)
         do_exedir = not (args.cas_objdir_only or args.cas_pchdir_only or args.cas_pcmdir_only)
 
-        trimmer = compiletools.trim_cache.CacheTrimmer(args)
-
-        objdir_stats = None
-        pchdir_stats = None
-        pcmdir_stats = None
-        exedir_stats = None
-
         # Object cache currency check is the only consumer of the
         # tracked-files set. PCM, PCH, and exe-cache use sidecar
         # manifests / hard-link refcounts / bucketing instead.
+        current_hashes = set()
         if do_objdir:
             from compiletools.build_context import BuildContext
             from compiletools.global_hash_registry import load_hashes
@@ -290,57 +284,27 @@ def main(argv=None):
             current_hashes = compiletools.trim_cache.build_current_hash_set(context)
 
             if args.verbose >= 1:
-                print(f"Loaded {len(current_hashes)} current file hashes from git", file=trimmer._human)
-                print(f"Trimming object directory: {args.cas_objdir}", file=trimmer._human)
-            objdir_stats = trimmer.trim_objdir(args.cas_objdir, current_hashes)
-            trimmer.reclaim_orphan_temps(args.cas_objdir, objdir_stats)
-            trimmer.enforce_budget(args.cas_objdir, objdir_stats, kind="obj", current_hashes=current_hashes)
-            if objdir_stats["total_scanned"] == 0:
-                compiletools.trim_cache.warn_if_suspicious_cas_dir(
-                    args.cas_objdir, "objdir", args.variant, verbose=args.verbose
-                )
-            compiletools.trim_cache.warn_if_wrong_checkout(
-                args.cas_objdir, objdir_stats, args.max_age, verbose=args.verbose
-            )
+                _human = sys.stderr if args.json else sys.stdout
+                print(f"Loaded {len(current_hashes)} current file hashes from git", file=_human)
 
-        if do_pchdir:
-            if args.verbose >= 1:
-                print(f"Trimming PCH directory: {args.cas_pchdir}", file=trimmer._human)
-            pchdir_stats = trimmer.trim_pchdir(args.cas_pchdir)
-            trimmer.reclaim_orphan_temps(args.cas_pchdir, pchdir_stats)
-            trimmer.enforce_budget(args.cas_pchdir, pchdir_stats, kind="pch")
-            if pchdir_stats["total_dirs_scanned"] == 0:
-                compiletools.trim_cache.warn_if_suspicious_cas_dir(
-                    args.cas_pchdir, "pchdir", args.variant, verbose=args.verbose
-                )
-
-        if do_pcmdir:
-            if args.verbose >= 1:
-                print(f"Trimming PCM directory: {args.cas_pcmdir}", file=trimmer._human)
-            pcmdir_stats = trimmer.trim_pcmdir(args.cas_pcmdir)
-            trimmer.reclaim_orphan_temps(args.cas_pcmdir, pcmdir_stats)
-            trimmer.enforce_budget(args.cas_pcmdir, pcmdir_stats, kind="pcm")
-            if pcmdir_stats["total_dirs_scanned"] == 0:
-                compiletools.trim_cache.warn_if_suspicious_cas_dir(
-                    args.cas_pcmdir, "pcmdir", args.variant, verbose=args.verbose
-                )
-
-        if do_exedir:
-            if args.verbose >= 1:
-                print(f"Trimming executable cache: {args.cas_exedir}", file=trimmer._human)
-            exedir_stats = trimmer.trim_exedir(args.cas_exedir)
-            trimmer.reclaim_orphan_temps(args.cas_exedir, exedir_stats)
-            trimmer.enforce_budget(args.cas_exedir, exedir_stats, kind="exe")
-            if exedir_stats["total_scanned"] == 0:
-                compiletools.trim_cache.warn_if_suspicious_cas_dir(
-                    args.cas_exedir, "exedir", args.variant, verbose=args.verbose
-                )
-
-        # Retry any first-attempt failures exactly once. Must run AFTER all four
-        # trim blocks so each cache's trim_* method has had a chance to queue its
-        # failures, and BEFORE the summary/JSON output so reported numbers reflect
-        # the final post-retry state.
-        trimmer.retry_failed()
+        res = compiletools.trim_cache.trim_one_variant(
+            args,
+            current_hashes=current_hashes,
+            cas_objdir=args.cas_objdir,
+            cas_pchdir=args.cas_pchdir,
+            cas_pcmdir=args.cas_pcmdir,
+            cas_exedir=args.cas_exedir,
+            do_objdir=do_objdir,
+            do_pchdir=do_pchdir,
+            do_pcmdir=do_pcmdir,
+            do_exedir=do_exedir,
+            variant_label=args.variant,
+        )
+        trimmer = res["trimmer"]
+        objdir_stats = res["objdir"]
+        pchdir_stats = res["pchdir"]
+        pcmdir_stats = res["pcmdir"]
+        exedir_stats = res["exedir"]
 
         if args.json:
             print(

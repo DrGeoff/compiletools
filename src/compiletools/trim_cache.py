@@ -2718,6 +2718,84 @@ def print_resolvable_report(result, *, stream=None):
         print(name, file=stream)
 
 
+def trim_one_variant(
+    args,
+    *,
+    current_hashes,
+    cas_objdir,
+    cas_pchdir,
+    cas_pcmdir,
+    cas_exedir,
+    do_objdir,
+    do_pchdir,
+    do_pcmdir,
+    do_exedir,
+    variant_label=None,
+):
+    """Run the normal four-cache trim for ONE variant's cell directories.
+
+    Builds a fresh ``CacheTrimmer`` and runs each enabled cache's
+    ``trim_*`` + ``reclaim_orphan_temps`` + ``enforce_budget``, then
+    ``retry_failed`` once.  ``current_hashes`` (the git-current object hash
+    set) is loaded by the caller ONCE and passed in — it is
+    variant-independent.
+
+    ``variant_label`` (defaults to ``args.variant``) is used only for the
+    suspicious-cas-dir warnings.
+
+    Returns a dict
+    ``{"trimmer": CacheTrimmer, "objdir": stats_or_None, "pchdir": ...,
+    "pcmdir": ..., "exedir": ...}``.
+    """
+    trimmer = CacheTrimmer(args)
+    label = variant_label if variant_label is not None else getattr(args, "variant", None)
+    stats: dict = {"objdir": None, "pchdir": None, "pcmdir": None, "exedir": None}
+
+    if do_objdir:
+        if args.verbose >= 1:
+            print(f"Trimming object directory: {cas_objdir}", file=trimmer._human)
+        s = trimmer.trim_objdir(cas_objdir, current_hashes)
+        trimmer.reclaim_orphan_temps(cas_objdir, s)
+        trimmer.enforce_budget(cas_objdir, s, kind="obj", current_hashes=current_hashes)
+        if s["total_scanned"] == 0:
+            warn_if_suspicious_cas_dir(cas_objdir, "objdir", label, verbose=args.verbose)
+        warn_if_wrong_checkout(cas_objdir, s, args.max_age, verbose=args.verbose)
+        stats["objdir"] = s
+
+    if do_pchdir:
+        if args.verbose >= 1:
+            print(f"Trimming PCH directory: {cas_pchdir}", file=trimmer._human)
+        s = trimmer.trim_pchdir(cas_pchdir)
+        trimmer.reclaim_orphan_temps(cas_pchdir, s)
+        trimmer.enforce_budget(cas_pchdir, s, kind="pch")
+        if s["total_dirs_scanned"] == 0:
+            warn_if_suspicious_cas_dir(cas_pchdir, "pchdir", label, verbose=args.verbose)
+        stats["pchdir"] = s
+
+    if do_pcmdir:
+        if args.verbose >= 1:
+            print(f"Trimming PCM directory: {cas_pcmdir}", file=trimmer._human)
+        s = trimmer.trim_pcmdir(cas_pcmdir)
+        trimmer.reclaim_orphan_temps(cas_pcmdir, s)
+        trimmer.enforce_budget(cas_pcmdir, s, kind="pcm")
+        if s["total_dirs_scanned"] == 0:
+            warn_if_suspicious_cas_dir(cas_pcmdir, "pcmdir", label, verbose=args.verbose)
+        stats["pcmdir"] = s
+
+    if do_exedir:
+        if args.verbose >= 1:
+            print(f"Trimming executable cache: {cas_exedir}", file=trimmer._human)
+        s = trimmer.trim_exedir(cas_exedir)
+        trimmer.reclaim_orphan_temps(cas_exedir, s)
+        trimmer.enforce_budget(cas_exedir, s, kind="exe")
+        if s["total_scanned"] == 0:
+            warn_if_suspicious_cas_dir(cas_exedir, "exedir", label, verbose=args.verbose)
+        stats["exedir"] = s
+
+    trimmer.retry_failed()
+    return {"trimmer": trimmer, **stats}
+
+
 def _format_size(size_bytes):
     """Format a byte count as a human-readable string."""
     if size_bytes < 1024:
