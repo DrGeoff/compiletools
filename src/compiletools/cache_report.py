@@ -26,6 +26,12 @@ This module is standalone — it imports only stdlib plus a handful of
 on-disk-format helpers from ``trim_cache`` (the single source of truth
 for the cache layouts). No Hunter / MagicFlags / BuildContext
 dependencies, so it stays cheap to import and easy to test.
+
+``--all-variants`` performs a whole-pool duplication report: enumerates every
+RESOLVABLE cell across the in-scope caches, reports each with per-cell error
+isolation, and aggregates into a single ``{schema, mode, variants, errors}`` JSON
+object (or per-variant ``=== <variant> ===`` text blocks); returns nonzero if any
+cell raised an error.
 """
 
 from __future__ import annotations

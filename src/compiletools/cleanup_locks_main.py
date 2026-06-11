@@ -14,6 +14,10 @@ The tool will:
 3. For local locks, check if the process is still running
 4. For remote locks, SSH to the host and check if the process is running
 5. Remove stale locks (or report them in --dry-run mode)
+
+``--all-variants`` performs a whole-pool stale-lock sweep over the object CAS only:
+enumerates every RESOLVABLE cell, runs ``scan_and_cleanup`` per cell with per-cell
+error isolation, aggregates the summary, and returns nonzero if any cell failed.
 """
 
 import os

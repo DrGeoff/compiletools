@@ -14,7 +14,7 @@ Clean up stale lock directories from file locking
 
 SYNOPSIS
 ========
-ct-cleanup-locks [--dry-run] [--cas-objdir PATH] [--min-lock-age SECONDS] [-v] [-vv]
+ct-cleanup-locks [--dry-run] [--cas-objdir PATH] [--min-lock-age SECONDS] [--all-variants] [-v] [-vv]
 
 DESCRIPTION
 ===========
@@ -40,6 +40,9 @@ USAGE
     # Preview what would be removed
     ct-cleanup-locks --dry-run
 
+    # Preview whole-pool sweep across all RESOLVABLE cells
+    ct-cleanup-locks --all-variants --dry-run
+
     # Remove stale locks (uses cas-objdir from ct.conf)
     ct-cleanup-locks
 
@@ -64,6 +67,12 @@ Cleanup Options
 ---------------
 ``--dry-run``
     Show what would be removed without actually removing locks
+
+``--all-variants``
+    Whole-pool stale-lock sweep. Enumerates every RESOLVABLE object-CAS cell
+    (derived from ``--cas-objdir`` + ``--variant``) and runs ``scan_and_cleanup``
+    on each in a single invocation. Per-cell failures are recorded and isolated
+    rather than aborting the sweep. Returns nonzero if any cell failed.
 
 ``--cas-objdir PATH``
     Override object directory from configuration (default: bin/<variant>/obj)

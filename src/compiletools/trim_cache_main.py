@@ -19,6 +19,14 @@ checkout's git HEAD. On a shared pool used by multiple branches or users, object
 built from other checkouts will appear non-current here. Use ``--max-age`` as the
 primary eviction control on shared pools to limit removal by age rather than by
 checkout-relative currency.
+
+Pool-level modes (mutually exclusive with each other and with ``--all-variants``):
+``--list-resolvable`` (read-only complement of ``--list-unresolvable`` — bare sorted
+RESOLVABLE cell names), ``--list-unresolvable`` (surfaces cells whose variant no longer
+resolves), and ``--purge-unresolvable`` (also reclaims NON_CANONICAL cells — resolvable
+but not a canonicalization fixed point — under the same COLD ``--max-age`` gate).
+``--all-variants`` performs a whole-pool trim sweep over every RESOLVABLE cell with
+per-cell error isolation and one aggregate ``{schema, mode, variants, errors}`` JSON.
 """
 
 import json
