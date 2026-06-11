@@ -2225,7 +2225,9 @@ def enumerate_cells(pool, kind):
     Returns:
         A list of per-cell record dicts with keys ``name``, ``path``,
         ``resolvable``, ``is_canonical``, ``cell_shape_ok``, ``total_bytes``,
-        ``newest_mtime``, ``label``.
+        ``newest_mtime``, ``label``.  ``is_canonical`` is only meaningful when
+        ``resolvable`` is True; for UNRESOLVABLE/UNKNOWN cells the value is
+        recorded but not actionable.
     """
     shape_ok = _CELL_SHAPE_PREDICATES[kind]  # KeyError on unknown kind is intentional
     records = []
