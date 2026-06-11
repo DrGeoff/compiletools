@@ -743,5 +743,5 @@ class TestAllVariants:
         assert rc == 1
         # gcc.debug must still have been cleaned (the other resolvable cell)
         assert not os.path.exists(gcc_lockdir), "gcc.debug lockdir must be removed despite clang.debug error"
-        # clang.debug was not processed (exception raised before scan)
+        # clang.debug lockdir intact because scan_and_cleanup raised for that cell
         assert os.path.exists(clang_lockdir), "clang.debug lockdir must remain (cell errored)"

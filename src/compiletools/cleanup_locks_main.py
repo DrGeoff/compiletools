@@ -79,6 +79,9 @@ def _run_all_variants(args, cleaner):
         int: 0 on full success, 1 if any cell failed or raised an exception.
     """
     pool = compiletools.trim_cache.cell_pool_root(args.cas_objdir, args.variant)
+    # Restrict to RESOLVABLE cells only, consistent with the trim-cache
+    # --all-variants and --list-resolvable scope. NON_CANONICAL/UNRESOLVABLE
+    # cells are left for the dedicated trim-cache purge modes.
     cells = [
         c
         for c in compiletools.trim_cache.enumerate_cells(pool, "obj")
