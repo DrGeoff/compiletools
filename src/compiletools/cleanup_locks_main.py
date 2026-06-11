@@ -80,9 +80,18 @@ def _run_all_variants(args, cleaner):
         cleaner: ``LockCleaner`` instance (already configured with ``args``).
 
     Returns:
-        int: 0 on full success, 1 if any cell failed or raised an exception.
+        int: 0 on full success, 1 if any cell failed or raised an exception,
+        or if the pool root cannot be derived from ``args.cas_objdir``.
     """
-    pool = compiletools.trim_cache.cell_pool_root(args.cas_objdir, args.variant)
+    try:
+        pool = compiletools.trim_cache.cell_pool_root(args.cas_objdir, args.variant)
+    except ValueError as exc:
+        # Parity note: trim-cache and cache-report warn-and-skip the offending
+        # cache and continue with the remaining caches; cleanup-locks sweeps
+        # only the obj CAS, so an untrusted pool root leaves nothing to sweep
+        # — hard error rather than a silent no-op summary.
+        print(f"Error: --all-variants: {exc}", file=sys.stderr)
+        return 1
     # Restrict to RESOLVABLE cells only, consistent with the trim-cache
     # --all-variants and --list-resolvable scope. NON_CANONICAL/UNRESOLVABLE
     # cells are left for the dedicated trim-cache purge modes.

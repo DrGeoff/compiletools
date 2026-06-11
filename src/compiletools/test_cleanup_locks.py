@@ -713,6 +713,31 @@ class TestAllVariants:
         assert os.path.exists(clang_lockdir), "clang.debug lockdir must survive --dry-run"
         assert os.path.exists(bogus_lockdir), "bogus.variant lockdir must survive --dry-run"
 
+    def test_untrusted_pool_root_is_hard_error(self, tmp_path, capsys):
+        """An untrusted pool root (``cell_pool_root`` ValueError) is a deliberate
+        hard error with a stderr diagnostic, not an unhandled traceback.
+
+        Unlike trim-cache/cache-report (which warn-and-skip the offending cache
+        and continue with the others), cleanup-locks sweeps only the obj CAS, so
+        nothing remains to sweep — rc must be 1 and no scan may run.  Drives
+        ``_run_all_variants`` directly with a mismatched path, mirroring
+        ``test_untrusted_pool_root_does_not_abort`` in test_trim_cache.
+        """
+        args = Mock()
+        # Basename 'mismatch' != variant 'gcc.debug' → cell_pool_root refuses.
+        args.cas_objdir = str(tmp_path / "pool" / "mismatch")
+        args.variant = "gcc.debug"
+        args.verbose = 0
+        cleaner = Mock()
+
+        rc = compiletools.cleanup_locks_main._run_all_variants(args, cleaner)
+        cap = capsys.readouterr()
+
+        assert rc == 1
+        assert "--all-variants" in cap.err
+        assert "pool root" in cap.err
+        cleaner.scan_and_cleanup.assert_not_called()
+
     def test_bad_cell_isolated_not_fatal(self, tmp_path, monkeypatch):
         """A per-cell scan_and_cleanup exception is isolated; the other cell still runs; rc==1."""
         pool = self._build_pool(tmp_path, monkeypatch)
