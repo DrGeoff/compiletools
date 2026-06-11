@@ -2037,6 +2037,20 @@ def _patch_resolver(monkeypatch, resolvable_names):
     monkeypatch.setattr(cu, "resolve_variant", _fake_resolve)
 
 
+def _patch_canonical(monkeypatch, canonical_of):
+    """Monkeypatch trim_cache._variant_canonical_name with an explicit map.
+
+    ``canonical_of`` maps a cell name to the canonical name a current build
+    would write. A name absent from the map is treated as already canonical
+    (maps to itself) — the common case for the synthetic pools' simple names.
+    """
+    monkeypatch.setattr(
+        trim_cache,
+        "_variant_canonical_name",
+        lambda name: canonical_of.get(name, name),
+    )
+
+
 class TestEnumerateCells:
     """``enumerate_cells(pool, kind)`` returns one record per candidate cell,
     correctly classified, conservatively skipping non-cell children."""
@@ -2148,6 +2162,35 @@ class TestEnumerateCells:
 
         records = {r["name"]: r for r in trim_cache.enumerate_cells(str(pool), "exe")}
         assert records["bogus.variant"]["label"] == "UNKNOWN"
+
+    def test_non_canonical_resolvable_cell_labeled_non_canonical(self, tmp_path, monkeypatch):
+        """A cell whose name resolves but is NOT a canonicalization fixed point
+        (e.g. a doubled-token directory) is labeled NON_CANONICAL, not RESOLVABLE."""
+        pool = tmp_path / "pool"
+        pool.mkdir()
+        # A doubled-token cell that still resolves but is not canonical.
+        cell = pool / "gcc.gcc.debug.debug"
+        cell.mkdir()
+        bucket = cell / "aa"
+        bucket.mkdir()
+        (bucket / "foo_aabbccddeeff_11223344556677_0011223344556677.o").write_bytes(b"\0" * 100)
+
+        _patch_resolver(monkeypatch, {"gcc.gcc.debug.debug"})  # it DOES resolve
+        _patch_canonical(monkeypatch, {"gcc.gcc.debug.debug": "gcc.debug"})  # but isn't canonical
+
+        records = {r["name"]: r for r in trim_cache.enumerate_cells(str(pool), "obj")}
+        assert records["gcc.gcc.debug.debug"]["label"] == "NON_CANONICAL"
+        assert records["gcc.gcc.debug.debug"]["is_canonical"] is False
+
+    def test_canonical_resolvable_cell_still_resolvable(self, tmp_path, monkeypatch):
+        """A resolvable cell whose name IS a fixed point stays RESOLVABLE."""
+        pool, _expected = _make_synthetic_pool(tmp_path, "obj")
+        _patch_resolver(monkeypatch, {"good.variant"})
+        _patch_canonical(monkeypatch, {})  # every name is its own canonical form
+
+        records = {r["name"]: r for r in trim_cache.enumerate_cells(str(pool), "obj")}
+        assert records["good.variant"]["label"] == "RESOLVABLE"
+        assert records["good.variant"]["is_canonical"] is True
 
 
 # ── _format_age_days ────────────────────────────────────────────────────────

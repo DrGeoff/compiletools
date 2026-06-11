@@ -2029,6 +2029,7 @@ _NON_CELL_POOL_CHILDREN: frozenset[str] = frozenset({"TraceStore", "diagnostics"
 
 # Cell classification labels.
 _CELL_RESOLVABLE = "RESOLVABLE"
+_CELL_NON_CANONICAL = "NON_CANONICAL"
 _CELL_UNRESOLVABLE = "UNRESOLVABLE"
 _CELL_UNKNOWN = "UNKNOWN"
 
@@ -2166,6 +2167,23 @@ def _variant_resolvable(name):
         return False
 
 
+def _variant_canonical_name(name):
+    """Return the canonical dotted form a current build would write for ``name``.
+
+    A legitimate active cell's directory name is a FIXED POINT of
+    canonicalization (``name == canonicalize_variant_input(name)``). A cell
+    whose name does not survive the round-trip — a doubled-token artifact, a
+    mis-ordered name — is addressable by no current build and is a reclaim
+    candidate (labeled NON_CANONICAL by ``enumerate_cells``).
+
+    Uses ``argv=None`` so canonical-order resolution reads the conf hierarchy
+    directly, exactly like ``_variant_resolvable``.
+    """
+    import compiletools.configutils
+
+    return compiletools.configutils.canonicalize_variant_input(name)
+
+
 def enumerate_cells(pool, kind):
     """Enumerate and classify candidate cells under a pool root.
 
@@ -2190,10 +2208,14 @@ def enumerate_cells(pool, kind):
 
     Derived ``label``:
 
-    * ``RESOLVABLE``   — resolvable (regardless of shape);
-    * ``UNRESOLVABLE`` — not resolvable AND cell_shape_ok (a real, orphaned
+    * ``RESOLVABLE``     — resolvable AND name is a canonicalization fixed
+      point (exactly what a current build writes);
+    * ``NON_CANONICAL``  — resolvable BUT name is NOT a canonicalization
+      fixed point (e.g. a doubled-token artifact from a pre-Task-1 build);
+      no current build will ever address it — a reclaim candidate;
+    * ``UNRESOLVABLE``   — not resolvable AND cell_shape_ok (a real, orphaned
       cell of this kind — the only purge-candidate class);
-    * ``UNKNOWN``      — not resolvable AND NOT cell_shape_ok (reported for
+    * ``UNKNOWN``        — not resolvable AND NOT cell_shape_ok (reported for
       visibility but NEVER a purge candidate).
 
     Args:
@@ -2202,8 +2224,8 @@ def enumerate_cells(pool, kind):
 
     Returns:
         A list of per-cell record dicts with keys ``name``, ``path``,
-        ``resolvable``, ``cell_shape_ok``, ``total_bytes``, ``newest_mtime``,
-        ``label``.
+        ``resolvable``, ``is_canonical``, ``cell_shape_ok``, ``total_bytes``,
+        ``newest_mtime``, ``label``.
     """
     shape_ok = _CELL_SHAPE_PREDICATES[kind]  # KeyError on unknown kind is intentional
     records = []
@@ -2227,11 +2249,16 @@ def enumerate_cells(pool, kind):
             continue
 
         resolvable = _variant_resolvable(name)
+        is_canonical = name == _variant_canonical_name(name)
         cell_shape_ok = bool(shape_ok(child.path))
         total_bytes, newest_mtime = _cell_size_and_newest_mtime(child.path)
 
-        if resolvable:
+        if resolvable and is_canonical:
             label = _CELL_RESOLVABLE
+        elif resolvable and not is_canonical:
+            # Resolves, but its name is not a canonicalization fixed point —
+            # no current build will ever address it. A reclaim candidate.
+            label = _CELL_NON_CANONICAL
         elif cell_shape_ok:
             label = _CELL_UNRESOLVABLE
         else:
@@ -2242,6 +2269,7 @@ def enumerate_cells(pool, kind):
                 "name": name,
                 "path": child.path,
                 "resolvable": resolvable,
+                "is_canonical": is_canonical,
                 "cell_shape_ok": cell_shape_ok,
                 "total_bytes": total_bytes,
                 "newest_mtime": newest_mtime,
