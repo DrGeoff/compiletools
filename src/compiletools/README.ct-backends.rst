@@ -8,7 +8,7 @@ Build backend architecture and selection guide
 
 :Author: drgeoffathome@gmail.com
 :Date:   2026-04-02
-:Version: 10.1.7
+:Version: 10.1.8
 :Manual section: 7
 :Manual group: developers
 
