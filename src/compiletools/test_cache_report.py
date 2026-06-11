@@ -393,3 +393,28 @@ class TestAllVariants:
         assert err["variant"] == "clang.debug"
         assert isinstance(err["error"], str)
         assert len(err["error"]) > 0
+
+    def test_text_mode_banner_and_content(self, tmp_path, monkeypatch, capsys):
+        """--all-variants text mode emits sorted banners and per-cache content."""
+        pool, conf = self._make_pool(tmp_path, monkeypatch)
+        rc = cache_report.main(
+            [
+                "--all-variants",
+                f"--cas-objdir={pool}",
+                f"--config={conf}",
+                "--variant=gcc.debug",
+            ]
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+
+        # Both resolvable variants must appear as banners.
+        assert "=== clang.debug ===" in out
+        assert "=== gcc.debug ===" in out
+
+        # clang banner must appear before gcc banner (sorted order).
+        assert out.index("=== clang.debug ===") < out.index("=== gcc.debug ===")
+
+        # Each variant section must contain per-cache text content.
+        # "Duplication summary" is a stable header label from _render_cas_objdir_text.
+        assert "Duplication summary" in out

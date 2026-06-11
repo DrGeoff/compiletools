@@ -1045,6 +1045,13 @@ def _render_combined_json(
 _CAS_DIR_FLAGS = ("--cas-objdir", "--cas-pchdir", "--cas-pcmdir", "--cas-exedir")
 
 
+def _should_scan(explicit: set[str], flag: str, path: str) -> bool:
+    """Return True if *flag*'s cache is in scope for this invocation."""
+    if explicit:
+        return flag in explicit
+    return os.path.isdir(path)
+
+
 def _run_all_variants(args: object, explicit: set[str]) -> int:
     """Implement ``--all-variants``: report every RESOLVABLE cell across in-scope pools.
 
@@ -1072,11 +1079,6 @@ def _run_all_variants(args: object, explicit: set[str]) -> int:
         0 if no errors occurred, 1 otherwise.
     """
     import compiletools.trim_cache
-
-    def _should_scan(flag: str, path: str) -> bool:
-        if explicit:
-            return flag in explicit
-        return os.path.isdir(path)
 
     # Table of (cli-flag, kind, cas_dir, report_fn, json_payload_fn, text_render_fn, json_key)
     cache_table = [
@@ -1125,7 +1127,7 @@ def _run_all_variants(args: object, explicit: set[str]) -> int:
     active_caches: list[tuple] = []
 
     for flag, kind, cas_dir, rep_fn, payload_fn, text_fn, json_key in cache_table:
-        if not _should_scan(flag, cas_dir):
+        if not _should_scan(explicit, flag, cas_dir):
             continue
         try:
             pool = compiletools.trim_cache.cell_pool_root(cas_dir, args.variant)  # type: ignore[attr-defined]
@@ -1169,19 +1171,19 @@ def _run_all_variants(args: object, explicit: set[str]) -> int:
                 if jk not in entry:
                     entry[jk] = None
 
+            if not use_json:
+                print(f"=== {vname} ===")
+                for json_key, _rep_fn, _payload_fn, text_fn in active_caches:
+                    rep = reps[json_key]
+                    if rep is not None:
+                        sys.stdout.write(text_fn(rep, top_n))
+
         except Exception as exc:  # per-cell isolation
             errors.append({"variant": vname, "error": str(exc)})
             print(f"Error reporting variant {vname!r}: {exc}", file=sys.stderr)
             continue
 
         variants.append(entry)
-
-        if not use_json:
-            print(f"=== {vname} ===")
-            for json_key, _rep_fn, _payload_fn, text_fn in active_caches:
-                rep = reps[json_key]
-                if rep is not None:
-                    sys.stdout.write(text_fn(rep, top_n))
 
     agg: dict = {
         "schema": 1,
@@ -1192,9 +1194,6 @@ def _run_all_variants(args: object, explicit: set[str]) -> int:
     if use_json:
         sys.stdout.write(json.dumps(agg, indent=2) + "\n")
 
-    if errors:
-        for err in errors:
-            print(f"Error in variant {err['variant']!r}: {err['error']}", file=sys.stderr)
     return 1 if errors else 0
 
 
@@ -1278,18 +1277,13 @@ def main(argv: list[str] | None = None) -> int:
     # invocation operates on the variant-default CASes.
     explicit = _explicit_cas_flags(argv)
 
-    def _should_scan(flag: str, path: str) -> bool:
-        if explicit:
-            return flag in explicit
-        return os.path.isdir(path)
-
     if args.all_variants:
         return _run_all_variants(args, explicit)
 
-    obj_rep = report(args.cas_objdir) if _should_scan("--cas-objdir", args.cas_objdir) else None
-    pch_rep_obj = pch_report(args.cas_pchdir) if _should_scan("--cas-pchdir", args.cas_pchdir) else None
-    pcm_rep_obj = pcm_report(args.cas_pcmdir) if _should_scan("--cas-pcmdir", args.cas_pcmdir) else None
-    exe_rep_obj = exe_report(args.cas_exedir) if _should_scan("--cas-exedir", args.cas_exedir) else None
+    obj_rep = report(args.cas_objdir) if _should_scan(explicit, "--cas-objdir", args.cas_objdir) else None
+    pch_rep_obj = pch_report(args.cas_pchdir) if _should_scan(explicit, "--cas-pchdir", args.cas_pchdir) else None
+    pcm_rep_obj = pcm_report(args.cas_pcmdir) if _should_scan(explicit, "--cas-pcmdir", args.cas_pcmdir) else None
+    exe_rep_obj = exe_report(args.cas_exedir) if _should_scan(explicit, "--cas-exedir", args.cas_exedir) else None
 
     # No-args invocation that found nothing on disk would otherwise
     # exit 0 with zero-byte stdout — confusing for an interactive user
