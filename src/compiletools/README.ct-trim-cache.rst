@@ -7,14 +7,16 @@ Trim stale entries from the object, PCH, PCM, and linker-artefact CAS directorie
 ----------------------------------------------------------------------------------
 
 :Author: drgeoffathome@gmail.com
-:Date:   2026-06-04
+:Date:   2026-06-11
 :Version: 10.1.7
 :Manual section: 1
 :Manual group: developers
 
 SYNOPSIS
 ========
-ct-trim-cache [--dry-run] [--cas-objdir PATH] [--cas-pchdir PATH] [--cas-pcmdir PATH] [--cas-exedir PATH] [--max-age DAYS] [--keep-count N] [--max-size SIZE] [--json] [-j N] [-v]
+ct-trim-cache [--dry-run] [--cas-objdir PATH] [--cas-pchdir PATH] [--cas-pcmdir PATH] [--cas-exedir PATH] [--max-age DAYS] [--keep-count N] [--max-size SIZE] [--all-variants] [--json] [-j N] [-v]
+
+ct-trim-cache --list-resolvable [--json] [--cas-\*dir PATH] [-v]
 
 ct-trim-cache --list-unresolvable [--json] [--cas-\*dir PATH] [-v]
 
@@ -118,6 +120,23 @@ unavailable, the trim falls through to a plain unlink. Even so, prefer
 running ``ct-trim-cache`` in a maintenance window; concurrent runs work
 but slow active builds while the trim holds locks.
 
+Whole-pool sweep (--all-variants)
+---------------------------------
+By default ``ct-trim-cache`` trims only the single cell named by the active
+``--variant`` (``<pool>/<variant>/``). ``--all-variants`` instead trims **every
+RESOLVABLE cell** in the pool — the same set ``--list-resolvable`` prints — in one
+invocation. Cells are trimmed sequentially; a failure in one cell is isolated
+(reported but not fatal, so the remaining cells still run), while intra-cell
+``-j`` parallelism is preserved. It honours ``--dry-run``, ``--max-age``,
+``--max-size``, ``--keep-count``, and a single ``--cas-*-only`` scope flag, and is
+mutually exclusive with the three pool modes (``--list-resolvable`` /
+``--list-unresolvable`` / ``--purge-unresolvable``). With ``--json`` it emits one
+aggregate object (``mode: all-variants``); see `MACHINE-READABLE OUTPUT`_. On a
+shared multi-user or multi-branch pool, prefer ``--max-age`` as the primary
+eviction control — without it, objects from other checkouts appear non-current and
+are evicted down to ``--keep-count`` per basename (see `MULTI-USER SHARED
+CACHES`_).
+
 WHEN TO USE
 ===========
 - Shared cache growing too large or approaching disk quota
@@ -165,6 +184,12 @@ USAGE
 
     # Machine-readable summary (JSON to stdout, all human text to stderr)
     ct-trim-cache --max-age 14 --json
+
+    # Trim every resolvable cell in the pool, not just the active --variant cell
+    ct-trim-cache --all-variants --max-age 14
+
+    # List active (resolvable, canonical) cells -- read-only, bare names to stdout
+    ct-trim-cache --list-resolvable
 
     # List orphaned cells (variants that no longer resolve here) -- read-only
     ct-trim-cache --list-unresolvable
@@ -352,10 +377,37 @@ ORPHANED-VARIANT CELLS
 ======================
 Each CAS is laid out ``<pool>/<variant>/<entries>``; one ``<pool>/<variant>/``
 directory is a *cell*. The normal trim only reaches the cell whose variant
-resolves from the current checkout's ``ct.conf.d`` hierarchy. When an axis conf
-is removed (a retired toolchain or product line), every cached cell for that
-variant becomes **unreachable** by the variant-driven trim — its bytes can never
-be reclaimed by the normal mode. Two pool-level modes address this:
+resolves from the current checkout's ``ct.conf.d`` hierarchy. Every cell is
+classified into exactly one of four labels:
+
+**RESOLVABLE**
+    The variant name resolves here **and** is a canonicalization fixed point
+    (already in canonical token order). These are the live cells the normal trim
+    and ``--all-variants`` operate on.
+**NON_CANONICAL**
+    The variant resolves but the name is **not** a canonicalization fixed point —
+    e.g. a doubled-token directory like ``gcc.gcc.debug.debug`` left by an older
+    build. A current build always addresses the canonical name, so these cells are
+    dead weight that the variant-driven trim never reaches.
+**UNRESOLVABLE**
+    The variant name no longer resolves against this checkout's conf hierarchy
+    (e.g. an axis conf for a retired toolchain or product line was removed), but
+    the directory is still structurally a real cache cell.
+**UNKNOWN**
+    Not resolvable and not a structurally valid cell — stray top-level buckets,
+    ``TraceStore/``, and other non-cell directories. Never purged.
+
+When an axis conf is removed, every cached cell for that variant becomes
+**unreachable** by the variant-driven trim — its bytes can never be reclaimed by
+the normal mode. Three pool-level modes address the non-RESOLVABLE cells:
+
+``--list-resolvable`` (read-only)
+    The complement of ``--list-unresolvable``: report only the **RESOLVABLE**
+    cells (the active, canonical variants the normal trim operates on). Prints the
+    bare sorted variant names to stdout (all human/progress text to stderr) so the
+    output can be piped: ``ct-trim-cache --list-resolvable | while read v; do
+    ...; done``. NON_CANONICAL / UNRESOLVABLE / UNKNOWN cells are excluded.
+    Deletes nothing.
 
 ``--list-unresolvable`` (read-only)
     For each cache pool, report the immediate ``<variant>/`` cells whose variant
@@ -363,8 +415,10 @@ be reclaimed by the normal mode. Two pool-level modes address this:
     file. Deletes nothing.
 
 ``--purge-unresolvable`` (destructive, requires ``--max-age``)
-    Remove cells that are **both** unresolvable here **and** cold (newest file
-    older than ``--max-age``).
+    Remove cells that are cold (newest file older than ``--max-age``) **and**
+    either UNRESOLVABLE here **or** NON_CANONICAL. The NON_CANONICAL reclamation
+    is what lets ``--purge-unresolvable`` clean up legacy doubled-token cells that
+    a current build will never address again, under the same coldness guard.
 
 **"Unresolvable here" is not, by itself, an orphan signal.** On a shared pool a
 cell unresolvable from this checkout may be *another* checkout's or branch's live
@@ -372,20 +426,23 @@ cache (confs are git-tracked, so a variant valid on one branch is unresolvable
 from another). The purge therefore layers two guards:
 
 * **Coldness gate (mandatory).** ``--purge-unresolvable`` requires
-  ``--max-age > 0`` and SPARES any unresolvable cell whose newest file is within
-  the cutoff — a warm cell is most likely a peer's live cache. ``--max-age``
-  values ``<= 0`` are rejected (a zero cutoff would defeat this guard).
+  ``--max-age > 0`` and SPARES any unresolvable **or** non-canonical cell whose
+  newest file is within the cutoff — a warm cell is most likely a peer's live
+  cache. ``--max-age`` values ``<= 0`` are rejected (a zero cutoff would defeat
+  this guard).
 * **Leaf-level lock safety.** Removal descends into each cell and takes the same
   per-artefact ``<path>.lock`` the producer rules use; it never recursively
   deletes a cell root unlocked. A cell whose artefacts a peer build is mid-write
   to (or that a peer repopulates during the sweep) is left intact and reported
   **deferred** to the next run, never hard-failed.
 
-Only cells that are unresolvable AND structurally a real cache cell are touched;
-stray top-level buckets, ``TraceStore/``, and other non-cell directories are
-classified ``UNKNOWN`` and never purged. A single ``--cas-*-only`` flag scopes
-either mode to one cache. The two modes are mutually exclusive with each other.
-Run ``--list-unresolvable`` first; it is the safe way to see exactly what
+Only cells that are UNRESOLVABLE or NON_CANONICAL (and structurally a real cache
+cell) are touched; ``UNKNOWN`` directories — stray top-level buckets,
+``TraceStore/``, and other non-cell directories — are never purged. A single
+``--cas-*-only`` flag scopes any of these modes to one cache. The three pool
+modes (``--list-resolvable`` / ``--list-unresolvable`` / ``--purge-unresolvable``)
+are mutually exclusive with each other and with ``--all-variants``. Run
+``--list-unresolvable`` first; it is the safe way to see exactly what
 ``--purge-unresolvable`` would consider.
 
 MACHINE-READABLE OUTPUT
@@ -394,8 +451,25 @@ MACHINE-READABLE OUTPUT
 text is routed to **stderr**, so stdout stays pure JSON) with raw integer byte
 counts and per-cache counts. Every payload carries a ``"schema": 1`` version
 marker and a ``"mode"`` discriminator — ``"trim"`` for the normal trim,
-``"list-unresolvable"`` and ``"purge-unresolvable"`` for the pool modes — so a
-consumer can tell the three shapes apart. ``--json`` composes with any mode.
+``"all-variants"`` for the whole-pool sweep, and ``"list-resolvable"`` /
+``"list-unresolvable"`` / ``"purge-unresolvable"`` for the pool modes — so a
+consumer can tell the shapes apart. ``--json`` composes with any mode.
+
+In ``"mode": "all-variants"`` output the object is an aggregate::
+
+    {
+      "schema": 1,
+      "mode": "all-variants",
+      "variants": [ { "variant": "<name>", "objdir": {...}, "pchdir": {...},
+                     "pcmdir": {...}, "exedir": {...} }, ... ],
+      "errors":   [ { "variant": "<name>", "error": "<message>" }, ... ]
+    }
+
+Each ``variants`` entry is one swept cell's per-pool ``"trim"`` stats (the same
+per-pool dicts described below) tagged with its ``"variant"`` name; the entry's
+own ``"schema"``/``"mode"`` keys are stripped so only the envelope carries them.
+The ``errors`` list holds one record per cell whose trim raised an isolated
+failure.
 
 In ``"mode": "trim"`` output the per-pool dicts (``objdir``, ``pchdir``,
 ``pcmdir``, ``exedir``) include the following new keys (always present,
@@ -482,20 +556,40 @@ Trim Options
     Only trim the linker-artefact CAS (executables, static libraries,
     shared libraries), skip object, PCH, and PCM trimming.
 
+Whole-pool Sweep
+----------------
+``--all-variants``
+    Trim every RESOLVABLE cell in the pool (the same set ``--list-resolvable``
+    prints), not just the active ``--variant`` cell. Cells are trimmed
+    sequentially with per-cell failure isolation; intra-cell ``-j`` parallelism
+    is preserved. Honours ``--dry-run`` / ``--max-age`` / ``--max-size`` /
+    ``--keep-count`` and a single ``--cas-*-only`` scope flag. Mutually exclusive
+    with the three orphan-cell modes. With ``--json`` emits one aggregate object
+    (``mode: all-variants``). See `Whole-pool sweep (--all-variants)`_.
+
 Orphan-cell Modes
 -----------------
+``--list-resolvable``
+    Read-only. The complement of ``--list-unresolvable``: print the bare sorted
+    names of the RESOLVABLE cells (active variants in canonical token order, the
+    cells the normal trim and ``--all-variants`` operate on) to stdout, one per
+    line, so the output can be piped. NON_CANONICAL / UNRESOLVABLE / UNKNOWN
+    cells are excluded. Deletes nothing. See `ORPHANED-VARIANT CELLS`_.
+
 ``--list-unresolvable``
     Read-only. List the per-variant cells (``<pool>/<variant>/``) whose variant
     no longer resolves against this checkout's conf hierarchy, with each cell's
     size and newest-file age. Deletes nothing. See `ORPHANED-VARIANT CELLS`_.
 
 ``--purge-unresolvable``
-    Destructive. Remove cells that are both unresolvable here and cold (newest
-    file older than ``--max-age``). **Requires ``--max-age > 0``.** Warm
-    unresolvable cells are spared (likely another live checkout's cache);
-    removal is leaf-level and lock-safe (contended cells are deferred, not
-    hard-failed). Mutually exclusive with ``--list-unresolvable``; a single
-    ``--cas-*-only`` flag scopes it to one cache. Honours ``--dry-run``.
+    Destructive. Remove cells that are cold (newest file older than
+    ``--max-age``) **and** either UNRESOLVABLE here **or** NON_CANONICAL (a
+    legacy doubled-token cell like ``gcc.gcc.debug.debug`` that a current build
+    will never address again). **Requires ``--max-age > 0``.** Warm cells are
+    spared (likely another live checkout's cache); removal is leaf-level and
+    lock-safe (contended cells are deferred, not hard-failed). Mutually exclusive
+    with ``--list-resolvable`` / ``--list-unresolvable`` / ``--all-variants``; a
+    single ``--cas-*-only`` flag scopes it to one cache. Honours ``--dry-run``.
 
 Output Options
 --------------
@@ -585,10 +679,14 @@ EXIT CODES
     - More than one of ``--cas-objdir-only`` / ``--cas-pchdir-only`` /
       ``--cas-pcmdir-only`` / ``--cas-exedir-only`` was specified (mutually
       exclusive).
-    - Both ``--list-unresolvable`` and ``--purge-unresolvable`` were specified
-      (mutually exclusive).
+    - More than one of ``--list-resolvable`` / ``--list-unresolvable`` /
+      ``--purge-unresolvable`` was specified, or any of them was combined with
+      ``--all-variants`` (all mutually exclusive).
     - ``--purge-unresolvable`` was given without ``--max-age``, or with
       ``--max-age <= 0``.
+    - With ``--all-variants``, one or more swept cells raised an isolated trim
+      failure (reported per-cell in the ``errors`` list of the aggregate;
+      the remaining cells still run).
     - ``--max-size`` was given an unrecognised value (not a valid integer or
       decimal with optional K/M/G/T suffix).
 

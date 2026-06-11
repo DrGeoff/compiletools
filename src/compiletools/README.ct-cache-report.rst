@@ -7,14 +7,14 @@ Summarize occupancy and detect duplication across the CAS directories
 ----------------------------------------------------------------------------------
 
 :Author: drgeoffathome@gmail.com
-:Date:   2026-05-10
+:Date:   2026-06-11
 :Version: 10.1.7
 :Manual section: 1
 :Manual group: developers
 
 SYNOPSIS
 ========
-ct-cache-report [--cas-objdir PATH] [--cas-pchdir PATH] [--cas-pcmdir PATH] [--cas-exedir PATH] [--top N] [--json] [--otel-export [--otel-endpoint URL] [--otel-protocol grpc|http] ...]
+ct-cache-report [--cas-objdir PATH] [--cas-pchdir PATH] [--cas-pcmdir PATH] [--cas-exedir PATH] [--top N] [--all-variants] [--json] [--otel-export [--otel-endpoint URL] [--otel-protocol grpc|http] ...]
 
 DESCRIPTION
 ===========
@@ -126,6 +126,19 @@ OPTIONS
 ``--top N``
     Show the top N most-duplicated entries per cache. Default: 10.
 
+``--all-variants``
+    Report **every RESOLVABLE cell** in the pool, not just the single
+    ``--variant`` cell. For each in-scope cache the pool root is derived
+    from the variant-suffixed ``--cas-*dir`` path; the resolvable variant
+    names are enumerated (the same set ``ct-trim-cache --list-resolvable``
+    prints) and reported in sorted order. Per-cell errors are isolated — a
+    failure in one cell is recorded but never aborts the others. The same
+    scope rules apply: with no explicit ``--cas-*dir`` flag, the
+    variant-default caches present on disk are swept; naming a ``--cas-*dir``
+    flag scopes the sweep to those caches. Exits nonzero if any cell errored.
+    With ``--json`` the document is the aggregate described under
+    `Whole-pool aggregate (--all-variants)`_.
+
 ``--json``
     Emit JSON instead of human-readable text. The JSON schema is
     described below.
@@ -199,6 +212,34 @@ Preserved for back-compat: when ONLY ``--cas-objdir`` is supplied with
 under ``cas-objdir-report``. Any combination involving another cache
 flag triggers the combined schema above.
 
+Whole-pool aggregate (--all-variants)
+-------------------------------------
+With ``--all-variants --json`` the document is a versioned aggregate
+that wraps one combined-schema report per resolvable cell::
+
+    {
+      "schema": 1,
+      "mode": "all-variants",
+      "variants": [
+        {
+          "variant": "<name>",
+          "cas-objdir-report": { ... } | null,
+          "cas-pchdir-report": { ... } | null,
+          "cas-pcmdir-report": { ... } | null,
+          "cas-exedir-report": { ... } | null
+        },
+        ...
+      ],
+      "errors": [ { "variant": "<name>", "error": "<message>" }, ... ]
+    }
+
+Each ``variants`` entry carries the same four ``cas-*-report`` keys as
+the combined schema (a cache that is out of scope, or has no cell for
+that variant, is ``null``) plus the cell's ``"variant"`` name. The
+``errors`` list holds one record per cell whose report raised an
+isolated failure; the process exits nonzero when it is non-empty. The
+flat objdir-only schema is never used under ``--all-variants``.
+
 OPENTELEMETRY METRIC EXPORT
 ===========================
 With ``--otel-export``, the same CAS-health figures rendered as text or
@@ -249,6 +290,10 @@ EXIT CODES
 0
     Success (including the no-args case where no cache directories
     exist on disk -- the report is empty but the run is well-formed).
+1
+    With ``--all-variants``, one or more cells raised an isolated report
+    failure (each is recorded in the aggregate's ``errors`` list; the
+    remaining cells still report).
 2
     Argument-parsing failure (e.g. an unknown flag).
 
@@ -269,6 +314,11 @@ EXAMPLES
 **All four caches, JSON for downstream tooling**::
 
     ct-cache-report --json | jq '.["cas-objdir-report"]."wasted-bytes"'
+
+**Report every resolvable cell in the pool (whole-pool sweep)**::
+
+    ct-cache-report --all-variants --json \
+        | jq '.variants[] | {variant, wasted: .["cas-objdir-report"]."wasted-bytes"}'
 
 **Show only the top-3 worst offenders**::
 
