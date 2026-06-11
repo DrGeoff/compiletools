@@ -2415,6 +2415,143 @@ def _all_files_under(root):
     return out
 
 
+# ── --list-resolvable: READ-ONLY complement of --list-unresolvable ─────────
+
+
+class TestListResolvableMode:
+    """``--list-resolvable`` runs a standalone READ-ONLY listing of RESOLVABLE
+    cells and returns 0 without trimming or removing anything."""
+
+    def _build_pool(self, tmp_path, monkeypatch):
+        """Build an obj pool with a known set of cells; classify only gcc.debug as RESOLVABLE.
+
+        Uses ``gcc.debug`` as the resolvable cell because that variant resolves
+        against the checkout's real conf hierarchy at parse time (``main`` calls
+        ``apptools.parseargs`` which calls the real ``resolve_variant``).
+        Classification inside ``enumerate_cells`` is controlled separately by
+        patching ``trim_cache._variant_resolvable``, so parse-time resolution
+        stays unaffected.
+
+        Pool layout (obj-shaped inner structure):
+          * ``gcc.debug``            — valid obj cell → RESOLVABLE (patched classifier)
+          * ``bogus.variant``        — valid obj cell → UNRESOLVABLE
+          * ``gcc.gcc.debug.debug``  — valid obj cell → NON_CANONICAL (patched canonical name)
+          * ``odd.variant``          — empty dir → UNKNOWN
+        """
+        pool = str(tmp_path / "pool")
+        os.makedirs(pool)
+
+        def _obj_shape(cell_dir):
+            bucket = os.path.join(cell_dir, "aa")
+            os.makedirs(bucket)
+            open(
+                os.path.join(bucket, "foo_aabbccddeeff_11223344556677_0011223344556677.o"),
+                "wb",
+            ).close()
+
+        for cell_name in ("gcc.debug", "bogus.variant", "gcc.gcc.debug.debug"):
+            cell_dir = os.path.join(pool, cell_name)
+            os.makedirs(cell_dir)
+            _obj_shape(cell_dir)
+
+        os.makedirs(os.path.join(pool, "odd.variant"))  # empty → UNKNOWN
+
+        # Patch only the CLASSIFICATION helper inside trim_cache, not the
+        # parse-time configutils.resolve_variant path.  gcc.debug resolves for
+        # real at parse time; bogus.variant and odd.variant do not, but they
+        # never reach apptools.parseargs — they are cells in the pool, not the
+        # active variant.
+        resolvable = {"gcc.debug", "gcc.gcc.debug.debug"}
+        monkeypatch.setattr(trim_cache, "_variant_resolvable", lambda name: name in resolvable)
+        # gcc.gcc.debug.debug resolves but is not a canonicalization fixed point.
+        noncanonical = {"gcc.gcc.debug.debug": "gcc.debug"}
+        monkeypatch.setattr(trim_cache, "_variant_canonical_name", lambda name: noncanonical.get(name, name))
+
+        return pool
+
+    def test_bare_names_to_stdout_sorted(self, tmp_path, monkeypatch, capsys):
+        pool = self._build_pool(tmp_path, monkeypatch)
+        objdir = os.path.join(pool, "gcc.debug")
+        rc = main(
+            [
+                "--list-resolvable",
+                "--cas-objdir-only",
+                f"--cas-objdir={objdir}",
+                "--variant=gcc.debug",
+            ]
+        )
+        cap = capsys.readouterr()
+        assert rc == 0
+        lines = [ln for ln in cap.out.splitlines() if ln.strip()]
+        assert lines == ["gcc.debug"]
+        assert "gcc.gcc.debug.debug" not in cap.out
+        assert "bogus.variant" not in cap.out
+        assert "odd.variant" not in cap.out
+
+    def test_json_shape(self, tmp_path, monkeypatch, capsys):
+        pool = self._build_pool(tmp_path, monkeypatch)
+        objdir = os.path.join(pool, "gcc.debug")
+        rc = main(
+            [
+                "--json",
+                "--list-resolvable",
+                "--cas-objdir-only",
+                f"--cas-objdir={objdir}",
+                "--variant=gcc.debug",
+            ]
+        )
+        cap = capsys.readouterr()
+        assert rc == 0
+        parsed = json.loads(cap.out)
+        assert parsed["schema"] == 1
+        assert parsed["mode"] == "list-resolvable"
+        obj = parsed["objdir"]
+        names = {c["name"] for c in obj["cells"]}
+        assert names == {"gcc.debug"}
+        assert isinstance(obj["resolvable_bytes"], int)
+
+    def test_read_only_deletes_nothing(self, tmp_path, monkeypatch, capsys):
+        pool = self._build_pool(tmp_path, monkeypatch)
+        objdir = os.path.join(pool, "gcc.debug")
+        before = _all_files_under(pool)
+        rc = main(
+            [
+                "--list-resolvable",
+                "--cas-objdir-only",
+                f"--cas-objdir={objdir}",
+                "--variant=gcc.debug",
+            ]
+        )
+        capsys.readouterr()
+        assert rc == 0
+        assert before == _all_files_under(pool)
+
+    def test_empty_pool_exit_zero_no_stdout(self, tmp_path, monkeypatch, capsys):
+        pool = str(tmp_path / "emptypool")
+        os.makedirs(os.path.join(pool, "gcc.debug"))
+        monkeypatch.setattr(trim_cache, "_variant_resolvable", lambda name: False)
+        objdir = os.path.join(pool, "gcc.debug")
+        rc = main(
+            [
+                "--list-resolvable",
+                "--cas-objdir-only",
+                f"--cas-objdir={objdir}",
+                "--variant=gcc.debug",
+            ]
+        )
+        cap = capsys.readouterr()
+        assert rc == 0
+        assert cap.out.strip() == ""
+
+    def test_mutually_exclusive_with_list_unresolvable(self):
+        rc = main(["--list-resolvable", "--list-unresolvable"])
+        assert rc == 1
+
+    def test_mutually_exclusive_with_purge_unresolvable(self):
+        rc = main(["--list-resolvable", "--purge-unresolvable", "--max-age=7"])
+        assert rc == 1
+
+
 # ── --purge-unresolvable: DESTRUCTIVE orphan reclamation ───────────────────
 
 

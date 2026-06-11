@@ -110,6 +110,23 @@ def add_arguments(cap):
         ),
     )
     cap.add_argument(
+        "--list-resolvable",
+        action="store_true",
+        default=False,
+        help=(
+            "READ-ONLY: list cache cells (per-variant <pool>/<variant>/ dirs) that are "
+            "ACTIVE — resolvable AND a canonicalization fixed point — against this "
+            "checkout's conf hierarchy.  Prints bare sorted variant names to stdout "
+            "(all human/progress text goes to stderr) so the output can be piped "
+            "directly: ct-trim-cache --list-resolvable | while read v; do ...; done. "
+            "Deletes nothing.  Complement of --list-unresolvable (NON_CANONICAL / "
+            "UNRESOLVABLE / UNKNOWN cells are excluded).  With --json emits the same "
+            "per-cache record structure as --list-unresolvable (mode: list-resolvable). "
+            "Honours a single --cas-*-only flag to scope to one cache.  Mutually "
+            "exclusive with --list-unresolvable and --purge-unresolvable."
+        ),
+    )
+    cap.add_argument(
         "--list-unresolvable",
         action="store_true",
         default=False,
@@ -190,17 +207,31 @@ def main(argv=None):
             )
             return 1
 
-        # --list-unresolvable and --purge-unresolvable are the two standalone
-        # pool-level modes. They are MUTUALLY EXCLUSIVE WITH EACH OTHER (the
-        # one mode-exclusivity guard). A single --cas-*-only flag is NOT
-        # forbidden here — it scopes either pool mode to the one selected cache
-        # (handled by the selection logic inside list_/purge_unresolvable_cells).
-        if args.list_unresolvable and args.purge_unresolvable:
+        # --list-resolvable / --list-unresolvable / --purge-unresolvable are the
+        # three standalone pool-level modes. They are MUTUALLY EXCLUSIVE WITH
+        # EACH OTHER. A single --cas-*-only flag is NOT forbidden here — it
+        # scopes any pool mode to the one selected cache (handled by the
+        # selection logic inside the respective _cells functions).
+        pool_modes = sum(
+            bool(getattr(args, name)) for name in ("list_resolvable", "list_unresolvable", "purge_unresolvable")
+        )
+        if pool_modes > 1:
             print(
-                "Error: --list-unresolvable and --purge-unresolvable are mutually exclusive (pick one)",
+                "Error: --list-resolvable / --list-unresolvable / --purge-unresolvable "
+                "are mutually exclusive (pick one)",
                 file=sys.stderr,
             )
             return 1
+
+        # --list-resolvable is a standalone READ-ONLY mode: print the active
+        # cell names and return without touching the normal trim path.
+        if args.list_resolvable:
+            result = compiletools.trim_cache.list_resolvable_cells(args)
+            if args.json:
+                print(json.dumps(result, indent=2))
+            else:
+                compiletools.trim_cache.print_resolvable_report(result)
+            return 0
 
         # --list-unresolvable is a standalone READ-ONLY mode: run the orphan
         # listing and return without touching the normal trim path.

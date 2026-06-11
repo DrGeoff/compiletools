@@ -2348,6 +2348,73 @@ def list_unresolvable_cells(args, stream=None):
     return result
 
 
+def list_resolvable_cells(args, stream=None):
+    """Run the read-only ``--list-resolvable`` discovery across the caches.
+
+    Complement of ``list_unresolvable_cells``: for each active cache (honouring
+    the ``--cas-*-only`` selection, same as the trim path), derive its
+    ``(pool, kind)`` via ``cell_pool_root`` and ``enumerate_cells`` it, keeping
+    only cells whose ``label`` is ``_CELL_RESOLVABLE`` — i.e. resolvable AND a
+    canonicalization fixed point.  A NON_CANONICAL / UNRESOLVABLE / UNKNOWN cell
+    is never reported here.
+
+    Identical ``(pool, kind)`` pairs are enumerated once and the same record
+    list is reused.  A cache whose pool root cannot be trusted (``cell_pool_root``
+    raises ``ValueError``) emits a diagnostic to *stream* (stderr by default)
+    and is skipped — the listing continues across the other caches rather than
+    aborting the whole run.
+
+    This function NEVER mutates the filesystem.
+
+    Args:
+        args: Parsed args namespace (needs ``cas_objdir`` / ``cas_pchdir`` /
+            ``cas_pcmdir`` / ``cas_exedir``, ``variant``, and the four
+            ``cas_*_only`` flags).
+        stream: Diagnostic stream (default ``sys.stderr`` resolved at call time
+            so pytest ``capsys`` patching works).
+
+    Returns:
+        A dict with keys ``schema`` / ``mode`` plus ``objdir`` / ``pchdir`` /
+        ``pcmdir`` / ``exedir``; each is ``None`` when that cache was not run,
+        else ``{"pool": str, "cells": [<RESOLVABLE record>, ...],
+        "resolvable_bytes": int}``.
+    """
+    if stream is None:
+        stream = sys.stderr
+
+    caches = _active_cache_sections(args)
+    variant = getattr(args, "variant", None)
+    result: dict = {
+        "schema": 1,
+        "mode": "list-resolvable",
+        "objdir": None,
+        "pchdir": None,
+        "pcmdir": None,
+        "exedir": None,
+    }
+    enumerated: dict[tuple[str, str], list] = {}  # (pool, kind) -> records
+
+    for section, kind, cas_dir, active in caches:
+        if not active or not cas_dir:
+            continue
+        try:
+            pool = cell_pool_root(cas_dir, variant)
+        except ValueError as exc:
+            print(f"warning: cannot list resolvable cells for {section}: {exc}", file=stream)
+            continue
+        key = (pool, kind)
+        if key not in enumerated:
+            enumerated[key] = enumerate_cells(pool, kind)
+        resolvable_cells = [c for c in enumerated[key] if c["label"] == _CELL_RESOLVABLE]
+        result[section] = {
+            "pool": pool,
+            "cells": resolvable_cells,
+            "resolvable_bytes": sum(c["total_bytes"] for c in resolvable_cells),
+        }
+
+    return result
+
+
 def _purge_one_cell(cell_path, *, dry_run):
     """Leaf-level lock-safe removal of one purgeable cell.
 
@@ -2622,6 +2689,32 @@ def print_unresolvable_report(result, *, stream=None):
                 f"  ({_format_size(cell['total_bytes'])}, age {_format_age_days(cell['newest_mtime'], now)})",
                 file=stream,
             )
+
+
+def print_resolvable_report(result, *, stream=None):
+    """Print bare resolvable variant names, newline-separated and sorted, to *stream*.
+
+    Output is the SORTED UNION of resolvable cell names across every cache that
+    ran (a variant is "active" if it resolves in any selected cache).  Bare names
+    only — nothing else on *stream* (stdout by default) — so the output composes
+    in a shell pipeline::
+
+        ct-trim-cache --list-resolvable | while read v; do ... --variant="$v"; done
+
+    Human/progress text goes to stderr (the caller's responsibility); this
+    function only writes the names to *stream*.
+    """
+    if stream is None:
+        stream = sys.stdout
+    names: set[str] = set()
+    for section in ("objdir", "pchdir", "pcmdir", "exedir"):
+        info = result.get(section)
+        if info is None:
+            continue
+        for cell in info["cells"]:
+            names.add(cell["name"])
+    for name in sorted(names):
+        print(name, file=stream)
 
 
 def _format_size(size_bytes):
