@@ -2302,9 +2302,10 @@ def list_unresolvable_cells(args, stream=None):
             so pytest ``capsys`` patching works).
 
     Returns:
-        A dict with keys ``objdir`` / ``pchdir`` / ``pcmdir`` / ``exedir``;
-        each is ``None`` when that cache was not run, else
-        ``{"pool": str, "cells": [<record>, ...]}``.
+        A dict with keys ``schema`` / ``mode`` plus ``objdir`` / ``pchdir`` /
+        ``pcmdir`` / ``exedir``; each is ``None`` when that cache was not run,
+        else ``{"pool": str, "cells": [<record>, ...], "unresolvable_bytes":
+        int, "unknown_bytes": int, "non_canonical_bytes": int}``.
     """
     if stream is None:
         stream = sys.stderr

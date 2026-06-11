@@ -2530,6 +2530,7 @@ class TestListResolvableMode:
         pool = str(tmp_path / "emptypool")
         os.makedirs(os.path.join(pool, "gcc.debug"))
         monkeypatch.setattr(trim_cache, "_variant_resolvable", lambda name: False)
+        monkeypatch.setattr(trim_cache, "_variant_canonical_name", lambda name: name)
         objdir = os.path.join(pool, "gcc.debug")
         rc = main(
             [
@@ -2542,6 +2543,79 @@ class TestListResolvableMode:
         cap = capsys.readouterr()
         assert rc == 0
         assert cap.out.strip() == ""
+
+    def test_untrusted_pool_root_does_not_abort(self, tmp_path, monkeypatch, capsys):
+        """A cache whose ``cell_pool_root`` raises ``ValueError`` is skipped with
+        a stderr diagnostic WITHOUT aborting the listing or producing any stdout.
+
+        We drive ``list_resolvable_cells`` directly: the objdir basename
+        (``mismatch``) disagrees with the variant (``good.variant``), so
+        ``cell_pool_root`` refuses it; the pchdir is trusted.  We assert rc == 0,
+        a stderr diagnostic for the objdir, no exception, and the pchdir section
+        still produced — all without touching the filesystem.
+        """
+        pool, _expected = _make_synthetic_pool(tmp_path, "pch")
+        _patch_resolver(monkeypatch, {"good.variant"})
+
+        args = _make_args(
+            list_resolvable=True,
+            variant="good.variant",
+            # objdir basename ('mismatch') != variant → cell_pool_root refuses.
+            cas_objdir=os.path.join(pool, "mismatch"),
+            cas_pchdir=os.path.join(pool, "good.variant"),  # trusted
+            cas_pcmdir=os.path.join(pool, "good.variant"),
+            cas_exedir=os.path.join(pool, "good.variant"),
+            cas_objdir_only=False,
+            cas_pchdir_only=False,
+            cas_pcmdir_only=False,
+            cas_exedir_only=False,
+        )
+        result = trim_cache.list_resolvable_cells(args)
+        cap = capsys.readouterr()
+        # A diagnostic for the untrusted objdir went to stderr.
+        assert cap.err != ""
+        # The diagnostic must NOT appear on stdout (stdout stays pure for names).
+        assert cap.out == ""
+        # ...but the pch section was still produced (no whole-run abort).
+        assert result.get("pchdir") is not None
+
+    def test_multi_cache_union_and_dedup(self, tmp_path, monkeypatch, capsys):
+        """``print_resolvable_report`` emits the SORTED UNION of resolvable names
+        across multiple active caches, and deduplicates names that appear in more
+        than one cache.
+
+        We unit-test ``print_resolvable_report`` directly by constructing a
+        ``result`` dict with two sections (objdir + pchdir) each holding distinct
+        resolvable cell records, plus a name shared by both (``shared.cell``).
+        The expected stdout is the three names sorted, with the shared one
+        appearing exactly once.
+        """
+        import io
+
+        def _cell(name, total_bytes=0):
+            return {"name": name, "label": "RESOLVABLE", "total_bytes": total_bytes}
+
+        result = {
+            "schema": 1,
+            "mode": "list-resolvable",
+            "objdir": {
+                "pool": "/fake/pool",
+                "cells": [_cell("obj.only.cell"), _cell("shared.cell")],
+                "resolvable_bytes": 0,
+            },
+            "pchdir": {
+                "pool": "/fake/pool",
+                "cells": [_cell("pch.only.cell"), _cell("shared.cell")],
+                "resolvable_bytes": 0,
+            },
+            "pcmdir": None,
+            "exedir": None,
+        }
+        buf = io.StringIO()
+        trim_cache.print_resolvable_report(result, stream=buf)
+        lines = [ln for ln in buf.getvalue().splitlines() if ln.strip()]
+        # Sorted union: obj.only, pch.only, shared — shared deduped to one.
+        assert lines == sorted({"obj.only.cell", "pch.only.cell", "shared.cell"})
 
     def test_mutually_exclusive_with_list_unresolvable(self):
         rc = main(["--list-resolvable", "--list-unresolvable"])
