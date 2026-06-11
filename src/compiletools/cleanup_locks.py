@@ -11,6 +11,12 @@ import sys
 
 import compiletools.lock_utils
 
+# Keys of the stats dict returned by ``LockCleaner.scan_and_cleanup``.
+# ``cleanup_locks_main._run_all_variants`` seeds its aggregate from this
+# tuple, so adding/removing a key here automatically flows through to the
+# --all-variants summary instead of silently dropping it.
+SCAN_STATS_KEYS = ("total", "active", "stale_removed", "stale_failed", "unknown", "skipped_young")
+
 
 class LockCleaner:
     """Scans and cleans up stale locks in object CAS."""
@@ -149,7 +155,7 @@ class LockCleaner:
         Returns:
             dict: Statistics about locks found/cleaned
         """
-        stats = {"total": 0, "active": 0, "stale_removed": 0, "stale_failed": 0, "unknown": 0, "skipped_young": 0}
+        stats = dict.fromkeys(SCAN_STATS_KEYS, 0)
 
         if not os.path.exists(objdir):
             print(f"ERROR: Object directory does not exist: {objdir}", file=sys.stderr)

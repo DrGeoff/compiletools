@@ -423,7 +423,12 @@ the normal mode. Three pool-level modes address the non-RESOLVABLE cells:
 **"Unresolvable here" is not, by itself, an orphan signal.** On a shared pool a
 cell unresolvable from this checkout may be *another* checkout's or branch's live
 cache (confs are git-tracked, so a variant valid on one branch is unresolvable
-from another). The purge therefore layers two guards:
+from another). The same caveat applies to **NON_CANONICAL**: the canonical token
+order is itself checkout-overridable (CLI / ``CT_VARIANT_CANONICAL_ORDER`` env /
+``variant-canonical-order`` in any ct.conf), so a peer checkout with a different
+order legitimately writes cells that classify NON_CANONICAL *here* — "a current
+build always addresses the canonical name" means a build from *this* checkout's
+order. The purge therefore layers two guards:
 
 * **Coldness gate (mandatory).** ``--purge-unresolvable`` requires
   ``--max-age > 0`` and SPARES any unresolvable **or** non-canonical cell whose

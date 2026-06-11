@@ -101,8 +101,7 @@ def _run_all_variants(args, cleaner):
         if c["label"] == compiletools.trim_cache._CELL_RESOLVABLE
     ]
 
-    _zero_stats = {"total": 0, "active": 0, "stale_removed": 0, "stale_failed": 0, "unknown": 0, "skipped_young": 0}
-    aggregate = dict(_zero_stats)
+    aggregate = dict.fromkeys(compiletools.cleanup_locks.SCAN_STATS_KEYS, 0)
     errors: list[dict] = []
     failed = False
 
@@ -114,7 +113,7 @@ def _run_all_variants(args, cleaner):
             errors.append({"variant": cell["name"], "error": str(exc)})
             failed = True
             continue
-        for key in _zero_stats:
+        for key in compiletools.cleanup_locks.SCAN_STATS_KEYS:
             aggregate[key] += cell_stats[key]
         if cell_stats["stale_failed"] > 0:
             failed = True

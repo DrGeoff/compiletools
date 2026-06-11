@@ -1168,16 +1168,16 @@ def _run_all_variants(args: object, explicit: set[str]) -> int:
                 cell_dir = dirs.get(json_key)
                 reps[json_key] = rep_fn(cell_dir) if cell_dir is not None else None
 
-            # Populate JSON payload for each active cache key.
-            for json_key, _rep_fn, payload_fn, _text_fn in active_caches:
-                rep = reps[json_key]
-                entry[json_key] = payload_fn(rep, top_n) if rep is not None else None
-            # Fill in None for any cache that was out-of-scope.
-            for _, _, _, _, _, _, jk in cache_table:
-                if jk not in entry:
-                    entry[jk] = None
-
-            if not use_json:
+            if use_json:
+                # Populate JSON payload for each active cache key.
+                for json_key, _rep_fn, payload_fn, _text_fn in active_caches:
+                    rep = reps[json_key]
+                    entry[json_key] = payload_fn(rep, top_n) if rep is not None else None
+                # Fill in None for any cache that was out-of-scope.
+                for _, _, _, _, _, _, jk in cache_table:
+                    if jk not in entry:
+                        entry[jk] = None
+            else:
                 print(f"=== {vname} ===")
                 for json_key, _rep_fn, _payload_fn, text_fn in active_caches:
                     rep = reps[json_key]

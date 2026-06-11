@@ -137,7 +137,10 @@ OPTIONS
     variant-default caches present on disk are swept; naming a ``--cas-*dir``
     flag scopes the sweep to those caches. Exits nonzero if any cell errored.
     With ``--json`` the document is the aggregate described under
-    `Whole-pool aggregate (--all-variants)`_.
+    `Whole-pool aggregate (--all-variants)`_. Cannot be combined with
+    ``--otel-export`` (a hard error): metric export covers only the single
+    ``--variant`` cell, so run ``ct-cache-report --otel-export`` once per
+    variant instead.
 
 ``--json``
     Emit JSON instead of human-readable text. The JSON schema is

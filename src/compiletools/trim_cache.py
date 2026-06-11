@@ -2177,7 +2177,12 @@ def _variant_canonical_name(name):
     candidate (labeled NON_CANONICAL by ``enumerate_cells``).
 
     Uses ``argv=None`` so canonical-order resolution reads the conf hierarchy
-    directly, exactly like ``_variant_resolvable``.
+    directly, exactly like ``_variant_resolvable``. A CLI
+    ``--variant-canonical-order`` passed to the trim tool is therefore
+    deliberately NOT consulted: cell classification describes what the conf
+    hierarchy would address, and must agree with ``_variant_resolvable`` —
+    not with a one-off override that the builds which wrote the cells never
+    saw.
     """
     import compiletools.configutils
 
@@ -2686,7 +2691,8 @@ def print_unresolvable_report(result, *, stream=None):
             continue
         for cell in cells:
             print(
-                f"  {cell['label']:<12} {cell['name']}"
+                # Width 13 fits the longest label, NON_CANONICAL.
+                f"  {cell['label']:<13} {cell['name']}"
                 f"  ({_format_size(cell['total_bytes'])}, age {_format_age_days(cell['newest_mtime'], now)})",
                 file=stream,
             )

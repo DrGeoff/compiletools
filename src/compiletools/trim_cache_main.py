@@ -337,7 +337,11 @@ def main(argv=None):
 
             current_hashes_av: set = set()
             stream = sys.stderr if args.json else sys.stdout
-            if do_objdir and per_variant_dirs:
+            # The git hash scan only protects object-cache currency, so skip
+            # it when no enumerated cell actually has an objdir entry (e.g. a
+            # pch/pcm-only pool) — per_variant_dirs being non-empty alone
+            # doesn't imply any objdir work.
+            if do_objdir and any("objdir" in dirs for dirs in per_variant_dirs.values()):
                 from compiletools.build_context import BuildContext
                 from compiletools.global_hash_registry import load_hashes
 
