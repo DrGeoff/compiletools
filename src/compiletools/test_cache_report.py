@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 
 import pytest
@@ -331,15 +332,37 @@ class TestAllVariants:
             assert obj_rep["duplicated-groups-count"] == 1
             assert obj_rep["wasted-bytes"] > 0
 
+    def test_otel_export_rejected(self, tmp_path, monkeypatch, capsys):
+        """--all-variants --otel-export is a hard error: export only covers the
+        single --variant cell, so the combination would silently drop metrics."""
+        pool, conf = self._make_pool(tmp_path, monkeypatch)
+        rc = cache_report.main(
+            [
+                "--all-variants",
+                "--otel-export",
+                f"--cas-objdir={pool}",
+                f"--config={conf}",
+                "--variant=gcc.debug",
+            ]
+        )
+        cap = capsys.readouterr()
+        assert rc == 1
+        assert "--all-variants" in cap.err
+        assert "--otel-export" in cap.err
+        # No report output: the rejection short-circuits before any scan.
+        assert cap.out == ""
+
     def test_read_only_no_mutation(self, tmp_path, monkeypatch, capsys):
         """--all-variants must not create, modify, or delete any file."""
         pool, conf = self._make_pool(tmp_path, monkeypatch)
 
         def _snapshot(root):
             snap = {}
-            for dirpath, _dirs, files in pathlib.Path(root).walk():
+            # os.walk, not pathlib.Path.walk — the latter is 3.12+ and the
+            # project supports 3.10 (pyright pythonVersion pin).
+            for dirpath, _dirs, files in os.walk(root):
                 for name in files:
-                    p = dirpath / name
+                    p = pathlib.Path(dirpath) / name
                     snap[str(p)] = p.read_bytes()
             return snap
 

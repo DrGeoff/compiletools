@@ -1284,6 +1284,19 @@ def main(argv: list[str] | None = None) -> int:
     explicit = _explicit_cas_flags(argv)
 
     if args.all_variants:
+        # --otel-export covers only the single --variant cell (the export
+        # block below never runs on the _run_all_variants path), so the
+        # combination would silently drop metrics from a cron deployment.
+        # Reject it outright, matching the hard-error convention for
+        # unsupported flag combinations (cf. --use-mtime on non-make backends).
+        if getattr(args, "otel_export", False):
+            print(
+                "Error: --all-variants cannot be combined with --otel-export "
+                "(metric export covers only the single --variant cell; run "
+                "ct-cache-report --otel-export once per variant instead)",
+                file=sys.stderr,
+            )
+            return 1
         return _run_all_variants(args, explicit)
 
     obj_rep = report(args.cas_objdir) if _should_scan(explicit, "--cas-objdir", args.cas_objdir) else None
