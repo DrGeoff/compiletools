@@ -16,12 +16,14 @@ The tool will:
 5. Remove stale locks (or report them in --dry-run mode)
 """
 
+import os
 import sys
 
 import compiletools.apptools
 import compiletools.cleanup_locks
 import compiletools.configutils
 import compiletools.namer
+import compiletools.trim_cache
 
 
 def add_arguments(cap):
@@ -48,6 +50,69 @@ def add_arguments(cap):
         default=None,
         help="Only check locks older than this many seconds (default: lock-cross-host-timeout)",
     )
+    cap.add_argument(
+        "--all-variants",
+        action="store_true",
+        default=False,
+        help=(
+            "Sweep every RESOLVABLE obj-pool cell for stale locks, not just the "
+            "active --variant cell.  Enumerates the pool root derived from "
+            "--cas-objdir + --variant via cell_pool_root."
+        ),
+    )
+
+
+def _run_all_variants(args, cleaner):
+    """Sweep every RESOLVABLE obj-pool cell for stale locks.
+
+    Derives the pool root from ``args.cas_objdir`` + ``args.variant`` via
+    ``cell_pool_root``, then enumerates every RESOLVABLE cell in the pool and
+    calls ``cleaner.scan_and_cleanup`` on each in sorted order.  Per-cell
+    exceptions are caught and recorded — one bad cell must not abort the sweep.
+
+    Args:
+        args: Parsed args namespace (needs ``cas_objdir``, ``variant``,
+            ``verbose``).
+        cleaner: ``LockCleaner`` instance (already configured with ``args``).
+
+    Returns:
+        int: 0 on full success, 1 if any cell failed or raised an exception.
+    """
+    pool = compiletools.trim_cache.cell_pool_root(args.cas_objdir, args.variant)
+    cells = [
+        c
+        for c in compiletools.trim_cache.enumerate_cells(pool, "obj")
+        if c["label"] == compiletools.trim_cache._CELL_RESOLVABLE
+    ]
+
+    _zero_stats = {"total": 0, "active": 0, "stale_removed": 0, "stale_failed": 0, "unknown": 0, "skipped_young": 0}
+    aggregate = dict(_zero_stats)
+    errors: list[dict] = []
+    failed = False
+
+    for cell in sorted(cells, key=lambda c: c["name"]):
+        cell_path = os.path.join(pool, cell["name"])
+        try:
+            cell_stats = cleaner.scan_and_cleanup(cell_path)
+        except Exception as exc:
+            errors.append({"variant": cell["name"], "error": str(exc)})
+            failed = True
+            continue
+        for key in _zero_stats:
+            aggregate[key] += cell_stats[key]
+        if cell_stats["stale_failed"] > 0:
+            failed = True
+
+    # Print aggregate summary using the standard cleaner method
+    if args.verbose >= 1:
+        print(f"Swept {len(cells)} RESOLVABLE obj-pool cell(s) (--all-variants).")
+    cleaner.print_summary(aggregate)
+
+    if errors:
+        for err in errors:
+            print(f"  Error in cell {err['variant']!r}: {err['error']}", file=sys.stderr)
+
+    return 1 if failed else 0
 
 
 def main(argv=None):
@@ -92,6 +157,9 @@ def main(argv=None):
 
         # Create cleaner and run
         cleaner = compiletools.cleanup_locks.LockCleaner(args)
+
+        if args.all_variants:
+            return _run_all_variants(args, cleaner)
 
         # Get objdir from namer (respects ct.conf settings)
         from compiletools.build_context import BuildContext

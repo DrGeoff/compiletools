@@ -6,6 +6,7 @@ Tests cover:
 - Race condition handling
 - Metrics validation
 - CLI entry point
+- Whole-pool --all-variants sweep
 """
 
 import os
@@ -20,6 +21,7 @@ import pytest
 import compiletools.cleanup_locks
 import compiletools.cleanup_locks_main
 import compiletools.git_utils
+import compiletools.trim_cache
 
 
 @pytest.fixture
@@ -553,6 +555,7 @@ class TestCleanupLocksMain:
         mock_args.lock_cross_host_timeout = 600
         mock_args.ssh_timeout = 5
         mock_args.dry_run = dry_run
+        mock_args.all_variants = False
 
         mock_cleaner = Mock()
         mock_cleaner.scan_and_cleanup.return_value = stats
@@ -623,3 +626,122 @@ class TestCleanupLocksMain:
             mock_parser.return_value.parse_args.return_value = mock_args
             with pytest.raises(OSError):
                 compiletools.cleanup_locks_main.main(argv=[])
+
+
+class TestAllVariants:
+    """``--all-variants`` sweeps every RESOLVABLE obj-pool cell for stale locks.
+
+    Pool layout used by most tests:
+      * ``gcc.debug``    — RESOLVABLE (patched classifier) — has a stale lockdir
+      * ``clang.debug``  — RESOLVABLE (patched classifier) — has a stale lockdir
+      * ``bogus.variant`` — UNRESOLVABLE (patched classifier) — has a stale
+                            lockdir that MUST survive untouched
+
+    The test argv passes ``--cas-objdir=<pool>/gcc.debug`` and
+    ``--variant=gcc.debug`` so that ``cell_pool_root`` can climb from the
+    variant-suffixed path to the pool root.  ``--min-lock-age=0`` ensures the
+    planted locks are not skipped as too young.
+    """
+
+    hostname = socket.gethostname()
+
+    def _build_pool(self, tmp_path, monkeypatch):
+        """Create an obj pool with resolvable and unresolvable cells, each with a
+        stale lockdir inside them."""
+        pool = tmp_path / "pool"
+        pool.mkdir()
+
+        for cell_name in ("gcc.debug", "clang.debug", "bogus.variant"):
+            cell_dir = str(pool / cell_name)
+            os.makedirs(cell_dir)
+            # Plant a stale lockdir (PID 999999 is non-existent locally)
+            create_old_lockdir(cell_dir, "lock1", self.hostname, 999999, 200)
+
+        resolvable = {"gcc.debug", "clang.debug"}
+        monkeypatch.setattr(compiletools.trim_cache, "_variant_resolvable", lambda name: name in resolvable)
+        monkeypatch.setattr(compiletools.trim_cache, "_variant_canonical_name", lambda name: name)
+        return str(pool)
+
+    def test_sweeps_every_resolvable_cell(self, tmp_path, monkeypatch):
+        """--all-variants sweeps every RESOLVABLE cell; UNRESOLVABLE cells are untouched."""
+        pool = self._build_pool(tmp_path, monkeypatch)
+
+        gcc_lockdir = os.path.join(pool, "gcc.debug", "lock1.lockdir")
+        clang_lockdir = os.path.join(pool, "clang.debug", "lock1.lockdir")
+        bogus_lockdir = os.path.join(pool, "bogus.variant", "lock1.lockdir")
+
+        # All lockdirs must exist before the sweep
+        assert os.path.exists(gcc_lockdir)
+        assert os.path.exists(clang_lockdir)
+        assert os.path.exists(bogus_lockdir)
+
+        rc = compiletools.cleanup_locks_main.main(
+            [
+                "--all-variants",
+                f"--cas-objdir={pool}/gcc.debug",
+                "--variant=gcc.debug",
+                "--min-lock-age=0",
+            ]
+        )
+
+        assert rc == 0
+        assert not os.path.exists(gcc_lockdir), "gcc.debug stale lockdir must be removed"
+        assert not os.path.exists(clang_lockdir), "clang.debug stale lockdir must be removed"
+        assert os.path.exists(bogus_lockdir), "bogus.variant lockdir must NOT be touched"
+
+    def test_dry_run_removes_nothing(self, tmp_path, monkeypatch):
+        """--all-variants --dry-run reports but touches nothing."""
+        pool = self._build_pool(tmp_path, monkeypatch)
+
+        gcc_lockdir = os.path.join(pool, "gcc.debug", "lock1.lockdir")
+        clang_lockdir = os.path.join(pool, "clang.debug", "lock1.lockdir")
+        bogus_lockdir = os.path.join(pool, "bogus.variant", "lock1.lockdir")
+
+        rc = compiletools.cleanup_locks_main.main(
+            [
+                "--all-variants",
+                "--dry-run",
+                f"--cas-objdir={pool}/gcc.debug",
+                "--variant=gcc.debug",
+                "--min-lock-age=0",
+            ]
+        )
+
+        assert rc == 0
+        # All lockdirs must still exist after dry-run
+        assert os.path.exists(gcc_lockdir), "gcc.debug lockdir must survive --dry-run"
+        assert os.path.exists(clang_lockdir), "clang.debug lockdir must survive --dry-run"
+        assert os.path.exists(bogus_lockdir), "bogus.variant lockdir must survive --dry-run"
+
+    def test_bad_cell_isolated_not_fatal(self, tmp_path, monkeypatch):
+        """A per-cell scan_and_cleanup exception is isolated; the other cell still runs; rc==1."""
+        pool = self._build_pool(tmp_path, monkeypatch)
+
+        gcc_lockdir = os.path.join(pool, "gcc.debug", "lock1.lockdir")
+        clang_lockdir = os.path.join(pool, "clang.debug", "lock1.lockdir")
+
+        real_scan = compiletools.cleanup_locks.LockCleaner.scan_and_cleanup
+
+        def flaky_scan(self_cleaner, objdir):
+            # Fail only for the clang.debug cell
+            if objdir.endswith(os.sep + "clang.debug"):
+                raise RuntimeError("injected per-cell boom")
+            return real_scan(self_cleaner, objdir)
+
+        monkeypatch.setattr(compiletools.cleanup_locks.LockCleaner, "scan_and_cleanup", flaky_scan)
+
+        rc = compiletools.cleanup_locks_main.main(
+            [
+                "--all-variants",
+                f"--cas-objdir={pool}/gcc.debug",
+                "--variant=gcc.debug",
+                "--min-lock-age=0",
+            ]
+        )
+
+        # rc==1 because one cell errored
+        assert rc == 1
+        # gcc.debug must still have been cleaned (the other resolvable cell)
+        assert not os.path.exists(gcc_lockdir), "gcc.debug lockdir must be removed despite clang.debug error"
+        # clang.debug was not processed (exception raised before scan)
+        assert os.path.exists(clang_lockdir), "clang.debug lockdir must remain (cell errored)"
