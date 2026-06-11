@@ -835,6 +835,30 @@ class TestVariant:
         got = compiletools.configutils.canonicalize_variant_tokens(("debug", "zproj", "gcc", "myproj"), order)
         assert got == ("gcc", "debug", "zproj", "myproj"), got
 
+    def test_canonicalize_variant_tokens_dedups_keeping_first_occurrence(self):
+        """A repeated token collapses to a single occurrence in canonical order."""
+        order = compiletools.configutils._DEFAULT_VARIANT_CANONICAL_ORDER
+        # Doubled known tokens: each survives once, in canonical order.
+        got = compiletools.configutils.canonicalize_variant_tokens(("gcc", "gcc", "debug", "debug"), order)
+        assert got == ("gcc", "debug"), got
+        # Doubled unknown token: first occurrence wins, order preserved.
+        got = compiletools.configutils.canonicalize_variant_tokens(("myproj", "asan", "myproj"), order)
+        assert got == ("asan", "myproj"), got
+
+    def test_canonicalize_variant_tokens_is_idempotent(self):
+        """canon(canon(x)) == canon(x) for both duplicate-free and doubled input."""
+        order = compiletools.configutils._DEFAULT_VARIANT_CANONICAL_ORDER
+        for tokens in (("gcc", "debug", "asan"), ("gcc", "gcc", "debug"), ("debug", "gcc")):
+            once = compiletools.configutils.canonicalize_variant_tokens(tokens, order)
+            twice = compiletools.configutils.canonicalize_variant_tokens(once, order)
+            assert once == twice, (tokens, once, twice)
+
+    def test_canonicalize_variant_tokens_noop_on_duplicate_free_input(self):
+        """Dedup never changes a well-formed (duplicate-free) variant."""
+        order = compiletools.configutils._DEFAULT_VARIANT_CANONICAL_ORDER
+        got = compiletools.configutils.canonicalize_variant_tokens(("gcc", "debug", "asan"), order)
+        assert got == ("gcc", "debug", "asan"), got
+
     def test_user_axis_extending_ccache_wrappers_resolves_cleanly(self):
         """End-to-end: a user-defined axis can extend the bundled
         ``ccache-gcc`` / ``ccache-clang`` axes. Their canonical positions

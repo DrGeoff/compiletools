@@ -307,17 +307,28 @@ def get_canonical_order(
 
 
 def canonicalize_variant_tokens(tokens, canonical_order):
-    """Reorder *tokens* by their position in *canonical_order*.
+    """Reorder *tokens* by their position in *canonical_order*, deduplicating.
 
-    Tokens not in the order list go to the end, preserving user-typed order
-    (so a project can add a new axis without re-declaring the whole order).
-    Stable when two tokens have the same canonical position (shouldn't happen
-    in well-formed config).
+    The first occurrence of each token wins; later duplicates are dropped.
+    Tokens not in the order list go to the end, preserving the user-typed
+    order of their first appearance (so a project can add a new axis without
+    re-declaring the whole order). Deduplication makes this a true canonical
+    form — ``canon(canon(x)) == canon(x)`` — which the cell fixed-point check
+    in trim_cache.enumerate_cells relies on.
+
+    A well-formed composite variant draws each axis from a disjoint value set,
+    so it contains no repeated token: dedup is a no-op on every legitimate
+    input and only changes the (previously broken) duplicate case, e.g. a
+    doubled ``--variant`` or a malformed ``extends``.
     """
     order_pos = {name: i for i, name in enumerate(canonical_order)}
+    seen = set()
     known = []
     unknown = []
     for tok in tokens:
+        if tok in seen:
+            continue  # first occurrence wins; drop later duplicates
+        seen.add(tok)
         if tok in order_pos:
             known.append((order_pos[tok], tok))
         else:
