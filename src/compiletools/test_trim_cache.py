@@ -4417,3 +4417,70 @@ class TestAllVariants:
         err = capsys.readouterr().err
         assert rc == 1
         assert "--all-variants" in err
+
+    def test_mutually_exclusive_with_list_unresolvable(self, capsys):
+        """``--all-variants`` and ``--list-unresolvable`` together → rc==1 + error message."""
+        rc = main(
+            [
+                "--all-variants",
+                "--list-unresolvable",
+                "--cas-objdir=/nonexistent/obj",
+                "--variant=gcc.debug",
+            ]
+        )
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "--all-variants" in err
+
+    def test_json_entries_lack_envelope_keys(self, tmp_path, monkeypatch, capsys):
+        """Per-cell entries in ``variants`` must not carry ``schema`` or ``mode``."""
+        pool = self._build_pool(tmp_path, monkeypatch)
+        objdir = os.path.join(pool, "gcc.debug")
+
+        rc = main(
+            [
+                "--all-variants",
+                "--json",
+                "--cas-objdir-only",
+                f"--cas-objdir={objdir}",
+                "--variant=gcc.debug",
+            ]
+        )
+        cap = capsys.readouterr()
+        assert rc == 0
+
+        parsed = json.loads(cap.out)
+        # Top-level aggregate must keep the envelope keys.
+        assert parsed["schema"] == 1
+        assert parsed["mode"] == "all-variants"
+
+        # Per-cell entries must NOT carry schema/mode; they must carry "variant".
+        for entry in parsed["variants"]:
+            assert "schema" not in entry, f"entry for {entry.get('variant')!r} must not have 'schema'"
+            assert "mode" not in entry, f"entry for {entry.get('variant')!r} must not have 'mode'"
+            assert "variant" in entry
+
+    def test_non_json_prints_per_cell_summary(self, tmp_path, monkeypatch, capsys):
+        """Non-JSON ``--all-variants`` prints a per-cell summary, not just the banner."""
+        pool = self._build_pool(tmp_path, monkeypatch)
+        objdir = os.path.join(pool, "gcc.debug")
+
+        rc = main(
+            [
+                "--all-variants",
+                "--cas-objdir-only",
+                f"--cas-objdir={objdir}",
+                "--variant=gcc.debug",
+            ]
+        )
+        cap = capsys.readouterr()
+        assert rc == 0
+
+        # CacheTrimmer._human is stdout when --json is not set.
+        combined = cap.out + cap.err
+        # Each resolvable cell removes 1 object file; print_summary emits a
+        # "Removed:" line for the objdir section.
+        assert "Removed:" in combined, "print_summary output must appear for at least one cell"
+        # Both resolvable cells should have been swept.
+        assert "gcc.debug" in combined
+        assert "clang.debug" in combined

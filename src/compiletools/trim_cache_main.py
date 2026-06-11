@@ -307,7 +307,7 @@ def main(argv=None):
             caches = compiletools.trim_cache._active_cache_sections(args)
             variant = args.variant
             per_variant_dirs: dict = {}  # vname -> {section: <pool>/<vname>}
-            enumerated: dict = {}
+            enumerated: dict[tuple[str, str], list] = {}  # (pool, kind) -> cell records
             for section, kind, cas_dir, active in caches:
                 if not active or not cas_dir:
                     continue
@@ -328,6 +328,7 @@ def main(argv=None):
                     per_variant_dirs.setdefault(cell["name"], {})[section] = os.path.join(pool, cell["name"])
 
             current_hashes_av: set = set()
+            stream = sys.stderr if args.json else sys.stdout
             if do_objdir and per_variant_dirs:
                 from compiletools.build_context import BuildContext
                 from compiletools.global_hash_registry import load_hashes
@@ -336,10 +337,9 @@ def main(argv=None):
                 load_hashes(verbose=args.verbose, context=context)
                 current_hashes_av = compiletools.trim_cache.build_current_hash_set(context)
                 if args.verbose >= 1:
-                    _human_av = sys.stderr if args.json else sys.stdout
                     print(
                         f"Loaded {len(current_hashes_av)} current file hashes from git",
-                        file=_human_av,
+                        file=stream,
                     )
 
             agg: dict = {"schema": 1, "mode": "all-variants", "variants": [], "errors": []}
@@ -372,18 +372,24 @@ def main(argv=None):
                     pcmdir_stats=res["pcmdir"],
                     exedir_stats=res["exedir"],
                 )
+                # Strip single-variant envelope keys: nested entries in the
+                # all-variants aggregate must not carry "schema"/"mode" so that
+                # machine consumers can key on those fields unambiguously at the
+                # top level only.
+                entry.pop("schema", None)
+                entry.pop("mode", None)
                 entry["variant"] = vname
                 agg["variants"].append(entry)
                 per_cell_failed = sum((res[s] or {}).get("failed", 0) for s in ("objdir", "pchdir", "pcmdir", "exedir"))
                 if per_cell_failed:
                     any_failed_av = True
+                if not args.json:
+                    print(f"=== {vname} ===", file=stream)
+                    trimmer_av.print_summary(res["objdir"], res["pchdir"], res["pcmdir"], res["exedir"])
 
             if args.json:
                 print(json.dumps(agg, indent=2))
-            else:
-                for entry in agg["variants"]:
-                    print(f"=== {entry['variant']} ===", file=sys.stderr)
-            return 1 if (any_failed_av or agg["errors"]) else 0
+            return 1 if any_failed_av else 0
 
         # Object cache currency check is the only consumer of the
         # tracked-files set. PCM, PCH, and exe-cache use sidecar
