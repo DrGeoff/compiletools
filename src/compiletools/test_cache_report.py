@@ -239,3 +239,157 @@ def test_cli_help_runs():
     with pytest.raises(SystemExit) as excinfo:
         cache_report.main(["--help"])
     assert excinfo.value.code == 0
+
+
+# ---------------------------------------------------------------------------
+# --all-variants
+# ---------------------------------------------------------------------------
+
+
+class TestAllVariants:
+    """Tests for ``ct-cache-report --all-variants``."""
+
+    @staticmethod
+    def _make_pool(tmp_path, monkeypatch):
+        """Build a pool with gcc.debug, clang.debug (resolvable), bogus.variant
+        (unresolvable).  Returns the pool dir and the empty conf file path.
+
+        gcc.debug  — two objs sharing (file_hash, dep_hash) but differing macro_state_hash
+                     → one duplicated group.
+        clang.debug — same shape.
+        bogus.variant — one real-shaped obj; classified UNRESOLVABLE.
+        """
+        pool = tmp_path / "pool"
+        pool.mkdir()
+
+        gcc_cell = pool / "gcc.debug"
+        gcc_cell.mkdir()
+        _make_obj(gcc_cell, "aaaaaaaaaaaa", "11111111111111", "0000000000000001", basename="X", size=100)
+        _make_obj(gcc_cell, "aaaaaaaaaaaa", "11111111111111", "0000000000000002", basename="X", size=100)
+
+        clang_cell = pool / "clang.debug"
+        clang_cell.mkdir()
+        _make_obj(clang_cell, "bbbbbbbbbbbb", "22222222222222", "0000000000000001", basename="Y", size=200)
+        _make_obj(clang_cell, "bbbbbbbbbbbb", "22222222222222", "0000000000000002", basename="Y", size=200)
+
+        bogus_cell = pool / "bogus.variant"
+        bogus_cell.mkdir()
+        _make_obj(bogus_cell, "cccccccccccc", "33333333333333", "0000000000000001", basename="Z", size=50)
+
+        # Patch _variant_resolvable: True for gcc.debug and clang.debug, False otherwise.
+        import compiletools.trim_cache
+
+        monkeypatch.setattr(
+            compiletools.trim_cache,
+            "_variant_resolvable",
+            lambda name: name in ("gcc.debug", "clang.debug"),
+        )
+        # Patch _variant_canonical_name: identity (so every resolvable name is canonical).
+        monkeypatch.setattr(
+            compiletools.trim_cache,
+            "_variant_canonical_name",
+            lambda name: name,
+        )
+
+        conf = tmp_path / "empty.conf"
+        conf.write_text("")
+        return pool, conf
+
+    def test_json_aggregate_lists_resolvable_cells(self, tmp_path, monkeypatch, capsys):
+        """--all-variants JSON lists only RESOLVABLE variants in sorted order."""
+        pool, conf = self._make_pool(tmp_path, monkeypatch)
+        rc = cache_report.main(
+            [
+                "--all-variants",
+                "--json",
+                f"--cas-objdir={pool}",
+                f"--config={conf}",
+                "--variant=gcc.debug",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert rc == 0
+        data = json.loads(out)
+        assert data["schema"] == 1
+        assert data["mode"] == "all-variants"
+        assert "variants" in data
+        assert "errors" in data
+        assert data["errors"] == []
+
+        names = [e["variant"] for e in data["variants"]]
+        # Exactly the two resolvable variants, sorted; bogus.variant excluded.
+        assert names == ["clang.debug", "gcc.debug"]
+
+        # Each entry has all four report keys; only cas-objdir-report is non-None
+        # because only --cas-objdir was explicit.
+        for entry in data["variants"]:
+            assert entry["cas-pchdir-report"] is None
+            assert entry["cas-pcmdir-report"] is None
+            assert entry["cas-exedir-report"] is None
+            obj_rep = entry["cas-objdir-report"]
+            assert obj_rep is not None
+            assert obj_rep["duplicated-groups-count"] == 1
+            assert obj_rep["wasted-bytes"] > 0
+
+    def test_read_only_no_mutation(self, tmp_path, monkeypatch, capsys):
+        """--all-variants must not create, modify, or delete any file."""
+        pool, conf = self._make_pool(tmp_path, monkeypatch)
+
+        def _snapshot(root):
+            snap = {}
+            for dirpath, _dirs, files in pathlib.Path(root).walk():
+                for name in files:
+                    p = dirpath / name
+                    snap[str(p)] = p.read_bytes()
+            return snap
+
+        before = _snapshot(pool)
+        cache_report.main(
+            [
+                "--all-variants",
+                "--json",
+                f"--cas-objdir={pool}",
+                f"--config={conf}",
+                "--variant=gcc.debug",
+            ]
+        )
+        capsys.readouterr()
+        after = _snapshot(pool)
+        assert before == after
+
+    def test_bad_cell_isolated_not_fatal(self, tmp_path, monkeypatch, capsys):
+        """Per-cell errors are isolated: one failed cell appears in errors, rc=1."""
+        pool, conf = self._make_pool(tmp_path, monkeypatch)
+
+        real_report = cache_report.report
+
+        def patched_report(objdir):
+            if objdir.endswith("clang.debug"):
+                raise RuntimeError("injected scan failure")
+            return real_report(objdir)
+
+        monkeypatch.setattr(cache_report, "report", patched_report)
+
+        rc = cache_report.main(
+            [
+                "--all-variants",
+                "--json",
+                f"--cas-objdir={pool}",
+                f"--config={conf}",
+                "--variant=gcc.debug",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert rc == 1
+        data = json.loads(out)
+
+        # gcc.debug must still appear in variants.
+        variant_names = [e["variant"] for e in data["variants"]]
+        assert "gcc.debug" in variant_names
+
+        # clang.debug must appear in errors.
+        assert len(data["errors"]) == 1
+        err = data["errors"][0]
+        assert err["variant"] == "clang.debug"
+        assert isinstance(err["error"], str)
+        assert len(err["error"]) > 0

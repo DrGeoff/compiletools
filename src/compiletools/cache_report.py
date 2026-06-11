@@ -1045,6 +1045,159 @@ def _render_combined_json(
 _CAS_DIR_FLAGS = ("--cas-objdir", "--cas-pchdir", "--cas-pcmdir", "--cas-exedir")
 
 
+def _run_all_variants(args: object, explicit: set[str]) -> int:
+    """Implement ``--all-variants``: report every RESOLVABLE cell across in-scope pools.
+
+    For each in-scope cache (governed by *explicit* or directory existence),
+    ``cell_pool_root`` is called to derive the pool from the variant-suffixed
+    ``args.cas_*dir``.  A ``ValueError`` from ``cell_pool_root`` (path-shape
+    cannot be trusted) is caught per-cache and logged to stderr — that cache is
+    skipped but the others proceed.
+
+    ``enumerate_cells`` classifies every candidate cell.  Only RESOLVABLE cells
+    (label == ``_CELL_RESOLVABLE``) are included.
+
+    For each resolvable variant name (sorted), the per-cache report function is
+    called.  Errors are isolated per-variant: a failure in one variant is
+    captured in ``errors`` and never prevents the remaining variants from
+    running.
+
+    JSON output: ``{"schema": 1, "mode": "all-variants", "variants": [...],
+    "errors": [...]}``.
+
+    Text output: ``=== <variant> ===`` banner followed by the in-scope
+    ``_render_*_text`` blocks for that variant.
+
+    Returns:
+        0 if no errors occurred, 1 otherwise.
+    """
+    import compiletools.trim_cache
+
+    def _should_scan(flag: str, path: str) -> bool:
+        if explicit:
+            return flag in explicit
+        return os.path.isdir(path)
+
+    # Table of (cli-flag, kind, cas_dir, report_fn, json_payload_fn, text_render_fn, json_key)
+    cache_table = [
+        (
+            "--cas-objdir",
+            "obj",
+            args.cas_objdir,  # type: ignore[attr-defined]
+            report,
+            _cas_objdir_json_payload,
+            _render_cas_objdir_text,
+            "cas-objdir-report",
+        ),
+        (
+            "--cas-pchdir",
+            "pch",
+            args.cas_pchdir,  # type: ignore[attr-defined]
+            pch_report,
+            _pch_json_payload,
+            _render_pch_text,
+            "cas-pchdir-report",
+        ),
+        (
+            "--cas-pcmdir",
+            "pcm",
+            args.cas_pcmdir,  # type: ignore[attr-defined]
+            pcm_report,
+            _pcm_json_payload,
+            _render_pcm_text,
+            "cas-pcmdir-report",
+        ),
+        (
+            "--cas-exedir",
+            "exe",
+            args.cas_exedir,  # type: ignore[attr-defined]
+            exe_report,
+            _exe_json_payload,
+            _render_exe_text,
+            "cas-exedir-report",
+        ),
+    ]
+
+    # Enumerate RESOLVABLE cells for each in-scope cache.
+    # per_variant_dirs: variant_name -> {json_key: cell_dir}
+    per_variant_dirs: dict[str, dict[str, str]] = {}
+    # active_caches: list of (json_key, report_fn, payload_fn, text_fn) for in-scope caches
+    active_caches: list[tuple] = []
+
+    for flag, kind, cas_dir, rep_fn, payload_fn, text_fn, json_key in cache_table:
+        if not _should_scan(flag, cas_dir):
+            continue
+        try:
+            pool = compiletools.trim_cache.cell_pool_root(cas_dir, args.variant)  # type: ignore[attr-defined]
+        except ValueError as exc:
+            print(
+                f"warning: skipping {flag} for --all-variants: {exc}",
+                file=sys.stderr,
+            )
+            continue
+        active_caches.append((json_key, rep_fn, payload_fn, text_fn))
+        cells = compiletools.trim_cache.enumerate_cells(pool, kind)
+        for cell in cells:
+            if cell["label"] != compiletools.trim_cache._CELL_RESOLVABLE:
+                continue
+            cell_dir = os.path.join(pool, cell["name"])
+            per_variant_dirs.setdefault(cell["name"], {})[json_key] = cell_dir
+
+    variants: list[dict] = []
+    errors: list[dict] = []
+
+    top_n: int = args.top  # type: ignore[attr-defined]
+    use_json: bool = args.json  # type: ignore[attr-defined]
+
+    for vname in sorted(per_variant_dirs):
+        dirs = per_variant_dirs[vname]
+        try:
+            entry: dict = {"variant": vname}
+            # Compute report objects for each active cache (or None if this
+            # variant has no cell in that cache).
+            reps: dict[str, object] = {}
+            for json_key, rep_fn, _payload_fn, _text_fn in active_caches:
+                cell_dir = dirs.get(json_key)
+                reps[json_key] = rep_fn(cell_dir) if cell_dir is not None else None
+
+            # Populate JSON payload for each active cache key.
+            for json_key, _rep_fn, payload_fn, _text_fn in active_caches:
+                rep = reps[json_key]
+                entry[json_key] = payload_fn(rep, top_n) if rep is not None else None
+            # Fill in None for any cache that was out-of-scope.
+            for _, _, _, _, _, _, jk in cache_table:
+                if jk not in entry:
+                    entry[jk] = None
+
+        except Exception as exc:  # per-cell isolation
+            errors.append({"variant": vname, "error": str(exc)})
+            print(f"Error reporting variant {vname!r}: {exc}", file=sys.stderr)
+            continue
+
+        variants.append(entry)
+
+        if not use_json:
+            print(f"=== {vname} ===")
+            for json_key, _rep_fn, _payload_fn, text_fn in active_caches:
+                rep = reps[json_key]
+                if rep is not None:
+                    sys.stdout.write(text_fn(rep, top_n))
+
+    agg: dict = {
+        "schema": 1,
+        "mode": "all-variants",
+        "variants": variants,
+        "errors": errors,
+    }
+    if use_json:
+        sys.stdout.write(json.dumps(agg, indent=2) + "\n")
+
+    if errors:
+        for err in errors:
+            print(f"Error in variant {err['variant']!r}: {err['error']}", file=sys.stderr)
+    return 1 if errors else 0
+
+
 def _explicit_cas_flags(argv: list[str] | None) -> set[str]:
     """Return which of the four ``--cas-*dir`` flags appear literally in *argv*.
 
@@ -1093,6 +1246,19 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Emit JSON instead of human-readable text.",
     )
+    cap.add_argument(
+        "--all-variants",
+        action="store_true",
+        default=False,
+        help=(
+            "Report EVERY RESOLVABLE cell in the pool, not just the single "
+            "--variant cell. Per-cell errors are isolated (one bad cell is "
+            "reported but not fatal). With --json emits a single aggregate "
+            "object with schema=1, mode='all-variants', 'variants' list "
+            "(one entry per resolvable cell), and 'errors' list. rc=1 if "
+            "any cell error occurred."
+        ),
+    )
     # --otel-* arg group (shared with ct-cake; declared once in apptools).
     # ct-cache-report is one-shot: emit metrics once and exit. The natural
     # deployment is a cron job (or a post-build hook) per CAS-bearing host
@@ -1116,6 +1282,9 @@ def main(argv: list[str] | None = None) -> int:
         if explicit:
             return flag in explicit
         return os.path.isdir(path)
+
+    if args.all_variants:
+        return _run_all_variants(args, explicit)
 
     obj_rep = report(args.cas_objdir) if _should_scan("--cas-objdir", args.cas_objdir) else None
     pch_rep_obj = pch_report(args.cas_pchdir) if _should_scan("--cas-pchdir", args.cas_pchdir) else None
