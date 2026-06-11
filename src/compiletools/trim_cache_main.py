@@ -22,6 +22,7 @@ checkout-relative currency.
 """
 
 import json
+import os
 import sys
 
 import compiletools.apptools
@@ -158,6 +159,25 @@ def add_arguments(cap):
             "one cache. Honours --dry-run."
         ),
     )
+    cap.add_argument(
+        "--all-variants",
+        action="store_true",
+        default=False,
+        help=(
+            "Trim EVERY RESOLVABLE cell in the pool (the same set --list-resolvable "
+            "prints), not just the single --variant cell. Cells are trimmed "
+            "sequentially; a failure in one cell is isolated (reported but not fatal — "
+            "other cells still run). Intra-cell -j parallelism is preserved. With "
+            "--json emits a single aggregate object (mode: all-variants) whose "
+            "'variants' list has one entry per swept cell plus an 'errors' list for "
+            "any isolated failures. Mutually exclusive with --list-resolvable / "
+            "--list-unresolvable / --purge-unresolvable. Honours --dry-run, --max-age, "
+            "--max-size, --keep-count, and a single --cas-*-only scope flag. On shared "
+            "multi-user or multi-branch pools prefer --max-age as the primary eviction "
+            "control; without it, objects from other checkouts appear non-current and "
+            "will be evicted down to --keep-count per basename."
+        ),
+    )
 
 
 def main(argv=None):
@@ -223,6 +243,14 @@ def main(argv=None):
             )
             return 1
 
+        if args.all_variants and (args.list_resolvable or args.list_unresolvable or args.purge_unresolvable):
+            print(
+                "Error: --all-variants cannot be combined with --list-resolvable / "
+                "--list-unresolvable / --purge-unresolvable",
+                file=sys.stderr,
+            )
+            return 1
+
         # --list-resolvable is a standalone READ-ONLY mode: print the active
         # cell names and return without touching the normal trim path.
         if args.list_resolvable:
@@ -270,6 +298,92 @@ def main(argv=None):
         do_pchdir = not (args.cas_objdir_only or args.cas_pcmdir_only or args.cas_exedir_only)
         do_pcmdir = not (args.cas_objdir_only or args.cas_pchdir_only or args.cas_exedir_only)
         do_exedir = not (args.cas_objdir_only or args.cas_pchdir_only or args.cas_pcmdir_only)
+
+        # --all-variants: sweep every RESOLVABLE cell in the pool, not just the
+        # single --variant cell. Per-cell errors are isolated (one bad cell is
+        # reported, other cells still run). current_hashes is loaded once and
+        # reused across all cells (it is variant-independent).
+        if args.all_variants:
+            caches = compiletools.trim_cache._active_cache_sections(args)
+            variant = args.variant
+            per_variant_dirs: dict = {}  # vname -> {section: <pool>/<vname>}
+            enumerated: dict = {}
+            for section, kind, cas_dir, active in caches:
+                if not active or not cas_dir:
+                    continue
+                try:
+                    pool = compiletools.trim_cache.cell_pool_root(cas_dir, variant)
+                except ValueError as exc:
+                    print(
+                        f"warning: skipping {section} for --all-variants: {exc}",
+                        file=sys.stderr,
+                    )
+                    continue
+                key = (pool, kind)
+                if key not in enumerated:
+                    enumerated[key] = compiletools.trim_cache.enumerate_cells(pool, kind)
+                for cell in enumerated[key]:
+                    if cell["label"] != compiletools.trim_cache._CELL_RESOLVABLE:
+                        continue
+                    per_variant_dirs.setdefault(cell["name"], {})[section] = os.path.join(pool, cell["name"])
+
+            current_hashes_av: set = set()
+            if do_objdir and per_variant_dirs:
+                from compiletools.build_context import BuildContext
+                from compiletools.global_hash_registry import load_hashes
+
+                context = BuildContext()
+                load_hashes(verbose=args.verbose, context=context)
+                current_hashes_av = compiletools.trim_cache.build_current_hash_set(context)
+                if args.verbose >= 1:
+                    _human_av = sys.stderr if args.json else sys.stdout
+                    print(
+                        f"Loaded {len(current_hashes_av)} current file hashes from git",
+                        file=_human_av,
+                    )
+
+            agg: dict = {"schema": 1, "mode": "all-variants", "variants": [], "errors": []}
+            any_failed_av = False
+            for vname in sorted(per_variant_dirs):
+                dirs = per_variant_dirs[vname]
+                try:
+                    res = compiletools.trim_cache.trim_one_variant(
+                        args,
+                        current_hashes=current_hashes_av,
+                        cas_objdir=dirs.get("objdir"),
+                        cas_pchdir=dirs.get("pchdir"),
+                        cas_pcmdir=dirs.get("pcmdir"),
+                        cas_exedir=dirs.get("exedir"),
+                        do_objdir=do_objdir and "objdir" in dirs,
+                        do_pchdir=do_pchdir and "pchdir" in dirs,
+                        do_pcmdir=do_pcmdir and "pcmdir" in dirs,
+                        do_exedir=do_exedir and "exedir" in dirs,
+                        variant_label=vname,
+                    )
+                except Exception as exc:  # per-cell isolation
+                    any_failed_av = True
+                    agg["errors"].append({"variant": vname, "error": str(exc)})
+                    print(f"Error trimming variant {vname!r}: {exc}", file=sys.stderr)
+                    continue
+                trimmer_av = res["trimmer"]
+                entry = trimmer_av.summary_json(
+                    objdir_stats=res["objdir"],
+                    pchdir_stats=res["pchdir"],
+                    pcmdir_stats=res["pcmdir"],
+                    exedir_stats=res["exedir"],
+                )
+                entry["variant"] = vname
+                agg["variants"].append(entry)
+                per_cell_failed = sum((res[s] or {}).get("failed", 0) for s in ("objdir", "pchdir", "pcmdir", "exedir"))
+                if per_cell_failed:
+                    any_failed_av = True
+
+            if args.json:
+                print(json.dumps(agg, indent=2))
+            else:
+                for entry in agg["variants"]:
+                    print(f"=== {entry['variant']} ===", file=sys.stderr)
+            return 1 if (any_failed_av or agg["errors"]) else 0
 
         # Object cache currency check is the only consumer of the
         # tracked-files set. PCM, PCH, and exe-cache use sidecar

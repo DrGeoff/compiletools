@@ -4217,3 +4217,203 @@ class TestMaxSizeCLI:
         assert obj["removed"] == 1
         assert obj["budget_removed"] == 1
         assert not os.path.exists(new), "budget eviction goes below keep_count for rebuildables"
+
+
+# ── --all-variants: whole-pool sweep ────────────────────────────────────────
+
+
+class TestAllVariants:
+    """``--all-variants`` sweeps every RESOLVABLE cell in the pool (not just the
+    active ``--variant`` cell), with per-cell error isolation and a single
+    aggregate JSON output (mode: all-variants).
+
+    Pool layout used by most tests (obj-shaped cells):
+      * ``gcc.debug``    — RESOLVABLE (patched classifier) — 2 non-current .o files
+      * ``clang.debug``  — RESOLVABLE (patched classifier) — 2 non-current .o files
+      * ``bogus.variant`` — UNRESOLVABLE — 2 non-current .o files (must be untouched)
+
+    Two non-current .o files per resolvable cell (same basename, different
+    file-hashes) allow keep_count=1 (default) to remove the older one, giving
+    a verifiable trim that does not require emptying the cell (the safety guard
+    in _process_basename_group always keeps at least 1 per basename when no
+    current entry exists).
+    """
+
+    def _build_pool(self, tmp_path, monkeypatch):
+        """Create an obj pool with resolvable and unresolvable cells.
+
+        Each cell has two non-current .o files (same basename, distinct
+        file-hashes) aged 30 days.  keep_count=1 (default) removes the older
+        one from each resolvable cell.
+        """
+        pool = str(tmp_path / "pool")
+        os.makedirs(pool)
+
+        def _plant_objs(cell_dir):
+            """Plant two non-current .o files in ``cell_dir``."""
+            os.makedirs(cell_dir, exist_ok=True)
+            _touch_obj(cell_dir, "foo", "aabbccddeeff", age_seconds=40 * 86400, size=1024)
+            _touch_obj(cell_dir, "foo", "112233445566", age_seconds=10 * 86400, size=1024)
+
+        for cell_name in ("gcc.debug", "clang.debug", "bogus.variant"):
+            _plant_objs(os.path.join(pool, cell_name))
+
+        resolvable = {"gcc.debug", "clang.debug"}
+        monkeypatch.setattr(trim_cache, "_variant_resolvable", lambda name: name in resolvable)
+        monkeypatch.setattr(trim_cache, "_variant_canonical_name", lambda name: name)
+        monkeypatch.setattr(trim_cache, "build_current_hash_set", lambda ctx: set())
+        return pool
+
+    def _o_files_under(self, root):
+        """Return the set of ``.o`` file paths under *root* (excludes lock sidecars)."""
+        out = set()
+        for dirpath, _dirs, files in os.walk(root):
+            for f in files:
+                if f.endswith(".o"):
+                    out.add(os.path.join(dirpath, f))
+        return out
+
+    def test_sweeps_every_resolvable_cell(self, tmp_path, monkeypatch, capsys):
+        """Trimming runs on every RESOLVABLE cell; UNRESOLVABLE cells are untouched."""
+        pool = self._build_pool(tmp_path, monkeypatch)
+        objdir = os.path.join(pool, "gcc.debug")
+
+        # Record the older (to-be-removed) .o file in each resolvable cell.
+        # _touch_obj uses file_hash[:2] as the bucket name.
+        older_gcc = os.path.join(pool, "gcc.debug", "aa", "foo_aabbccddeeff_11223344556677_0011223344556677.o")
+        older_clang = os.path.join(pool, "clang.debug", "aa", "foo_aabbccddeeff_11223344556677_0011223344556677.o")
+        before_bogus = _all_files_under(os.path.join(pool, "bogus.variant"))
+
+        rc = main(
+            [
+                "--all-variants",
+                "--cas-objdir-only",
+                f"--cas-objdir={objdir}",
+                "--variant=gcc.debug",
+            ]
+        )
+        capsys.readouterr()
+        assert rc == 0
+
+        # Each resolvable cell had 2 non-current .o files; keep_count=1 removes the
+        # older one (aabbccddeeff, age 40 days) and keeps the newer (112233445566).
+        assert not os.path.exists(older_gcc), "gcc.debug: older .o must be removed"
+        assert not os.path.exists(older_clang), "clang.debug: older .o must be removed"
+
+        # Unresolvable cell must be completely untouched.
+        assert _all_files_under(os.path.join(pool, "bogus.variant")) == before_bogus
+
+    def test_json_is_single_aggregate_object(self, tmp_path, monkeypatch, capsys):
+        """``--json`` emits one aggregate dict with mode=all-variants and per-cell entries."""
+        pool = self._build_pool(tmp_path, monkeypatch)
+        objdir = os.path.join(pool, "gcc.debug")
+
+        rc = main(
+            [
+                "--all-variants",
+                "--json",
+                "--cas-objdir-only",
+                f"--cas-objdir={objdir}",
+                "--variant=gcc.debug",
+            ]
+        )
+        cap = capsys.readouterr()
+        assert rc == 0
+
+        parsed = json.loads(cap.out)
+        assert parsed["schema"] == 1
+        assert parsed["mode"] == "all-variants"
+        assert "variants" in parsed
+        assert "errors" in parsed
+
+        swept = {v["variant"] for v in parsed["variants"]}
+        assert swept == {"gcc.debug", "clang.debug"}
+
+        # Each entry must carry the standard trim stats sub-keys.
+        for entry in parsed["variants"]:
+            assert "objdir" in entry
+            assert isinstance(entry["objdir"]["removed"], int)
+            assert entry["objdir"]["removed"] == 1
+
+    def test_dry_run_removes_nothing(self, tmp_path, monkeypatch, capsys):
+        """``--dry-run`` makes the sweep report but touch nothing."""
+        pool = self._build_pool(tmp_path, monkeypatch)
+        objdir = os.path.join(pool, "gcc.debug")
+        before = _all_files_under(pool)
+
+        rc = main(
+            [
+                "--all-variants",
+                "--dry-run",
+                "--cas-objdir-only",
+                f"--cas-objdir={objdir}",
+                "--variant=gcc.debug",
+            ]
+        )
+        capsys.readouterr()
+        assert rc == 0
+        assert before == _all_files_under(pool), "--dry-run must not remove any files"
+
+    def test_bad_cell_isolated_not_fatal(self, tmp_path, monkeypatch, capsys):
+        """A per-cell exception is isolated: other cells still run; rc==1; JSON captures error."""
+        pool = self._build_pool(tmp_path, monkeypatch)
+        objdir = os.path.join(pool, "gcc.debug")
+
+        real = trim_cache.trim_one_variant
+
+        def flaky(args, **kw):
+            if (kw.get("cas_objdir") or "").endswith(os.sep + "clang.debug"):
+                raise RuntimeError("boom")
+            return real(args, **kw)
+
+        monkeypatch.setattr(trim_cache, "trim_one_variant", flaky)
+
+        rc = main(
+            [
+                "--all-variants",
+                "--json",
+                "--cas-objdir-only",
+                f"--cas-objdir={objdir}",
+                "--variant=gcc.debug",
+            ]
+        )
+        cap = capsys.readouterr()
+        assert rc == 1  # any per-cell error → exit 1
+        parsed = json.loads(cap.out)
+
+        errored = {e["variant"] for e in parsed.get("errors", [])}
+        assert "clang.debug" in errored, "clang.debug error must appear in errors list"
+
+        # gcc.debug must still have been trimmed successfully.
+        swept = {v["variant"] for v in parsed["variants"]}
+        assert "gcc.debug" in swept
+
+    def test_mutually_exclusive_with_list_resolvable(self, capsys):
+        """``--all-variants`` and ``--list-resolvable`` together → rc==1 + error message."""
+        rc = main(
+            [
+                "--all-variants",
+                "--list-resolvable",
+                "--dry-run",
+                "--cas-objdir=/nonexistent/obj",
+                "--variant=gcc.debug",
+            ]
+        )
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "--all-variants" in err
+
+    def test_mutually_exclusive_with_purge_unresolvable(self, capsys):
+        """``--all-variants`` and ``--purge-unresolvable`` together → rc==1."""
+        rc = main(
+            [
+                "--all-variants",
+                "--purge-unresolvable",
+                "--max-age=7",
+                "--cas-objdir=/nonexistent/obj",
+                "--variant=gcc.debug",
+            ]
+        )
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "--all-variants" in err
