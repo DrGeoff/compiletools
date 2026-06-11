@@ -2509,7 +2509,7 @@ def purge_unresolvable_cells(args, stream=None):
                 stats["cells_skipped_warm"] += 1
                 if verbose >= 1:
                     print(
-                        f"  Skipping warm unresolvable cell (peer-owned?): {cell['path']}"
+                        f"  Skipping warm reclaimable cell ({cell['label']}, peer-owned?): {cell['path']}"
                         f" (age {_format_age_days(newest, now)})",
                         file=human,
                     )

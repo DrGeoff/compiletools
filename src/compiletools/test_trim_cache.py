@@ -2310,6 +2310,8 @@ class TestListUnresolvableMode:
         # 0-byte files in _build_pool, so rollups are 0.
         assert obj["unresolvable_bytes"] == sum(c["total_bytes"] for c in obj["cells"] if c["label"] == "UNRESOLVABLE")
         assert obj["unknown_bytes"] == sum(c["total_bytes"] for c in obj["cells"] if c["label"] == "UNKNOWN")
+        assert isinstance(obj["non_canonical_bytes"], int)
+        assert cells["gcc.gcc.debug.debug"]["label"] == "NON_CANONICAL"
 
     def test_human_table_to_stdout(self, tmp_path, monkeypatch, capsys):
         pool = self._build_pool(tmp_path, monkeypatch)
