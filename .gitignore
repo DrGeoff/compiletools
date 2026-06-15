@@ -46,6 +46,7 @@ uv.lock
 
 # Local directories
 docs/superpowers/
+docs/parallax/
 docs/_build/
 # docs/_generated/ contains per-tool stub .rst files written by
 # docs/conf.py's _generate_tool_stubs() setup hook on every Sphinx
