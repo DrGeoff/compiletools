@@ -68,8 +68,8 @@ def add_arguments(cap):
             help="Maximum bytes to read from files (0 = entire file)",
         )
 
-    # Add FileAnalyzer arguments for file reading strategy control
-    compiletools.file_analyzer.FileAnalyzer.add_arguments(cap)
+    # Add file-analyzer arguments for file reading strategy control
+    compiletools.file_analyzer.add_arguments(cap)
 
 
 class HeaderDepsBase:
@@ -80,7 +80,7 @@ class HeaderDepsBase:
     def __init__(self, args, context):
         self.args = args
         self.context = context
-        # Set analyzer args for FileAnalyzer caching
+        # Set analyzer args for file_analyzer caching
         set_analyzer_args(args, context)
 
     def _process_impl(self, realpath: str, macro_cache_key: MacroCacheKey) -> list[str]:
@@ -364,7 +364,7 @@ class DirectHeaderDeps(HeaderDepsBase):
         # Cache miss for variant file - compute and store
         if self.args.verbose >= 9 and analysis_result.include_positions:
             print(
-                f"DirectHeaderDeps::analyze - FileAnalyzer pre-found "
+                f"DirectHeaderDeps::analyze - file_analyzer pre-found "
                 f"{len(analysis_result.include_positions)} includes in {realpath}"
             )
 

@@ -148,6 +148,47 @@ class TestExtractModuleDeclarations:
         assert result["import"] == ["math"]
         assert result["header_import"] == ["<vector>", '"x.h"']
 
+    def test_export_import_header_unit_collected(self):
+        # A1: `export import <h>;` / `export import "h";` re-exports a header
+        # unit from a primary interface unit. The header-unit dependency edge
+        # must be recorded (token form preserved) exactly like a plain
+        # `import <h>;`, not silently dropped.
+        source = 'export module math;\nexport import <vector>;\nexport import "x.h";\n'
+        result = self._classify(source)
+        assert result["export_module"] == ["math"]
+        assert result["header_import"] == ["<vector>", '"x.h"']
+
+    def test_continued_import_resolves_name(self):
+        # N4 / A1: a backslash continuation splices the next physical line
+        # before tokenization, so the imported name may sit on it.
+        source = "import \\\nmath;\nint main() { return 0; }\n"
+        result = self._classify(source)
+        assert result["import"] == ["math"]
+
+    def test_continued_export_module_resolves_name(self):
+        source = "export module \\\nmath;\nexport int add(int, int);\n"
+        result = self._classify(source)
+        assert result["export_module"] == ["math"]
+
+    def test_continued_export_import_partition_resolves(self):
+        source = "export module math;\nexport import \\\n:basic;\n"
+        result = self._classify(source)
+        assert result["export_module"] == ["math"]
+        assert result["import"] == [":basic"]
+
+    def test_stray_cr_between_tokens_treated_as_whitespace(self):
+        # C++ treats a carriage return as whitespace. A stray lone CR between
+        # tokens (mixed/old-Mac line endings) must not block classification.
+        source = "export\rmodule\rmath;\n"
+        result = self._classify(source)
+        assert result["export_module"] == ["math"]
+
+    def test_leading_cr_before_declaration_treated_as_whitespace(self):
+        # A line whose only leading whitespace is a stray CR still classifies.
+        source = "\rimport util;\n"
+        result = self._classify(source)
+        assert result["import"] == ["util"]
+
 
 # ---------------------------------------------------------------------------
 # FileAnalysisResult exposes the new fields.
@@ -165,6 +206,7 @@ class TestCompilerKindClassification:
         # the probe to None (=> "couldn't read banner, trust the basename")
         # and clear the lru_cache so prior real-host calls don't bleed in.
         import compiletools.apptools as _ap
+
         monkeypatch.setattr(_ap, "_compiler_major_version", lambda _c: None)
         _ap.compiler_kind.cache_clear()
 

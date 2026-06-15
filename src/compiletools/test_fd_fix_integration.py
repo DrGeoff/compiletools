@@ -6,13 +6,14 @@ from types import SimpleNamespace
 
 import configargparse
 import pytest
+import stringzilla as sz
 
 import compiletools.wrappedos
 from compiletools.build_context import BuildContext
 from compiletools.examples_registry import example_file
 from compiletools.file_analyzer import (
-    FileAnalyzer,
     _determine_file_reading_strategy,
+    add_arguments,
     analyze_file,
     set_analyzer_args,
 )
@@ -140,12 +141,12 @@ class TestFileReadingStrategy(_CtxBase):
 
 
 class TestFileAnalyzerArguments:
-    """Tests for FileAnalyzer.add_arguments."""
+    """Tests for the module-level add_arguments function."""
 
     def test_add_arguments_no_use_mmap(self):
         """Test that --no-use-mmap argument works."""
         cap = configargparse.ArgumentParser()
-        FileAnalyzer.add_arguments(cap)
+        add_arguments(cap)
 
         args = cap.parse_args(["--no-use-mmap"])
         assert args.use_mmap is False
@@ -153,7 +154,7 @@ class TestFileAnalyzerArguments:
     def test_add_arguments_force_mmap(self):
         """Test that --force-mmap argument works."""
         cap = configargparse.ArgumentParser()
-        FileAnalyzer.add_arguments(cap)
+        add_arguments(cap)
 
         args = cap.parse_args(["--force-mmap"])
         assert args.force_mmap is True
@@ -161,7 +162,7 @@ class TestFileAnalyzerArguments:
     def test_add_arguments_suppress_warnings(self):
         """Test that warning suppression arguments work."""
         cap = configargparse.ArgumentParser()
-        FileAnalyzer.add_arguments(cap)
+        add_arguments(cap)
 
         args = cap.parse_args(["--suppress-fd-warnings", "--suppress-filesystem-warnings"])
         assert args.suppress_fd_warnings is True
@@ -189,7 +190,7 @@ class TestFileReadingWithRealFiles(_CtxBase):
         strategy = _determine_file_reading_strategy(self.ctx)
         assert strategy == "no_mmap"
 
-        # Analyze the file - this exercises _read_file_with_strategy
+        # Analyze the file - this exercises the no_mmap read path in _load_file_text
         result = analyze_file(content_hash, self.ctx)
 
         # Verify the analysis worked correctly
@@ -218,6 +219,107 @@ class TestFileReadingWithRealFiles(_CtxBase):
         assert result.line_count > 0
         assert len(result.includes) > 0
         assert any("iostream" in str(inc["filename"]) for inc in result.includes)
+
+    def test_analyze_file_detaches_retained_strs(self, monkeypatch):
+        """Wiring (A7): analyze_file must detach retained Str views so the cached
+        result does not pin the whole decoded-file buffer.
+
+        Captures the parent buffer produced by ``_load_file_text`` and asserts no
+        retained Str in the returned result still lies inside it. Every retained
+        token is a slice-view into ``str_text`` until ``_detach_file_analysis_result``
+        rebuilds it; an un-wired ``analyze_file`` therefore leaves views pinning
+        the buffer (RED), a wired one detaches them all (GREEN).
+        """
+        import compiletools.file_analyzer as fa
+
+        sample_file = compiletools.wrappedos.realpath(example_file("simple/helloworld_cpp.cpp"))
+        assert os.path.exists(sample_file)
+
+        load_hashes(context=self.ctx)
+        content_hash = get_file_hash(sample_file, self.ctx)
+
+        captured = {}
+        real_load = fa._load_file_text
+
+        def _capturing_load(*a, **k):
+            str_text, bytes_analyzed, was_truncated = real_load(*a, **k)
+            captured["lo"] = str_text.address
+            captured["hi"] = str_text.address + str_text.nbytes
+            return str_text, bytes_analyzed, was_truncated
+
+        monkeypatch.setattr(fa, "_load_file_text", _capturing_load)
+
+        args = _make_args(exemarkers=["int main"], use_mmap=False)
+        set_analyzer_args(args, self.ctx)
+        result = analyze_file(content_hash, self.ctx)
+
+        lo, hi = captured["lo"], captured["hi"]
+
+        def walk(obj):
+            if isinstance(obj, sz.Str):
+                yield obj
+            elif isinstance(obj, dict):
+                for v in obj.values():
+                    yield from walk(v)
+            elif isinstance(obj, (list, tuple, set, frozenset)):
+                for v in obj:
+                    yield from walk(v)
+
+        strs = []
+        for field in (
+            result.includes,
+            result.magic_flags,
+            result.defines,
+            result.system_headers,
+            result.quoted_headers,
+            result.conditional_macros,
+        ):
+            strs.extend(walk(field))
+        if result.include_guard is not None:
+            strs.extend(walk(result.include_guard))
+        for d in result.directives:
+            for v in (d.condition, d.macro_name, d.macro_value):
+                if v is not None:
+                    strs.extend(walk(v))
+
+        # Sanity: there is at least one retained Str to check (helloworld has an
+        # #include), so a passing assertion is not vacuous.
+        assert strs, "expected retained Str fields in the analysis result"
+        offenders = [str(s) for s in strs if lo <= s.address < hi]
+        assert offenders == [], f"cached result still pins file buffer: {offenders}"
+
+    def test_analyze_file_computes_block_comment_spans_once(self, monkeypatch):
+        """Perf contract: block-comment spans are computed ONCE per analyze_file.
+
+        ``find_block_comment_spans`` is a full forward pass over the whole file.
+        The bulk finders and the per-item consumers (``_extract_includes`` per
+        include, ``_extract_module_declarations`` per line) must all share a
+        single precomputed span list rather than each recomputing it. An
+        un-threaded analyze_file calls it many times (RED, O(k) full scans); a
+        threaded one calls it exactly once (GREEN).
+        """
+        import compiletools.file_analyzer as fa
+
+        sample_file = compiletools.wrappedos.realpath(example_file("simple/helloworld_cpp.cpp"))
+        assert os.path.exists(sample_file)
+
+        load_hashes(context=self.ctx)
+        content_hash = get_file_hash(sample_file, self.ctx)
+
+        calls = {"n": 0}
+        real = fa.find_block_comment_spans
+
+        def _counting(str_text):
+            calls["n"] += 1
+            return real(str_text)
+
+        monkeypatch.setattr(fa, "find_block_comment_spans", _counting)
+
+        args = _make_args(exemarkers=["int main"], use_mmap=False)
+        set_analyzer_args(args, self.ctx)
+        analyze_file(content_hash, self.ctx)
+
+        assert calls["n"] == 1, f"block-comment spans recomputed {calls['n']} times; expected 1"
 
     def test_no_use_mmap_mode_reads_real_file(self):
         """Test that --no-use-mmap mode reads and analyzes real files correctly."""

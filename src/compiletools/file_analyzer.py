@@ -1,7 +1,7 @@
 """File analysis module for efficient pattern detection in source files.
 
-This module provides SIMD-optimized file analysis with StringZilla when available,
-falling back to traditional regex-based analysis for compatibility.
+This module provides SIMD-optimized file analysis built on StringZilla, which is
+a required dependency (imported unconditionally below).
 """
 
 import bisect
@@ -38,8 +38,20 @@ class MarkerType(Enum):
     LIBRARY = 3
 
 
-def is_position_commented_simd_optimized(str_text: "stringzilla.Str", pos: int, line_byte_offsets: list[int]) -> bool:
-    """Optimized comment detection using pre-computed line boundaries."""
+def is_position_commented_simd_optimized(
+    str_text: "stringzilla.Str",
+    pos: int,
+    line_byte_offsets: list[int],
+    block_comment_spans: "list[tuple[int, int]] | None" = None,
+) -> bool:
+    """Optimized comment detection using pre-computed line boundaries.
+
+    ``block_comment_spans`` (from :func:`find_block_comment_spans`) is the
+    file's block-comment spans precomputed once per scan. When supplied, the
+    block-comment test is an O(log n) ``_pos_in_spans`` lookup; when omitted it
+    falls back to recomputing the spans, so callers off the hot path keep the
+    old single-argument behaviour.
+    """
     # Binary search for line start using precomputed line starts
     line_start_idx = bisect.bisect_right(line_byte_offsets, pos) - 1
     line_start = line_byte_offsets[line_start_idx] if line_start_idx >= 0 else 0
@@ -49,62 +61,222 @@ def is_position_commented_simd_optimized(str_text: "stringzilla.Str", pos: int, 
     if line_prefix_slice.find("//") != -1:
         return True
 
-    # Delegate block-comment check to the dedicated helper to avoid duplication.
+    # Block-comment check: reuse precomputed spans on the hot path, else recompute.
+    if block_comment_spans is not None:
+        return _pos_in_spans(block_comment_spans, pos)
     return is_inside_block_comment_simd(str_text, pos)
 
 
-def is_inside_block_comment_simd(str_text: "stringzilla.Str", pos: int) -> bool:
-    """Check if position is inside a multi-line block comment using StringZilla."""
-    last_block_start = str_text.rfind("/*", 0, pos)
-    if last_block_start != -1:
-        last_block_end = str_text.rfind("*/", last_block_start, pos)
-        if last_block_end == -1:
-            return True
+def _skip_quoted_literal(str_text: "stringzilla.Str", start: int, quote: str, n: int) -> int:
+    """Return the index just past a string/char literal that opened at ``start``.
 
+    ``start`` points at the first byte *after* the opening quote. Backslash
+    escapes are honoured so an escaped quote does not close the literal. If the
+    literal is unterminated, ``n`` (end of text) is returned.
+    """
+    i = start
+    delims = "\\" + quote
+    while i < n:
+        k = str_text.find_first_of(delims, i)
+        if k == -1:
+            return n
+        if str_text[k : k + 1] == "\\":
+            i = k + 2  # skip the escaped byte
+        else:
+            return k + 1  # consumed the closing quote
+    return n
+
+
+def find_block_comment_spans(str_text: "stringzilla.Str") -> list[tuple[int, int]]:
+    """Compute block-comment byte ranges in a single forward pass.
+
+    Returns a sorted list of ``(start, end)`` half-open intervals covering every
+    ``/* ... */`` block comment, where ``end`` is the index just past the closing
+    ``*/`` (or ``len(str_text)`` for an unterminated comment). The scan is
+    comment/string aware: a ``/*`` that appears inside a ``//`` line comment or
+    inside a string/char literal does NOT open a block comment. This is the
+    authoritative source for block-comment membership, replacing the naive
+    backwards ``rfind`` that mistook such markers for real comments.
+    """
+    spans: list[tuple[int, int]] = []
+    n = len(str_text)
+    i = 0
+    while i < n:
+        j = str_text.find_first_of("/\"'", i)
+        if j == -1:
+            break
+        ch = str_text[j : j + 1]
+        if ch == "/":
+            nxt = str_text[j + 1 : j + 2]
+            if nxt == "*":
+                end = str_text.find("*/", j + 2)
+                if end == -1:
+                    spans.append((j, n))
+                    break
+                end += 2
+                spans.append((j, end))
+                i = end
+            elif nxt == "/":
+                eol = str_text.find("\n", j + 2)
+                i = n if eol == -1 else eol + 1
+            else:
+                i = j + 1
+        else:  # opening of a string (") or char (') literal
+            i = _skip_quoted_literal(str_text, j + 1, str(ch), n)
+    return spans
+
+
+def _pos_in_spans(spans: list[tuple[int, int]], pos: int) -> bool:
+    """True if ``pos`` falls inside any half-open ``(start, end)`` span.
+
+    ``spans`` must be sorted and non-overlapping (as produced by
+    :func:`find_block_comment_spans`), so membership is an O(log n) search.
+    """
+    lo, hi = 0, len(spans)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        start, end = spans[mid]
+        if end <= pos:
+            lo = mid + 1
+        elif start > pos:
+            hi = mid
+        else:
+            return True
     return False
 
 
-def find_include_positions_simd_bulk(str_text, line_byte_offsets: list[int]) -> list[int]:
-    """Optimized include position finder using pre-computed line byte offsets.
+def is_inside_block_comment_simd(str_text: "stringzilla.Str", pos: int) -> bool:
+    """Check if position is inside a multi-line block comment using StringZilla.
 
-    Vectorization: Minimizes Python-level loops by finding all positions in one pass.
+    Comment/string aware via :func:`find_block_comment_spans` so a ``/*`` marker
+    inside a ``//`` line comment or a string literal is not mistaken for a real
+    block comment (fixes the rest-of-file blinding bug).
     """
-    positions = []
-
-    # Single-pass search: find and validate in one loop
-    pos = str_text.find("#include", 0)
-    while pos != -1:
-        if not is_position_commented_simd_optimized(str_text, pos, line_byte_offsets):
-            positions.append(pos)
-        pos = str_text.find("#include", pos + 8)  # Continue from next position
-
-    return positions
+    return _pos_in_spans(find_block_comment_spans(str_text), pos)
 
 
-def find_magic_positions_simd_bulk(str_text, line_byte_offsets: list[int]) -> list[int]:
+def _is_directive_start(
+    str_text: "stringzilla.Str",
+    marker_pos: int,
+    line_byte_offsets: list[int],
+    block_comment_spans: list[tuple[int, int]],
+) -> bool:
+    """True if a preprocessor marker at ``marker_pos`` begins a real directive.
+
+    A directive (or magic ``//#``) marker is genuine only when it is preceded on
+    its physical line by whitespace alone AND it does not fall inside a ``/* */``
+    block comment. ``block_comment_spans`` is precomputed once per scan
+    (:func:`find_block_comment_spans`) so membership is O(log n) rather than the
+    old O(n*m) recompute on every marker.
+    """
+    # Whitespace-only line prefix. A *closed* block comment counts as whitespace
+    # per the standard (`/* c */ #if FOO` is a valid directive, A21), so the gaps
+    # between the prefix's block-comment spans — not the raw prefix — must be
+    # whitespace-only. An UNclosed comment extends past marker_pos and is caught
+    # by the block-comment membership test below, so it is not special-cased here.
+    line_start_idx = bisect.bisect_right(line_byte_offsets, marker_pos) - 1
+    line_start = line_byte_offsets[line_start_idx] if line_start_idx >= 0 else 0
+    if marker_pos > line_start:
+        cursor = line_start
+        # Start at the first span that could overlap [line_start, marker_pos):
+        # the last span whose start <= line_start (it may extend in), or the next.
+        si = bisect.bisect_right(block_comment_spans, line_start, key=lambda s: s[0]) - 1
+        if si < 0:
+            si = 0
+        for s_start, s_end in block_comment_spans[si:]:
+            if s_start >= marker_pos:
+                break
+            if s_end <= cursor:
+                continue
+            gap_end = min(s_start, marker_pos)
+            if cursor < gap_end and str_text[cursor:gap_end].find_first_not_of(" \t\r\n") != -1:
+                return False
+            cursor = max(cursor, min(s_end, marker_pos))
+        if cursor < marker_pos and str_text[cursor:marker_pos].find_first_not_of(" \t\r\n") != -1:
+            return False
+
+    # Not inside a block comment.
+    return not _pos_in_spans(block_comment_spans, marker_pos)
+
+
+def _strip_trailing_comment_sz(s: "stringzilla.Str") -> "stringzilla.Str":
+    """Return ``s`` truncated before the first ``//`` or ``/*`` not inside a literal.
+
+    Directive operands, values, and conditions may carry a trailing comment
+    (``#define V 100 // note``); the comment is not part of the operand. The scan
+    is string/char-literal aware so a ``//`` or ``/*`` inside a literal (e.g. a
+    URL ``"http://x"`` or a path) is preserved. The caller is responsible for any
+    surrounding whitespace strip.
+    """
+    n = len(s)
+    i = 0
+    while i < n:
+        j = s.find_first_of("/\"'", i)
+        if j == -1:
+            break
+        ch = s[j : j + 1]
+        if ch == "/":
+            nxt = s[j + 1 : j + 2]
+            if nxt == "/" or nxt == "*":
+                return s[:j]
+            i = j + 1
+        else:  # opening of a string (") or char (') literal
+            i = _skip_quoted_literal(s, j + 1, str(ch), n)
+    return s
+
+
+def find_include_positions_simd_bulk(str_text, line_byte_offsets: list[int]) -> list[int]:
+    """Return byte positions of every real ``#include`` directive.
+
+    Derived from the single directive finder so include detection shares one
+    validation site (whitespace line-prefix gate + block-comment gate + tolerance
+    of ``# include``). This collapses the previously separate, weaker include
+    scan that recorded ghost headers from string literals (N9) and missed the
+    spaced ``# include`` form (A18).
+
+    ``#include_next`` (the header-wrapper idiom) names a real dependency too, so
+    its positions are merged in source order — the extractor reuses the same
+    ``include``-prefix parse. ``#include_next`` keeps its own directive key (it
+    parses as its own type, not as a plain ``include`` whose operand would carry
+    the stray ``_next``).
+    """
+    directive_positions = find_directive_positions_simd_bulk(str_text, line_byte_offsets)
+    include = directive_positions.get("include", [])
+    include_next = directive_positions.get("include_next", [])
+    if not include_next:
+        return include
+    return sorted(include + include_next)
+
+
+def _include_positions_from_directives(directives: list["PreprocessorDirective"]) -> list[int]:
+    """Byte positions of include directives, derived from the cleaned directive list.
+
+    This is the production derivation (continuation lines already absorbed, so no
+    phantom includes). ``#include`` and ``#include_next`` both name real
+    dependencies and are parsed by the same ``include``-prefix extractor.
+    """
+    return [d.byte_pos for d in directives if d.directive_type in ("include", "include_next")]
+
+
+def find_magic_positions_simd_bulk(str_text, line_byte_offsets: list[int], block_comment_spans=None) -> list[int]:
     """Optimized magic position finder using pre-computed line byte offsets.
 
     Vectorization: Single-pass search avoiding intermediate list allocation.
+
+    ``block_comment_spans`` may be supplied by the caller (``analyze_file`` computes
+    it once and threads it to all consumers); recomputed here only when omitted.
     """
     positions = []
+
+    # Precompute block-comment spans once so the per-marker gate is O(log n).
+    if block_comment_spans is None:
+        block_comment_spans = find_block_comment_spans(str_text)
 
     # Single-pass search with inline validation
     pos = str_text.find("//#", 0)
     while pos != -1:
-        # Binary search for line start
-        line_start_idx = bisect.bisect_right(line_byte_offsets, pos) - 1
-        line_start = line_byte_offsets[line_start_idx] if line_start_idx >= 0 else 0
-
-        # Check if only whitespace before //# using StringZilla slice
-        if pos > line_start:
-            line_prefix_slice = str_text[line_start:pos]
-            # Use StringZilla's character set operations for efficient whitespace checking
-            if line_prefix_slice.find_first_not_of(" \t\r\n") != -1:
-                pos = str_text.find("//#", pos + 3)
-                continue
-
-        # Check if we're inside a block comment
-        if is_inside_block_comment_simd(str_text, pos):
+        # Reject markers with a non-whitespace line prefix or inside a block comment.
+        if not _is_directive_start(str_text, pos, line_byte_offsets, block_comment_spans):
             pos = str_text.find("//#", pos + 3)
             continue
 
@@ -147,16 +319,22 @@ def find_magic_positions_simd_bulk(str_text, line_byte_offsets: list[int]) -> li
     return positions
 
 
-def find_directive_positions_simd_bulk(str_text, line_byte_offsets: list[int]) -> dict[str, list[int]]:
+def find_directive_positions_simd_bulk(
+    str_text, line_byte_offsets: list[int], block_comment_spans=None
+) -> dict[str, list[int]]:
     """Optimized directive position finder using pre-computed newline positions.
 
     Vectorization: Single-pass search without intermediate list allocation.
+
+    ``block_comment_spans`` may be supplied by the caller (``analyze_file`` computes
+    it once and threads it to all consumers); recomputed here only when omitted.
     """
     directive_positions = {}
 
     # Pre-define common directives for faster lookup
     target_directives = {
         "include",
+        "include_next",
         "ifdef",
         "ifndef",
         "define",
@@ -171,20 +349,18 @@ def find_directive_positions_simd_bulk(str_text, line_byte_offsets: list[int]) -
         "if",
     }
 
+    # Precompute block-comment spans once so the per-marker gate is O(log n).
+    if block_comment_spans is None:
+        block_comment_spans = find_block_comment_spans(str_text)
+
     # Single-pass search: find and process each # character
     hash_pos = str_text.find("#", 0)
     while hash_pos != -1:
-        # Binary search for line start using precomputed line starts
-        line_start_idx = bisect.bisect_right(line_byte_offsets, hash_pos) - 1
-        line_start = line_byte_offsets[line_start_idx] if line_start_idx >= 0 else 0
-
-        # Check if only whitespace before # using StringZilla slice
-        if hash_pos > line_start:
-            line_prefix_slice = str_text[line_start:hash_pos]
-            # Use StringZilla's character set operations for efficient whitespace checking
-            if line_prefix_slice.find_first_not_of(" \t\r\n") != -1:
-                hash_pos = str_text.find("#", hash_pos + 1)
-                continue
+        # Reject markers that are not real directive starts: a non-whitespace
+        # line prefix (e.g. inside a string literal) or inside a block comment.
+        if not _is_directive_start(str_text, hash_pos, line_byte_offsets, block_comment_spans):
+            hash_pos = str_text.find("#", hash_pos + 1)
+            continue
 
         # Extract directive name efficiently
         directive_start = hash_pos + 1
@@ -241,7 +417,8 @@ def parse_directive_struct(
     if content_start_pos == -1:
         return directive
 
-    content_slice = full_text_str[content_start_pos:]
+    # Drop any trailing comment so it does not leak into the operand/value/condition.
+    content_slice = _strip_trailing_comment_sz(full_text_str[content_start_pos:])
 
     if dtype in ("ifdef", "ifndef", "undef"):
         directive.macro_name = strip_sz(content_slice)
@@ -250,18 +427,32 @@ def parse_directive_struct(
         directive.condition = strip_sz(content_slice)
 
     elif dtype == "define":
-        parts = content_slice.split(maxsplit=1)
-        if len(parts) > 0:
-            name_part = parts[0]
-            # Handle function-like macros: extract name before '('
-            paren_pos = name_part.find("(")
-            if paren_pos != -1:
-                directive.macro_name = name_part[:paren_pos]
-            else:
-                directive.macro_name = name_part
+        # A macro is function-like ONLY when '(' immediately follows the name
+        # with no intervening whitespace (C standard): `#define F(x)` is
+        # function-like, `#define F (x)` is an object macro whose value is `(x)`.
+        # Splitting on the first whitespace is wrong because a function-like
+        # parameter list may itself contain spaces (`#define F(a, b) ...`) (N2).
+        paren_pos = content_slice.find("(")
+        space_pos = content_slice.find_first_of(" \t")
+        if paren_pos != -1 and (space_pos == -1 or paren_pos < space_pos):
+            name_end = paren_pos
+        else:
+            name_end = space_pos
 
-            if len(parts) > 1:
-                directive.macro_value = strip_sz(parts[1])
+        if name_end == -1:  # bare macro, no params, no value
+            directive.macro_name = strip_sz(content_slice)
+            directive.macro_value = None
+        else:
+            directive.macro_name = content_slice[:name_end]
+            if paren_pos == name_end:  # function-like: value follows the ')'
+                params_end = content_slice.find(")", paren_pos + 1)
+                value_start = content_slice.find_first_not_of(" \t", params_end + 1) if params_end != -1 else -1
+            else:  # object-like: value follows the whitespace
+                value_start = content_slice.find_first_not_of(" \t", name_end)
+
+            if value_start != -1:
+                value = strip_sz(content_slice[value_start:])
+                directive.macro_value = value if len(value) > 0 else None
             else:
                 directive.macro_value = None
 
@@ -291,6 +482,59 @@ def _warn_low_ulimit(total_files: int, soft_limit: int, context: "BuildContext")
     print(f"  To use faster mmap mode: ulimit -n {total_files * 2}", file=sys.stderr)
     print("  To suppress this warning: add '--suppress-fd-warnings' flag or config", file=sys.stderr)
     context.warned_low_ulimit = True
+
+
+def _detach_str(s: "stringzilla.Str") -> "stringzilla.Str":
+    """Return a stringzilla.Str that owns its own bytes (pins no larger buffer).
+
+    A slice of a parent Str is a zero-copy *view* that keeps the entire parent
+    buffer alive. ``Str(str(s))`` round-trips through an independent Python str,
+    allocating a fresh buffer sized to the token alone.
+    """
+    return Str(str(s))
+
+
+def _detach_file_analysis_result(result: "FileAnalysisResult") -> None:
+    """Detach every retained Str so the cached result stops pinning the file (A7).
+
+    Every Str field is a view into the decoded-text buffer (or a small per-line/
+    per-directive join buffer). Because ``FileAnalysisResult`` is cached for the
+    whole build, those views would keep every analyzed file's full text resident.
+    The retained tokens are tiny next to the source, so copying them out and
+    releasing the parents is a net memory win. Mutates ``result`` in place.
+
+    Set/frozenset membership is preserved: ``hash(Str)`` is content-based, so
+    rebuilt copies collide with the originals' keys.
+    """
+    for inc in result.includes:
+        for key in ("full_line", "filename"):
+            if isinstance(inc.get(key), Str):
+                inc[key] = _detach_str(inc[key])
+    for mf in result.magic_flags:
+        for key in ("full_line", "key", "value"):
+            if isinstance(mf.get(key), Str):
+                mf[key] = _detach_str(mf[key])
+    for d in result.defines:
+        for key in ("name", "value"):
+            if isinstance(d.get(key), Str):
+                d[key] = _detach_str(d[key])
+        for key in ("lines", "params"):
+            seq = d.get(key)
+            if isinstance(seq, list):
+                d[key] = [_detach_str(x) if isinstance(x, Str) else x for x in seq]
+    result.system_headers = {_detach_str(h) for h in result.system_headers}
+    result.quoted_headers = {_detach_str(h) for h in result.quoted_headers}
+    result.conditional_macros = frozenset(_detach_str(m) for m in result.conditional_macros)
+    if result.include_guard is not None:
+        result.include_guard = _detach_str(result.include_guard)
+    # directive_by_line shares these objects, so detaching here covers both.
+    for directive in result.directives:
+        if directive.condition is not None:
+            directive.condition = _detach_str(directive.condition)
+        if directive.macro_name is not None:
+            directive.macro_name = _detach_str(directive.macro_name)
+        if directive.macro_value is not None:
+            directive.macro_value = _detach_str(directive.macro_value)
 
 
 def _determine_file_reading_strategy(context: "BuildContext") -> str:
@@ -353,23 +597,6 @@ def _determine_file_reading_strategy(context: "BuildContext") -> str:
     return strategy
 
 
-def _read_file_with_strategy(filepath: str, strategy: str):
-    """Read file using specified strategy.
-
-    Args:
-        filepath: Path to file to read
-        strategy: 'mmap' or 'no_mmap' (based on ulimit/file count)
-
-    Returns:
-        stringzilla.Str object with file contents
-    """
-    # Strategy is about ulimit/resource constraints
-    # Filesystem safety is handled by safe_read_text_file
-    force_no_mmap = strategy == "no_mmap"
-
-    return compiletools.filesystem_utils.safe_read_text_file(filepath, encoding="utf-8", force_no_mmap=force_no_mmap)
-
-
 def set_analyzer_args(args, context: "BuildContext"):
     """Set args for file analysis. Must be called once at build start.
 
@@ -395,8 +622,11 @@ def _load_file_text(filepath: str, file_size: int, max_read_size: int, strategy:
     read_entire_file = (max_read_size == 0) or (file_size <= max_read_size)
 
     if read_entire_file:
-        # Read entire file using appropriate strategy
-        str_text = _read_file_with_strategy(filepath, strategy)
+        # Read entire file. The strategy only governs the ulimit/resource path
+        # (mmap vs read()); filesystem safety is handled by safe_read_text_file.
+        str_text = compiletools.filesystem_utils.safe_read_text_file(
+            filepath, encoding="utf-8", force_no_mmap=(strategy == "no_mmap")
+        )
         return str_text, len(str_text), False
 
     # Read limited amount using mmap for better performance
@@ -430,35 +660,47 @@ def _extract_directives(
 ) -> tuple[list["PreprocessorDirective"], dict[int, "PreprocessorDirective"]]:
     """Extract structured directive records from raw directive positions.
 
-    Honors line continuations (lines ending with backslash). Each line is processed
-    only once even if it appears under multiple directive types.
+    Honors line continuations (lines ending with backslash). Each line is
+    processed only once even if it appears under multiple directive types.
+
+    Positions are processed in strict source (byte) order. ``directive_positions``
+    is keyed by type, so its values interleave out of source order; iterating it
+    type-by-type would let a later type's continuation line be claimed by an
+    earlier type as a phantom standalone directive (e.g. an ``#include`` on a
+    ``#define`` continuation line). Flattening and sorting by position first makes
+    the ``processed_lines`` filter strictly top-to-bottom and returns the
+    directives already in source order.
     """
     directives: list[PreprocessorDirective] = []
     directive_by_line: dict[int, PreprocessorDirective] = {}
     processed_lines: set[int] = set()
 
-    for dtype, positions in directive_positions.items():
-        for pos in positions:
-            # Use binary search on pre-computed line offsets for O(log n) performance
-            line_num = bisect.bisect_right(line_byte_offsets, pos) - 1
-            if line_num in processed_lines:
-                continue
+    flat = sorted(
+        ((pos, dtype) for dtype, positions in directive_positions.items() for pos in positions),
+        key=lambda item: item[0],
+    )
 
-            # Extract directive with continuations using StringZilla
-            directive_lines = []
-            current_line = line_num
-            while current_line < len(lines):
-                line = lines[current_line]
-                directive_lines.append(line)  # Already StringZilla.Str from splitlines()
-                processed_lines.add(current_line)
-                if not ends_with_backslash_sz(line):
-                    break
-                current_line += 1
+    for pos, dtype in flat:
+        # Use binary search on pre-computed line offsets for O(log n) performance
+        line_num = bisect.bisect_right(line_byte_offsets, pos) - 1
+        if line_num in processed_lines:
+            continue
 
-            # Parse directive
-            directive = parse_directive_struct(dtype, pos, line_num, directive_lines)
-            directives.append(directive)
-            directive_by_line[line_num] = directive
+        # Extract directive with continuations using StringZilla
+        directive_lines = []
+        current_line = line_num
+        while current_line < len(lines):
+            line = lines[current_line]
+            directive_lines.append(line)  # Already StringZilla.Str from splitlines()
+            processed_lines.add(current_line)
+            if not ends_with_backslash_sz(line):
+                break
+            current_line += 1
+
+        # Parse directive
+        directive = parse_directive_struct(dtype, pos, line_num, directive_lines)
+        directives.append(directive)
+        directive_by_line[line_num] = directive
 
     return directives, directive_by_line
 
@@ -468,8 +710,13 @@ def _extract_includes(
     lines: list["stringzilla.Str"],
     line_byte_offsets: list[int],
     str_text: "stringzilla.Str",
+    block_comment_spans=None,
 ) -> list[dict]:
-    """Build include records for each #include position."""
+    """Build include records for each #include position.
+
+    ``block_comment_spans`` may be supplied by the caller (``analyze_file`` computes
+    it once and threads it to all consumers); recomputed per-position only when omitted.
+    """
     includes: list[dict] = []
     if not include_positions:
         return includes
@@ -478,14 +725,35 @@ def _extract_includes(
         line_num = bisect.bisect_right(line_byte_offsets, pos) - 1
         line = lines[line_num] if line_num < len(lines) else Str("")  # Already Str from splitlines()
 
-        is_commented = is_position_commented_simd_optimized(str_text, pos, line_byte_offsets)
+        # Splice backslash line-continuations (C++ phase-2): the header token
+        # may legitimately sit on a continuation line (N13). Only join when a
+        # continuation is actually present so the common single-line case is
+        # byte-for-byte unchanged.
+        if ends_with_backslash_sz(line):
+            inc_lines = [line]
+            current_line = line_num + 1
+            while current_line < len(lines):
+                cont = lines[current_line]
+                inc_lines.append(cont)
+                if not ends_with_backslash_sz(cont):
+                    break
+                current_line += 1
+            line = join_lines_strip_backslash_sz(inc_lines)
 
-        # Extract filename and type using StringZilla, replacing regex
-        include_keyword_pos = line.find("#include")
-        if include_keyword_pos == -1:
+        is_commented = is_position_commented_simd_optimized(
+            str_text, pos, line_byte_offsets, block_comment_spans
+        )
+
+        # Extract filename and type using StringZilla, replacing regex.
+        # Tolerate whitespace between '#' and 'include' (e.g. `#  include`).
+        hash_in_line = line.find("#")
+        if hash_in_line == -1:
+            continue
+        name_start = line.find_first_not_of(" \t", hash_in_line + 1)
+        if name_start == -1 or line[name_start : name_start + 7] != "include":
             continue
 
-        search_start = include_keyword_pos + 8  # len('#include')
+        search_start = name_start + 7  # len('include')
 
         quote_pos = line.find('"', search_start)
         lt_pos = line.find("<", search_start)
@@ -539,9 +807,7 @@ def _extract_magic_flags(
         # surface (find_first_not_of et al.) below.
         line = lines[line_num] if line_num < len(lines) else Str("")
 
-        # Parse magic flag using StringZilla operations - ensure line is Str
-        if not isinstance(line, Str):
-            line = Str(line)
+        # Parse magic flag using StringZilla operations
         hash_pos = line.find("//#")
         if hash_pos == -1:
             continue
@@ -681,9 +947,33 @@ def _classify_module_line(rest: "stringzilla.Str"):
         return name, j
 
     def skip_ws(j: int) -> int:
-        while j < n and s[j] in " \t":
+        # C++ treats CR as whitespace; tolerate stray lone CRs (mixed/old-Mac
+        # line endings) between tokens so a declaration still classifies.
+        while j < n and s[j] in " \t\r":
             j += 1
         return j
+
+    def read_header_unit(j: int):
+        """Classify a header-unit import token (``<h>`` or ``"h"``) at ``j``.
+
+        Returns ``("header_import", tok)`` with the token captured verbatim
+        (brackets/quotes included) so build_backend can re-emit it on the
+        precompile / ``-fmodule-file=`` flags, or ``None`` when ``j`` does not
+        open a well-formed ``<...>;`` / ``"...";`` header-name (caller falls
+        through to the named-module forms). Shared by plain ``import`` and
+        ``export import`` so both record header-unit dependency edges (A1).
+        """
+        if j >= n or s[j] not in ("<", '"'):
+            return None
+        closer = ">" if s[j] == "<" else '"'
+        close = s.find(closer, j + 1)
+        if close == -1:
+            return None
+        tok = s[j : close + 1]
+        k = skip_ws(close + 1)
+        if k >= n or s[k] != ";":
+            return None
+        return "header_import", tok
 
     word1, i = read_ident(0)
     if word1 is None:
@@ -701,8 +991,9 @@ def _classify_module_line(rest: "stringzilla.Str"):
             i = skip_ws(i)
             if i >= n:
                 return None, None
-            if s[i] in ("<", '"'):
-                return None, None
+            hu = read_header_unit(i)
+            if hu is not None:
+                return hu
             name, i = read_module_spec(i, allow_partition_only=True)
             if name is None:
                 return None, None
@@ -739,29 +1030,9 @@ def _classify_module_line(rest: "stringzilla.Str"):
         i = skip_ws(i)
         if i >= n:
             return None, None
-        # Header unit: `import <h>;` or `import "h";`. Capture the
-        # token verbatim (including brackets/quotes) so the build
-        # backend can re-emit it as the header-name argument to the
-        # precompile and as the lookup key in clang's
-        # `-fmodule-file=<h>=<path>` flag.
-        if s[i] == "<":
-            close = s.find(">", i + 1)
-            if close == -1:
-                return None, None
-            tok = s[i : close + 1]
-            j = skip_ws(close + 1)
-            if j >= n or s[j] != ";":
-                return None, None
-            return "header_import", tok
-        if s[i] == '"':
-            close = s.find('"', i + 1)
-            if close == -1:
-                return None, None
-            tok = s[i : close + 1]
-            j = skip_ws(close + 1)
-            if j >= n or s[j] != ";":
-                return None, None
-            return "header_import", tok
+        hu = read_header_unit(i)
+        if hu is not None:
+            return hu
         name, i = read_module_spec(i, allow_partition_only=True)
         if name is None:
             return None, None
@@ -776,6 +1047,7 @@ def _classify_module_line(rest: "stringzilla.Str"):
 def _extract_module_declarations(
     str_text: "stringzilla.Str",
     line_byte_offsets: list[int],
+    block_comment_spans=None,
 ) -> dict[str, list[str]]:
     """Find every C++20 module declaration in a source.
 
@@ -787,7 +1059,12 @@ def _extract_module_declarations(
     ``"import"``, ``"header_import"`` -- mapping to lists of names in
     source order. ``header_import`` entries preserve the token form
     (with ``<...>`` or ``"..."``) so the build backend can re-emit them.
+
+    ``block_comment_spans`` may be supplied by the caller (``analyze_file`` computes
+    it once and threads it to all consumers); recomputed per-line only when omitted.
     """
+    if block_comment_spans is None:
+        block_comment_spans = find_block_comment_spans(str_text)
     result: dict[str, list[str]] = {
         "export_module": [],
         "module": [],
@@ -799,17 +1076,40 @@ def _extract_module_declarations(
         return result
 
     line_count = len(line_byte_offsets)
-    for i in range(line_count):
+    i = 0
+    while i < line_count:
         start = line_byte_offsets[i]
         end = line_byte_offsets[i + 1] if i + 1 < line_count else n
         line = str_text[start:end]
-        first_nws = line.find_first_not_of(" \t")
+        # CR is C++ whitespace; skip a stray leading lone CR too (mixed line
+        # endings) so the declaration after it is reached.
+        first_nws = line.find_first_not_of(" \t\r")
         if first_nws == -1:
+            i += 1
             continue
         kw_pos = start + first_nws
-        if is_inside_block_comment_simd(str_text, kw_pos):
+        if _pos_in_spans(block_comment_spans, kw_pos):
+            i += 1
             continue
         rest = line[first_nws:]
+        # Splice backslash line-continuations (C++ phase-2): a module name may
+        # legitimately sit on a continuation line (N4/A1). Consumed lines are
+        # skipped so they are not reprocessed.
+        if ends_with_backslash_sz(line):
+            decl_lines = [rest]
+            j = i + 1
+            while j < line_count:
+                cstart = line_byte_offsets[j]
+                cend = line_byte_offsets[j + 1] if j + 1 < line_count else n
+                cont = str_text[cstart:cend]
+                decl_lines.append(cont)
+                if not ends_with_backslash_sz(cont):
+                    break
+                j += 1
+            rest = join_lines_strip_backslash_sz(decl_lines)
+            i = j + 1
+        else:
+            i += 1
         kind, name = _classify_module_line(rest)
         if kind is not None and name is not None:
             result[kind].append(name)
@@ -851,8 +1151,10 @@ def _extract_defines(
         if name_start_pos == -1:
             continue
 
-        # Join lines for parsing complex defines using StringZilla
-        full_define_str = join_lines_strip_backslash_sz(define_lines)
+        # Join lines for parsing complex defines using StringZilla. Drop any
+        # trailing comment so it cannot leak into the macro value (A19); the
+        # macro name precedes any comment, so name detection is unaffected.
+        full_define_str = _strip_trailing_comment_sz(join_lines_strip_backslash_sz(define_lines))
 
         # Find macro name part in the joined string
         name_part_start = full_define_str.find_first_not_of(" \t", full_define_str.find("#define") + 7)
@@ -928,17 +1230,17 @@ def _detect_marker_type(
     """
     if exe_markers:
         for marker in exe_markers:
-            if str_text.count(marker) > 0:
+            if str_text.find(marker) != -1:
                 return MarkerType.EXE
 
     if test_markers:
         for marker in test_markers:
-            if str_text.count(marker) > 0:
+            if str_text.find(marker) != -1:
                 return MarkerType.TEST
 
     if library_markers:
         for marker in library_markers:
-            if str_text.count(marker) > 0:
+            if str_text.find(marker) != -1:
                 return MarkerType.LIBRARY
 
     return MarkerType.NONE
@@ -987,30 +1289,36 @@ def analyze_file(content_hash: str, context: "BuildContext") -> "FileAnalysisRes
     # Build line_byte_offsets efficiently in a single pass
     line_byte_offsets = _compute_line_byte_offsets(str_text)
 
-    # Find all pattern positions using optimized StringZilla bulk operations
-    include_positions = find_include_positions_simd_bulk(str_text, line_byte_offsets)
-    magic_positions = find_magic_positions_simd_bulk(str_text, line_byte_offsets)
-    directive_positions = find_directive_positions_simd_bulk(str_text, line_byte_offsets)
+    # Compute block-comment spans ONCE and thread them to every consumer; each
+    # is a full forward pass, so recomputing per-finder/per-include/per-line is
+    # the dominant redundant cost on this hot path.
+    block_comment_spans = find_block_comment_spans(str_text)
 
-    # Extract structured directive information
+    # Find all pattern positions using optimized StringZilla bulk operations.
+    magic_positions = find_magic_positions_simd_bulk(str_text, line_byte_offsets, block_comment_spans)
+    directive_positions = find_directive_positions_simd_bulk(str_text, line_byte_offsets, block_comment_spans)
+
+    # Extract structured directive information. _extract_directives returns
+    # records in source order with continuation lines absorbed, so include and
+    # define positions are derived from it (not from the raw, type-keyed
+    # directive_positions) to keep phantom continuation directives out of the
+    # dependency/define graph.
     directives, directive_by_line = _extract_directives(directive_positions, lines, line_byte_offsets)
+    include_positions = _include_positions_from_directives(directives)
 
     # Extract includes with full information using bulk processing
-    includes = _extract_includes(include_positions, lines, line_byte_offsets, str_text)
+    includes = _extract_includes(include_positions, lines, line_byte_offsets, str_text, block_comment_spans)
 
     # Extract magic flags with full information using StringZilla operations
     magic_flags = _extract_magic_flags(magic_positions, lines, line_byte_offsets)
 
-    # Sort directives by line number for correct guard detection
-    # The directives list is built by iterating directive_positions.items()
-    # which processes by directive TYPE, not line number order
-    directives_sorted = sorted(directives, key=lambda d: d.line_num)
-
     # Detect include guard first so we can exclude it from defines
-    include_guard = detect_include_guard(directives_sorted)
+    # (directives are already in source order).
+    include_guard = detect_include_guard(directives)
 
     # Extract defines with full information (excluding include guard)
-    defines = _extract_defines(directive_positions.get("define", []), lines, line_byte_offsets, include_guard)
+    define_positions = [d.byte_pos for d in directives if d.directive_type == "define"]
+    defines = _extract_defines(define_positions, lines, line_byte_offsets, include_guard)
 
     # Extract unique headers
     system_headers = {inc["filename"] for inc in includes if inc["is_system"]}
@@ -1019,15 +1327,12 @@ def analyze_file(content_hash: str, context: "BuildContext") -> "FileAnalysisRes
     # Extract macros referenced in conditionals (for cache optimization)
     conditional_macros = _extract_conditional_macros(directives)
 
-    # Extract static undef targets (macro names from all #undef directives)
-    undef_targets = frozenset(d.macro_name for d in directives if d.directive_type == "undef" and d.macro_name)
-
     # Detect marker type - check for exe, test, or library markers
     marker_type = _detect_marker_type(str_text, exe_markers, test_markers, library_markers)
 
     # C++20 module declarations (named modules, partitions, and header
     # units; the global module fragment opener is skipped at the classifier).
-    module_decls = _extract_module_declarations(str_text, line_byte_offsets)
+    module_decls = _extract_module_declarations(str_text, line_byte_offsets, block_comment_spans)
 
     result = FileAnalysisResult(
         line_count=len(lines),
@@ -1047,13 +1352,16 @@ def analyze_file(content_hash: str, context: "BuildContext") -> "FileAnalysisRes
         content_hash=content_hash,
         include_guard=include_guard,
         conditional_macros=conditional_macros,
-        undef_targets=undef_targets,
         marker_type=marker_type,
         module_exports=tuple(module_decls["export_module"]),
         module_implements=tuple(module_decls["module"]),
         module_imports=tuple(module_decls["import"]),
         module_header_imports=tuple(module_decls["header_import"]),
     )
+
+    # Detach every retained Str slice so the cached result owns its bytes and
+    # stops pinning the whole decoded-file buffer for the build lifetime (A7).
+    _detach_file_analysis_result(result)
 
     context.analyze_file_cache[content_hash] = result
     return result
@@ -1079,7 +1387,7 @@ def print_cache_stats(context: "BuildContext"):
     """Print cache statistics."""
     stats = get_cache_stats(context)
 
-    print("\n=== FileAnalyzer Cache Statistics ===")
+    print("\n=== File Analyzer Cache Statistics ===")
     print(f"Cache size:     {stats['cache_size']:,}")
 
 
@@ -1131,16 +1439,20 @@ def read_file_traditional(filepath, max_size=0):
     try:
         file_size = compiletools.wrappedos.getsize(filepath)
 
-        with builtins.open(filepath, encoding="utf-8", errors="ignore") as f:
+        # Read in binary so truncation is by BYTES, matching the mmap path
+        # (text-mode f.read(max_size) counts characters and would over-read and
+        # mis-report bytes_analyzed on multibyte content, A6). Counting bytes
+        # directly also avoids re-encoding the whole text just to size it (A22c).
+        with builtins.open(filepath, "rb") as f:
             if max_size > 0 and max_size < file_size:
-                text = f.read(max_size)
-                bytes_analyzed = len(text.encode("utf-8"))
+                data = f.read(max_size)
                 was_truncated = True
             else:
-                text = f.read()
-                bytes_analyzed = len(text.encode("utf-8"))
+                data = f.read()
                 was_truncated = False
 
+        bytes_analyzed = len(data)
+        text = data.decode("utf-8", errors="ignore")
         return text, bytes_analyzed, was_truncated
 
     except (OSError, ValueError):
@@ -1221,8 +1533,6 @@ def detect_include_guard(directives: list[PreprocessorDirective]) -> Optional["s
         #endif
         // ... rest of file
     """
-    import stringzilla as sz
-
     if not directives:
         return None
 
@@ -1232,10 +1542,10 @@ def detect_include_guard(directives: list[PreprocessorDirective]) -> Optional["s
         if directive.directive_type == "pragma":
             # Check macro_name for "once" (how parse_directive_struct stores it)
             if directive.macro_name and str(directive.macro_name) == "once":
-                return sz.Str("pragma_once")
+                return Str("pragma_once")
             # Also check condition in case it's stored there
             if directive.condition and "once" in str(directive.condition):
-                return sz.Str("pragma_once")
+                return Str("pragma_once")
 
     # Check for traditional include guard pattern: #ifndef GUARD followed by #define GUARD
     # STRICT: Must start at the FIRST directive to be a true include guard
@@ -1248,6 +1558,23 @@ def detect_include_guard(directives: list[PreprocessorDirective]) -> Optional["s
 
     # The last directive must be #endif for this to be an include guard
     if last_directive.directive_type != "endif":
+        return None
+
+    # The #endif that closes the opening #ifndef must be the LAST directive, so
+    # the guard wraps the entire file. Track conditional nesting depth from the
+    # start: an early return to depth 0 means the opener was closed before EOF
+    # (a feature-flag pattern), not a whole-file include guard (N1).
+    depth = 0
+    matching_endif_idx = None
+    for idx, d in enumerate(directives):
+        if d.directive_type in ("if", "ifdef", "ifndef"):
+            depth += 1
+        elif d.directive_type == "endif":
+            depth -= 1
+            if depth == 0:
+                matching_endif_idx = idx
+                break
+    if matching_endif_idx != len(directives) - 1:
         return None
 
     if first_directive.directive_type == "ifndef" and first_directive.macro_name:
@@ -1326,8 +1653,11 @@ class FileAnalysisResult:
     #   'params': List[stringzilla.Str],        # Parameters for function-like macros
     # }
 
-    system_headers: set[str] = field(default_factory=set)  # Unique system headers found
-    quoted_headers: set[str] = field(default_factory=set)  # Unique quoted headers found
+    # NOTE: these sets hold stringzilla.Str (from include filenames), NOT plain
+    # str. hash(Str) != hash(str) and `Str("x") in {<str>}` is False, so membership
+    # queries must use Str keys (all current consumers are Str-consistent). See A14.
+    system_headers: set["stringzilla.Str"] = field(default_factory=set)  # Unique system headers found
+    quoted_headers: set["stringzilla.Str"] = field(default_factory=set)  # Unique quoted headers found
     content_hash: str = ""  # SHA1 of original content
     include_guard: Optional["stringzilla.Str"] = (
         None  # Include guard macro name (traditional) or sz.Str("pragma_once") for #pragma once
@@ -1335,9 +1665,6 @@ class FileAnalysisResult:
     conditional_macros: frozenset["stringzilla.Str"] = field(
         default_factory=frozenset
     )  # Macros referenced in conditionals (for cache optimization)
-    undef_targets: frozenset["stringzilla.Str"] = field(
-        default_factory=frozenset
-    )  # Macro names from all #undef directives (static, input-independent)
     marker_type: MarkerType = MarkerType.NONE  # Type of marker found in file (exe, test, library, or none)
 
     # C++20 module declarations. See _extract_module_declarations for the
@@ -1350,71 +1677,66 @@ class FileAnalysisResult:
 
     # Helper method for SimplePreprocessor compatibility
     def get_directive_line_numbers(self) -> dict[str, set[int]]:
-        """Get line numbers for each directive type (for SimplePreprocessor)."""
-        result = {}
-        for dtype, positions in self.directive_positions.items():
-            line_nums = set()
-            for pos in positions:
-                # Binary search in line_byte_offsets to find line number
-                line_num = bisect.bisect_right(self.line_byte_offsets, pos) - 1
-                line_nums.add(line_num)
-            result[dtype] = line_nums
+        """Get line numbers for each directive type (for SimplePreprocessor).
+
+        Derived from the cleaned ``directives`` list (source-ordered, with
+        continuation lines absorbed) rather than the raw ``directive_positions``
+        map, so phantom continuation directives never contribute a line number.
+        """
+        result: dict[str, set[int]] = {}
+        for directive in self.directives:
+            result.setdefault(directive.directive_type, set()).add(directive.line_num)
         return result
 
 
-class FileAnalyzer:
-    """Namespace for file-analyzer command-line arguments.
+def add_arguments(cap):
+    """Add file-analyzer command-line arguments to a parser.
 
     The module-level ``analyze_file()`` is the canonical entry point for file
-    analysis; this class only exists to host ``add_arguments`` for backward
-    compatibility with existing call sites in ``findtargets`` and ``headerdeps``.
+    analysis; this function only registers the file-reading-strategy flags
+    (matching the module-level ``add_arguments`` convention used by
+    ``hunter``/``findtargets``). Safe to call more than once on the same parser.
+    Call sites: ``findtargets`` and ``headerdeps``.
+
+    Args:
+        cap: ConfigArgParse parser instance
     """
+    import compiletools.apptools
+    import compiletools.utils
 
-    @staticmethod
-    def add_arguments(cap):
-        """Add file analyzer specific arguments.
+    if compiletools.apptools._parser_has_option(cap, "--use-mmap"):
+        return
 
-        Safe to call more than once on the same parser.
+    # Manual overrides for testing/debugging
+    compiletools.utils.add_flag_argument(
+        parser=cap,
+        name="use-mmap",
+        dest="use_mmap",
+        default=True,
+        help="Use mmap for file reading. Disable with --no-use-mmap for GPFS, SMB/CIFS, etc.",
+    )
 
-        Args:
-            cap: ConfigArgParse parser instance
-        """
-        import compiletools.apptools
-        import compiletools.utils
+    compiletools.utils.add_flag_argument(
+        parser=cap,
+        name="force-mmap",
+        dest="force_mmap",
+        default=False,
+        help="Force mmap mode even on low ulimit systems (for testing/debugging)",
+    )
 
-        if compiletools.apptools._parser_has_option(cap, "--use-mmap"):
-            return
+    # Warning suppression
+    compiletools.utils.add_flag_argument(
+        parser=cap,
+        name="suppress-fd-warnings",
+        dest="suppress_fd_warnings",
+        default=False,
+        help="Suppress file descriptor limit warnings",
+    )
 
-        # Manual overrides for testing/debugging
-        compiletools.utils.add_flag_argument(
-            parser=cap,
-            name="use-mmap",
-            dest="use_mmap",
-            default=True,
-            help="Use mmap for file reading. Disable with --no-use-mmap for GPFS, SMB/CIFS, etc.",
-        )
-
-        compiletools.utils.add_flag_argument(
-            parser=cap,
-            name="force-mmap",
-            dest="force_mmap",
-            default=False,
-            help="Force mmap mode even on low ulimit systems (for testing/debugging)",
-        )
-
-        # Warning suppression
-        compiletools.utils.add_flag_argument(
-            parser=cap,
-            name="suppress-fd-warnings",
-            dest="suppress_fd_warnings",
-            default=False,
-            help="Suppress file descriptor limit warnings",
-        )
-
-        compiletools.utils.add_flag_argument(
-            parser=cap,
-            name="suppress-filesystem-warnings",
-            dest="suppress_filesystem_warnings",
-            default=False,
-            help="Suppress filesystem compatibility warnings",
-        )
+    compiletools.utils.add_flag_argument(
+        parser=cap,
+        name="suppress-filesystem-warnings",
+        dest="suppress_filesystem_warnings",
+        default=False,
+        help="Suppress filesystem compatibility warnings",
+    )

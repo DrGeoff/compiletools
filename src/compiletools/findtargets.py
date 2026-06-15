@@ -17,7 +17,7 @@ def add_arguments(cap):
     if compiletools.apptools._parser_has_option(cap, "--exemarkers"):
         return
     compiletools.namer.Namer.add_arguments(cap)
-    compiletools.file_analyzer.FileAnalyzer.add_arguments(cap)
+    compiletools.file_analyzer.add_arguments(cap)
     cap.add_argument(
         "--exemarkers",
         action="append",
@@ -121,7 +121,7 @@ class FindTargets:
     def __init__(self, args, argv=None, variant=None, exedir=None, *, context):
         self._args = args
         self.context = context
-        # Set analyzer args for FileAnalyzer caching
+        # Set analyzer args for file_analyzer caching
         from compiletools.file_analyzer import set_analyzer_args
 
         set_analyzer_args(args, context)
@@ -212,7 +212,7 @@ class FindTargets:
                             print("Found a test: " + filepath)
                         continue
 
-                # Check marker type from FileAnalyzer
+                # Check marker type from file_analyzer
                 if result.marker_type == MarkerType.EXE:
                     executabletargets.append(filepath)
                     if self._args.verbose >= 3:
