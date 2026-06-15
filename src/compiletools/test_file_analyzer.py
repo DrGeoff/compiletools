@@ -18,16 +18,12 @@ from compiletools.file_analyzer import (
     _extract_magic_flags,
     _include_positions_from_directives,
     add_arguments,
-    cache_clear,
     detect_include_guard,
     find_directive_positions_simd_bulk,
-    find_include_positions_simd_bulk,
     find_magic_positions_simd_bulk,
-    get_cache_stats,
     is_inside_block_comment_simd,
     is_position_commented_simd_optimized,
     parse_directive_struct,
-    print_cache_stats,
     read_file_mmap,
     read_file_traditional,
     set_analyzer_args,
@@ -208,8 +204,12 @@ class TestDirectiveAndIncludeFinders:
     def _includes_from_text(self, src):
         text = sz.Str(src)
         offsets = _compute_line_byte_offsets(text)
-        positions = find_include_positions_simd_bulk(text, offsets)
         lines = text.splitlines()
+        # Mirror the production path: directive finder -> _extract_directives
+        # (absorbs N13 continuations) -> _include_positions_from_directives.
+        directive_positions = find_directive_positions_simd_bulk(text, offsets)
+        directives, _ = _extract_directives(directive_positions, lines, offsets)
+        positions = _include_positions_from_directives(directives)
         return _extract_includes(positions, lines, offsets, text)
 
     def _directives_from_text(self, src):
@@ -395,8 +395,12 @@ class TestIncludeContinuationSplicing:
     def _includes_from_text(self, src):
         text = sz.Str(src)
         offsets = _compute_line_byte_offsets(text)
-        positions = find_include_positions_simd_bulk(text, offsets)
         lines = text.splitlines()
+        # Mirror the production path: directive finder -> _extract_directives
+        # (absorbs N13 continuations) -> _include_positions_from_directives.
+        directive_positions = find_directive_positions_simd_bulk(text, offsets)
+        directives, _ = _extract_directives(directive_positions, lines, offsets)
+        positions = _include_positions_from_directives(directives)
         return _extract_includes(positions, lines, offsets, text)
 
     def test_continued_quoted_include_resolves_header(self):
@@ -583,25 +587,6 @@ class TestParseDirectiveStruct:
         result = _parse_directive("define", "#define F(a, b)")
         assert str(result.macro_name) == "F"
         assert result.macro_value is None
-
-
-class TestCacheStatsFunctions:
-    """Test cache stats and clear functions."""
-
-    def test_get_cache_stats(self):
-        ctx = BuildContext()
-        stats = get_cache_stats(ctx)
-        assert "cache_size" in stats
-
-    def test_print_cache_stats(self, capsys):
-        ctx = BuildContext()
-        print_cache_stats(ctx)
-        captured = capsys.readouterr()
-        assert "Cache" in captured.out
-
-    def test_cache_clear(self):
-        ctx = BuildContext()
-        cache_clear(ctx)  # Should not raise
 
 
 class TestReadFileTraditionalEdgeCases:

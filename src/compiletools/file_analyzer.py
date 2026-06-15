@@ -168,6 +168,13 @@ def _is_directive_start(
     block comment. ``block_comment_spans`` is precomputed once per scan
     (:func:`find_block_comment_spans`) so membership is O(log n) rather than the
     old O(n*m) recompute on every marker.
+
+    The whitespace-only prefix rule is also what rejects a ``#include`` that only
+    *looks* like one because it sits inside a string literal (e.g.
+    ``const char* s = "#include <x>";``): the ``#`` there has non-whitespace
+    bytes before it on the line. Routing every include through this single gate is
+    what closed the N9 "ghost header from a string literal" bug that the old,
+    separate include scan lacked.
     """
     # Whitespace-only line prefix. A *closed* block comment counts as whitespace
     # per the standard (`/* c */ #if FOO` is a valid directive, A21), so the gaps
@@ -225,35 +232,17 @@ def _strip_trailing_comment_sz(s: "stringzilla.Str") -> "stringzilla.Str":
     return s
 
 
-def find_include_positions_simd_bulk(str_text, line_byte_offsets: list[int]) -> list[int]:
-    """Return byte positions of every real ``#include`` directive.
-
-    Derived from the single directive finder so include detection shares one
-    validation site (whitespace line-prefix gate + block-comment gate + tolerance
-    of ``# include``). This collapses the previously separate, weaker include
-    scan that recorded ghost headers from string literals (N9) and missed the
-    spaced ``# include`` form (A18).
-
-    ``#include_next`` (the header-wrapper idiom) names a real dependency too, so
-    its positions are merged in source order — the extractor reuses the same
-    ``include``-prefix parse. ``#include_next`` keeps its own directive key (it
-    parses as its own type, not as a plain ``include`` whose operand would carry
-    the stray ``_next``).
-    """
-    directive_positions = find_directive_positions_simd_bulk(str_text, line_byte_offsets)
-    include = directive_positions.get("include", [])
-    include_next = directive_positions.get("include_next", [])
-    if not include_next:
-        return include
-    return sorted(include + include_next)
-
-
 def _include_positions_from_directives(directives: list["PreprocessorDirective"]) -> list[int]:
     """Byte positions of include directives, derived from the cleaned directive list.
 
-    This is the production derivation (continuation lines already absorbed, so no
-    phantom includes). ``#include`` and ``#include_next`` both name real
-    dependencies and are parsed by the same ``include``-prefix extractor.
+    This is the production derivation: continuation lines have already been
+    absorbed by :func:`_extract_directives`, so an N13 backslash-continued
+    ``#include \\`` <newline> ``"foo.h"`` yields one include position, not a
+    phantom on the continuation line. ``#include`` and ``#include_next`` (the
+    header-wrapper idiom) both name real dependencies and are parsed by the same
+    ``include``-prefix extractor; ``include_next`` keeps its own directive type
+    rather than folding into ``include`` — otherwise its operand would carry the
+    stray ``_next`` suffix.
     """
     return [d.byte_pos for d in directives if d.directive_type in ("include", "include_next")]
 
@@ -326,6 +315,13 @@ def find_directive_positions_simd_bulk(
 
     Vectorization: Single-pass search without intermediate list allocation.
 
+    This is the single source of directive positions — ``#include`` /
+    ``#include_next`` included — so the whitespace-prefix and block-comment gates
+    in :func:`_is_directive_start` apply uniformly. The earlier design had a
+    separate, weaker include scan that re-introduced the N9 (string-literal ghost)
+    and A18 (spaced ``# include``) bugs; folding includes into this finder retired
+    it.
+
     ``block_comment_spans`` may be supplied by the caller (``analyze_file`` computes
     it once and threads it to all consumers); recomputed here only when omitted.
     """
@@ -364,7 +360,9 @@ def find_directive_positions_simd_bulk(
 
         # Extract directive name efficiently
         directive_start = hash_pos + 1
-        # Skip whitespace after # using StringZilla
+        # Tolerate whitespace between the marker and the keyword: `#   include`
+        # and `# if` are valid directives (A18). The retired separate include scan
+        # matched only the tight `#include` spelling and missed these.
         directive_start = str_text.find_first_not_of(" \t", directive_start)
         if directive_start == -1:
             hash_pos = str_text.find("#", hash_pos + 1)
@@ -1365,30 +1363,6 @@ def analyze_file(content_hash: str, context: "BuildContext") -> "FileAnalysisRes
 
     context.analyze_file_cache[content_hash] = result
     return result
-
-
-def cache_clear(context: "BuildContext"):
-    """Clear the file analysis cache and reset analyzer args."""
-    context.analyzer_args = None
-    context.file_reading_strategy = None
-    context.warned_low_ulimit = False
-    context.analyze_file_cache.clear()
-
-
-def get_cache_stats(context: "BuildContext"):
-    """Get cache statistics from context cache."""
-    cache_size = len(context.analyze_file_cache)
-    return {
-        "cache_size": cache_size,
-    }
-
-
-def print_cache_stats(context: "BuildContext"):
-    """Print cache statistics."""
-    stats = get_cache_stats(context)
-
-    print("\n=== File Analyzer Cache Statistics ===")
-    print(f"Cache size:     {stats['cache_size']:,}")
 
 
 def read_file_mmap(filepath, max_size=0):
