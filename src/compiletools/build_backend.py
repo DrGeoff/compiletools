@@ -2732,7 +2732,7 @@ class BuildBackend(abc.ABC):
         prerequisites = [filename] + sorted([str(dep) for dep in deplist])
 
         # Compute include_weight for SLURM memory estimation.
-        # len(quoted_headers) from FileAnalyzer correlates with peak RSS (r=0.85)
+        # len(quoted_headers) from analyze_file correlates with peak RSS (r=0.85)
         # because each quoted include transitively pulls in framework templates.
         # analyze_file is already cached from the header dep walk -- zero cost.
         try:

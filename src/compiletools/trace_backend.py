@@ -981,7 +981,7 @@ class SlurmBackend(ShakeBackend):
         only the *weight* differs by rule type:
 
         * Compile rules use ``rule.include_weight`` (=
-          ``len(FileAnalyzer.quoted_headers)`` for the source file, set in
+          ``len(FileAnalysisResult.quoted_headers)`` for the source file, set in
           ``BuildBackend._create_compile_rule()`` at zero cost — analyze_file
           results are cached from the header-dep walk).
         * Link / static_library / shared_library rules have no source file

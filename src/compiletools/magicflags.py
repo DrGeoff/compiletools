@@ -128,7 +128,7 @@ class MagicFlagsBase:
         self._headerdeps = headerdeps
         self.context = context
 
-        # Set analyzer args for FileAnalyzer caching
+        # Set analyzer args for file_analyzer caching
         from compiletools.file_analyzer import set_analyzer_args
 
         set_analyzer_args(args, context)
@@ -830,7 +830,7 @@ class DirectMagicFlags(MagicFlagsBase):
             return
 
         updates = {}
-        # Extract macros directly from FileAnalyzer's structured defines data
+        # Extract macros directly from file_analyzer's structured defines data
         for define_info in file_result.defines:
             if define_info["is_function_like"]:
                 continue
@@ -1095,7 +1095,7 @@ class DirectMagicFlags(MagicFlagsBase):
         return result
 
     # DirectMagicFlags doesn't implement readfile() - it uses structured data processing only
-    # All processing goes through get_structured_data() -> FileAnalyzerResults
+    # All processing goes through get_structured_data() -> FileAnalysisResult
 
     def _verify_macro_state_unchanged(self, context, filename):
         """Verify that the macro state hasn't changed after convergence for a specific file."""
@@ -1114,7 +1114,7 @@ class DirectMagicFlags(MagicFlagsBase):
                 )
 
     def parse(self, filename):
-        # Leverage FileAnalyzer data for optimization and validation
+        # Leverage file_analyzer data for optimization and validation
         result = self._parse(filename)
 
         # Verify macro state hasn't been corrupted during parsing
