@@ -22,7 +22,11 @@ def ends_with_backslash_sz(sz_str: "stringzilla.Str") -> bool:
     last_non_ws = sz_str.find_last_not_of(" \t\r\n")
     if last_non_ws == -1:
         return False
-    return sz_str[last_non_ws] == "\\"
+    # Compare via a one-byte slice rather than ``sz_str[last_non_ws]``: the
+    # index is a byte offset and may land inside a multi-byte UTF-8 sequence
+    # (e.g. a trailing emoji), where single-char indexing raises
+    # UnicodeDecodeError. Slice equality compares bytes and is decode-safe.
+    return sz_str[last_non_ws : last_non_ws + 1] == "\\"
 
 
 def is_alpha_or_underscore_sz(sz_str: "stringzilla.Str", pos: int = 0) -> bool:
@@ -54,7 +58,11 @@ def join_lines_strip_backslash_sz(lines: list["stringzilla.Str"]) -> "stringzill
     for line in lines:
         # Use SIMD-optimized strip_sz for whitespace removal
         trimmed = strip_sz(line, " \t\r\n")
-        if len(trimmed) > 0 and trimmed[-1] == "\\":
+        # Probe the final byte via a one-byte slice, not ``trimmed[-1]``: the
+        # tail may be a multi-byte UTF-8 sequence (e.g. a trailing emoji) where
+        # single-char indexing raises UnicodeDecodeError. Slice equality
+        # compares bytes and is decode-safe. (Mirrors ends_with_backslash_sz.)
+        if len(trimmed) > 0 and trimmed[-1:] == "\\":
             trimmed = trimmed[:-1]  # Remove backslash
         trimmed = strip_sz(trimmed, " \t")  # Remove trailing whitespace
         result_parts.append(str(trimmed))  # Convert to str for fast joining

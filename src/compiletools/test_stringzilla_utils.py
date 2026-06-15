@@ -48,6 +48,11 @@ class TestEndsWithBackslashSz:
             pytest.param("hello\\world", False, id="backslash-not-at-end"),
             pytest.param("hello\\\\", True, id="multiple-backslashes"),
             pytest.param("hello\\\\\\", True, id="escaped-backslash"),
+            # The last non-whitespace byte falls inside a multi-byte UTF-8
+            # sequence (emoji 🎯 ends in 0xaf). Indexing that single byte must
+            # not raise a UnicodeDecodeError; it is simply not a backslash.
+            pytest.param("// trailing emoji \U0001f3af", False, id="multibyte-tail-emoji"),
+            pytest.param("see the em—dash", False, id="multibyte-tail-emdash"),
         ],
     )
     def test_ends_with_backslash(self, source, expected):
@@ -99,6 +104,12 @@ class TestJoinLinesStripBackslashSz:
             pytest.param(["hello\\  \t", "world\\  \r\n", "test"], "hello world test", id="backslash-whitespace"),
             pytest.param(["  ", "\t", "hello"], "  hello", id="whitespace-only-lines"),
             pytest.param(["hello\\", "world"], "hello world", id="stringzilla-input"),
+            # A joined physical line whose trimmed content ends in a multi-byte
+            # UTF-8 character (emoji 🎯 ends in byte 0xaf). The trailing-backslash
+            # probe must not index that single tail byte (UnicodeDecodeError);
+            # such a line simply has no backslash to strip.
+            pytest.param(["start \\", "end \U0001f3af"], "start end \U0001f3af", id="multibyte-tail-emoji"),
+            pytest.param(["trailing dash —"], "trailing dash —", id="multibyte-tail-emdash"),
         ],
     )
     def test_join_lines_strip_backslash(self, lines, expected):
