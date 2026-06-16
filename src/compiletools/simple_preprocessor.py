@@ -266,14 +266,11 @@ class SimplePreprocessor:
         self.verbose = verbose
         self.compiler_path = compiler_path
         self.cppflags = cppflags
-        # Include guard to skip when processing #define. This is instance state
-        # (not a local/param) because it is a per-call channel from
-        # process_structured to _handle_define_structured, which is dispatched
-        # generically via _DIRECTIVE_DISPATCH under the fixed
-        # (directive, condition_stack) signature. Threading the guard through the
-        # uniform dispatch to every handler (most of which don't need it), or
-        # special-casing this one handler's signature, would break that design;
-        # process_structured resets it at the top of each call.
+        # Per-call channel from process_structured to _handle_define_structured:
+        # which include guard macro to skip when re-#define'd. Kept as instance
+        # state rather than a param because _DIRECTIVE_DISPATCH calls every
+        # handler with the fixed (directive, condition_stack) signature. Reset at
+        # the top of each process_structured call.
         self._include_guard = None
 
     def _strip_comments_sz(self, expr_sz: sz.Str) -> sz.Str:
