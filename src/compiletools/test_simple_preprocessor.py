@@ -640,6 +640,34 @@ class TestExpandHasFunctions:
         with patch("compiletools.compiler_macros.query_has_function", return_value=0):
             assert processor._evaluate_expression_sz(sz.Str("defined(FOO)")) == 1
 
+    def test_non_ascii_byte_in_operand_does_not_crash(self):
+        """A9: a non-ASCII byte inside the __has_* operand must not crash the scan.
+
+        The paren-matching loop walks the operand byte-by-byte. Indexing a
+        ``sz.Str`` with a bare integer decodes that single byte as UTF-8 in
+        isolation, so the leading byte of any multi-byte sequence (here the
+        UTF-8 ``ö``) raised ``UnicodeDecodeError``. Slice indexing returns a
+        1-char ``Str`` (a replacement char for a lone continuation byte) and
+        keeps the scan intact.
+        """
+        with patch("compiletools.compiler_macros.query_has_function", return_value=1):
+            # Must not raise; the call is recognised and expanded to '1'.
+            result = self.processor._expand_has_functions_sz(sz.Str("__has_include(<föö.h>)"))
+            assert str(result) == "1"
+
+    def test_non_ascii_byte_where_paren_expected_does_not_crash(self):
+        """A9: a non-ASCII byte where the opening paren is expected must not crash.
+
+        After the function name + whitespace skip, the scanner peeks the next
+        byte to decide whether this is a call. A multi-byte char there formerly
+        raised ``UnicodeDecodeError``; now it is correctly treated as 'not a
+        call' and the identifier is left unchanged.
+        """
+        with patch("compiletools.compiler_macros.query_has_function", return_value=1):
+            result = self.processor._expand_has_functions_sz(sz.Str("__has_include é"))
+            # Not a function call (no paren) -> name passed through verbatim.
+            assert "__has_include" in str(result)
+
     def test_same_identifier_in_defined_and_has_check_resolves_each_correctly(self):
         """A18 cross-operand: when ONE identifier feeds BOTH defined() and a
         __has_* in the same expression, the two operands have opposite expansion

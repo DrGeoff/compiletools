@@ -480,8 +480,12 @@ class SimplePreprocessor:
             if j == -1:
                 j = len(expr_sz)
 
-            # Must have opening paren to be a function call
-            if j >= len(expr_sz) or expr_sz[j] != "(":
+            # Must have opening paren to be a function call. Slice-index
+            # (``[j:j+1]``) rather than bare-int-index: ``sz.Str[j]`` decodes a
+            # single byte as UTF-8 and raises UnicodeDecodeError on the leading
+            # byte of any multi-byte char (see module-level _ID_*_BYTESET note);
+            # the slice yields a 1-char Str that compares correctly to "(".
+            if j >= len(expr_sz) or expr_sz[j : j + 1] != "(":
                 # Not a function call - leave unchanged
                 result_parts.append(func_name)
                 i = name_end
@@ -491,7 +495,11 @@ class SimplePreprocessor:
             paren_depth = 1
             k = j + 1
             while k < len(expr_sz) and paren_depth > 0:
-                ch = expr_sz[k]
+                # Slice-index (not bare ``expr_sz[k]``): a bare-int index decodes
+                # one byte as UTF-8 and raises UnicodeDecodeError when the operand
+                # contains a multi-byte char (e.g. <föö.h>). The 1-char Str slice
+                # is safe and compares correctly to "(" / ")".
+                ch = expr_sz[k : k + 1]
                 if ch == "(":
                     paren_depth += 1
                 elif ch == ")":
