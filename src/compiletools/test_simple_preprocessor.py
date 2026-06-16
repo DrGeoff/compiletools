@@ -1408,3 +1408,72 @@ class TestMacroStateBuildContextHash:
         ms2 = ms.without_keys([sz.Str("Y")])
         assert ms2.cflags == "-O2"
         assert ms2.cxxflags == "-std=c++17"
+
+
+class TestResolveComputedInclude:
+    """Tests for SimplePreprocessor.resolve_computed_include (A10).
+
+    The wrapper-stripping must remove exactly ONE balanced outer (...) pair,
+    not greedily peel every paren level. Greedy stripping corrupts computed
+    includes whose stripped content legitimately contains inner parentheses.
+    """
+
+    def test_single_wrapper_resolves(self):
+        """XSTR(FOO) -> FOO -> object-macro value. The simple, common case."""
+        macros = {sz.Str("FOO"): sz.Str("linux_extra.h")}
+        p = SimplePreprocessor(macros, verbose=0)
+        assert p.resolve_computed_include("XSTR(FOO)") == "linux_extra.h"
+
+    def test_quoted_include_returns_none(self):
+        """A literal quoted include is not a computed include."""
+        p = SimplePreprocessor({}, verbose=0)
+        assert p.resolve_computed_include('"foo.h"') is None
+
+    def test_angled_include_returns_none(self):
+        """A literal angle-bracket include is not a computed include."""
+        p = SimplePreprocessor({}, verbose=0)
+        assert p.resolve_computed_include("<foo.h>") is None
+
+    def test_empty_returns_none(self):
+        """Empty / whitespace-only input is not a computed include."""
+        p = SimplePreprocessor({}, verbose=0)
+        assert p.resolve_computed_include("   ") is None
+
+    def test_unresolvable_returns_none(self):
+        """A wrapper around a non-macro identifier is unresolvable (expanded == inner)."""
+        p = SimplePreprocessor({}, verbose=0)
+        assert p.resolve_computed_include("XSTR(NOT_A_MACRO)") is None
+
+    def test_balanced_strip_preserves_inner_parens(self):
+        """XSTR(KEEP(name)) must strip ONLY the outer XSTR(...) wrapper.
+
+        Greedy stripping peels both paren levels down to ``name``, silently
+        discarding the inner ``KEEP(...)`` token structure and resolving to
+        the bare macro value. The C-correct single-outer-pair strip leaves
+        ``KEEP(name)`` intact, so after object-macro expansion of ``name``
+        the result keeps the surrounding wrapper.
+        """
+        macros = {sz.Str("name"): sz.Str("config.h")}
+        p = SimplePreprocessor(macros, verbose=0)
+        # Balanced: XSTR(KEEP(name)) -> KEEP(name) -> KEEP(config.h)
+        assert p.resolve_computed_include("XSTR(KEEP(name))") == "KEEP(config.h)"
+
+    def test_unbalanced_trailing_paren_not_stripped(self):
+        """JOIN(A,B)(C): the leading '(' is NOT balanced by the final ')'.
+
+        Greedy stripping slices ``A,B)(C`` (syntactic garbage). A balanced
+        strip must refuse to peel this layer because the '(' after the leading
+        identifier does not enclose the entire remainder; the expression is
+        passed through to expansion unchanged.
+        """
+        macros = {sz.Str("A"): sz.Str("aval")}
+        p = SimplePreprocessor(macros, verbose=0)
+        # No outer pair stripped; object-macro A expands in place.
+        assert p.resolve_computed_include("JOIN(A,B)(C)") == "JOIN(aval,B)(C)"
+
+    def test_malformed_unbalanced_does_not_crash(self):
+        """An unbalanced wrapper must degrade gracefully (no exception)."""
+        p = SimplePreprocessor({}, verbose=0)
+        # Should not raise; returns None or a best-effort string.
+        result = p.resolve_computed_include("XSTR((FOO)")
+        assert result is None or isinstance(result, str)

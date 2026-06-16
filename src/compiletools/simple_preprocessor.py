@@ -676,14 +676,54 @@ class SimplePreprocessor:
         if not arg or arg[0] in ('"', "<"):
             return None
 
-        # Strip function-like macro wrappers: XSTR(FOO) -> FOO
-        inner = arg
-        while "(" in inner and inner.endswith(")"):
-            paren = inner.index("(")
-            inner = inner[paren + 1 : -1].strip()
+        # Strip the function-like macro wrapper: XSTR(FOO) -> FOO. Peel only a
+        # single *balanced* outer ``IDENT(...)`` pair — the '(' right after the
+        # leading identifier must be matched by the final ')' enclosing the
+        # entire remainder. A greedy ``inner.index("(")`` + ``[:-1]`` slice that
+        # repeats every level would over-peel inner parens belonging to the
+        # stripped content (e.g. ``XSTR(KEEP(name))`` -> ``name`` instead of
+        # ``KEEP(name)``, or ``JOIN(A,B)(C)`` -> the syntactic garbage
+        # ``A,B)(C``). Anything left inside (a further wrapper, a nested
+        # function-like call) is handed to macro expansion rather than blindly
+        # discarded.
+        inner = self._strip_one_balanced_wrapper(arg)
+        if inner is None:
+            inner = arg
 
         expanded = str(self._recursive_expand_macros_sz(sz.Str(inner)))
         return expanded if expanded != inner else None
+
+    @staticmethod
+    def _strip_one_balanced_wrapper(expr: str) -> str | None:
+        """Remove exactly one outer ``(...)`` pair if it balances the whole tail.
+
+        Returns the de-wrapped, stripped inner expression when ``expr`` ends in
+        ``)`` and the first ``(`` is balanced by that final ``)`` (so the pair
+        encloses the entire remainder after the leading text). Returns ``None``
+        when there is no such balanced outer pair — including unbalanced input —
+        so the caller leaves the expression untouched for macro expansion.
+        """
+        if not expr.endswith(")"):
+            return None
+        open_idx = expr.find("(")
+        if open_idx == -1:
+            return None
+
+        depth = 0
+        for i in range(open_idx, len(expr)):
+            ch = expr[i]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    # The first '(' closes at index i. It is a true outer
+                    # wrapper only if it closes at the very last character.
+                    if i == len(expr) - 1:
+                        return expr[open_idx + 1 : -1].strip()
+                    return None
+        # Ran off the end with depth > 0: unbalanced, leave it alone.
+        return None
 
     def process_structured(self, file_result: "FileAnalysisResult", context) -> list[int]:
         """Process FileAnalysisResult and return active line numbers using structured directive data.
