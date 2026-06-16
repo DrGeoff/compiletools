@@ -84,8 +84,9 @@ class _CExpressionParser:
     # Short-circuit mechanism (A6/A7): every recursive method takes an
     # ``evaluate`` flag. When False the subtree is still fully *parsed* (so the
     # token stream stays aligned), but the dead arithmetic that could raise —
-    # ``/`` and ``%`` — is skipped and a placeholder 0 is returned. The result
-    # of a non-evaluated subtree is discarded, so any placeholder is sound.
+    # ``/`` and ``%`` (ZeroDivisionError) and ``<<``/``>>`` (negative shift
+    # count) — is skipped and a placeholder 0 is returned. The result of a
+    # non-evaluated subtree is discarded, so any placeholder is sound.
     # ``||`` clears it for the RHS when the LHS is already true; ``&&`` when the
     # LHS is already false; ``?:`` for the untaken branch.
 
@@ -178,7 +179,11 @@ class _CExpressionParser:
         value = self._parse_additive(evaluate)
         while op := self._match("<<", ">>"):
             rhs = self._parse_additive(evaluate)
-            if op == "<<":
+            if not evaluate:
+                # Dead subtree (A6/A7): skip the shift so a dead negative count
+                # never raises ``ValueError``. The returned value is discarded.
+                value = 0
+            elif op == "<<":
                 value <<= rhs
             else:
                 value >>= rhs
@@ -201,7 +206,7 @@ class _CExpressionParser:
             if op == "*":
                 value *= rhs
             elif not evaluate:
-                # Dead subtree (A6/A7): skip the division so a dead ``x / 0``
+                # Dead subtree (A6/A7): skip the div/mod so a dead ``x / 0``
                 # never raises. The returned value is discarded.
                 value = 0
             elif op == "/":

@@ -890,6 +890,22 @@ class TestSimplePreprocessorEdgeCases:
         # ``0 || 1 / 0`` -> 0 || 0 -> 0.
         assert self.processor._evaluate_expression_sz(sz.Str("0 || 1 / 0")) == 0
 
+    def test_short_circuit_dead_negative_shift_skipped_sz(self):
+        """A6 follow-up: a dead-branch negative shift must not surface either.
+        Python's ``<<``/``>>`` raise on a negative RHS and ``_safe_eval``
+        re-raises ValueError, so the short-circuit must cover shift too."""
+        assert self.processor._evaluate_expression_sz(sz.Str("1 || (1 << -1)")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("0 && (1 << -2)")) == 0
+        # Dead shift in the untaken ternary branch as well.
+        assert self.processor._evaluate_expression_sz(sz.Str("1 ? 1 : (1 >> -1)")) == 1
+
+    def test_live_negative_shift_behavior_unchanged_sz(self):
+        """A6 follow-up: only DEAD shifts are skipped. A LIVE negative shift is
+        untouched -- it raises ValueError out of the parser exactly as before
+        (``_safe_eval`` re-raises ValueError as the unsafe-expression signal)."""
+        with pytest.raises(ValueError):
+            self.processor._evaluate_expression_sz(sz.Str("1 << -1"))
+
     def test_ternary_conditional_operator_sz(self):
         """A7: ``?:`` is valid in a constant-expression; evaluate the taken
         branch only."""
