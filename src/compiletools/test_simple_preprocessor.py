@@ -837,6 +837,133 @@ class TestExpandHasFunctions:
         result = get_or_compute_preprocessing(file_result, macros, verbose=0, context=self.ctx)
         assert 1 not in result.active_lines
 
+    # Cycle 9 (Finding A1): dead-branch #if/#elif must NOT evaluate the
+    # controlling expression, because _evaluate_expression_sz issues a real
+    # compiler probe (query_has_function) for __has_include / __has_*.
+
+    def _spy_evaluate(self):
+        """Wrap _evaluate_expression_sz to record every expression it sees."""
+        seen = []
+        real = self.processor._evaluate_expression_sz
+
+        def spy(expr_sz):
+            seen.append(str(expr_sz))
+            return real(expr_sz)
+
+        self.processor._evaluate_expression_sz = spy  # type: ignore[method-assign]
+        return seen
+
+    def test_dead_if_branch_does_not_evaluate_nested_if(self):
+        """A #if nested inside a dead #if 0 must not evaluate its expression
+        (no spurious __has_include compiler probe for an unreachable branch)."""
+        text = dedent("""\
+            #if 0
+            #if __has_include(<should_not_be_probed.h>)
+            #include <unreachable.h>
+            #endif
+            #endif""")
+        file_result = _make_file_analysis_result(text)
+        seen = self._spy_evaluate()
+
+        # query_has_function would be the real side effect; assert it is never
+        # called for the dead inner branch.
+        with patch("compiletools.compiler_macros.query_has_function", return_value=1) as probe:
+            active_lines = self.processor.process_structured(file_result, self.ctx)
+
+        assert probe.call_count == 0
+        assert not any("should_not_be_probed" in e for e in seen)
+        # The outer #if 0 is dead, so nothing inside is active.
+        assert 2 not in active_lines
+
+    def test_dead_elif_branch_does_not_evaluate_nested_if(self):
+        """A #if nested inside a dead #elif branch must not evaluate its
+        expression."""
+        text = dedent("""\
+            #if 1
+            #include <taken.h>
+            #elif 1
+            #if __has_include(<should_not_be_probed.h>)
+            #include <unreachable.h>
+            #endif
+            #endif""")
+        file_result = _make_file_analysis_result(text)
+        seen = self._spy_evaluate()
+
+        with patch("compiletools.compiler_macros.query_has_function", return_value=1) as probe:
+            active_lines = self.processor.process_structured(file_result, self.ctx)
+
+        assert probe.call_count == 0
+        assert not any("should_not_be_probed" in e for e in seen)
+        assert 1 in active_lines  # <taken.h>
+        assert 4 not in active_lines  # <unreachable.h>
+
+    def test_elif_inside_dead_outer_does_not_evaluate(self):
+        """An #elif whose parent branch is dead must not evaluate its
+        controlling expression either."""
+        text = dedent("""\
+            #if 0
+            #if 0
+            #include <a.h>
+            #elif __has_include(<should_not_be_probed.h>)
+            #include <b.h>
+            #endif
+            #endif""")
+        file_result = _make_file_analysis_result(text)
+        seen = self._spy_evaluate()
+
+        with patch("compiletools.compiler_macros.query_has_function", return_value=1) as probe:
+            active_lines = self.processor.process_structured(file_result, self.ctx)
+
+        assert probe.call_count == 0
+        assert not any("should_not_be_probed" in e for e in seen)
+        assert 2 not in active_lines
+        assert 4 not in active_lines
+
+    def test_dead_branch_skip_preserves_active_lines(self):
+        """Skipping dead-branch eval must not change which lines are active for
+        a representative battery of nested conditionals, elif chains, and
+        else."""
+        # Nested true inside true.
+        text1 = dedent("""\
+            #if 1
+            #if 1
+            #include <aa.h>
+            #else
+            #include <ab.h>
+            #endif
+            #else
+            #include <b.h>
+            #endif""")
+        active = self.processor.process_structured(_make_file_analysis_result(text1), self.ctx)
+        assert 2 in active and 4 not in active and 7 not in active
+
+        # elif after a dead #if: the elif is the parent-active branch and must
+        # still be evaluated and taken.
+        self.processor = SimplePreprocessor(self.macros, verbose=0)
+        text2 = dedent("""\
+            #if 0
+            #include <x.h>
+            #elif 1
+            #include <y.h>
+            #else
+            #include <z.h>
+            #endif""")
+        active = self.processor.process_structured(_make_file_analysis_result(text2), self.ctx)
+        assert 1 not in active and 3 in active and 5 not in active
+
+        # #else after a fully-dead chain becomes active.
+        self.processor = SimplePreprocessor(self.macros, verbose=0)
+        text3 = dedent("""\
+            #if 0
+            #include <x.h>
+            #elif 0
+            #include <y.h>
+            #else
+            #include <z.h>
+            #endif""")
+        active = self.processor.process_structured(_make_file_analysis_result(text3), self.ctx)
+        assert 1 not in active and 3 not in active and 5 in active
+
 
 class TestSimplePreprocessorEdgeCases:
     """Tests for uncovered edge cases in SimplePreprocessor."""

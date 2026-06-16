@@ -902,7 +902,15 @@ class SimplePreprocessor:
         self, directive: "PreprocessorDirective", condition_stack: list[tuple[bool, bool, bool]]
     ) -> None:
         """Handle #if directive using structured data"""
-        if directive.condition:
+        if not condition_stack[-1][0]:
+            # Parent branch is already dead, so this #if can never be taken.
+            # Skip evaluating the controlling expression to avoid spurious
+            # __has_include / __has_* compiler probes (an observable side effect
+            # of _evaluate_expression_sz). Still push an inactive frame so
+            # nesting depth and bookkeeping stay correct. This is the exact frame
+            # the old code pushed when result was AND-ed with a False parent.
+            condition_stack.append((False, False, False))
+        elif directive.condition:
             try:
                 # Strip comments before processing - work with StringZilla strings
                 expr_sz = self._strip_comments_sz(directive.condition)
@@ -928,8 +936,14 @@ class SimplePreprocessor:
             return
 
         _, seen_else, any_condition_met = condition_stack.pop()
-        if not seen_else and not any_condition_met and directive.condition:
-            parent_active = condition_stack[-1][0]
+        parent_active = condition_stack[-1][0]
+        if not seen_else and not any_condition_met and directive.condition and not parent_active:
+            # Parent branch is dead, so this #elif can never be taken. Skip the
+            # eval to avoid spurious __has_include / __has_* compiler probes.
+            # Behavior-preserving: new_active = bool(result) and parent_active is
+            # necessarily False, hence new_any_condition_met == any_condition_met.
+            condition_stack.append((False, False, any_condition_met))
+        elif not seen_else and not any_condition_met and directive.condition:
             try:
                 # Strip comments before processing - work with StringZilla strings
                 expr_sz = self._strip_comments_sz(directive.condition)
