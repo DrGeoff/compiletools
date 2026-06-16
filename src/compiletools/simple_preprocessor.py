@@ -14,18 +14,30 @@ if TYPE_CHECKING:
 # Precompiled regex patterns for _safe_eval
 _RE_BACKSLASH_WHITESPACE = re.compile(r"\\\s*")
 _RE_MALFORMED_NUMBERS = re.compile(r"(\d+)\s*\(\s*(\d+)\s*\)")
-# Strip C integer suffixes (U, L, UL, LL, ULL, LU, LLU, ... in any order/case)
-# from a complete integer literal. The captured body must cover all four C
-# literal forms, since the suffix letters differ from the literal's own digits:
+# Strip C integer suffixes from a complete integer literal. The captured body
+# must cover all four C literal forms, since the suffix letters differ from the
+# literal's own digits:
 #   - hex  0x.. / 0X..  (body digits 0-9A-Fa-f overlap the suffix letter 'L')
 #   - bin  0b.. / 0B..
 #   - oct/dec  bare digit run (C octal is a leading-0 digit run; normalized later)
 # A naive ``(\d+)`` body only matches decimal, so ``0xFFUL`` was left unstripped
-# (then rejected by the tokenizer) and ``0xFFu`` had no suffix removed. The
-# ``(?![0-9A-Za-z_])`` lookahead (replacing ``\b``) ensures we strip a suffix
+# (then rejected by the tokenizer) and ``0xFFu`` had no suffix removed.
+#
+# The suffix alternation is constrained to the VALID C forms only:
+# ``U?(L|LL)?`` / ``(L|LL)U?`` — an optional unsigned ``u``/``U`` and an optional
+# long ``l``/``L``/``ll``/``LL`` (matching case for the two-letter long), in
+# either order, with at most one ``u``. A naive ``[LlUu]+`` would also strip
+# *invalid* runs (``1UU``, ``1ULUL``, ``1LLL``, mixed-case ``1lL``/``1Ll``),
+# silently treating them as the bare value; the constrained form leaves them
+# untouched so the tokenizer rejects them (degrading the directive to 0) instead
+# of accepting a malformed literal. The regex still only fires when a suffix is
+# present, so a bare body is never matched.
+# The ``(?![0-9A-Za-z_])`` lookahead (replacing ``\b``) ensures we strip a suffix
 # only at a true literal boundary — ``0xF`` alone is never shortened to ``0x``
 # because there is no U/L run after the hex body.
-_RE_INTEGER_SUFFIXES = re.compile(r"(0[xX][0-9A-Fa-f]+|0[bB][01]+|\d+)[LlUu]+(?![0-9A-Za-z_])")
+_RE_INTEGER_SUFFIXES = re.compile(
+    r"(0[xX][0-9A-Fa-f]+|0[bB][01]+|\d+)(?:[uU](?:ll|LL|l|L)?|(?:ll|LL|l|L)[uU]?)(?![0-9A-Za-z_])"
+)
 
 # Precompiled regex patterns for _normalize_numeric_literals
 _RE_HEX_LITERAL = re.compile(r"\b0[xX][0-9A-Fa-f]+\b")

@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from compiletools.build_context import BuildContext
 from compiletools.file_analyzer import FileAnalysisResult, PreprocessorDirective
 from compiletools.preprocessing_cache import MacroState, get_or_compute_preprocessing
-from compiletools.simple_preprocessor import SimplePreprocessor
+from compiletools.simple_preprocessor import _RE_INTEGER_SUFFIXES, SimplePreprocessor
 
 
 @pytest.fixture(autouse=True)
@@ -206,6 +206,65 @@ class TestSimplePreprocessor:
         assert self.processor._evaluate_expression_sz(sz.Str("42UL == 42")) == 1
         # Suffix-bearing literals participate in arithmetic / branch activation
         assert self.processor._evaluate_expression_sz(sz.Str("0x10UL + 0b1U == 17")) == 1
+
+    def test_valid_integer_suffix_forms_still_evaluate_sz(self):
+        """Every valid C integer-suffix form strips to its bare value (A5 no-regression).
+
+        Valid forms are ``U?(L|LL)?`` / ``(L|LL)U?`` with at most one ``u`` and a
+        matching-case long part — in either order, any ``u``-case. The A5 fix
+        constrained the suffix alternation to exactly these forms; this guards
+        that none of them regressed to ValueError/0.
+        """
+        # Unsigned-only, both cases
+        assert self.processor._evaluate_expression_sz(sz.Str("1u == 1")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("1U == 1")) == 1
+        # Long-only, both cases and lengths
+        assert self.processor._evaluate_expression_sz(sz.Str("1l == 1")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("1L == 1")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("1ll == 1")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("1LL == 1")) == 1
+        # Unsigned-then-long, both orders/cases
+        assert self.processor._evaluate_expression_sz(sz.Str("1ul == 1")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("1UL == 1")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("1lu == 1")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("1LU == 1")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("1ull == 1")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("1ULL == 1")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("42LLU == 42")) == 1
+        # Non-decimal bodies keep their suffixes stripped under the new alternation
+        assert self.processor._evaluate_expression_sz(sz.Str("0xFFu == 255")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("0xFFUL == 255")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("0b101L == 5")) == 1
+        # Direct regex check: the suffix is removed, leaving the bare body
+        assert _RE_INTEGER_SUFFIXES.sub(r"\1", "1ULL") == "1"
+        assert _RE_INTEGER_SUFFIXES.sub(r"\1", "0xFFu") == "0xFF"
+
+    def test_invalid_integer_suffix_runs_not_silently_accepted_sz(self):
+        """Invalid suffix runs must NOT be stripped to the bare valid value (A5 fix).
+
+        The old ``[LlUu]+`` alternation matched ANY run of suffix letters, so
+        malformed literals like ``1UU``/``1LLL``/``1lL`` were silently rewritten to
+        ``1`` and evaluated truthy. C permits only ``U?(L|LL)?`` / ``(L|LL)U?`` with
+        at most one ``u`` and a matching-case long part. The constrained regex no
+        longer matches these runs, so the literal survives to the parser, which
+        rejects it ("trailing tokens" SyntaxError) and ``_safe_eval`` degrades the
+        directive to 0 (inactive) rather than accepting the bare integer.
+        """
+        # Doubled unsigned, triple/over-long, and mixed-case long parts: all invalid C.
+        assert self.processor._evaluate_expression_sz(sz.Str("1UU")) == 0
+        assert self.processor._evaluate_expression_sz(sz.Str("1ULUL")) == 0
+        assert self.processor._evaluate_expression_sz(sz.Str("1LLL")) == 0
+        assert self.processor._evaluate_expression_sz(sz.Str("1lL")) == 0
+        assert self.processor._evaluate_expression_sz(sz.Str("1Ll")) == 0
+        # In a comparison the bogus literal must not satisfy "== bare value".
+        assert self.processor._evaluate_expression_sz(sz.Str("1UU == 1")) == 0
+        assert self.processor._evaluate_expression_sz(sz.Str("1LLL == 1")) == 0
+        # Direct regex check: invalid runs leave the literal untouched (no strip).
+        assert _RE_INTEGER_SUFFIXES.sub(r"\1", "1UU") == "1UU"
+        assert _RE_INTEGER_SUFFIXES.sub(r"\1", "1ULUL") == "1ULUL"
+        assert _RE_INTEGER_SUFFIXES.sub(r"\1", "1LLL") == "1LLL"
+        assert _RE_INTEGER_SUFFIXES.sub(r"\1", "1lL") == "1lL"
+        assert _RE_INTEGER_SUFFIXES.sub(r"\1", "1Ll") == "1Ll"
 
     def test_bitwise_operators_sz(self):
         """Test bitwise and shift operators in expressions with StringZilla"""
