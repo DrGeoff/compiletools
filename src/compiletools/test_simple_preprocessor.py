@@ -964,6 +964,31 @@ class TestExpandHasFunctions:
         active = self.processor.process_structured(_make_file_analysis_result(text3), self.ctx)
         assert 1 not in active and 3 not in active and 5 in active
 
+    def test_live_nested_if_still_evaluates_has_probe_exactly_once(self):
+        """N1 (A1 positive control): A1 must not OVER-suppress a LIVE branch.
+
+        The A1 dead-branch tests only assert the probe is NOT called for
+        unreachable branches. This complement proves a __has_include inside a
+        LIVE nested #if (outer #if 1 active) IS still evaluated — exactly once,
+        not zero times (over-suppressed) and not twice (re-evaluated)."""
+        text = dedent("""\
+            #if 1
+            #if __has_include(<live_probe.h>)
+            #include <found.h>
+            #endif
+            #endif""")
+        file_result = _make_file_analysis_result(text)
+        seen = self._spy_evaluate()
+
+        with patch("compiletools.compiler_macros.query_has_function", return_value=1) as probe:
+            active_lines = self.processor.process_structured(file_result, self.ctx)
+
+        # The live inner #if must be evaluated exactly once (probe fired once).
+        assert probe.call_count == 1
+        assert any("live_probe" in e for e in seen)
+        # Probe returned 1 -> the inner branch is active -> <found.h> is included.
+        assert 2 in active_lines
+
 
 class TestSimplePreprocessorEdgeCases:
     """Tests for uncovered edge cases in SimplePreprocessor."""
@@ -1056,6 +1081,75 @@ class TestSimplePreprocessorEdgeCases:
         assert str(self.processor._expand_defined_sz(sz.Str("defined(FOO)"))) == "0"
         assert str(self.processor._expand_defined_sz(sz.Str("defined DEFINED_MACRO"))) == "1"
         assert str(self.processor._expand_defined_sz(sz.Str("defined FOO"))) == "0"
+
+    def test_non_ascii_byte_after_defined_space_form_does_not_crash(self):
+        """B1: a non-ASCII byte where the operand of the SPACE form ``defined`` is
+        expected must not crash the scan.
+
+        After the ``defined`` keyword + whitespace skip, ``_expand_defined_sz``
+        peeks the next byte to decide between the ``defined(MACRO)`` and
+        ``defined MACRO`` forms. That peek formerly indexed the 1-byte
+        ``sz.Str`` slice with a bare integer (``ch[0]``), which re-decodes the
+        single raw byte as UTF-8 and raised ``UnicodeDecodeError`` on the lead
+        byte of a multi-byte char (here the UTF-8 ``é``). The slice-compare
+        idiom keeps the scan intact; the non-identifier byte means there is no
+        parseable operand, so ``defined`` is passed through untouched.
+        """
+        # Must not raise. Best-effort result: 'defined' kept as-is (no operand).
+        result = self.processor._expand_defined_sz(sz.Str("defined é"))
+        assert "defined" in str(result)
+
+    def test_non_ascii_byte_after_defined_paren_form_does_not_crash(self):
+        """B1: a non-ASCII byte where the closing paren of the PAREN form is
+        expected must not crash the scan.
+
+        For ``defined(X é`` the scanner consumes ``(X`` then peeks for the
+        closing ``)``. That peek formerly used the unsafe ``ch[0] == ")"`` form
+        and raised ``UnicodeDecodeError`` on the UTF-8 ``é`` byte. With the
+        slice-compare idiom the byte is correctly 'not a close paren', so the
+        unterminated form falls through to the A14 keep-as-is path.
+        """
+        # Must not raise; unterminated paren degrades gracefully (A14 contract).
+        result = self.processor._expand_defined_sz(sz.Str("defined(X é"))
+        assert "defined" in str(result)
+        # A14: unterminated paren must not become a corrupt '1('/'0(' rewrite.
+        assert "1(" not in str(result) and "0(" not in str(result)
+
+    def test_non_ascii_byte_in_defined_does_not_crash_end_to_end(self):
+        """B1 end-to-end: a ``#if defined é`` line must not crash the scan.
+
+        Mirrors the A9 end-to-end contract — a non-ASCII byte in the controlling
+        expression must degrade the directive to false rather than propagating a
+        ``UnicodeDecodeError`` out of ``_evaluate_expression_sz`` (where the
+        directive-level ``except Exception`` would swallow it, silently dropping
+        the whole conditional block).
+        """
+        # _evaluate_expression_sz must not raise on a non-ASCII defined operand.
+        result = self.processor._evaluate_expression_sz(sz.Str("defined é"))
+        assert result in (0, 1)
+
+        # And the full structured scan over a #if defined é block must not crash.
+        text = dedent("""\
+            #if defined é
+            #include <unreachable.h>
+            #endif""")
+        file_result = _make_file_analysis_result(text)
+        active_lines = self.processor.process_structured(file_result, self.ctx)
+        # Degenerate operand -> false -> body inactive; the contract is "no crash".
+        assert 1 not in active_lines
+
+    def test_defined_numeric_and_empty_operand_degrade_gracefully(self):
+        """N3 (A14 regression lock): numeric / empty parenthesized operands must
+        pass through untouched, never producing a corrupt ``1(``/``0(`` rewrite.
+
+        ``defined(123)``, ``defined(1FOO)`` and ``defined()`` have no valid
+        identifier operand (an identifier cannot start with a digit, and ``()``
+        is empty). They must be kept verbatim rather than rewritten.
+        """
+        for probe in ("defined(123)", "defined(1FOO)", "defined()"):
+            result = str(self.processor._expand_defined_sz(sz.Str(probe)))
+            assert result == probe
+            assert "1(" not in result and "0(" not in result
 
     def test_safe_eval_unsafe_expression(self):
         """_safe_eval should raise ValueError for unsafe expressions."""
@@ -1644,3 +1738,27 @@ class TestResolveComputedInclude:
         # Should not raise; returns None or a best-effort string.
         result = p.resolve_computed_include("XSTR((FOO)")
         assert result is None or isinstance(result, str)
+
+    # N2: direct unit tests for the _strip_one_balanced_wrapper staticmethod.
+    # Previously only exercised transitively through resolve_computed_include;
+    # these pin its contract (return value verified against the live method).
+
+    def test_strip_wrapper_empty_inner(self):
+        """``()`` strips to the empty string: outer pair closes at the last char."""
+        assert SimplePreprocessor._strip_one_balanced_wrapper("()") == ""
+
+    def test_strip_wrapper_nested_keeps_inner(self):
+        """``X((Y))`` strips ONLY the first balanced outer pair -> ``(Y)``."""
+        assert SimplePreprocessor._strip_one_balanced_wrapper("X((Y))") == "(Y)"
+
+    def test_strip_wrapper_leading_paren_not_wrapping_returns_none(self):
+        """``(FOO)bar`` does not end in ')' -> None (fails the endswith guard)."""
+        assert SimplePreprocessor._strip_one_balanced_wrapper("(FOO)bar") is None
+
+    def test_strip_wrapper_two_separate_groups_returns_none(self):
+        """``(A)(B)``: the first '(' is not balanced by the FINAL ')' -> None."""
+        assert SimplePreprocessor._strip_one_balanced_wrapper("(A)(B)") is None
+
+    def test_strip_wrapper_unbalanced_returns_none(self):
+        """An unbalanced input (no closing ')') -> None."""
+        assert SimplePreprocessor._strip_one_balanced_wrapper("(unbalanced") is None

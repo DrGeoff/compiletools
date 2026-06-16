@@ -385,7 +385,7 @@ class SimplePreprocessor:
             end_pos = j
 
             ch = expr_sz[j : j + 1]
-            if len(ch) > 0 and ch[0] == "(":
+            if ch == "(":
                 # Find macro name inside parens
                 j += 1
                 # Skip whitespace - vectorized
@@ -414,7 +414,7 @@ class SimplePreprocessor:
                     closed = False
                     if j < len(expr_sz):
                         ch = expr_sz[j : j + 1]
-                        if len(ch) > 0 and ch[0] == ")":
+                        if ch == ")":
                             end_pos = j + 1
                             closed = True
                     if not closed:
