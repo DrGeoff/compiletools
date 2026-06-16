@@ -177,6 +177,36 @@ class TestSimplePreprocessor:
         assert self.processor._evaluate_expression_sz(sz.Str("010 == 8")) == 1  # octal
         assert self.processor._evaluate_expression_sz(sz.Str("0 == 0")) == 1
 
+    def test_integer_suffixes_on_nondecimal_literals_sz(self):
+        """C integer suffixes (U/L/UL/LL/ULL, any order) must strip on hex/bin/oct literals (A8).
+
+        The A8 bug was specific to HEX: the old regex ``(\\d+)[LlUu]+\\b`` only matched
+        decimal digit runs, so ``\\d+`` couldn't span the hex letters and a suffixed hex
+        literal like ``0xFFUL`` survived unstripped, reaching the tokenizer and raising
+        ValueError. Binary/octal/decimal suffixed literals already worked under the old
+        regex (``\\d+`` matched the digit run after the ``0b``/``0`` prefix); they are
+        retained here as defense-in-depth coverage against future regex changes. The
+        literal value itself must be preserved.
+        """
+        # Hex with suffixes (the A8 break: previously raised ValueError)
+        assert self.processor._evaluate_expression_sz(sz.Str("0xFFUL == 255")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("0xFFu == 255")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("0xFFl == 255")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("0XffU == 255")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("0xABCUL == 2748")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("0xDEADBEEFull == 3735928559")) == 1
+        # Binary with suffixes (defense-in-depth: already worked pre-A8)
+        assert self.processor._evaluate_expression_sz(sz.Str("0b1010U == 10")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("0b1010UL == 10")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("0b1010LLU == 10")) == 1
+        # Octal (C bare-leading-zero) with suffixes (defense-in-depth: already worked pre-A8)
+        assert self.processor._evaluate_expression_sz(sz.Str("0777L == 511")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("0777UL == 511")) == 1
+        # Decimal control still works
+        assert self.processor._evaluate_expression_sz(sz.Str("42UL == 42")) == 1
+        # Suffix-bearing literals participate in arithmetic / branch activation
+        assert self.processor._evaluate_expression_sz(sz.Str("0x10UL + 0b1U == 17")) == 1
+
     def test_bitwise_operators_sz(self):
         """Test bitwise and shift operators in expressions with StringZilla"""
         assert self.processor._evaluate_expression_sz(sz.Str("1 & 1")) == 1
@@ -540,6 +570,7 @@ class TestExpandHasFunctions:
 
     def test_mixed_multiple_has_include(self):
         """Both __has_include calls should be expanded in a compound expression."""
+
         def mock_query(compiler, call_str, cppflags="", verbose=0):
             if "<a>" in call_str:
                 return 1
