@@ -463,6 +463,17 @@ class SimplePreprocessor:
         __has_builtin(__builtin_x), __has_feature(cxx_rvalue_references), etc.
 
         If no compiler_path is set, all __has_* calls evaluate to 0.
+
+        Probe suppression is BRANCH-level only. This expansion runs eagerly,
+        before the expression parser, so the compiler probe (query_has_function)
+        fires here regardless of the parser's later boolean short-circuit
+        (evaluate=False on the dead side of &&/||/?:). A __has_* in a dead
+        SUB-expression of a LIVE controlling expression is therefore still
+        probed (e.g. ``0 && __has_include(<x.h>)`` probes <x.h>); only a __has_*
+        inside a wholly dead #if/#elif BRANCH is skipped (its controlling
+        expression is never expanded). Result-correct either way — the parser
+        discards the unused probe result — so this is documented, not refactored
+        to lazy thunks.
         """
         from compiletools.compiler_macros import query_has_function
         from compiletools.stringzilla_utils import concat_sz, strip_sz
@@ -716,15 +727,14 @@ class SimplePreprocessor:
             return None
 
         # Strip the function-like macro wrapper: XSTR(FOO) -> FOO. Peel only a
-        # single *balanced* outer ``IDENT(...)`` pair — the '(' right after the
-        # leading identifier must be matched by the final ')' enclosing the
-        # entire remainder. A greedy ``inner.index("(")`` + ``[:-1]`` slice that
-        # repeats every level would over-peel inner parens belonging to the
-        # stripped content (e.g. ``XSTR(KEEP(name))`` -> ``name`` instead of
-        # ``KEEP(name)``, or ``JOIN(A,B)(C)`` -> the syntactic garbage
-        # ``A,B)(C``). Anything left inside (a further wrapper, a nested
-        # function-like call) is handed to macro expansion rather than blindly
-        # discarded.
+        # single *balanced* outer ``(...)`` pair — the first '(' must be matched
+        # by the final ')' enclosing the entire remainder. A greedy
+        # ``inner.index("(")`` + ``[:-1]`` slice that repeats every level would
+        # over-peel inner parens belonging to the stripped content (e.g.
+        # ``XSTR(KEEP(name))`` -> ``name`` instead of ``KEEP(name)``, or
+        # ``JOIN(A,B)(C)`` -> the syntactic garbage ``A,B)(C``). Anything left
+        # inside (a further wrapper, a nested function-like call) is handed to
+        # macro expansion rather than blindly discarded.
         inner = self._strip_one_balanced_wrapper(arg)
         if inner is None:
             inner = arg
@@ -969,7 +979,7 @@ class SimplePreprocessor:
 
         _, seen_else, any_condition_met = condition_stack.pop()
         parent_active = condition_stack[-1][0]
-        if not seen_else and not any_condition_met and directive.condition and not parent_active:
+        if not parent_active and not seen_else and not any_condition_met and directive.condition:
             # Parent branch is dead, so this #elif can never be taken. Skip the
             # eval to avoid spurious __has_include / __has_* compiler probes.
             # Behavior-preserving: new_active = bool(result) and parent_active is
