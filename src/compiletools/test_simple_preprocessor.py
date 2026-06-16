@@ -630,6 +630,42 @@ class TestExpandHasFunctions:
             processor._evaluate_expression_sz(sz.Str("__has_attribute(A)"))
             mock_query.assert_called_once_with("gcc", "__has_attribute(nodiscard)", "", 0)
 
+    def test_quoted_literal_header_operand_not_macro_expanded(self):
+        """A1: a quoted header-name operand ("foo.h") is NOT macro-expanded.
+
+        Per C23 6.10.1 the header-name form of a __has_include operand is taken
+        literally, not subject to macro expansion. With ``foo`` #defined as
+        ``bar``, ``__has_include("foo.h")`` must probe ``"foo.h"`` -- NOT
+        ``"bar.h"`` (the A18 bug expanded it unconditionally).
+        """
+        processor = SimplePreprocessor({sz.Str("foo"): sz.Str("bar")}, compiler_path="gcc")
+        with patch("compiletools.compiler_macros.query_has_function", return_value=1) as mock_query:
+            processor._expand_has_functions_sz(sz.Str('__has_include("foo.h")'))
+            mock_query.assert_called_once_with("gcc", '__has_include("foo.h")', "", 0)
+
+    def test_angle_literal_header_operand_not_macro_expanded(self):
+        """A1: an angle-bracket header-name operand (<foo.h>) is NOT macro-expanded.
+
+        With ``foo`` #defined as ``bar``, ``__has_include(<foo.h>)`` must probe
+        ``<foo.h>`` -- NOT ``<bar.h>``.
+        """
+        processor = SimplePreprocessor({sz.Str("foo"): sz.Str("bar")}, compiler_path="gcc")
+        with patch("compiletools.compiler_macros.query_has_function", return_value=1) as mock_query:
+            processor._expand_has_functions_sz(sz.Str("__has_include(<foo.h>)"))
+            mock_query.assert_called_once_with("gcc", "__has_include(<foo.h>)", "", 0)
+
+    def test_literal_header_operand_with_surrounding_whitespace_not_expanded(self):
+        """A1: leading whitespace before a header-name operand is stripped before
+        the literal-form check, so ``__has_include( "foo.h" )`` is still treated
+        as a (non-expanded) header name.
+        """
+        processor = SimplePreprocessor({sz.Str("foo"): sz.Str("bar")}, compiler_path="gcc")
+        with patch("compiletools.compiler_macros.query_has_function", return_value=1) as mock_query:
+            processor._expand_has_functions_sz(sz.Str('__has_include( "foo.h" )'))
+            (_, call_str, _, _) = mock_query.call_args.args
+            assert '"foo.h"' in call_str
+            assert '"bar.h"' not in call_str
+
     def test_defined_operand_not_expanded_with_has_check_present(self):
         """A18 must not regress defined(): defined()'s operand stays unexpanded.
 

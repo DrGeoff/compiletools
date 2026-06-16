@@ -453,7 +453,7 @@ class SimplePreprocessor:
         If no compiler_path is set, all __has_* calls evaluate to 0.
         """
         from compiletools.compiler_macros import query_has_function
-        from compiletools.stringzilla_utils import concat_sz
+        from compiletools.stringzilla_utils import concat_sz, strip_sz
 
         result_parts = []
         i = 0
@@ -523,7 +523,8 @@ class SimplePreprocessor:
                 continue
 
             # Extract the full function call: __has_include(<iostream>)
-            # A18: the operand is subject to macro expansion (e.g.
+            # A18: the bare pp-tokens operand form is subject to macro expansion
+            # (e.g.
             #   #define HEADER <foo.h>
             #   #if __has_include(HEADER)
             # must probe __has_include(<foo.h>), not the literal token HEADER).
@@ -534,8 +535,24 @@ class SimplePreprocessor:
             # operands are not valid C, so neither needs re-running. Expansion
             # is iterated to a fixed point so chained macros (HEADER -> NAME ->
             # <foo.h>) fully resolve before the probe.
+            #
+            # A1 / C23 6.10.1: the *header-name* operand form — a literal
+            # "foo.h" or <foo.h> — must NOT be macro-expanded; only the bare
+            # pp-tokens form is. So with `#define foo bar`,
+            # __has_include("foo.h") probes "foo.h" (not "bar.h") and
+            # __has_include(<foo.h>) probes <foo.h> (not <bar.h>). We detect the
+            # header-name form by its leading " or < (after stripping leading
+            # whitespace) and skip expansion for it.
             operand = expr_sz[j + 1 : k - 1]
-            expanded_operand = self._expand_object_macros_recursive_sz(operand)
+            stripped_operand = strip_sz(operand)
+            # Slice-index ([0:1]) not bare [0]: a bare int index decodes one
+            # byte as UTF-8 and raises on a multi-byte leading byte.
+            first_char = stripped_operand[0:1] if len(stripped_operand) > 0 else sz.Str("")
+            if first_char == '"' or first_char == "<":
+                # Header-name form: literal, not macro-expanded.
+                expanded_operand = operand
+            else:
+                expanded_operand = self._expand_object_macros_recursive_sz(operand)
             call_str = str(expr_sz[has_pos : j + 1]) + str(expanded_operand) + ")"
 
             if not self.compiler_path:
