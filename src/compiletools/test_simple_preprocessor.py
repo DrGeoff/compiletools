@@ -14,6 +14,7 @@ from compiletools.build_context import BuildContext
 from compiletools.file_analyzer import FileAnalysisResult, PreprocessorDirective
 from compiletools.preprocessing_cache import MacroState, get_or_compute_preprocessing
 from compiletools.simple_preprocessor import _RE_INTEGER_SUFFIXES, SimplePreprocessor
+from compiletools.stringzilla_utils import is_alnum_or_underscore_sz
 
 
 @pytest.fixture(autouse=True)
@@ -169,6 +170,56 @@ class TestSimplePreprocessor:
         # Test defined() in complex expressions
         assert self.processor._evaluate_expression_sz(sz.Str("defined(TEST_MACRO) && TEST_MACRO == 1")) == 1
         assert self.processor._evaluate_expression_sz(sz.Str("defined(VERSION) && VERSION > 2")) == 1
+
+    def test_digit_adjacent_defined_not_treated_as_operator_sz(self):
+        """A6: a digit immediately before 'defined' makes it part of a larger
+        pp-token (e.g. '1defined'), so the 'defined' operator must NOT fire.
+
+        The identifier-continuation class includes digits, so the left-boundary
+        check rejects 'defined' as an operator here. The malformed token degrades:
+        '1defined(FOO)' is left literally unexpanded by _expand_defined_sz (NOT
+        rewritten to 1/0), and the whole expression then evaluates to 0 (the
+        inactive result the degraded/unrecognized path produces) regardless of
+        whether FOO is defined.
+        """
+        # FOO defined: still must not be recognized as the defined() operator.
+        assert str(self.processor._expand_defined_sz(sz.Str("1defined(TEST_MACRO)"))) == "1defined(TEST_MACRO)"
+        assert self.processor._evaluate_expression_sz(sz.Str("1defined(TEST_MACRO)")) == 0
+        # FOO undefined: same degraded result.
+        assert (
+            str(self.processor._expand_defined_sz(sz.Str("1defined(UNDEFINED_MACRO)"))) == "1defined(UNDEFINED_MACRO)"
+        )
+        assert self.processor._evaluate_expression_sz(sz.Str("1defined(UNDEFINED_MACRO)")) == 0
+
+    def test_digit_right_adjacent_defined_not_treated_as_operator_sz(self):
+        """A6: a digit immediately AFTER 'defined' makes it part of a larger
+        pp-token (e.g. 'defined1'), so the 'defined' operator must NOT fire.
+
+        Symmetric with the left-boundary case (`1defined`). The right-boundary
+        guard in `_expand_defined_sz` keys on `is_alnum_or_underscore_sz`, whose
+        A6 fix added digits to the identifier-continuation class; this test pins
+        that the digit IS in that class, so `defined1` is recognized as one token
+        and the operator is rejected. Asserting the predicate directly is what
+        makes this fail pre-fix: the downstream macro-name extractor independently
+        rejects a digit-led name, so `_expand_defined_sz`'s output coincides on
+        either side of the fix — only the boundary predicate observably changes.
+        The pass-through assertion documents the resulting end-to-end behavior.
+        """
+        assert is_alnum_or_underscore_sz(sz.Str("defined1(TEST_MACRO)"), len("defined")) is True
+        assert str(self.processor._expand_defined_sz(sz.Str("defined1(TEST_MACRO)"))) == "defined1(TEST_MACRO)"
+
+    def test_defined_still_fires_when_digit_is_operator_separated_sz(self):
+        """A6 regression: a digit separated from 'defined' by an operator/space is
+        operator-adjacency, NOT identifier-adjacency, so 'defined' STILL fires.
+
+        Also covers the normal parenthesized and space forms.
+        """
+        # Normal forms unaffected.
+        assert self.processor._evaluate_expression_sz(sz.Str("defined(TEST_MACRO)")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("defined TEST_MACRO")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("defined(UNDEFINED_MACRO)")) == 0
+        # Digit separated by an operator: defined() still evaluates, 1 + 1 == 2.
+        assert self.processor._evaluate_expression_sz(sz.Str("1 + defined(TEST_MACRO)")) == 2
 
     def test_numeric_literal_parsing_sz(self):
         """Test hex, binary, and octal numeric literals in expressions with StringZilla"""
@@ -782,6 +833,29 @@ class TestExpandHasFunctions:
             # __has_include is a standalone call and expands to '1'.
             result = self.processor._expand_has_functions_sz(sz.Str("é__has_include(<x.h>)"))
             assert str(result).endswith("1")
+
+    def test_digit_adjacent_has_include_does_not_probe(self):
+        """A6: a digit immediately before ``__has_`` makes it part of a larger
+        pp-token (``FOO1__has_include``), so the ``__has_include`` operator must
+        NOT fire and no compiler probe must be issued.
+
+        The left-boundary check uses the identifier-continuation class (letters,
+        digits, underscore); a digit there means ``__has_`` is the tail of a
+        larger identifier and the call string is passed through verbatim.
+        """
+        with patch("compiletools.compiler_macros.query_has_function", return_value=1) as mock_query:
+            result = self.processor._expand_has_functions_sz(sz.Str("FOO1__has_include(<x.h>)"))
+            # Passed through unchanged; no probe issued.
+            assert str(result) == "FOO1__has_include(<x.h>)"
+            mock_query.assert_not_called()
+
+    def test_standalone_has_include_still_probes(self):
+        """A6 regression: a standalone ``__has_include`` (no identifier char
+        adjacent) still fires and probes the compiler exactly once."""
+        with patch("compiletools.compiler_macros.query_has_function", return_value=1) as mock_query:
+            result = self.processor._expand_has_functions_sz(sz.Str("__has_include(<x.h>)"))
+            assert str(result) == "1"
+            mock_query.assert_called_once_with("gcc", "__has_include(<x.h>)", "", 0)
 
     def test_same_identifier_in_defined_and_has_check_resolves_each_correctly(self):
         """A18 cross-operand: when ONE identifier feeds BOTH defined() and a

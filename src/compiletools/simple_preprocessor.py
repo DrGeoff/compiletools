@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 import stringzilla as sz
 
-from compiletools.stringzilla_utils import is_alpha_or_underscore_sz
+from compiletools.stringzilla_utils import is_alnum_or_underscore_sz, is_alpha_or_underscore_sz
 
 if TYPE_CHECKING:
     from compiletools.file_analyzer import FileAnalysisResult, PreprocessorDirective
@@ -370,14 +370,14 @@ class SimplePreprocessor:
                 result_parts.append(expr_sz[i:defined_pos])
 
             # Check if this is actually 'defined' keyword (not part of identifier)
-            if defined_pos > 0 and is_alpha_or_underscore_sz(expr_sz, defined_pos - 1):
+            if defined_pos > 0 and is_alnum_or_underscore_sz(expr_sz, defined_pos - 1):
                 # Part of another identifier
                 result_parts.append(expr_sz[defined_pos : defined_pos + 7])
                 i = defined_pos + 7
                 continue
 
             after_defined = defined_pos + 7  # len('defined')
-            if after_defined < len(expr_sz) and is_alpha_or_underscore_sz(expr_sz, after_defined):
+            if after_defined < len(expr_sz) and is_alnum_or_underscore_sz(expr_sz, after_defined):
                 # Part of longer identifier
                 result_parts.append(expr_sz[defined_pos:after_defined])
                 i = after_defined
@@ -482,7 +482,7 @@ class SimplePreprocessor:
                 result_parts.append(expr_sz[i:has_pos])
 
             # Check if this is actually a standalone identifier start (not part of a larger identifier)
-            if has_pos > 0 and is_alpha_or_underscore_sz(expr_sz, has_pos - 1):
+            if has_pos > 0 and is_alnum_or_underscore_sz(expr_sz, has_pos - 1):
                 # Part of another identifier
                 result_parts.append(expr_sz[has_pos : has_pos + 6])
                 i = has_pos + 6

@@ -5,6 +5,7 @@ import stringzilla
 
 from compiletools.stringzilla_utils import (
     ends_with_backslash_sz,
+    is_alnum_or_underscore_sz,
     is_alpha_or_underscore_sz,
     join_lines_strip_backslash_sz,
     join_sz,
@@ -98,6 +99,48 @@ class TestIsAlphaOrUnderscoreSz:
         decode-safe and a non-ASCII byte is correctly not alphabetic/underscore.
         """
         assert is_alpha_or_underscore_sz(stringzilla.Str("é"), pos) is False
+
+
+class TestIsAlnumOrUnderscoreSz:
+    """Test is_alnum_or_underscore_sz function (identifier-continuation class)."""
+
+    @pytest.mark.parametrize(
+        ("source", "pos", "expected"),
+        [
+            pytest.param("", 0, False, id="empty"),
+            pytest.param("abc", 5, False, id="out-of-bounds"),
+            pytest.param("abc", 0, True, id="lowercase-a"),
+            pytest.param("abc", 1, True, id="lowercase-b"),
+            pytest.param("abc", 2, True, id="lowercase-c"),
+            pytest.param("ABC", 0, True, id="uppercase-a"),
+            pytest.param("ABC", 1, True, id="uppercase-b"),
+            pytest.param("ABC", 2, True, id="uppercase-c"),
+            pytest.param("_abc", 0, True, id="underscore"),
+            # Unlike is_alpha_or_underscore_sz, digits are in this class.
+            pytest.param("123", 0, True, id="digit-1"),
+            pytest.param("123", 1, True, id="digit-2"),
+            pytest.param("123", 2, True, id="digit-3"),
+            pytest.param("0", 0, True, id="digit-zero"),
+            pytest.param("9", 0, True, id="digit-nine"),
+            pytest.param("@#$", 0, False, id="special-at"),
+            pytest.param("@#$", 1, False, id="special-hash"),
+            pytest.param("@#$", 2, False, id="special-dollar"),
+            pytest.param("a1_B@", 0, True, id="mixed-a"),
+            pytest.param("a1_B@", 1, True, id="mixed-digit"),
+            pytest.param("a1_B@", 2, True, id="mixed-underscore"),
+            pytest.param("a1_B@", 3, True, id="mixed-b"),
+            pytest.param("a1_B@", 4, False, id="mixed-at"),
+        ],
+    )
+    def test_is_alnum_or_underscore(self, source, pos, expected):
+        assert is_alnum_or_underscore_sz(stringzilla.Str(source), pos) is expected
+
+    @pytest.mark.parametrize("pos", [0, 1])
+    def test_non_ascii_byte_does_not_crash(self, pos):
+        """A non-ASCII byte (here a byte of ``é``, 0xc3 0xa9) must not raise
+        UnicodeDecodeError; the one-byte slice is decode-safe and a non-ASCII
+        byte is correctly not alphanumeric/underscore."""
+        assert is_alnum_or_underscore_sz(stringzilla.Str("é"), pos) is False
 
 
 class TestJoinLinesStripBackslashSz:

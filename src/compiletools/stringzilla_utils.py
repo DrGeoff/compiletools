@@ -46,6 +46,31 @@ def is_alpha_or_underscore_sz(sz_str: "stringzilla.Str", pos: int = 0) -> bool:
     return ch == "_" or ("a" <= ch <= "z") or ("A" <= ch <= "Z")
 
 
+def is_alnum_or_underscore_sz(sz_str: "stringzilla.Str", pos: int = 0) -> bool:
+    """Check if character at position is in the identifier-continuation class.
+
+    The identifier-continuation class is letters, digits, and underscore — the
+    characters that may legally follow the first character of a C identifier.
+    Suitable for token-boundary (adjacency) checks: a character in
+    this class immediately before/after a keyword means the keyword is part of a
+    larger token and must not be recognized as an operator. (Contrast with
+    is_alpha_or_underscore_sz, the identifier-START class, which excludes digits
+    because an identifier cannot begin with one.)
+
+    Performance: For our workloads, a single-byte peek is faster than slice + find_first_not_of.
+    """
+    if pos >= len(sz_str):
+        return False
+    # Peek the byte via a one-byte slice rather than ``sz_str[pos]``: the index
+    # is a byte offset and may land inside a multi-byte UTF-8 sequence (e.g. an
+    # accented identifier-adjacent char), where single-char indexing decodes
+    # that byte in isolation and raises UnicodeDecodeError. Slice equality
+    # compares bytes and is decode-safe; a non-ASCII byte is never alphanumeric
+    # or underscore, so the result is correct. (Mirrors ends_with_backslash_sz.)
+    ch = sz_str[pos : pos + 1]
+    return ch == "_" or ("a" <= ch <= "z") or ("A" <= ch <= "Z") or ("0" <= ch <= "9")
+
+
 def join_lines_strip_backslash_sz(lines: list["stringzilla.Str"]) -> "stringzilla.Str":
     """Join lines stripping backslashes using StringZilla operations.
 
