@@ -61,7 +61,6 @@ _DIRECTIVE_DISPATCH = {
 _stats: dict[str, Any] = {
     "call_count": 0,
     "files_processed": Counter(),
-    "call_contexts": Counter(),
 }
 
 
@@ -267,7 +266,14 @@ class SimplePreprocessor:
         self.verbose = verbose
         self.compiler_path = compiler_path
         self.cppflags = cppflags
-        # Include guard to skip when processing #define (set by process_structured)
+        # Include guard to skip when processing #define. This is instance state
+        # (not a local/param) because it is a per-call channel from
+        # process_structured to _handle_define_structured, which is dispatched
+        # generically via _DIRECTIVE_DISPATCH under the fixed
+        # (directive, condition_stack) signature. Threading the guard through the
+        # uniform dispatch to every handler (most of which don't need it), or
+        # special-casing this one handler's signature, would break that design;
+        # process_structured resets it at the top of each call.
         self._include_guard = None
 
     def _strip_comments_sz(self, expr_sz: sz.Str) -> sz.Str:
@@ -912,9 +918,9 @@ class SimplePreprocessor:
             condition_stack.append((False, False, False))
         elif directive.condition:
             try:
-                # Strip comments before processing - work with StringZilla strings
-                expr_sz = self._strip_comments_sz(directive.condition)
-                result = self._evaluate_expression_sz(expr_sz)
+                # Pass the raw condition: _evaluate_expression_sz strips comments
+                # internally as its first step, so no handler-level strip is needed.
+                result = self._evaluate_expression_sz(directive.condition)
                 is_active = bool(result) and condition_stack[-1][0]
                 condition_stack.append((is_active, False, is_active))
                 if self.verbose >= 9:
@@ -945,9 +951,9 @@ class SimplePreprocessor:
             condition_stack.append((False, False, any_condition_met))
         elif not seen_else and not any_condition_met and directive.condition:
             try:
-                # Strip comments before processing - work with StringZilla strings
-                expr_sz = self._strip_comments_sz(directive.condition)
-                result = self._evaluate_expression_sz(expr_sz)
+                # Pass the raw condition: _evaluate_expression_sz strips comments
+                # internally as its first step, so no handler-level strip is needed.
+                result = self._evaluate_expression_sz(directive.condition)
                 new_active = bool(result) and parent_active
                 new_any_condition_met = any_condition_met or new_active
                 condition_stack.append((new_active, False, new_any_condition_met))
@@ -1101,6 +1107,3 @@ def print_preprocessor_stats() -> None:
     print("\nTop 20 most processed files:")
     for filepath, count in _stats["files_processed"].most_common(20):
         print(f"  {count:6d}x  {filepath}")
-    print("\nTop 20 call contexts:")
-    for context, count in _stats["call_contexts"].most_common(20):
-        print(f"  {count:6d}x  {context}")
