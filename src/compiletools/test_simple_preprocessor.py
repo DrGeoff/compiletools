@@ -890,6 +890,46 @@ class TestSimplePreprocessorEdgeCases:
         # Should not crash, keeps original text
         assert "defined" in str(result)
 
+    def test_defined_unterminated_paren_not_rewritten(self):
+        """A14: 'defined(MACRO' with no closing paren must NOT become '1(MACRO'/'0(MACRO'.
+
+        The unterminated parenthesized form is unparseable; it must fall through
+        to the "keep as is" path (leaving 'defined' intact) rather than emitting
+        a corrupt rewrite. No crash, no infinite loop.
+        """
+        # Defined macro: must not become '1(DEFINED_MACRO'
+        result = str(self.processor._expand_defined_sz(sz.Str("defined(DEFINED_MACRO")))
+        assert result == "defined(DEFINED_MACRO"
+        assert not result.startswith("1")
+        assert "1(" not in result
+
+        # Undefined macro: must not become '0(FOO'
+        result = str(self.processor._expand_defined_sz(sz.Str("defined(FOO")))
+        assert result == "defined(FOO"
+        assert "0(" not in result
+
+        # Trailing space, still no paren: must not become '0(FOO '
+        result = str(self.processor._expand_defined_sz(sz.Str("defined(FOO ")))
+        assert "0(" not in result and "1(" not in result
+        assert "defined(FOO" in result
+
+        # Malformed tail after a valid prefix: prefix preserved, no corrupt rewrite
+        result = str(self.processor._expand_defined_sz(sz.Str("A || defined(FOO")))
+        assert result.startswith("A || ")
+        assert "0(" not in result and "1(" not in result
+        assert "defined(FOO" in result
+
+        # Paren immediately followed by end: already handled, keep intact
+        result = str(self.processor._expand_defined_sz(sz.Str("defined(")))
+        assert result == "defined("
+
+    def test_defined_well_formed_paren_still_works(self):
+        """A14 regression guard: the well-formed forms must be unaffected by the fix."""
+        assert str(self.processor._expand_defined_sz(sz.Str("defined(DEFINED_MACRO)"))) == "1"
+        assert str(self.processor._expand_defined_sz(sz.Str("defined(FOO)"))) == "0"
+        assert str(self.processor._expand_defined_sz(sz.Str("defined DEFINED_MACRO"))) == "1"
+        assert str(self.processor._expand_defined_sz(sz.Str("defined FOO"))) == "0"
+
     def test_safe_eval_unsafe_expression(self):
         """_safe_eval should raise ValueError for unsafe expressions."""
         with pytest.raises(ValueError, match="Unsafe expression"):

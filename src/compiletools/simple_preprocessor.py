@@ -404,11 +404,18 @@ class SimplePreprocessor:
                     next_non_ws = expr_sz.find_first_not_of(" \t", j)
                     j = next_non_ws if next_non_ws != -1 else len(expr_sz)
 
-                    # Check for closing paren
+                    # Check for closing paren. An unterminated parenthesized
+                    # form (no ')') is unparseable: clear macro_name so it falls
+                    # through to the "keep as is" branch below rather than being
+                    # rewritten to a corrupt '1(MACRO' / '0(MACRO'.
+                    closed = False
                     if j < len(expr_sz):
                         ch = expr_sz[j : j + 1]
                         if len(ch) > 0 and ch[0] == ")":
                             end_pos = j + 1
+                            closed = True
+                    if not closed:
+                        macro_name = None
             else:
                 # Space form: defined MACRO - vectorized
                 if is_alpha_or_underscore_sz(expr_sz, j):
