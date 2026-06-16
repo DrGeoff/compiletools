@@ -640,6 +640,68 @@ class TestExpandHasFunctions:
         with patch("compiletools.compiler_macros.query_has_function", return_value=0):
             assert processor._evaluate_expression_sz(sz.Str("defined(FOO)")) == 1
 
+    def test_same_identifier_in_defined_and_has_check_resolves_each_correctly(self):
+        """A18 cross-operand: when ONE identifier feeds BOTH defined() and a
+        __has_* in the same expression, the two operands have opposite expansion
+        contracts and both must hold simultaneously.
+
+        For ``defined(COND) && __has_attribute(COND)`` with COND defined as
+        nodiscard:
+          - defined(COND) must see COND UNEXPANDED (it tests whether COND is a
+            defined macro NAME) -> 1, because COND is in the macro table.
+          - __has_attribute(COND) must see COND EXPANDED to nodiscard before the
+            probe (the compiler TU knows nothing of our #defines) -> the call
+            string handed to the compiler is __has_attribute(nodiscard).
+
+        This only passes because _expand_macros_sz consumes defined() (against
+        the raw name, via _expand_defined_sz) and the __has_* call (whose operand
+        is expanded internally) BEFORE the general _expand_object_macros_sz pass
+        rewrites any remaining bare identifiers. If object-macro expansion ran
+        FIRST, the bare COND outside the has-call would become nodiscard, so
+        defined() would see defined(nodiscard) -> 0, the && would short-circuit,
+        and the overall result would be 0. (Verified: moving _expand_object_macros_sz
+        to the front of _expand_macros_sz makes this test fail with 0 == 1.)
+        """
+        processor = SimplePreprocessor({sz.Str("COND"): sz.Str("nodiscard")}, compiler_path="gcc")
+        with patch("compiletools.compiler_macros.query_has_function", return_value=1) as mock_query:
+            result = processor._evaluate_expression_sz(sz.Str("defined(COND) && __has_attribute(COND)"))
+            # Both operands resolved correctly: defined(COND) -> 1 (name was
+            # defined) AND __has_attribute -> 1, so the && is true.
+            assert result == 1
+            # The has-check saw the EXPANDED operand; defined() saw the raw name
+            # (otherwise defined(nodiscard) would have short-circuited to 0 and
+            # the has probe would never have run / been called with COND).
+            mock_query.assert_called_once_with("gcc", "__has_attribute(nodiscard)", "", 0)
+
+    def test_cyclic_has_operand_warns_at_verbose_1(self, capsys):
+        """A18 follow-up: a cyclic object-macro pair used as a __has_* operand
+        truncates at max_iterations and warns at verbose >= 1 (parity with
+        _recursive_expand_macros_sz), instead of silently handing a half-expanded
+        token to the probe.
+        """
+        processor = SimplePreprocessor(
+            {sz.Str("A"): sz.Str("B"), sz.Str("B"): sz.Str("A")},
+            compiler_path="gcc",
+            verbose=1,
+        )
+        result = processor._expand_object_macros_recursive_sz(sz.Str("A"))
+        # Cyclic pair never converges; the result is one of the two tokens.
+        assert str(result) in ("A", "B")
+        captured = capsys.readouterr()
+        assert "WARNING" in captured.out
+        assert "_expand_object_macros_recursive_sz" in captured.out
+        assert "max_iterations" in captured.out
+
+    def test_cyclic_has_operand_silent_at_verbose_0(self, capsys):
+        """The cyclic-operand warning is gated on verbose >= 1 (default off)."""
+        processor = SimplePreprocessor(
+            {sz.Str("A"): sz.Str("B"), sz.Str("B"): sz.Str("A")},
+            compiler_path="gcc",
+            verbose=0,
+        )
+        processor._expand_object_macros_recursive_sz(sz.Str("A"))
+        assert "WARNING" not in capsys.readouterr().out
+
     def test_no_compiler_evaluates_to_0(self):
         """With no compiler_path, __has_* calls should evaluate to 0 (backward compat)."""
         processor = SimplePreprocessor(self.macros, compiler_path="")

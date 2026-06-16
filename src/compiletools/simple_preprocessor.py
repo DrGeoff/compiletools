@@ -594,7 +594,11 @@ class SimplePreprocessor:
         substitution — it deliberately does NOT re-run defined()/__has_*
         handling, so it is safe to call on a __has_* operand. ``max_iterations``
         caps depth to defeat cyclic ``#define`` pairs, mirroring the cap in
-        _recursive_expand_macros_sz.
+        _recursive_expand_macros_sz. When the cap is hit AND the operand is
+        still changing on each pass — a genuine cycle rather than benign
+        convergence — a warning is emitted at ``verbose >= 1`` (matching the
+        sibling), so a half-expanded token being handed to the __has_* probe is
+        not silently truncated. The last seen expression is returned regardless.
         """
         previous_expr = sz.Str("")
         iteration = 0
@@ -602,6 +606,19 @@ class SimplePreprocessor:
             previous_expr = expr_sz
             expr_sz = self._expand_object_macros_sz(expr_sz)
             iteration += 1
+
+        # If we hit the iteration cap AND the operand was still mutating on the
+        # last pass, the expansion was truncated — warn the user (mirrors
+        # _recursive_expand_macros_sz, scoped to the __has_* operand context).
+        if iteration == max_iterations and expr_sz != previous_expr:
+            if self.verbose >= 1:
+                print(
+                    f"WARNING: SimplePreprocessor._expand_object_macros_recursive_sz hit "
+                    f"max_iterations={max_iterations} while a __has_* operand was still "
+                    f"changing — likely a recursive macro definition cycle. "
+                    f"Truncated result: {expr_sz!r} (previous: {previous_expr!r})"
+                )
+
         return expr_sz
 
     def _recursive_expand_macros_sz(self, expr_sz: sz.Str, max_iterations: int = 10) -> sz.Str:
