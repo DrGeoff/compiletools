@@ -30,14 +30,19 @@ def ends_with_backslash_sz(sz_str: "stringzilla.Str") -> bool:
 
 
 def is_alpha_or_underscore_sz(sz_str: "stringzilla.Str", pos: int = 0) -> bool:
-    """Check if character at position is alphabetic or underscore using direct indexing.
+    """Check if character at position is alphabetic or underscore.
 
-    Performance: For our workloads, direct character indexing is faster than slice + find_first_not_of.
+    Performance: For our workloads, a single-byte peek is faster than slice + find_first_not_of.
     """
     if pos >= len(sz_str):
         return False
-    # Direct character access is faster than slicing for single-char checks
-    ch = sz_str[pos]
+    # Peek the byte via a one-byte slice rather than ``sz_str[pos]``: the index
+    # is a byte offset and may land inside a multi-byte UTF-8 sequence (e.g. an
+    # accented identifier-adjacent char), where single-char indexing decodes
+    # that byte in isolation and raises UnicodeDecodeError. Slice equality
+    # compares bytes and is decode-safe; a non-ASCII byte is never alphabetic
+    # or underscore, so the result is correct. (Mirrors ends_with_backslash_sz.)
+    ch = sz_str[pos : pos + 1]
     return ch == "_" or ("a" <= ch <= "z") or ("A" <= ch <= "Z")
 
 

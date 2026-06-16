@@ -88,6 +88,17 @@ class TestIsAlphaOrUnderscoreSz:
     def test_is_alpha_or_underscore(self, source, pos, expected):
         assert is_alpha_or_underscore_sz(stringzilla.Str(source), pos) is expected
 
+    @pytest.mark.parametrize("pos", [0, 1])
+    def test_non_ascii_byte_does_not_crash(self, pos):
+        """A9: indexing a byte that falls inside a multi-byte UTF-8 sequence must
+        not raise UnicodeDecodeError.
+
+        ``é`` is two bytes (0xc3 0xa9). A bare-integer ``sz_str[pos]`` decodes
+        that single byte in isolation and crashes; a one-byte slice is
+        decode-safe and a non-ASCII byte is correctly not alphabetic/underscore.
+        """
+        assert is_alpha_or_underscore_sz(stringzilla.Str("é"), pos) is False
+
 
 class TestJoinLinesStripBackslashSz:
     """Test join_lines_strip_backslash_sz function."""

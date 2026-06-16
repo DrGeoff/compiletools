@@ -668,6 +668,26 @@ class TestExpandHasFunctions:
             # Not a function call (no paren) -> name passed through verbatim.
             assert "__has_include" in str(result)
 
+    def test_non_ascii_byte_before_has_does_not_crash(self):
+        """A9 (third site): a non-ASCII byte immediately before ``__has_`` must
+        not crash the standalone-identifier check.
+
+        When ``has_pos > 0`` the scanner peeks the preceding byte to decide
+        whether ``__has_`` is a fresh identifier or the tail of a larger one
+        (``my__has_include``). That peek goes through
+        ``is_alpha_or_underscore_sz(expr_sz, has_pos - 1)``, which formerly
+        indexed the ``sz.Str`` with a bare integer and raised
+        ``UnicodeDecodeError`` when the preceding byte was a UTF-8 lead /
+        continuation byte (here the trailing byte of ``é``). A UTF-8 byte is
+        not an identifier char, so ``__has_`` is correctly a fresh identifier
+        and the call is recognised and expanded.
+        """
+        with patch("compiletools.compiler_macros.query_has_function", return_value=1):
+            # Must not raise; the preceding byte is non-identifier, so the
+            # __has_include is a standalone call and expands to '1'.
+            result = self.processor._expand_has_functions_sz(sz.Str("é__has_include(<x.h>)"))
+            assert str(result).endswith("1")
+
     def test_same_identifier_in_defined_and_has_check_resolves_each_correctly(self):
         """A18 cross-operand: when ONE identifier feeds BOTH defined() and a
         __has_* in the same expression, the two operands have opposite expansion
