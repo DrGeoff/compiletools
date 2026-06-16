@@ -76,10 +76,18 @@ class _CExpressionParser:
         self.pos = 0
 
     def parse(self) -> int:
-        value = self._parse_logical_or()
+        value = self._parse_conditional(evaluate=True)
         if self._peek() != "EOF":
             raise SyntaxError("trailing tokens")
         return value
+
+    # Short-circuit mechanism (A6/A7): every recursive method takes an
+    # ``evaluate`` flag. When False the subtree is still fully *parsed* (so the
+    # token stream stays aligned), but the dead arithmetic that could raise —
+    # ``/`` and ``%`` — is skipped and a placeholder 0 is returned. The result
+    # of a non-evaluated subtree is discarded, so any placeholder is sound.
+    # ``||`` clears it for the RHS when the LHS is already true; ``&&`` when the
+    # LHS is already false; ``?:`` for the untaken branch.
 
     def _peek(self) -> _CExprToken:
         return self.tokens[self.pos]
@@ -91,52 +99,71 @@ class _CExpressionParser:
             return token
         return None
 
-    def _parse_logical_or(self) -> int:
-        value = self._parse_logical_and()
+    def _parse_conditional(self, evaluate: bool) -> int:
+        # A7: conditional-expression := logical-or ( '?' expression ':'
+        # conditional )?  — lower precedence than ``||``, right-associative.
+        # Only the taken branch is evaluated; the untaken branch is parsed with
+        # ``evaluate=False`` so its arithmetic never raises.
+        condition = self._parse_logical_or(evaluate)
+        if not self._match("?"):
+            return condition
+        take_true = evaluate and condition != 0
+        true_value = self._parse_conditional(evaluate=take_true)
+        if not self._match(":"):
+            raise SyntaxError("expected ':' in conditional expression")
+        false_value = self._parse_conditional(evaluate=evaluate and condition == 0)
+        return true_value if condition != 0 else false_value
+
+    def _parse_logical_or(self, evaluate: bool) -> int:
+        value = self._parse_logical_and(evaluate)
         while self._match("||"):
-            rhs = self._parse_logical_and()
+            # A6: once the LHS is true the result is 1 and the RHS is dead.
+            rhs_live = evaluate and value == 0
+            rhs = self._parse_logical_and(rhs_live)
             value = 1 if value != 0 or rhs != 0 else 0
         return value
 
-    def _parse_logical_and(self) -> int:
-        value = self._parse_bitwise_or()
+    def _parse_logical_and(self, evaluate: bool) -> int:
+        value = self._parse_bitwise_or(evaluate)
         while self._match("&&"):
-            rhs = self._parse_bitwise_or()
+            # A6: once the LHS is false the result is 0 and the RHS is dead.
+            rhs_live = evaluate and value != 0
+            rhs = self._parse_bitwise_or(rhs_live)
             value = 1 if value != 0 and rhs != 0 else 0
         return value
 
-    def _parse_bitwise_or(self) -> int:
-        value = self._parse_bitwise_xor()
+    def _parse_bitwise_or(self, evaluate: bool) -> int:
+        value = self._parse_bitwise_xor(evaluate)
         while self._match("|"):
-            value |= self._parse_bitwise_xor()
+            value |= self._parse_bitwise_xor(evaluate)
         return value
 
-    def _parse_bitwise_xor(self) -> int:
-        value = self._parse_bitwise_and()
+    def _parse_bitwise_xor(self, evaluate: bool) -> int:
+        value = self._parse_bitwise_and(evaluate)
         while self._match("^"):
-            value ^= self._parse_bitwise_and()
+            value ^= self._parse_bitwise_and(evaluate)
         return value
 
-    def _parse_bitwise_and(self) -> int:
-        value = self._parse_equality()
+    def _parse_bitwise_and(self, evaluate: bool) -> int:
+        value = self._parse_equality(evaluate)
         while self._match("&"):
-            value &= self._parse_equality()
+            value &= self._parse_equality(evaluate)
         return value
 
-    def _parse_equality(self) -> int:
-        value = self._parse_relational()
+    def _parse_equality(self, evaluate: bool) -> int:
+        value = self._parse_relational(evaluate)
         while op := self._match("==", "!="):
-            rhs = self._parse_relational()
+            rhs = self._parse_relational(evaluate)
             if op == "==":
                 value = 1 if value == rhs else 0
             else:
                 value = 1 if value != rhs else 0
         return value
 
-    def _parse_relational(self) -> int:
-        value = self._parse_shift()
+    def _parse_relational(self, evaluate: bool) -> int:
+        value = self._parse_shift(evaluate)
         while op := self._match("<", "<=", ">", ">="):
-            rhs = self._parse_shift()
+            rhs = self._parse_shift(evaluate)
             if op == "<":
                 value = 1 if value < rhs else 0
             elif op == "<=":
@@ -147,56 +174,60 @@ class _CExpressionParser:
                 value = 1 if value >= rhs else 0
         return value
 
-    def _parse_shift(self) -> int:
-        value = self._parse_additive()
+    def _parse_shift(self, evaluate: bool) -> int:
+        value = self._parse_additive(evaluate)
         while op := self._match("<<", ">>"):
-            rhs = self._parse_additive()
+            rhs = self._parse_additive(evaluate)
             if op == "<<":
                 value <<= rhs
             else:
                 value >>= rhs
         return value
 
-    def _parse_additive(self) -> int:
-        value = self._parse_multiplicative()
+    def _parse_additive(self, evaluate: bool) -> int:
+        value = self._parse_multiplicative(evaluate)
         while op := self._match("+", "-"):
-            rhs = self._parse_multiplicative()
+            rhs = self._parse_multiplicative(evaluate)
             if op == "+":
                 value += rhs
             else:
                 value -= rhs
         return value
 
-    def _parse_multiplicative(self) -> int:
-        value = self._parse_unary()
+    def _parse_multiplicative(self, evaluate: bool) -> int:
+        value = self._parse_unary(evaluate)
         while op := self._match("*", "/", "%"):
-            rhs = self._parse_unary()
+            rhs = self._parse_unary(evaluate)
             if op == "*":
                 value *= rhs
+            elif not evaluate:
+                # Dead subtree (A6/A7): skip the division so a dead ``x / 0``
+                # never raises. The returned value is discarded.
+                value = 0
             elif op == "/":
                 value = self._c_trunc_div(value, rhs)
             else:
                 value = value - self._c_trunc_div(value, rhs) * rhs
         return value
 
-    def _parse_unary(self) -> int:
+    def _parse_unary(self, evaluate: bool) -> int:
         if self._match("+"):
-            return +self._parse_unary()
+            return +self._parse_unary(evaluate)
         if self._match("-"):
-            return -self._parse_unary()
+            return -self._parse_unary(evaluate)
         if self._match("!"):
-            return 0 if self._parse_unary() else 1
+            return 0 if self._parse_unary(evaluate) else 1
         if self._match("~"):
-            return ~self._parse_unary()
-        return self._parse_primary()
+            return ~self._parse_unary(evaluate)
+        return self._parse_primary(evaluate)
 
-    def _parse_primary(self) -> int:
+    def _parse_primary(self, evaluate: bool) -> int:
         token = self._peek()
         if isinstance(token, int):
             self.pos += 1
             return token
         if self._match("("):
-            value = self._parse_logical_or()
+            value = self._parse_conditional(evaluate)
             if not self._match(")"):
                 raise SyntaxError("missing closing parenthesis")
             return value
@@ -840,7 +871,8 @@ class SimplePreprocessor:
         tokens: list[_CExprToken] = []
         i = 0
         multi_ops = ("&&", "||", "<<", ">>", "==", "!=", "<=", ">=")
-        single_ops = set("()+-*/%<>!&|^~")
+        # ``?`` and ``:`` are the ternary conditional-operator tokens (A7).
+        single_ops = set("()+-*/%<>!&|^~?:")
         word_ops = {"and": "&&", "or": "||", "not": "!"}
 
         while i < len(expr):
@@ -881,8 +913,19 @@ class SimplePreprocessor:
                 if word in word_ops:
                     tokens.append(word_ops[word])
                     continue
-                raise ValueError(f"Unsafe expression: {expr}")
+                # A2: C preprocessor semantics — any identifier surviving macro
+                # expansion in a controlling expression is replaced by the
+                # integer 0. (Genuinely unsafe input is a *non*-identifier byte,
+                # handled by the catch-all below.) Emitting 0 instead of raising
+                # lets the parser run, which is what makes the A6 short-circuit
+                # reachable (a raise here would discard the whole expression).
+                tokens.append(0)
+                continue
 
+            # A stray byte that is neither part of a number, operator, nor a
+            # ``[A-Za-z_][A-Za-z0-9_]*`` identifier (e.g. ``@``, ``$``, a
+            # backtick, or a quote) is genuine garbage — reject it so the
+            # #if/#elif caller assumes false.
             raise ValueError(f"Unsafe expression: {expr}")
 
         tokens.append("EOF")

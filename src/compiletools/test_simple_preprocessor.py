@@ -809,18 +809,108 @@ class TestSimplePreprocessorEdgeCases:
         assert "#else" in out
 
     def test_if_evaluation_failure_assumes_false(self):
-        """#if with unparseable expression should assume false."""
+        """#if eval follows C semantics: an undefined identifier is the integer
+        0 (so a bare undefined macro is false, but it still participates in
+        arithmetic), while genuinely malformed/garbage expressions assume
+        false."""
 
         processor = SimplePreprocessor({}, verbose=0)
+
+        # (a) A valid expression whose only undefined identifier is replaced by
+        #     0 -> the whole expression is false because 0 is false.
         text = dedent("""
-            #if __has_cpp_attribute(nodiscard)
+            #if UNDEFINED_MACRO
             included
             #endif
         """).strip()
-        # __has_cpp_attribute isn't a known function, will fail to eval
         file_result = _make_file_analysis_result(text)
         active_lines = processor.process_structured(file_result, self.ctx)
-        assert 1 not in active_lines  # 'included' line should not be active
+        assert 1 not in active_lines  # 'included' must not be active (0 -> false)
+
+        # (a') Same undefined identifier, but now used in arithmetic: 0 + 1 == 1
+        #      -> the branch IS active (this is the C-correct behavior the old
+        #      "unparseable -> false" code got wrong by discarding the expr).
+        text = dedent("""
+            #if UNDEFINED_MACRO + 1
+            included
+            #endif
+        """).strip()
+        file_result = _make_file_analysis_result(text)
+        active_lines = processor.process_structured(file_result, self.ctx)
+        assert 1 in active_lines  # 'included' must be active (0 + 1 -> true)
+
+        # (b) Genuinely malformed garbage (a stray, non-identifier,
+        #     non-operator character) is still rejected -> false.
+        text = dedent("""
+            #if 1 @ 2
+            included
+            #endif
+        """).strip()
+        file_result = _make_file_analysis_result(text)
+        active_lines = processor.process_structured(file_result, self.ctx)
+        assert 1 not in active_lines  # garbage -> false
+
+    def test_undefined_identifier_evaluates_to_zero_sz(self):
+        """A2: in a controlling expression any surviving identifier is 0."""
+        # A bare undefined identifier is false (== 0).
+        assert self.processor._evaluate_expression_sz(sz.Str("UNDEFINED_MACRO")) == 0
+        # ... but it still participates as the integer 0 in arithmetic/logic.
+        assert self.processor._evaluate_expression_sz(sz.Str("UNDEFINED_MACRO + 1")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("UNDEFINED_MACRO == 0")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("!UNDEFINED_MACRO")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("FOO || BAR")) == 0
+        assert self.processor._evaluate_expression_sz(sz.Str("FOO + BAR + 2")) == 2
+
+    def test_garbage_expression_rejected_sz(self):
+        """A2: a stray non-identifier, non-operator byte stays unsafe (false)."""
+        # _safe_eval re-raises ValueError; #if/#elif callers turn that into
+        # false. _evaluate_expression_sz propagates it for the same reason.
+        for garbage in ("1 @ 2", "1 $ 2", "1 ` 2", "'a'"):
+            with pytest.raises(ValueError):
+                self.processor._evaluate_expression_sz(sz.Str(garbage))
+
+    def test_short_circuit_logical_or_skips_dead_rhs_sz(self):
+        """A6: ``1 || <anything>`` is 1 and must NOT evaluate the RHS, so a
+        dead division-by-zero on the right side never surfaces."""
+        assert self.processor._evaluate_expression_sz(sz.Str("1 || UNDEF / 0")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("1 || 1 / 0")) == 1
+
+    def test_short_circuit_logical_and_skips_dead_rhs_sz(self):
+        """A6: ``0 && <anything>`` is 0 and must NOT evaluate the RHS."""
+        assert self.processor._evaluate_expression_sz(sz.Str("0 && UNDEF / 0")) == 0
+        assert self.processor._evaluate_expression_sz(sz.Str("0 && 1 / 0")) == 0
+
+    def test_short_circuit_live_rhs_still_evaluated_sz(self):
+        """A6: the RHS is still evaluated when the LHS does not short-circuit,
+        and a LIVE division-by-zero still degrades to 0 (unchanged contract)."""
+        assert self.processor._evaluate_expression_sz(sz.Str("0 || 1")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("1 && 1")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("1 && 0")) == 0
+        # A live 1/0 in an evaluated position degrades to 0 (caught), so
+        # ``0 || 1 / 0`` -> 0 || 0 -> 0.
+        assert self.processor._evaluate_expression_sz(sz.Str("0 || 1 / 0")) == 0
+
+    def test_ternary_conditional_operator_sz(self):
+        """A7: ``?:`` is valid in a constant-expression; evaluate the taken
+        branch only."""
+        assert self.processor._evaluate_expression_sz(sz.Str("1 ? 2 : 3")) == 2
+        assert self.processor._evaluate_expression_sz(sz.Str("0 ? 2 : 3")) == 3
+        assert self.processor._evaluate_expression_sz(sz.Str("1 ? 0 : 1")) == 0
+        # Right-associative: 1 ? 0 : (1 ? 1 : 0) -> 0
+        assert self.processor._evaluate_expression_sz(sz.Str("1 ? 0 : 1 ? 1 : 0")) == 0
+        # 0 ? X : (1 ? 1 : 0) -> 1
+        assert self.processor._evaluate_expression_sz(sz.Str("0 ? 9 : 1 ? 1 : 0")) == 1
+
+    def test_ternary_short_circuits_untaken_branch_sz(self):
+        """A7: only the taken branch is evaluated; a dead 1/0 must not surface."""
+        assert self.processor._evaluate_expression_sz(sz.Str("1 ? 1 : 1 / 0")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("0 ? 1 / 0 : 2")) == 2
+
+    def test_ternary_precedence_below_logical_or_sz(self):
+        """A7: ternary binds looser than ``||`` -> ``1 || 0 ? 2 : 3`` parses as
+        ``(1 || 0) ? 2 : 3`` -> 2."""
+        assert self.processor._evaluate_expression_sz(sz.Str("1 || 0 ? 2 : 3")) == 2
+        assert self.processor._evaluate_expression_sz(sz.Str("0 || 0 ? 2 : 3")) == 3
 
     def test_elif_evaluation_failure_assumes_false(self):
         """#elif with unparseable expression should assume false."""
