@@ -596,6 +596,50 @@ class TestExpandHasFunctions:
             result = self.processor._expand_has_functions_sz(sz.Str("__has_builtin(__builtin_expect)"))
             assert str(result) == "1"
 
+    def test_object_macro_operand_expanded_before_has_check(self):
+        """A18: an object-macro used as a __has_* operand is expanded before the
+        has-check consumes it.
+
+        Per the C standard the operand of __has_include / __has_attribute /
+        __has_builtin etc. is macro-expanded. The compiler probe runs on a fresh
+        stdin TU that knows nothing of our #defines, so the simple preprocessor
+        must expand the operand itself before handing the call string to the
+        compiler.
+        """
+        processor = SimplePreprocessor({sz.Str("HEADER"): sz.Str("<foo.h>")}, compiler_path="gcc")
+        with patch("compiletools.compiler_macros.query_has_function", return_value=1) as mock_query:
+            result = processor._evaluate_expression_sz(sz.Str("__has_include(HEADER)"))
+            assert result == 1
+            # The operand must reach the compiler already expanded to <foo.h>,
+            # NOT as the literal token HEADER.
+            mock_query.assert_called_once_with("gcc", "__has_include(<foo.h>)", "", 0)
+
+    def test_object_macro_operand_expanded_for_has_attribute(self):
+        """A18: a macro operand of __has_attribute is expanded before the has-check."""
+        processor = SimplePreprocessor({sz.Str("ATTR"): sz.Str("nodiscard")}, compiler_path="gcc")
+        with patch("compiletools.compiler_macros.query_has_function", return_value=1) as mock_query:
+            processor._evaluate_expression_sz(sz.Str("__has_attribute(ATTR)"))
+            mock_query.assert_called_once_with("gcc", "__has_attribute(nodiscard)", "", 0)
+
+    def test_chained_object_macro_operand_fully_expanded(self):
+        """A18: a chained macro operand (A -> B -> nodiscard) resolves to a fixed point."""
+        processor = SimplePreprocessor(
+            {sz.Str("A"): sz.Str("B"), sz.Str("B"): sz.Str("nodiscard")}, compiler_path="gcc"
+        )
+        with patch("compiletools.compiler_macros.query_has_function", return_value=1) as mock_query:
+            processor._evaluate_expression_sz(sz.Str("__has_attribute(A)"))
+            mock_query.assert_called_once_with("gcc", "__has_attribute(nodiscard)", "", 0)
+
+    def test_defined_operand_not_expanded_with_has_check_present(self):
+        """A18 must not regress defined(): defined()'s operand stays unexpanded.
+
+        FOO is a defined macro whose body is BAR (BAR itself is undefined).
+        defined(FOO) checks the NAME FOO -> 1; it must NOT become defined(BAR) -> 0.
+        """
+        processor = SimplePreprocessor({sz.Str("FOO"): sz.Str("BAR")}, compiler_path="gcc")
+        with patch("compiletools.compiler_macros.query_has_function", return_value=0):
+            assert processor._evaluate_expression_sz(sz.Str("defined(FOO)")) == 1
+
     def test_no_compiler_evaluates_to_0(self):
         """With no compiler_path, __has_* calls should evaluate to 0 (backward compat)."""
         processor = SimplePreprocessor(self.macros, compiler_path="")

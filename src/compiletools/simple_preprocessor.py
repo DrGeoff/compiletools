@@ -505,7 +505,20 @@ class SimplePreprocessor:
                 continue
 
             # Extract the full function call: __has_include(<iostream>)
-            call_str = str(expr_sz[has_pos:k])
+            # A18: the operand is subject to macro expansion (e.g.
+            #   #define HEADER <foo.h>
+            #   #if __has_include(HEADER)
+            # must probe __has_include(<foo.h>), not the literal token HEADER).
+            # The compiler probe runs on a fresh stdin TU that knows nothing of
+            # our #defines, so we expand the operand ourselves here. Only
+            # object-macro expansion is applied — defined() was already consumed
+            # by _expand_defined_sz before this method ran, and nested __has_*
+            # operands are not valid C, so neither needs re-running. Expansion
+            # is iterated to a fixed point so chained macros (HEADER -> NAME ->
+            # <foo.h>) fully resolve before the probe.
+            operand = expr_sz[j + 1 : k - 1]
+            expanded_operand = self._expand_object_macros_recursive_sz(operand)
+            call_str = str(expr_sz[has_pos : j + 1]) + str(expanded_operand) + ")"
 
             if not self.compiler_path:
                 # No compiler available - evaluate to 0
@@ -522,9 +535,21 @@ class SimplePreprocessor:
         """Replace macro names with their values using StringZilla operations"""
         # First handle defined() expressions to avoid expanding macros inside them
         result = self._expand_defined_sz(expr_sz)
-        # Then expand __has_* function calls by querying the compiler
+        # Then expand __has_* function calls by querying the compiler (each
+        # call's operand is object-macro-expanded inside _expand_has_functions_sz)
         result = self._expand_has_functions_sz(result)
+        # Finally expand object-like macros in the remaining expression body
+        return self._expand_object_macros_sz(result)
 
+    def _expand_object_macros_sz(self, expr_sz: sz.Str) -> sz.Str:
+        """Replace object-like macro identifiers with their bodies (single pass).
+
+        Pure object-macro substitution only — does NOT touch defined() or
+        __has_* calls. Used both for the general expression body (after
+        defined()/__has_* have been consumed) and, in isolation, to expand a
+        __has_* operand before the has-check (A18).
+        """
+        result = expr_sz
         # Start from the beginning and find identifier patterns
         i = 0
         result_len = len(result)
@@ -561,6 +586,23 @@ class SimplePreprocessor:
                 result_len = len(result)
 
         return result
+
+    def _expand_object_macros_recursive_sz(self, expr_sz: sz.Str, max_iterations: int = 10) -> sz.Str:
+        """Iterate object-macro expansion to a fixed point (A18 operand expansion).
+
+        Like _recursive_expand_macros_sz but restricted to object-macro
+        substitution — it deliberately does NOT re-run defined()/__has_*
+        handling, so it is safe to call on a __has_* operand. ``max_iterations``
+        caps depth to defeat cyclic ``#define`` pairs, mirroring the cap in
+        _recursive_expand_macros_sz.
+        """
+        previous_expr = sz.Str("")
+        iteration = 0
+        while expr_sz != previous_expr and iteration < max_iterations:
+            previous_expr = expr_sz
+            expr_sz = self._expand_object_macros_sz(expr_sz)
+            iteration += 1
+        return expr_sz
 
     def _recursive_expand_macros_sz(self, expr_sz: sz.Str, max_iterations: int = 10) -> sz.Str:
         """Recursively expand macros using StringZilla operations until no more changes occur.
