@@ -2701,6 +2701,126 @@ def _make_purge_pool(tmp_path, monkeypatch, *, warm_age_seconds, cold_age_second
     return pool, paths
 
 
+def _make_flat_legacy_cell(pool, name, *, suffix, age_seconds=0, gch_size=100):
+    """Plant a retired flat-legacy pch/pcm cell.
+
+    The pool-root child ``name`` IS a 16-hex command-hash dir holding its
+    artefact (a ``legacy_pch.H<suffix>``), the artefact's ``.lock`` sidecar, and
+    a ``manifest.json`` DIRECTLY — the way the pool looked before
+    ``cas-{pch,pcm}dir`` gained the per-variant suffix. ``age_seconds`` ages every
+    file so the cell's ``newest_mtime`` reflects coldness for purge gating.
+    """
+    cell = os.path.join(pool, name)
+    os.makedirs(cell)
+    artefact = os.path.join(cell, f"legacy_pch.H{suffix}")
+    with open(artefact, "wb") as f:
+        f.write(b"\0" * gch_size)
+    open(os.path.join(cell, f"legacy_pch.H{suffix}.lock"), "wb").close()
+    with open(os.path.join(cell, "manifest.json"), "w") as f:
+        f.write("{}")
+    if age_seconds:
+        mtime = time.time() - age_seconds
+        for child in os.listdir(cell):
+            p = os.path.join(cell, child)
+            os.utime(p, (mtime, mtime))
+        os.utime(cell, (mtime, mtime))
+    return cell
+
+
+class TestFlatLegacyCmdhashCells:
+    """The retired flat-legacy pch/pcm layout — a pool-root child that is itself a
+    16-hex command-hash dir with artefacts DIRECTLY inside (not under
+    ``<variant>/<cmd_hash>/``) — must classify as UNRESOLVABLE, not UNKNOWN, so
+    ``--purge-unresolvable`` reclaims it, and must be removed cleanly (no stranded
+    ``.lock`` sidecars)."""
+
+    FLAT_PCH = "0123456789abcdef"  # pragma: allowlist secret
+    FLAT_PCM = "fedcba9876543210"  # pragma: allowlist secret
+
+    def test_flat_legacy_pch_cell_is_unresolvable(self, tmp_path, monkeypatch):
+        pool = str(tmp_path / "pool")
+        os.makedirs(pool)
+        _make_flat_legacy_cell(pool, self.FLAT_PCH, suffix=".gch")
+        _patch_resolver(monkeypatch, set())  # nothing resolves
+        records = {r["name"]: r for r in trim_cache.enumerate_cells(pool, "pch")}
+        assert records[self.FLAT_PCH]["cell_shape_ok"] is True
+        assert records[self.FLAT_PCH]["label"] == "UNRESOLVABLE"
+
+    def test_flat_legacy_pcm_cell_is_unresolvable(self, tmp_path, monkeypatch):
+        pool = str(tmp_path / "pool")
+        os.makedirs(pool)
+        _make_flat_legacy_cell(pool, self.FLAT_PCM, suffix=".pcm")
+        _patch_resolver(monkeypatch, set())
+        records = {r["name"]: r for r in trim_cache.enumerate_cells(pool, "pcm")}
+        assert records[self.FLAT_PCM]["label"] == "UNRESOLVABLE"
+
+    def test_sixteen_hex_cell_without_artifact_stays_unknown(self, tmp_path, monkeypatch):
+        # A 16-hex dir holding NO pch/pcm artefact is not a flat-legacy cell — it
+        # must NOT be mistaken for one (cell_shape_ok stays False -> UNKNOWN, which
+        # is never purged), so a stray dir is never destroyed by the purge path.
+        pool = str(tmp_path / "pool")
+        os.makedirs(pool)
+        cell = os.path.join(pool, self.FLAT_PCH)
+        os.makedirs(cell)
+        open(os.path.join(cell, "stray.txt"), "wb").close()
+        _patch_resolver(monkeypatch, set())
+        records = {r["name"]: r for r in trim_cache.enumerate_cells(pool, "pch")}
+        assert records[self.FLAT_PCH]["cell_shape_ok"] is False
+        assert records[self.FLAT_PCH]["label"] == "UNKNOWN"
+
+    def test_variant_scoped_pch_cell_unaffected(self, tmp_path, monkeypatch):
+        # Regression: a normal variant-scoped pch cell (dotted name, nested
+        # 16-hex/foo.gch) still classifies via the nested-subdir shape check.
+        pool, _expected = _make_synthetic_pool(tmp_path, "pch")
+        _patch_resolver(monkeypatch, {"good.variant"})
+        records = {r["name"]: r for r in trim_cache.enumerate_cells(pool, "pch")}
+        assert records["good.variant"]["label"] == "RESOLVABLE"
+        assert records["bogus.variant"]["label"] == "UNRESOLVABLE"
+
+    def test_purge_one_cell_removes_flat_legacy_cell(self, tmp_path):
+        # The flat cell's artefacts live at its TOP level, so removal must go via
+        # _safe_locked_rmtree; the per-child unlink path would strand .lock
+        # sidecars (FileLock leaves <file>.lock) and ENOTEMPTY-defer forever.
+        pool = str(tmp_path / "pool")
+        os.makedirs(pool)
+        cell = _make_flat_legacy_cell(pool, self.FLAT_PCH, suffix=".gch")
+        outcome = trim_cache._purge_one_cell(cell, dry_run=False)
+        assert outcome == "purged"
+        assert not os.path.exists(cell), "flat-legacy cell dir must be fully removed"
+
+    def test_purge_unresolvable_reclaims_cold_flat_legacy_cell(self, tmp_path, monkeypatch, capsys):
+        # End-to-end: a COLD flat-legacy pch cell is purged; a WARM one is spared;
+        # the resolvable variant cell is untouched.
+        pool = str(tmp_path / "pool")
+        os.makedirs(pool)
+        # Resolvable variant cell (nested 16-hex/foo.gch), cold.
+        variant_cell = os.path.join(pool, "good.variant")
+        inner = os.path.join(variant_cell, "a" * 16)
+        os.makedirs(inner)
+        with open(os.path.join(inner, "foo.gch"), "wb") as f:
+            f.write(b"\0" * 100)
+        cold_flat = _make_flat_legacy_cell(pool, self.FLAT_PCH, suffix=".gch", age_seconds=30 * 86400)
+        warm_flat = _make_flat_legacy_cell(pool, "abcdefabcdef0000", suffix=".gch", age_seconds=86400)
+
+        monkeypatch.setattr(trim_cache, "_variant_resolvable", lambda name: name == "good.variant")
+        monkeypatch.setattr(trim_cache, "_variant_canonical_name", lambda name: name)
+
+        args = _make_args(
+            variant="good.variant",
+            max_age=7,
+            cas_pchdir=variant_cell,  # basename == variant -> cell_pool_root climbs to pool
+            cas_pchdir_only=True,
+        )
+        result = trim_cache.purge_unresolvable_cells(args)
+        capsys.readouterr()
+        assert not os.path.exists(cold_flat), "cold flat-legacy cell must be purged"
+        assert os.path.exists(warm_flat), "warm flat-legacy cell must be spared"
+        assert os.path.exists(inner), "resolvable variant cell must be untouched"
+        pch = result["pchdir"]
+        assert pch["cells_purged"] == 1
+        assert pch["cells_skipped_warm"] == 1
+
+
 class TestPurgeUnresolvable:
     """``--purge-unresolvable`` reclaims UNRESOLVABLE + COLD cells ONLY, with a
     mandatory coldness gate and leaf-level lock-safe removal."""

@@ -2348,13 +2348,40 @@ def _exe_cell_shape_ok(cell_path):
     return False
 
 
+def _is_flat_legacy_cmdhash_cell(cell_path, suffixes):
+    """True if ``cell_path`` is a retired flat-legacy pch/pcm cell.
+
+    The flat layout predates the per-variant ``cas-{pch,pcm}dir`` suffix
+    (``apptools_argparse._ensure_variant_suffix``): the pool-root child is
+    ITSELF a 16-hex command-hash dir holding its artefact (a file ending in one
+    of ``suffixes``) DIRECTLY, rather than nesting it under
+    ``<variant>/<cmd_hash>/``. No current build can write this shape, so such a
+    cell is a dead orphan. Recognising it as a real (if unresolvable) cell makes
+    ``--purge-unresolvable`` reclaim it (cold-gated); otherwise it stays
+    ``UNKNOWN``, which is reported but NEVER purged — stranding it forever.
+    """
+    if not _PCH_COMMAND_HASH_RE.match(os.path.basename(cell_path)):
+        return False
+    try:
+        with os.scandir(cell_path) as it:
+            return any(e.name.endswith(suffixes) and e.is_file() for e in it)
+    except OSError:
+        return False
+
+
 # Per-kind cell-shape predicate. Each answers "does this child look like a real
 # cell of THIS kind?" — the obj/exe kinds key off 2-hex buckets, pch/pcm off
-# 16-hex command-hash dirs (exe additionally requires an artefact inside).
+# 16-hex command-hash dirs (exe additionally requires an artefact inside). pch/pcm
+# also accept the retired flat-legacy shape (the child is itself a command-hash
+# dir holding the artefact directly) so --purge-unresolvable can reclaim it.
 _CELL_SHAPE_PREDICATES = {
     "obj": lambda p: _has_immediate_subdir_matching(p, _OBJ_BUCKET_RE),
-    "pch": lambda p: _has_immediate_subdir_matching(p, _PCH_COMMAND_HASH_RE),
-    "pcm": lambda p: _has_immediate_subdir_matching(p, _PCM_COMMAND_HASH_RE),
+    "pch": lambda p: (
+        _has_immediate_subdir_matching(p, _PCH_COMMAND_HASH_RE) or _is_flat_legacy_cmdhash_cell(p, (".gch",))
+    ),
+    "pcm": lambda p: (
+        _has_immediate_subdir_matching(p, _PCM_COMMAND_HASH_RE) or _is_flat_legacy_cmdhash_cell(p, (".pcm", ".gcm"))
+    ),
     "exe": _exe_cell_shape_ok,
 }
 
@@ -2634,11 +2661,18 @@ def list_resolvable_cells(args, stream=None):
 def _purge_one_cell(cell_path, *, dry_run):
     """Leaf-level lock-safe removal of one purgeable cell.
 
-    **NEVER ``_safe_locked_rmtree`` the cell root.** ``_safe_locked_rmtree``
+    **NEVER ``_safe_locked_rmtree`` a BUCKETED cell root.** ``_safe_locked_rmtree``
     only locks the cell's TOP-LEVEL files before rmtree'ing the whole subtree;
-    a cell root's immediate children are DIRS (2-hex buckets / 16-hex cmd-hash
-    dirs), so it would lock NOTHING and rmtree the artefacts unlocked —
-    clobbering a peer build mid-write. So we descend ONE level and dispatch each
+    a normal cell root's immediate children are DIRS (2-hex buckets / 16-hex
+    cmd-hash dirs), so it would lock NOTHING and rmtree the artefacts unlocked —
+    clobbering a peer build mid-write.
+
+    The one EXCEPTION is a flat-legacy cell (retired non-variant-scoped pch/pcm
+    layout) whose immediate children are FILES, not bucket dirs — there the
+    artefacts ARE the top-level files, so ``_safe_locked_rmtree`` locks them
+    correctly and is the right primitive (handled up front below).
+
+    For the normal bucketed shape we descend ONE level and dispatch each
     immediate child:
 
     * dir  → ``_safe_locked_rmtree(child)`` (locks the artefacts INSIDE the
@@ -2670,6 +2704,16 @@ def _purge_one_cell(cell_path, *, dry_run):
     except OSError:
         # Cell vanished mid-purge (a peer reclaimed it) — nothing to do.
         return "purged"
+
+    # Flat-legacy cell (retired non-variant-scoped pch/pcm layout): the cell IS a
+    # command-hash dir holding its artefact (+ its .lock) DIRECTLY, with no bucket
+    # subdirs. Its lockable artefacts are this dir's TOP-LEVEL files, so
+    # _safe_locked_rmtree locks them and removes the whole cell in one shot. The
+    # per-child loop below is WRONG for this shape: _safe_locked_unlink's FileLock
+    # leaves a <file>.lock sidecar behind for each file it removes, so the dir is
+    # never empty and os.rmdir hits ENOTEMPTY -> permanent DEFERRED.
+    if children and not any(c.is_dir(follow_symlinks=False) for c in children):
+        return "purged" if _safe_locked_rmtree(cell_path) else "deferred"
 
     all_removed = True
     for child in children:
