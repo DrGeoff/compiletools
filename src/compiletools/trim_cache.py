@@ -38,6 +38,13 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+# fcntl is unavailable on Windows; the orphan-sidecar lock probe degrades to
+# "cannot prove unheld -> never reap" when it is absent (see _lock_unheld).
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
 import compiletools.filesystem_utils
 
 # Object filename format: {basename}_{file_hash_12}_{dep_hash_14}_{macro_state_hash_16}.o
@@ -471,6 +478,8 @@ class CacheTrimmer:
             "bytes_freed": 0,
             "orphan_temps_removed": 0,
             "orphan_temp_bytes_freed": 0,
+            "orphan_sidecars_removed": 0,
+            "orphan_sidecar_bytes_freed": 0,
             "budget_removed": 0,
             "budget_bytes_freed": 0,
             "budget_unmet_bytes": 0,
@@ -659,6 +668,8 @@ class CacheTrimmer:
             "bytes_freed": 0,
             "orphan_temps_removed": 0,
             "orphan_temp_bytes_freed": 0,
+            "orphan_sidecars_removed": 0,
+            "orphan_sidecar_bytes_freed": 0,
             "budget_removed": 0,
             "budget_bytes_freed": 0,
             "budget_unmet_bytes": 0,
@@ -835,6 +846,8 @@ class CacheTrimmer:
             "bytes_freed": 0,
             "orphan_temps_removed": 0,
             "orphan_temp_bytes_freed": 0,
+            "orphan_sidecars_removed": 0,
+            "orphan_sidecar_bytes_freed": 0,
             "budget_removed": 0,
             "budget_bytes_freed": 0,
             "budget_unmet_bytes": 0,
@@ -1004,6 +1017,8 @@ class CacheTrimmer:
             "bytes_freed": 0,
             "orphan_temps_removed": 0,
             "orphan_temp_bytes_freed": 0,
+            "orphan_sidecars_removed": 0,
+            "orphan_sidecar_bytes_freed": 0,
             "budget_removed": 0,
             "budget_bytes_freed": 0,
             "budget_unmet_bytes": 0,
@@ -1280,6 +1295,131 @@ class CacheTrimmer:
                             }
                         )
 
+    def reclaim_orphan_sidecars(self, cache_root: str, stats: dict) -> None:
+        """Remove orphaned sidecar files whose primary artefact is gone.
+
+        Three sidecar families accumulate next to CAS artefacts and are never
+        reclaimed by the artefact scanners:
+
+        * ``<target>.lock`` — zero-byte lock sidecars from the ``fcntl``/``flock``
+          lock strategies. The kernel releases the *lock* on process death but
+          the *file* persists, so one survives per target ever built. Neither
+          ``ct-cleanup-locks`` (``.lockdir`` dirs only) nor the artefact scanner
+          (``.o``/``.exe``/``.a``/``.so`` only) ever removes them.
+        * ``<cas>.manifest`` / ``<cas>.result`` — exe-pool sidecars. These are
+          removed alongside their artefact by ``cleanup_sidecars`` when trim
+          evicts the artefact, but one whose artefact was *already* gone is
+          invisible to the bucket scanner and stranded forever.
+
+        For each sidecar in a bucket / cmd_hash dir whose PRIMARY artefact (the
+        path with the sidecar suffix stripped) no longer exists AND whose mtime
+        is older than ``_ORPHAN_TEMP_MIN_AGE_SECONDS``, the sidecar is removed.
+
+        Safety properties:
+
+        * **Primary-gone gate**: only a sidecar whose artefact is absent is
+          reaped — nothing the cache still serves loses a sidecar.
+        * **Age floor** (1 day): for ``.manifest`` / ``.result`` this defends
+          against a concurrent republish — ``cas_publish`` rewrites the manifest
+          with ``open("w")`` (mtime=now), so a freshly written sidecar fails the
+          floor and is kept. (A ``.lock`` mtime is unreliable for liveness, so
+          there the floor is only defence-in-depth — see below.)
+        * **Live-holder probe for ``.lock``**: a ``.lock``'s mtime is set at
+          creation, not on acquisition, so age cannot prove "no holder".
+          ``_lock_unheld`` takes the lock non-blocking; only an unheld lock is
+          reaped. ``.manifest`` / ``.result`` carry no lock semantics and are
+          unlinked directly.
+        * **One-level descent only**: never recurses past the bucket / cmd_hash
+          layer.
+
+        Unlike ``reclaim_orphan_temps`` this does NOT queue failures on
+        ``self._retry``: that retry path routes through ``_safe_locked_unlink``,
+        which would lock (and so *create*) a ``<sidecar>.lock`` — exactly the
+        family we are trying to drain. Sidecar removal is therefore best-effort
+        plain ``os.remove``; a failure is almost always another owner's file on
+        the shared pool, which a same-run retry cannot fix.
+
+        Honours ``self.dry_run`` (count-only). Accumulates into
+        ``stats["orphan_sidecars_removed"]`` / ``["orphan_sidecar_bytes_freed"]``
+        (initialised by each ``trim_*`` method).
+        """
+        if not os.path.isdir(cache_root):
+            return
+
+        now = time.time()
+        cutoff = now - _ORPHAN_TEMP_MIN_AGE_SECONDS
+
+        try:
+            with os.scandir(cache_root) as top_it:
+                subdirs = [e.path for e in top_it if e.is_dir(follow_symlinks=False)]
+        except OSError:
+            return  # cache_root became unreadable mid-scan; best-effort
+
+        for subdir_path in subdirs:
+            try:
+                with os.scandir(subdir_path) as inner_it:
+                    entries = list(inner_it)
+            except OSError:
+                continue  # subdir vanished mid-scan; best-effort
+
+            for entry in entries:
+                name = entry.name
+                # ``.lock.excl`` / ``.lockdir`` are the locking subsystem's own
+                # bookkeeping, not per-artefact sidecars — never touch them here.
+                if name.endswith((".lock.excl", ".lockdir")):
+                    continue
+                if name.endswith(".lock"):
+                    suffix = ".lock"
+                elif name.endswith(".manifest"):
+                    suffix = ".manifest"
+                elif name.endswith(".result"):
+                    suffix = ".result"
+                else:
+                    continue
+
+                primary = entry.path[: -len(suffix)]
+                if os.path.exists(primary):
+                    continue  # artefact still cached — keep its sidecar
+
+                try:
+                    st = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue  # vanished mid-scan; best-effort
+                if st.st_mtime >= cutoff:
+                    continue  # too fresh — may pair with an in-flight artefact
+
+                path = entry.path
+                # A held .lock means a peer is mid-write on this target (its
+                # artefact only momentarily absent via temp+rename); leave it.
+                if suffix == ".lock" and not _lock_unheld(path):
+                    continue
+
+                size = st.st_size
+                if self.verbose >= 1:
+                    action = "Would remove orphan sidecar" if self.dry_run else "Removing orphan sidecar"
+                    print(f"  {action}: {path} ({_format_size(size)})", file=self._human)
+
+                if self.dry_run:
+                    stats["orphan_sidecars_removed"] += 1
+                    stats["orphan_sidecar_bytes_freed"] += size
+                    stats["bytes_freed"] += size
+                    continue
+
+                try:
+                    os.remove(path)
+                    removed = True
+                except FileNotFoundError:
+                    removed = True  # raced another reaper / a build's own cleanup
+                except OSError:
+                    removed = False
+
+                if removed:
+                    stats["orphan_sidecars_removed"] += 1
+                    stats["orphan_sidecar_bytes_freed"] += size
+                    stats["bytes_freed"] += size
+                elif self.verbose >= 1:
+                    print(f"  Failed to remove orphan sidecar {path}", file=self._human)
+
     # ------------------------------------------------------------------
     # Per-pool size budget (--max-size)
     # ------------------------------------------------------------------
@@ -1544,6 +1684,16 @@ class CacheTrimmer:
                 file=self._human,
             )
 
+    def _print_orphan_sidecar_lines(self, cache_stats):
+        """Print the orphan-sidecar reclamation line for one cache (no-op when
+        nothing was reaped). ``.lock`` sidecars are zero-byte, so the freed-bytes
+        suffix usually reflects only reclaimed ``.manifest`` files."""
+        if cache_stats["orphan_sidecars_removed"]:
+            sidecar_str = f"    Orphan sidecars: {cache_stats['orphan_sidecars_removed']}"
+            if cache_stats["orphan_sidecar_bytes_freed"]:
+                sidecar_str += f" ({_format_size(cache_stats['orphan_sidecar_bytes_freed'])} freed)"
+            print(sidecar_str, file=self._human)
+
     def print_summary(self, objdir_stats=None, pchdir_stats=None, pcmdir_stats=None, exedir_stats=None):
         """Print a formatted summary of trimming results."""
         total_freed = 0
@@ -1569,6 +1719,7 @@ class CacheTrimmer:
                 if objdir_stats["orphan_temp_bytes_freed"]:
                     orphan_str += f" ({_format_size(objdir_stats['orphan_temp_bytes_freed'])} freed)"
                 print(orphan_str, file=self._human)
+            self._print_orphan_sidecar_lines(objdir_stats)
             self._print_budget_lines(objdir_stats)
 
         if pchdir_stats is not None:
@@ -1588,6 +1739,7 @@ class CacheTrimmer:
                 if pchdir_stats["orphan_temp_bytes_freed"]:
                     orphan_str += f" ({_format_size(pchdir_stats['orphan_temp_bytes_freed'])} freed)"
                 print(orphan_str, file=self._human)
+            self._print_orphan_sidecar_lines(pchdir_stats)
             self._print_budget_lines(pchdir_stats)
 
         if pcmdir_stats is not None:
@@ -1607,6 +1759,7 @@ class CacheTrimmer:
                 if pcmdir_stats["orphan_temp_bytes_freed"]:
                     orphan_str += f" ({_format_size(pcmdir_stats['orphan_temp_bytes_freed'])} freed)"
                 print(orphan_str, file=self._human)
+            self._print_orphan_sidecar_lines(pcmdir_stats)
             self._print_budget_lines(pcmdir_stats)
 
         if exedir_stats is not None:
@@ -1626,6 +1779,7 @@ class CacheTrimmer:
                 if exedir_stats["orphan_temp_bytes_freed"]:
                     orphan_str += f" ({_format_size(exedir_stats['orphan_temp_bytes_freed'])} freed)"
                 print(orphan_str, file=self._human)
+            self._print_orphan_sidecar_lines(exedir_stats)
             self._print_budget_lines(exedir_stats)
 
         # The summary line aggregates whatever was actually scanned.
@@ -1676,6 +1830,62 @@ class CacheTrimmer:
 
         result["total_bytes_freed"] = total_bytes_freed
         return result
+
+
+def _lock_unheld(path: str) -> bool:
+    """Return True iff the ``.lock`` sidecar ``path`` has no live holder and is
+    therefore safe to unlink.
+
+    A ``<target>.lock`` sidecar's mtime is set only when the file is *created*,
+    NOT when a builder *acquires* the lock (acquire opens an existing file and
+    takes a kernel lock on the fd — see ``locking.FcntlLock``/``FlockLock``), so
+    age cannot distinguish a dead sidecar from one a peer build is actively
+    holding. The authoritative test is a non-blocking lock acquisition: if we
+    can take the lock without blocking, no peer holds it. We immediately release
+    and let the caller unlink.
+
+    The probe matches the lock primitive used for ``path``'s filesystem
+    (``filesystem_utils.get_lock_strategy``): ``fcntl.lockf`` for the GPFS
+    ``fcntl`` strategy the CAS pools use, ``fcntl.flock`` for the node-local
+    ``flock`` strategy. Strategies that create no ``.lock`` sidecar (``lockdir``)
+    or that cannot be probed race-free (``cifs``, or ``fcntl`` missing) return
+    False — conservative, never reap.
+
+    The sidecar is opened WITHOUT ``O_CREAT``: one that vanished mid-scan raises
+    ``FileNotFoundError`` and is reported safe (already gone — the unlink is a
+    harmless no-op). Any other error returns False (leave it in place).
+    """
+    if fcntl is None:
+        return False  # no fcntl (non-unix): cannot probe -> never reap
+
+    strategy = compiletools.filesystem_utils.get_lock_strategy(compiletools.filesystem_utils.get_filesystem_type(path))
+    if strategy == "fcntl":
+        lock_op = fcntl.lockf
+    elif strategy == "flock":
+        lock_op = fcntl.flock
+    else:
+        # lockdir creates no .lock files; cifs / unknown can't be probed
+        # race-free. Never reap under those strategies.
+        return False
+
+    try:
+        fd = os.open(path, os.O_RDWR)  # no O_CREAT: must already exist
+    except FileNotFoundError:
+        return True  # vanished mid-scan; unlink would be a no-op
+    except OSError:
+        return False
+    try:
+        try:
+            lock_op(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return False  # held by a peer (EAGAIN/EACCES) -> keep
+        try:
+            lock_op(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        return True
+    finally:
+        os.close(fd)
 
 
 def _safe_locked_unlink(path, *, skip_if_nlink_above=None):
@@ -2741,8 +2951,12 @@ def trim_one_variant(
     """Run the normal four-cache trim for ONE variant's cell directories.
 
     Builds a fresh ``CacheTrimmer`` and runs each enabled cache's
-    ``trim_*`` + ``reclaim_orphan_temps`` + ``enforce_budget``, then
-    ``retry_failed`` once.  ``current_hashes`` (the git-current object hash
+    ``trim_*`` + ``reclaim_orphan_temps`` + ``enforce_budget`` +
+    ``reclaim_orphan_sidecars``, then ``retry_failed`` once.
+    ``reclaim_orphan_sidecars`` runs last so it also reaps the lock/manifest/
+    result sidecars of artefacts the budget pass just evicted — one mechanism
+    covers the backlog and prevents recurrence for all four pools.
+    ``current_hashes`` (the git-current object hash
     set) is loaded by the caller ONCE and passed in — it is
     variant-independent.
 
@@ -2763,6 +2977,7 @@ def trim_one_variant(
         s = trimmer.trim_objdir(cas_objdir, current_hashes)
         trimmer.reclaim_orphan_temps(cas_objdir, s)
         trimmer.enforce_budget(cas_objdir, s, kind="obj", current_hashes=current_hashes)
+        trimmer.reclaim_orphan_sidecars(cas_objdir, s)
         if s["total_scanned"] == 0:
             warn_if_suspicious_cas_dir(cas_objdir, "objdir", label, verbose=args.verbose)
         warn_if_wrong_checkout(cas_objdir, s, args.max_age, verbose=args.verbose)
@@ -2774,6 +2989,7 @@ def trim_one_variant(
         s = trimmer.trim_pchdir(cas_pchdir)
         trimmer.reclaim_orphan_temps(cas_pchdir, s)
         trimmer.enforce_budget(cas_pchdir, s, kind="pch")
+        trimmer.reclaim_orphan_sidecars(cas_pchdir, s)
         if s["total_dirs_scanned"] == 0:
             warn_if_suspicious_cas_dir(cas_pchdir, "pchdir", label, verbose=args.verbose)
         stats["pchdir"] = s
@@ -2784,6 +3000,7 @@ def trim_one_variant(
         s = trimmer.trim_pcmdir(cas_pcmdir)
         trimmer.reclaim_orphan_temps(cas_pcmdir, s)
         trimmer.enforce_budget(cas_pcmdir, s, kind="pcm")
+        trimmer.reclaim_orphan_sidecars(cas_pcmdir, s)
         if s["total_dirs_scanned"] == 0:
             warn_if_suspicious_cas_dir(cas_pcmdir, "pcmdir", label, verbose=args.verbose)
         stats["pcmdir"] = s
@@ -2794,6 +3011,7 @@ def trim_one_variant(
         s = trimmer.trim_exedir(cas_exedir)
         trimmer.reclaim_orphan_temps(cas_exedir, s)
         trimmer.enforce_budget(cas_exedir, s, kind="exe")
+        trimmer.reclaim_orphan_sidecars(cas_exedir, s)
         if s["total_scanned"] == 0:
             warn_if_suspicious_cas_dir(cas_exedir, "exedir", label, verbose=args.verbose)
         stats["exedir"] = s

@@ -3820,6 +3820,288 @@ class TestReclaimOrphanTemps:
         assert obj["orphan_temp_bytes_freed"] == 256
 
 
+# ── orphan sidecar reclamation ────────────────────────────────────────────────
+
+
+def _sidecar_stats():
+    """Fresh stats dict with the keys reclaim_orphan_sidecars accumulates into."""
+    return {"orphan_sidecars_removed": 0, "orphan_sidecar_bytes_freed": 0, "bytes_freed": 0}
+
+
+class TestLockUnheld:
+    """``trim_cache._lock_unheld``: the non-blocking lock probe that gates
+    ``.lock`` sidecar reaping."""
+
+    def test_missing_file_is_unheld(self, tmp_path):
+        """A .lock that vanished mid-scan → True (the unlink would be a no-op)."""
+        assert trim_cache._lock_unheld(str(tmp_path / "gone.o.lock")) is True
+
+    def test_lockdir_strategy_never_probes(self, tmp_path, monkeypatch):
+        """Under a strategy that creates no .lock files (lockdir) the probe is
+        conservative and returns False even for an existing, unlocked file."""
+        monkeypatch.setattr("compiletools.filesystem_utils.get_lock_strategy", lambda fstype: "lockdir")
+        path = str(tmp_path / "foo.o.lock")
+        with open(path, "wb"):
+            pass
+        assert trim_cache._lock_unheld(path) is False
+
+    def test_unheld_flock_is_unheld(self, tmp_path, monkeypatch):
+        """An existing, unlocked .lock under the flock strategy → True."""
+        monkeypatch.setattr("compiletools.filesystem_utils.get_lock_strategy", lambda fstype: "flock")
+        path = str(tmp_path / "foo.o.lock")
+        with open(path, "wb"):
+            pass
+        assert trim_cache._lock_unheld(path) is True
+
+    def test_held_flock_is_held(self, tmp_path, monkeypatch):
+        """A .lock a peer holds via flock(LOCK_EX) → False. flock locks are
+        per-open-file-description, so an independent fd in this same process
+        still conflicts — a faithful stand-in for a peer holder."""
+        import fcntl
+
+        monkeypatch.setattr("compiletools.filesystem_utils.get_lock_strategy", lambda fstype: "flock")
+        path = str(tmp_path / "foo.o.lock")
+        # The flock is released when the fd closes at block exit.
+        with open(path, "w+b") as holder:
+            fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+            assert trim_cache._lock_unheld(path) is False
+
+
+class TestReclaimOrphanSidecars:
+    """``CacheTrimmer.reclaim_orphan_sidecars`` drains lock/manifest/result
+    sidecars whose primary artefact is gone, age-floored, primary-gated, and
+    (for .lock) live-holder-probed.
+
+    Layout mirrors the real CAS pool: ``cache_root/<bucket>/<sidecar>``; the
+    reaper descends exactly one level.
+    """
+
+    # ── .manifest / .result orphans (primary gone) are removed ──────────────
+
+    def test_orphan_manifest_removed(self, tmp_path):
+        cache_root = str(tmp_path / "exedir")
+        bucket = os.path.join(cache_root, "aa")
+        man = _touch_temp(bucket, "main_deadbeef.exe.manifest", age_seconds=2 * 86400, size=200)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _sidecar_stats()
+        trimmer.reclaim_orphan_sidecars(cache_root, stats)
+
+        assert not os.path.exists(man), "orphan .manifest must be removed"
+        assert stats["orphan_sidecars_removed"] == 1
+        assert stats["orphan_sidecar_bytes_freed"] == 200
+        assert stats["bytes_freed"] == 200
+
+    def test_orphan_result_removed(self, tmp_path):
+        cache_root = str(tmp_path / "exedir")
+        bucket = os.path.join(cache_root, "aa")
+        res = _touch_temp(bucket, "main_deadbeef.exe.result", age_seconds=2 * 86400, size=0)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _sidecar_stats()
+        trimmer.reclaim_orphan_sidecars(cache_root, stats)
+
+        assert not os.path.exists(res), "orphan .result must be removed"
+        assert stats["orphan_sidecars_removed"] == 1
+
+    # ── paired sidecar (primary present) is kept ────────────────────────────
+
+    def test_paired_manifest_kept(self, tmp_path):
+        """A .manifest whose .exe still exists must never be removed — the cache
+        still serves that artefact."""
+        cache_root = str(tmp_path / "exedir")
+        bucket = os.path.join(cache_root, "aa")
+        exe = _touch_temp(bucket, "main_deadbeef.exe", age_seconds=2 * 86400, size=4096)
+        man = _touch_temp(bucket, "main_deadbeef.exe.manifest", age_seconds=2 * 86400, size=200)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _sidecar_stats()
+        trimmer.reclaim_orphan_sidecars(cache_root, stats)
+
+        assert os.path.exists(exe), "live .exe must not be touched"
+        assert os.path.exists(man), "paired .manifest (primary present) must be kept"
+        assert stats["orphan_sidecars_removed"] == 0
+
+    # ── age floor: fresh orphan sidecar is kept ─────────────────────────────
+
+    def test_fresh_orphan_manifest_kept(self, tmp_path):
+        """A freshly written manifest (mtime=now) is kept even with primary
+        absent — defends against racing a concurrent republish."""
+        cache_root = str(tmp_path / "exedir")
+        bucket = os.path.join(cache_root, "aa")
+        man = _touch_temp(bucket, "main_deadbeef.exe.manifest", age_seconds=0, size=200)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _sidecar_stats()
+        trimmer.reclaim_orphan_sidecars(cache_root, stats)
+
+        assert os.path.exists(man), "fresh orphan .manifest must be kept (age floor)"
+        assert stats["orphan_sidecars_removed"] == 0
+
+    # ── .lock orphan: reaped only when unheld ───────────────────────────────
+
+    def test_orphan_lock_reaped_when_unheld(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("compiletools.filesystem_utils.get_lock_strategy", lambda fstype: "flock")
+        cache_root = str(tmp_path / "objdir")
+        bucket = os.path.join(cache_root, "ab")
+        lock = _touch_temp(bucket, "foo.o.lock", age_seconds=2 * 86400, size=0)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _sidecar_stats()
+        trimmer.reclaim_orphan_sidecars(cache_root, stats)
+
+        assert not os.path.exists(lock), "unheld orphan .lock must be removed"
+        assert stats["orphan_sidecars_removed"] == 1
+
+    def test_orphan_lock_kept_when_held(self, tmp_path, monkeypatch):
+        """A held .lock (peer mid-rebuild of the just-evicted target) is kept."""
+        import fcntl
+
+        monkeypatch.setattr("compiletools.filesystem_utils.get_lock_strategy", lambda fstype: "flock")
+        cache_root = str(tmp_path / "objdir")
+        bucket = os.path.join(cache_root, "ab")
+        lock = _touch_temp(bucket, "foo.o.lock", age_seconds=2 * 86400, size=0)
+
+        # The flock is released when the fd closes at block exit.
+        with open(lock, "w+b") as holder:
+            fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+            trimmer = CacheTrimmer(_make_args())
+            stats = _sidecar_stats()
+            trimmer.reclaim_orphan_sidecars(cache_root, stats)
+            assert os.path.exists(lock), "held orphan .lock must be kept"
+            assert stats["orphan_sidecars_removed"] == 0
+
+    def test_paired_lock_kept(self, tmp_path, monkeypatch):
+        """A .lock whose target artefact still exists is kept (primary-gone gate),
+        without even probing the lock."""
+        monkeypatch.setattr("compiletools.filesystem_utils.get_lock_strategy", lambda fstype: "flock")
+        cache_root = str(tmp_path / "objdir")
+        bucket = os.path.join(cache_root, "ab")
+        obj = _touch_temp(bucket, "foo.o", age_seconds=2 * 86400, size=2048)
+        lock = _touch_temp(bucket, "foo.o.lock", age_seconds=2 * 86400, size=0)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _sidecar_stats()
+        trimmer.reclaim_orphan_sidecars(cache_root, stats)
+
+        assert os.path.exists(obj)
+        assert os.path.exists(lock), "lock of a live artefact must be kept"
+        assert stats["orphan_sidecars_removed"] == 0
+
+    # ── locking-subsystem bookkeeping is never touched ──────────────────────
+
+    def test_lock_excl_and_lockdir_skipped(self, tmp_path):
+        """``.lock.excl`` / ``.lockdir`` belong to the locking subsystem, not to a
+        build artefact — never reaped even when old with no primary."""
+        cache_root = str(tmp_path / "objdir")
+        bucket = os.path.join(cache_root, "ab")
+        lock_excl = _touch_temp(bucket, "foo.o.lock.excl", age_seconds=10 * 86400, size=0)
+        lockdir = _touch_temp(bucket, "foo.o.lockdir", age_seconds=10 * 86400, size=0)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _sidecar_stats()
+        trimmer.reclaim_orphan_sidecars(cache_root, stats)
+
+        assert os.path.exists(lock_excl), ".lock.excl must not be removed"
+        assert os.path.exists(lockdir), ".lockdir must not be removed"
+        assert stats["orphan_sidecars_removed"] == 0
+
+    # ── real artefacts are never matched ────────────────────────────────────
+
+    def test_real_artefacts_not_touched(self, tmp_path):
+        """A bare .o / .exe is not a sidecar and must never be removed here."""
+        cache_root = str(tmp_path / "cache")
+        bucket = os.path.join(cache_root, "ab")
+        obj = _touch_temp(
+            bucket, "foo_aabbccddeeff_11223344556677_0011223344556677.o", age_seconds=10 * 86400, size=2048
+        )
+        exe = _touch_temp(bucket, "main_deadbeef.exe", age_seconds=10 * 86400, size=4096)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _sidecar_stats()
+        trimmer.reclaim_orphan_sidecars(cache_root, stats)
+
+        assert os.path.exists(obj)
+        assert os.path.exists(exe)
+        assert stats["orphan_sidecars_removed"] == 0
+
+    # ── dry_run counts but does not unlink ──────────────────────────────────
+
+    def test_dry_run_counts_without_deleting(self, tmp_path):
+        cache_root = str(tmp_path / "exedir")
+        bucket = os.path.join(cache_root, "aa")
+        man = _touch_temp(bucket, "main_deadbeef.exe.manifest", age_seconds=2 * 86400, size=200)
+
+        trimmer = CacheTrimmer(_make_args(dry_run=True))
+        stats = _sidecar_stats()
+        trimmer.reclaim_orphan_sidecars(cache_root, stats)
+
+        assert os.path.exists(man), "dry_run must not unlink"
+        assert stats["orphan_sidecars_removed"] == 1, "dry_run must count the would-be removal"
+        assert stats["orphan_sidecar_bytes_freed"] == 200
+        assert stats["bytes_freed"] == 200
+
+    # ── non-existent cache root is a no-op ──────────────────────────────────
+
+    def test_missing_cache_root_is_no_op(self, tmp_path):
+        trimmer = CacheTrimmer(_make_args())
+        stats = _sidecar_stats()
+        trimmer.reclaim_orphan_sidecars(str(tmp_path / "nonexistent"), stats)
+        assert stats["orphan_sidecars_removed"] == 0
+
+    # ── stats keys present in every cache's stats dict ──────────────────────
+
+    def test_stats_keys_present_in_all_caches(self, tmp_path):
+        trimmer = CacheTrimmer(_make_args())
+        nonexistent = str(tmp_path / "none")
+        for label, stats in (
+            ("objdir", trimmer.trim_objdir(nonexistent, set())),
+            ("pchdir", trimmer.trim_pchdir(nonexistent)),
+            ("pcmdir", trimmer.trim_pcmdir(nonexistent)),
+            ("exedir", trimmer.trim_exedir(nonexistent)),
+        ):
+            assert stats["orphan_sidecars_removed"] == 0, f"{label} must init orphan_sidecars_removed"
+            assert stats["orphan_sidecar_bytes_freed"] == 0, f"{label} must init orphan_sidecar_bytes_freed"
+
+    def test_summary_json_includes_sidecar_keys(self, tmp_path):
+        trimmer = CacheTrimmer(_make_args())
+        nonexistent = str(tmp_path / "none")
+        result = trimmer.summary_json(
+            objdir_stats=trimmer.trim_objdir(nonexistent, set()),
+            pchdir_stats=trimmer.trim_pchdir(nonexistent),
+            pcmdir_stats=trimmer.trim_pcmdir(nonexistent),
+            exedir_stats=trimmer.trim_exedir(nonexistent),
+        )
+        for section in ("objdir", "pchdir", "pcmdir", "exedir"):
+            assert "orphan_sidecars_removed" in result[section]
+            assert "orphan_sidecar_bytes_freed" in result[section]
+
+    # ── integration: trim_one_variant runs the reaper after enforce_budget ──
+
+    def test_trim_one_variant_reaps_orphan_sidecars(self, tmp_path):
+        """End-to-end: a stranded .manifest in the exe pool is reaped by the
+        per-pool flow (trim → reclaim_temps → enforce_budget → reclaim_sidecars)."""
+        cas_exedir = str(tmp_path / "exe")
+        bucket = os.path.join(cas_exedir, "aa")
+        man = _touch_temp(bucket, "main_deadbeef.exe.manifest", age_seconds=2 * 86400, size=200)
+
+        res = trim_cache.trim_one_variant(
+            _make_args(),
+            current_hashes=set(),
+            cas_objdir=None,
+            cas_pchdir=None,
+            cas_pcmdir=None,
+            cas_exedir=cas_exedir,
+            do_objdir=False,
+            do_pchdir=False,
+            do_pcmdir=False,
+            do_exedir=True,
+            variant_label="gcc.debug",
+        )
+        assert not os.path.exists(man), "trim_one_variant must reap the orphan sidecar"
+        assert res["exedir"]["orphan_sidecars_removed"] == 1
+
+
 # ── _parse_size ──────────────────────────────────────────────────────
 
 
