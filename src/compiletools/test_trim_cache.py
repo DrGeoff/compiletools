@@ -639,6 +639,29 @@ class TestMainCLI:
         rc = main(["--dry-run", "--cas-pchdir-only", f"--cas-pchdir={pchdir}"])
         assert rc == 0
 
+    def test_only_and_skip_are_mutually_exclusive(self):
+        # --cas-*-only (include one) and --cas-*-skip (deselect one) are
+        # opposite selection mechanisms; mixing them is a usage error.
+        rc = main(["--cas-objdir-only", "--cas-exedir-skip"])
+        assert rc == 1
+
+    def test_skip_all_pools_is_error(self):
+        rc = main(
+            [
+                "--cas-objdir-skip",
+                "--cas-pchdir-skip",
+                "--cas-pcmdir-skip",
+                "--cas-exedir-skip",
+            ]
+        )
+        assert rc == 1
+
+    def test_skip_with_pool_mode_is_error(self):
+        # Skip flags scope the trim sweep only; the standalone pool modes
+        # (--list-*/--purge-unresolvable) scope via --cas-*-only instead.
+        rc = main(["--cas-exedir-skip", "--list-resolvable"])
+        assert rc == 1
+
 
 # ── _safe_locked_unlink / _safe_locked_rmtree behavior ───────────────
 
@@ -1479,6 +1502,37 @@ class TestJsonMode:
         # --cas-objdir-only: pchdir/pcmdir/exedir should be absent or null
         for key in ("pchdir", "pcmdir", "exedir"):
             assert parsed.get(key) is None, f"{key} should be absent/null when not run"
+
+    def test_cas_exedir_skip_excludes_exe_only(self, tmp_path, capsys):
+        """--cas-exedir-skip deselects the exe pool; obj/pch/pcm still run.
+
+        Deselect counterpart of --cas-exedir-only: it lets the --all-variants
+        bulk sweep avoid stat-walking the write-once exe pool, which a
+        dedicated --cas-exedir-only --keep-count 0 pass handles on its own.
+        """
+        objdir = str(tmp_path / "obj")
+        pchdir = str(tmp_path / "pch")
+        pcmdir = str(tmp_path / "pcm")
+        exedir = str(tmp_path / "exe")
+        for d in (objdir, pchdir, pcmdir, exedir):
+            os.makedirs(d)
+
+        rc, out, _err = self._run_json(
+            [
+                "--dry-run",
+                "--cas-exedir-skip",
+                f"--cas-objdir={objdir}",
+                f"--cas-pchdir={pchdir}",
+                f"--cas-pcmdir={pcmdir}",
+                f"--cas-exedir={exedir}",
+            ],
+            capsys,
+        )
+        assert rc == 0
+        parsed = json.loads(out)
+        assert parsed.get("exedir") is None, "exe pool must be skipped"
+        for key in ("objdir", "pchdir", "pcmdir"):
+            assert parsed.get(key) is not None, f"{key} should still run when only exe is skipped"
 
     def test_non_json_mode_prints_human_summary_to_stdout(self, tmp_path, capsys):
         """Without --json, human summary still goes to stdout (regression guard)."""

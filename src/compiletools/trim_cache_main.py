@@ -109,6 +109,37 @@ def add_arguments(cap):
         help="Only trim the executable CAS (cas-exedir), skip objects, PCH, and PCM",
     )
     cap.add_argument(
+        "--cas-objdir-skip",
+        action="store_true",
+        default=False,
+        help="Exclude the object CAS from the sweep (deselect; the trim path runs every other pool)",
+    )
+    cap.add_argument(
+        "--cas-pchdir-skip",
+        action="store_true",
+        default=False,
+        help="Exclude the PCH CAS from the sweep (deselect; the trim path runs every other pool)",
+    )
+    cap.add_argument(
+        "--cas-pcmdir-skip",
+        action="store_true",
+        default=False,
+        help="Exclude the C++20 module CAS (cas-pcmdir) from the sweep (deselect)",
+    )
+    cap.add_argument(
+        "--cas-exedir-skip",
+        action="store_true",
+        default=False,
+        help=(
+            "Exclude the executable CAS (cas-exedir) from the sweep (deselect). "
+            "Pass this on the bulk --all-variants trim so the write-once exe pool "
+            "is stat-walked only by a dedicated --cas-exedir-only --keep-count 0 "
+            "pass, not twice per run (stat-walk is the dominant cost on GPFS and "
+            "exe is the largest pool). Deselect counterpart of --cas-exedir-only; "
+            "the two selection mechanisms cannot be combined."
+        ),
+    )
+    cap.add_argument(
         "--json",
         action="store_true",
         default=False,
@@ -180,7 +211,8 @@ def add_arguments(cap):
             "'variants' list has one entry per swept cell plus an 'errors' list for "
             "any isolated failures. Mutually exclusive with --list-resolvable / "
             "--list-unresolvable / --purge-unresolvable. Honours --dry-run, --max-age, "
-            "--max-size, --keep-count, and a single --cas-*-only scope flag. On shared "
+            "--max-size, --keep-count, and either a single --cas-*-only scope flag or "
+            "one or more --cas-*-skip deselect flags. On shared "
             "multi-user or multi-branch pools prefer --max-age as the primary eviction "
             "control; without it, objects from other checkouts appear non-current and "
             "will be evicted down to --keep-count per basename."
@@ -235,6 +267,28 @@ def main(argv=None):
             )
             return 1
 
+        # --cas-*-skip is the deselect counterpart of --cas-*-only: it removes
+        # one pool from the trim sweep, leaving the rest. The two are opposite
+        # selection mechanisms and cannot be mixed; skipping every pool leaves
+        # nothing to do.
+        skip_flags = sum(
+            bool(getattr(args, name))
+            for name in ("cas_objdir_skip", "cas_pchdir_skip", "cas_pcmdir_skip", "cas_exedir_skip")
+        )
+        if only_flags and skip_flags:
+            print(
+                "Error: --cas-*-only (include one pool) and --cas-*-skip (deselect a "
+                "pool) are opposite selection mechanisms; pass only one kind",
+                file=sys.stderr,
+            )
+            return 1
+        if skip_flags == 4:
+            print(
+                "Error: --cas-*-skip cannot exclude all four pools (nothing left to trim)",
+                file=sys.stderr,
+            )
+            return 1
+
         # --list-resolvable / --list-unresolvable / --purge-unresolvable are the
         # three standalone pool-level modes. They are MUTUALLY EXCLUSIVE WITH
         # EACH OTHER. A single --cas-*-only flag is NOT forbidden here — it
@@ -255,6 +309,18 @@ def main(argv=None):
             print(
                 "Error: --all-variants cannot be combined with --list-resolvable / "
                 "--list-unresolvable / --purge-unresolvable",
+                file=sys.stderr,
+            )
+            return 1
+
+        # Skip flags deselect a pool from the cell-level trim sweep; the
+        # standalone pool modes scope via --cas-*-only instead, so a skip flag
+        # there would silently do nothing — reject it rather than mislead.
+        if skip_flags and (args.list_resolvable or args.list_unresolvable or args.purge_unresolvable):
+            print(
+                "Error: --cas-*-skip applies to the trim sweep only, not "
+                "--list-resolvable / --list-unresolvable / --purge-unresolvable "
+                "(use --cas-*-only to scope those to one pool)",
                 file=sys.stderr,
             )
             return 1
@@ -301,11 +367,17 @@ def main(argv=None):
             return 0
 
         # ``--cas-X-only`` flags select a single cache; with none set we
-        # trim all four. Each cache runs unless any *other* "only" flag is on.
+        # trim all four. Each cache runs unless any *other* "only" flag is on,
+        # then ``--cas-X-skip`` deselects its own pool. only/skip are mutually
+        # exclusive (validated above), so at most one mechanism applies.
         do_objdir = not (args.cas_pchdir_only or args.cas_pcmdir_only or args.cas_exedir_only)
         do_pchdir = not (args.cas_objdir_only or args.cas_pcmdir_only or args.cas_exedir_only)
         do_pcmdir = not (args.cas_objdir_only or args.cas_pchdir_only or args.cas_exedir_only)
         do_exedir = not (args.cas_objdir_only or args.cas_pchdir_only or args.cas_pcmdir_only)
+        do_objdir = do_objdir and not args.cas_objdir_skip
+        do_pchdir = do_pchdir and not args.cas_pchdir_skip
+        do_pcmdir = do_pcmdir and not args.cas_pcmdir_skip
+        do_exedir = do_exedir and not args.cas_exedir_skip
 
         # --all-variants: sweep every RESOLVABLE cell in the pool, not just the
         # single --variant cell. Per-cell errors are isolated (one bad cell is

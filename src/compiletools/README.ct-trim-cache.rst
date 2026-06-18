@@ -128,7 +128,8 @@ RESOLVABLE cell** in the pool — the same set ``--list-resolvable`` prints — 
 invocation. Cells are trimmed sequentially; a failure in one cell is isolated
 (reported but not fatal, so the remaining cells still run), while intra-cell
 ``-j`` parallelism is preserved. It honours ``--dry-run``, ``--max-age``,
-``--max-size``, ``--keep-count``, and a single ``--cas-*-only`` scope flag, and is
+``--max-size``, ``--keep-count``, and either a single ``--cas-*-only`` scope flag
+or one or more ``--cas-*-skip`` deselect flags, and is
 mutually exclusive with the three pool modes (``--list-resolvable`` /
 ``--list-unresolvable`` / ``--purge-unresolvable``). With ``--json`` it emits one
 aggregate object (``mode: all-variants``); see `MACHINE-READABLE OUTPUT`_. On a
@@ -177,6 +178,13 @@ USAGE
 
     # Only trim the linker-artefact cache (executables, .a, .so)
     ct-trim-cache --cas-exedir-only
+
+    # Sweep obj/pch/pcm, deselecting the write-once exe pool, then sweep exe
+    # once on its own. Without --cas-exedir-skip the first sweep would also
+    # stat-walk exe (freeing ~nothing at keep-count 1), doubling the dominant
+    # GPFS stat-walk cost on the largest pool.
+    ct-trim-cache --all-variants --max-age 14 --cas-exedir-skip
+    ct-trim-cache --all-variants --cas-exedir-only --keep-count 0 --max-age 2
 
     # Custom directories
     ct-trim-cache --cas-objdir=/shared/build/objects --cas-pchdir=/shared/build/pch \
@@ -561,6 +569,16 @@ Trim Options
     Only trim the linker-artefact CAS (executables, static libraries,
     shared libraries), skip object, PCH, and PCM trimming.
 
+``--cas-objdir-skip`` / ``--cas-pchdir-skip`` / ``--cas-pcmdir-skip`` / ``--cas-exedir-skip``
+    Deselect a single pool from the trim sweep, running every *other* pool —
+    the inverse of the ``--cas-*-only`` flags. only/skip are opposite selection
+    mechanisms and cannot be combined, and ``--cas-*-skip`` cannot deselect all
+    four pools. The common use is ``--all-variants ... --cas-exedir-skip`` so the
+    write-once exe pool is stat-walked only by a dedicated
+    ``--cas-exedir-only --keep-count 0`` pass instead of twice per run (stat-walk
+    is the dominant cost on GPFS and exe is the largest pool). Skip flags scope
+    the trim sweep only; the orphan-cell modes scope via ``--cas-*-only``.
+
 Whole-pool Sweep
 ----------------
 ``--all-variants``
@@ -568,7 +586,8 @@ Whole-pool Sweep
     prints), not just the active ``--variant`` cell. Cells are trimmed
     sequentially with per-cell failure isolation; intra-cell ``-j`` parallelism
     is preserved. Honours ``--dry-run`` / ``--max-age`` / ``--max-size`` /
-    ``--keep-count`` and a single ``--cas-*-only`` scope flag. Mutually exclusive
+    ``--keep-count`` and either a single ``--cas-*-only`` scope flag or one or
+    more ``--cas-*-skip`` deselect flags. Mutually exclusive
     with the three orphan-cell modes. With ``--json`` emits one aggregate object
     (``mode: all-variants``). See `Whole-pool sweep (--all-variants)`_.
 
@@ -684,6 +703,10 @@ EXIT CODES
     - More than one of ``--cas-objdir-only`` / ``--cas-pchdir-only`` /
       ``--cas-pcmdir-only`` / ``--cas-exedir-only`` was specified (mutually
       exclusive).
+    - A ``--cas-*-only`` flag was combined with a ``--cas-*-skip`` flag (opposite
+      selection mechanisms), all four pools were ``--cas-*-skip``-ped (nothing
+      left to trim), or a ``--cas-*-skip`` flag was combined with one of the
+      orphan-cell modes (skip scopes the trim sweep only).
     - More than one of ``--list-resolvable`` / ``--list-unresolvable`` /
       ``--purge-unresolvable`` was specified, or any of them was combined with
       ``--all-variants`` (all mutually exclusive).
