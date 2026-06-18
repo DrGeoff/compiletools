@@ -5,6 +5,7 @@ import io
 import json
 import os
 import re
+import socket
 import time
 import types
 
@@ -3948,6 +3949,66 @@ def _sidecar_stats():
     return {"orphan_sidecars_removed": 0, "orphan_sidecar_bytes_freed": 0, "bytes_freed": 0}
 
 
+# A pid that cannot exist: above any Linux pid_max (2**22), so os.kill raises
+# ProcessLookupError → is_process_alive_local returns False (a dead holder).
+_DEAD_PID = 2147483647
+
+
+def _make_lockdir(parent, name, *, age_seconds=0, pid_contents=None):
+    """Create a ``<name>`` lockdir DIRECTORY under ``parent`` (the NFS/Lustre
+    lock primitive), optionally with a ``pid`` file.
+
+    ``pid_contents`` is written verbatim into ``<lockdir>/pid`` (e.g.
+    ``"host:1234"`` or ``"host:1234:567.8"``); None leaves the lockdir empty.
+    mtime is set AFTER the pid file is written so ``age_seconds`` controls the
+    final dir mtime.
+    """
+    os.makedirs(parent, exist_ok=True)
+    path = os.path.join(parent, name)
+    os.makedirs(path, exist_ok=True)
+    if pid_contents is not None:
+        with open(os.path.join(path, "pid"), "w") as f:
+            f.write(pid_contents)
+    if age_seconds:
+        mtime = time.time() - age_seconds
+        os.utime(path, (mtime, mtime))
+    return path
+
+
+class TestLockdirUnheld:
+    """``trim_cache._lockdir_unheld``: the liveness gate for ``.lockdir`` (NFS/
+    Lustre) lock-primitive reaping. No fcntl probe — it reads the recorded
+    holder and checks local liveness, never SSH-ing to a remote host."""
+
+    def test_missing_lockdir_is_unheld(self, tmp_path):
+        """A lockdir that does not exist → True (removal is a no-op)."""
+        assert trim_cache._lockdir_unheld(str(tmp_path / "gone.o.lockdir")) is True
+
+    def test_empty_lockdir_is_unheld(self, tmp_path):
+        """A lockdir with no pid file records no holder → True."""
+        path = _make_lockdir(str(tmp_path), "foo.o.lockdir")
+        assert trim_cache._lockdir_unheld(path) is True
+
+    def test_local_live_holder_is_held(self, tmp_path):
+        """A pid file naming this host and a live local pid → False (held)."""
+        host = socket.gethostname()
+        path = _make_lockdir(str(tmp_path), "foo.o.lockdir", pid_contents=f"{host}:{os.getpid()}")
+        assert trim_cache._lockdir_unheld(path) is False
+
+    def test_local_dead_holder_is_unheld(self, tmp_path):
+        """A pid file naming this host but a dead pid → True (safe to reap)."""
+        host = socket.gethostname()
+        path = _make_lockdir(str(tmp_path), "foo.o.lockdir", pid_contents=f"{host}:{_DEAD_PID}")
+        assert trim_cache._lockdir_unheld(path) is True
+
+    def test_remote_holder_is_unheld(self, tmp_path):
+        """A pid file naming another host → True: we never SSH-probe a remote
+        holder; the caller's primary-gone + age-floor gates make a live remote
+        holder on a vanished artefact impossible."""
+        path = _make_lockdir(str(tmp_path), "foo.o.lockdir", pid_contents=f"some-other-host.example.com:{os.getpid()}")
+        assert trim_cache._lockdir_unheld(path) is True
+
+
 class TestLockUnheld:
     """``trim_cache._lock_unheld``: the non-blocking lock probe that gates
     ``.lock`` sidecar reaping."""
@@ -4110,20 +4171,167 @@ class TestReclaimOrphanSidecars:
 
     # ── locking-subsystem bookkeeping is never touched ──────────────────────
 
-    def test_lock_excl_and_lockdir_skipped(self, tmp_path):
-        """``.lock.excl`` / ``.lockdir`` belong to the locking subsystem, not to a
-        build artefact — never reaped even when old with no primary."""
+    def test_lock_excl_skipped(self, tmp_path):
+        """``.lock.excl`` belongs to the locking subsystem, not to a build
+        artefact — never reaped even when old with no primary."""
         cache_root = str(tmp_path / "objdir")
         bucket = os.path.join(cache_root, "ab")
         lock_excl = _touch_temp(bucket, "foo.o.lock.excl", age_seconds=10 * 86400, size=0)
-        lockdir = _touch_temp(bucket, "foo.o.lockdir", age_seconds=10 * 86400, size=0)
 
         trimmer = CacheTrimmer(_make_args())
         stats = _sidecar_stats()
         trimmer.reclaim_orphan_sidecars(cache_root, stats)
 
         assert os.path.exists(lock_excl), ".lock.excl must not be removed"
-        assert os.path.exists(lockdir), ".lockdir must not be removed"
+        assert stats["orphan_sidecars_removed"] == 0
+
+    # ── A3: .lockdir (NFS/Lustre) lock-primitive reaping ────────────────────
+
+    def test_orphan_lockdir_reaped(self, tmp_path):
+        """An old ``<target>.lockdir`` whose primary is gone, with no live local
+        holder, is removed whole (rmtree)."""
+        cache_root = str(tmp_path / "objdir")
+        bucket = os.path.join(cache_root, "ab")
+        lockdir = _make_lockdir(bucket, "foo.o.lockdir", age_seconds=2 * 86400)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _sidecar_stats()
+        trimmer.reclaim_orphan_sidecars(cache_root, stats)
+
+        assert not os.path.exists(lockdir), "orphan .lockdir must be reaped"
+        assert stats["orphan_sidecars_removed"] == 1
+
+    def test_lockdir_with_live_local_holder_kept(self, tmp_path):
+        """A ``.lockdir`` recording a live local pid is a peer mid-write → kept."""
+        cache_root = str(tmp_path / "objdir")
+        bucket = os.path.join(cache_root, "ab")
+        lockdir = _make_lockdir(
+            bucket, "foo.o.lockdir", age_seconds=2 * 86400, pid_contents=f"{socket.gethostname()}:{os.getpid()}"
+        )
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _sidecar_stats()
+        trimmer.reclaim_orphan_sidecars(cache_root, stats)
+
+        assert os.path.exists(lockdir), "lockdir with a live local holder must be kept"
+        assert stats["orphan_sidecars_removed"] == 0
+
+    def test_lockdir_with_dead_local_holder_reaped(self, tmp_path):
+        """A ``.lockdir`` recording a dead local pid (crashed build) is reaped."""
+        cache_root = str(tmp_path / "objdir")
+        bucket = os.path.join(cache_root, "ab")
+        lockdir = _make_lockdir(
+            bucket, "foo.o.lockdir", age_seconds=2 * 86400, pid_contents=f"{socket.gethostname()}:{_DEAD_PID}"
+        )
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _sidecar_stats()
+        trimmer.reclaim_orphan_sidecars(cache_root, stats)
+
+        assert not os.path.exists(lockdir), "lockdir of a dead holder must be reaped"
+        assert stats["orphan_sidecars_removed"] == 1
+
+    def test_fresh_orphan_lockdir_kept(self, tmp_path):
+        """A ``.lockdir`` younger than the age floor is kept (may pair with an
+        in-flight artefact)."""
+        cache_root = str(tmp_path / "objdir")
+        bucket = os.path.join(cache_root, "ab")
+        lockdir = _make_lockdir(bucket, "foo.o.lockdir", age_seconds=60)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _sidecar_stats()
+        trimmer.reclaim_orphan_sidecars(cache_root, stats)
+
+        assert os.path.exists(lockdir), "fresh orphan lockdir must be kept"
+        assert stats["orphan_sidecars_removed"] == 0
+
+    def test_lockdir_with_primary_kept(self, tmp_path):
+        """A ``.lockdir`` whose target artefact still exists is kept."""
+        cache_root = str(tmp_path / "objdir")
+        bucket = os.path.join(cache_root, "ab")
+        obj = _touch_temp(bucket, "foo.o", age_seconds=2 * 86400, size=2048)
+        lockdir = _make_lockdir(bucket, "foo.o.lockdir", age_seconds=2 * 86400)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _sidecar_stats()
+        trimmer.reclaim_orphan_sidecars(cache_root, stats)
+
+        assert os.path.exists(obj)
+        assert os.path.exists(lockdir), "lockdir of a live artefact must be kept"
+        assert stats["orphan_sidecars_removed"] == 0
+
+    # ── A4: variant-root (level-0) orphan reaping ───────────────────────────
+
+    def test_variant_root_orphan_lock_reaped(self, tmp_path, monkeypatch):
+        """A stray ``.lock`` directly under the variant root (not in a bucket)
+        is reaped (A4: level-0 scan)."""
+        monkeypatch.setattr("compiletools.filesystem_utils.get_lock_strategy", lambda fstype: "flock")
+        cache_root = str(tmp_path / "objdir")
+        os.makedirs(cache_root, exist_ok=True)
+        lock = _touch_temp(cache_root, "foo.o.lock", age_seconds=2 * 86400, size=0)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _sidecar_stats()
+        trimmer.reclaim_orphan_sidecars(cache_root, stats)
+
+        assert not os.path.exists(lock), "variant-root orphan .lock must be reaped"
+        assert stats["orphan_sidecars_removed"] == 1
+
+    def test_variant_root_lock_lock_double_reaped(self, tmp_path, monkeypatch):
+        """A ``.lock.lock`` double at the variant root (primary ``.lock`` gone)
+        is reaped."""
+        monkeypatch.setattr("compiletools.filesystem_utils.get_lock_strategy", lambda fstype: "flock")
+        cache_root = str(tmp_path / "objdir")
+        os.makedirs(cache_root, exist_ok=True)
+        double = _touch_temp(cache_root, "foo.o.lock.lock", age_seconds=2 * 86400, size=0)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _sidecar_stats()
+        trimmer.reclaim_orphan_sidecars(cache_root, stats)
+
+        assert not os.path.exists(double), "variant-root .lock.lock double must be reaped"
+        assert stats["orphan_sidecars_removed"] == 1
+
+    def test_variant_root_orphan_lockdir_reaped(self, tmp_path):
+        """A stray ``.lockdir`` directly under the variant root is reaped."""
+        cache_root = str(tmp_path / "objdir")
+        os.makedirs(cache_root, exist_ok=True)
+        lockdir = _make_lockdir(cache_root, "foo.o.lockdir", age_seconds=2 * 86400)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _sidecar_stats()
+        trimmer.reclaim_orphan_sidecars(cache_root, stats)
+
+        assert not os.path.exists(lockdir), "variant-root orphan .lockdir must be reaped"
+        assert stats["orphan_sidecars_removed"] == 1
+
+    def test_variant_root_ct_traces_untouched(self, tmp_path):
+        """``.ct-traces.json`` at the variant root is live TraceStore state — its
+        ``.json`` suffix matches no sidecar family, so it is never selected."""
+        cache_root = str(tmp_path / "objdir")
+        os.makedirs(cache_root, exist_ok=True)
+        traces = _touch_temp(cache_root, ".ct-traces.json", age_seconds=10 * 86400, size=4096)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _sidecar_stats()
+        trimmer.reclaim_orphan_sidecars(cache_root, stats)
+
+        assert os.path.exists(traces), ".ct-traces.json must never be touched"
+        assert stats["orphan_sidecars_removed"] == 0
+
+    def test_variant_root_paired_sidecar_kept(self, tmp_path):
+        """A variant-root ``.manifest`` whose primary still exists is kept."""
+        cache_root = str(tmp_path / "exedir")
+        os.makedirs(cache_root, exist_ok=True)
+        exe = _touch_temp(cache_root, "main_deadbeef.exe", age_seconds=2 * 86400, size=4096)
+        man = _touch_temp(cache_root, "main_deadbeef.exe.manifest", age_seconds=2 * 86400, size=200)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _sidecar_stats()
+        trimmer.reclaim_orphan_sidecars(cache_root, stats)
+
+        assert os.path.exists(exe)
+        assert os.path.exists(man), "paired sidecar at variant root must be kept"
         assert stats["orphan_sidecars_removed"] == 0
 
     # ── real artefacts are never matched ────────────────────────────────────
@@ -4220,6 +4428,147 @@ class TestReclaimOrphanSidecars:
         )
         assert not os.path.exists(man), "trim_one_variant must reap the orphan sidecar"
         assert res["exedir"]["orphan_sidecars_removed"] == 1
+
+    def test_trim_one_variant_reaps_no_leaf_cmd_hash_dir(self, tmp_path):
+        """Fix 1 wiring: a no-leaf PCH cmd_hash dir is reaped by trim_one_variant
+        (trim → temps → budget → sidecars → reclaim_orphan_cmd_hash_dirs)."""
+        cas_pchdir = str(tmp_path / "pch")
+        d = os.path.join(cas_pchdir, "a" * 16)
+        _touch_temp(d, "manifest.json", age_seconds=2 * 86400, size=200)
+        _touch_temp(d, "source.H", age_seconds=2 * 86400, size=50)
+
+        res = trim_cache.trim_one_variant(
+            _make_args(),
+            current_hashes=set(),
+            cas_objdir=None,
+            cas_pchdir=cas_pchdir,
+            cas_pcmdir=None,
+            cas_exedir=None,
+            do_objdir=False,
+            do_pchdir=True,
+            do_pcmdir=False,
+            do_exedir=False,
+            variant_label="gcc.debug",
+        )
+        assert not os.path.exists(d), "trim_one_variant must reap the no-leaf cmd_hash dir"
+        assert res["pchdir"]["cmd_hash_dirs_removed"] == 1
+
+    def test_trim_one_variant_reaps_empty_bucket(self, tmp_path):
+        """Fix 2 wiring: an emptied 2-hex obj bucket is rmdir'd by trim_one_variant
+        (post-pass after the artefact/sidecar passes drain it)."""
+        cas_objdir = str(tmp_path / "obj")
+        bucket = os.path.join(cas_objdir, "ab")
+        os.makedirs(bucket, exist_ok=True)  # an empty 2-hex bucket
+
+        res = trim_cache.trim_one_variant(
+            _make_args(),
+            current_hashes=set(),
+            cas_objdir=cas_objdir,
+            cas_pchdir=None,
+            cas_pcmdir=None,
+            cas_exedir=None,
+            do_objdir=True,
+            do_pchdir=False,
+            do_pcmdir=False,
+            do_exedir=False,
+            variant_label="gcc.debug",
+        )
+        assert not os.path.exists(bucket), "trim_one_variant must rmdir the empty bucket"
+        assert res["objdir"]["empty_buckets_removed"] == 1
+
+    def test_trim_one_variant_reaps_bucket_emptied_by_retry(self, tmp_path, monkeypatch):
+        """Fix 2 ordering: a bucket whose last file is removed only on the retry
+        pass is still reaped in the SAME run — the empty-bucket sweep must run
+        AFTER retry_failed(), not before it. With a flaky unlink that fails the
+        first attempt, the orphan temp survives every direct pass and is removed
+        only by retry_failed; an empty-bucket sweep ordered before the retry
+        would see a non-empty bucket and leak it.
+
+        The retry stub removes the file with a plain ``os.remove`` (no FileLock)
+        so the bucket is genuinely empty afterwards — isolating trim_one_variant's
+        pass ORDERING from ``_safe_locked_unlink``'s own ``.lock`` residue, which
+        is the sidecar reaper's concern and tested separately."""
+        cas_objdir = str(tmp_path / "obj")
+        bucket = os.path.join(cas_objdir, "ab")
+        # One stale orphan temp, no real artefact: reclaim_orphan_temps removes it.
+        tmp = _touch_temp(bucket, "foo.o.compiletools.tmp", age_seconds=2 * 86400, size=512)
+
+        call_count = {"n": 0}
+
+        def _flaky_unlink(path, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return False  # first attempt fails -> queued for retry
+            os.remove(path)  # retry succeeds cleanly, leaving the bucket empty
+            return True
+
+        monkeypatch.setattr(trim_cache, "_safe_locked_unlink", _flaky_unlink)
+
+        res = trim_cache.trim_one_variant(
+            _make_args(),
+            current_hashes=set(),
+            cas_objdir=cas_objdir,
+            cas_pchdir=None,
+            cas_pcmdir=None,
+            cas_exedir=None,
+            do_objdir=True,
+            do_pchdir=False,
+            do_pcmdir=False,
+            do_exedir=False,
+            variant_label="gcc.debug",
+        )
+        assert not os.path.exists(tmp), "the orphan temp must be removed (on retry)"
+        assert not os.path.exists(bucket), "a bucket emptied by the retry pass must still be reaped same-run"
+        assert res["objdir"]["empty_buckets_removed"] == 1
+
+    def test_trim_one_variant_clears_retry_lock_residue_same_run(self, tmp_path, monkeypatch):
+        """A retried obj removal leaves its ``<target>.lock`` sidecar behind — the
+        lock strategies deliberately never unlink the base lockfile. Because
+        ``reclaim_orphan_sidecars`` ran BEFORE the retry, that now-orphaned lock
+        (and the bucket it keeps non-empty) would otherwise linger until the next
+        run. ``trim_one_variant`` re-reaps obj/exe sidecars after ``retry_failed``
+        when a retry fired, so the lock residue is cleared and the drained bucket
+        reclaimed in the SAME run.
+
+        Uses the real ``_safe_locked_unlink`` on retry (it really takes/leaves the
+        FileLock), with a pre-existing old ``.lock`` so the age-floored sidecar
+        reap is eligible — exactly the production shape (FileLock.acquire never
+        bumps an existing lockfile's mtime)."""
+        cas_objdir = str(tmp_path / "obj")
+        bucket = os.path.join(cas_objdir, "ab")
+        tmp = _touch_temp(bucket, "foo.o.compiletools.tmp", age_seconds=2 * 86400, size=512)
+        # The persistent lock sidecar a real build left next to the artefact,
+        # with an old mtime (FileLock reuses it without bumping mtime).
+        lock = _touch_temp(bucket, "foo.o.compiletools.tmp.lock", age_seconds=2 * 86400, size=0)
+
+        call_count = {"n": 0}
+        real_unlink = trim_cache._safe_locked_unlink
+
+        def _flaky_unlink(path, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return False  # first attempt fails -> queued for retry
+            return real_unlink(path, **kwargs)  # retry takes the real FileLock
+
+        monkeypatch.setattr(trim_cache, "_safe_locked_unlink", _flaky_unlink)
+
+        res = trim_cache.trim_one_variant(
+            _make_args(),
+            current_hashes=set(),
+            cas_objdir=cas_objdir,
+            cas_pchdir=None,
+            cas_pcmdir=None,
+            cas_exedir=None,
+            do_objdir=True,
+            do_pchdir=False,
+            do_pcmdir=False,
+            do_exedir=False,
+            variant_label="gcc.debug",
+        )
+        assert not os.path.exists(tmp), "the orphan temp must be removed (on retry)"
+        assert not os.path.exists(lock), "the orphan .lock residue must be reaped same-run"
+        assert not os.path.exists(bucket), "the drained bucket must be reaped same-run"
+        assert res["objdir"]["empty_buckets_removed"] == 1
 
 
 # ── _parse_size ──────────────────────────────────────────────────────
@@ -4886,3 +5235,268 @@ class TestAllVariants:
         # Both resolvable cells should have been swept.
         assert "gcc.debug" in combined
         assert "clang.debug" in combined
+
+
+# ── Fix 6 (A11): stat-race undercount in _scan_one_cmd_hash_dir ───────────────
+
+
+class TestScanOneCmdHashDirStatRace:
+    """A11: a leaf whose ``_entry_mtime_size`` races to ``None`` mid-scan must be
+    dropped consistently from BOTH the leaf list and the byte total — never
+    counted-present-but-sized-zero."""
+
+    def test_vanished_leaf_not_counted(self, pchdir, monkeypatch):
+        d = _make_pchdir_entry(pchdir, "a" * 16, ["alpha", "beta"], size_per_gch=1024)
+        assert os.path.isdir(d)
+        with os.scandir(pchdir) as it:
+            entry = next(e for e in it if e.name == "a" * 16)
+
+        real = trim_cache._entry_mtime_size
+
+        def spy(e):
+            if e.name == "beta.gch":
+                return None  # simulate a stat race: leaf vanished mid-scan
+            return real(e)
+
+        monkeypatch.setattr(trim_cache, "_entry_mtime_size", spy)
+
+        result = trim_cache._scan_one_cmd_hash_dir(entry, (".gch",))
+        assert result is not None
+        _name, _path, _mtime, total_size, leaves = result
+        assert leaves == ["alpha.gch"], "vanished leaf must not appear in the leaf list"
+        assert total_size == 1024, "vanished leaf's bytes must not be counted"
+
+
+# ── Fix 5 (A6): budget byte-undercount in _budget_scan_cmd_hash_dirs ──────────
+
+
+class TestBudgetScanCmdHashDirsByteAccounting:
+    """A6: the ``--max-size`` re-scan must size a cmd_hash dir by ALL its files,
+    not just the artefact leaf — otherwise it undercounts each dir by the bytes
+    of the ``manifest.json`` / ``source.H`` / ``*.gcm~`` it also holds."""
+
+    def test_total_size_includes_non_leaf_files(self, pchdir):
+        d = _make_pchdir_entry(pchdir, "a" * 16, ["stdafx.h"], size_per_gch=1000)
+        with open(os.path.join(d, "manifest.json"), "wb") as f:
+            f.write(b"\0" * 200)
+        with open(os.path.join(d, "source.H"), "wb") as f:
+            f.write(b"\0" * 50)
+        # A ``*.gcm~`` companion backup (called out by Fix 1's docstring) is also a
+        # non-leaf file the old scan excluded — it must count toward the total.
+        with open(os.path.join(d, "stdafx.h.gcm~"), "wb") as f:
+            f.write(b"\0" * 30)
+
+        trimmer = CacheTrimmer(_make_args())
+        units = trimmer._budget_scan_cmd_hash_dirs(pchdir, "pch")
+        assert len(units) == 1
+        _dir_path, _newest, total_size, protected = units[0]
+        assert total_size == 1280, "budget total must sum .gch + manifest.json + source.H + *.gcm~"
+        assert protected is False
+
+
+# ── Fix 1 (A1/A5/A7/L2): reap no-leaf PCH/PCM cmd_hash dirs ───────────────────
+
+
+def _cmd_hash_stats():
+    return {
+        "cmd_hash_dirs_removed": 0,
+        "cmd_hash_dir_bytes_freed": 0,
+        "bytes_freed": 0,
+        "failed": 0,
+    }
+
+
+class TestReclaimOrphanCmdHashDirs:
+    """A1/A5/A7/L2: ``CacheTrimmer.reclaim_orphan_cmd_hash_dirs`` removes whole
+    PCH/PCM ``<cmd_hash>/`` dirs that hold no artefact leaf (crashed/superseded
+    precompiles leaving only ``manifest.json`` / ``source.H`` / ``*.gcm~`` /
+    ``*.tmp``), age-floored independently of ``--max-age``."""
+
+    def test_old_no_leaf_dir_reaped_whole(self, pchdir):
+        """A5/L2: the whole dir goes — including manifest.json (not ``.manifest``)
+        and the copied source.H that no other reaper matches."""
+        d = os.path.join(pchdir, "a" * 16)
+        _touch_temp(d, "manifest.json", age_seconds=2 * 86400, size=200)
+        _touch_temp(d, "source.H", age_seconds=2 * 86400, size=50)
+        # A crashed precompile temp: ends in .tmp, NOT a .gch leaf.
+        _touch_temp(d, "stdafx.h.gch.12345.tmp", age_seconds=2 * 86400, size=4096)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _cmd_hash_stats()
+        trimmer.reclaim_orphan_cmd_hash_dirs(pchdir, stats, kind="pch")
+
+        assert not os.path.exists(d), "old no-leaf cmd_hash dir must be removed whole"
+        assert stats["cmd_hash_dirs_removed"] == 1
+        assert stats["cmd_hash_dir_bytes_freed"] == 4346
+        assert stats["bytes_freed"] == 4346
+
+    def test_fresh_no_leaf_dir_kept(self, pchdir):
+        """A7: a fresh no-leaf dir is an in-flight precompile (no .gch yet) — the
+        age floor keeps it even though it has no leaf."""
+        d = os.path.join(pchdir, "b" * 16)
+        _touch_temp(d, "manifest.json", age_seconds=0, size=200)
+        _touch_temp(d, "stdafx.h.gch.999.tmp", age_seconds=0, size=4096)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _cmd_hash_stats()
+        trimmer.reclaim_orphan_cmd_hash_dirs(pchdir, stats, kind="pch")
+
+        assert os.path.isdir(d), "fresh no-leaf dir must be kept (age floor)"
+        assert stats["cmd_hash_dirs_removed"] == 0
+
+    def test_dir_with_gch_leaf_untouched(self, pchdir):
+        """A live artefact dir (has a .gch) is left entirely to the normal trim,
+        even when old."""
+        d = _make_pchdir_entry(pchdir, "c" * 16, ["stdafx.h"], age_seconds=10 * 86400)
+        _touch_temp(d, "manifest.json", age_seconds=10 * 86400, size=200)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _cmd_hash_stats()
+        trimmer.reclaim_orphan_cmd_hash_dirs(pchdir, stats, kind="pch")
+
+        assert os.path.isdir(d), "dir with a .gch leaf must not be reaped here"
+        assert stats["cmd_hash_dirs_removed"] == 0
+
+    def test_empty_old_dir_reaped(self, pchdir):
+        """An entirely empty old cmd_hash dir (residue of a temp/sidecar reap)
+        is removed; the age floor falls back to the dir's own mtime."""
+        d = os.path.join(pchdir, "1" * 16)
+        os.makedirs(d)
+        old = time.time() - 2 * 86400
+        os.utime(d, (old, old))
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _cmd_hash_stats()
+        trimmer.reclaim_orphan_cmd_hash_dirs(pchdir, stats, kind="pch")
+
+        assert not os.path.exists(d), "empty old cmd_hash dir must be removed"
+        assert stats["cmd_hash_dirs_removed"] == 1
+        assert stats["cmd_hash_dir_bytes_freed"] == 0
+
+    def test_dry_run_counts_without_deleting(self, pchdir):
+        d = os.path.join(pchdir, "d" * 16)
+        _touch_temp(d, "manifest.json", age_seconds=2 * 86400, size=200)
+
+        trimmer = CacheTrimmer(_make_args(dry_run=True))
+        stats = _cmd_hash_stats()
+        trimmer.reclaim_orphan_cmd_hash_dirs(pchdir, stats, kind="pch")
+
+        assert os.path.isdir(d), "dry-run must not delete"
+        assert stats["cmd_hash_dirs_removed"] == 1
+        assert stats["cmd_hash_dir_bytes_freed"] == 200
+
+    def test_pcm_no_leaf_dir_reaped(self, pcmdir):
+        d = os.path.join(pcmdir, "e" * 16)
+        _touch_temp(d, "manifest.json", age_seconds=2 * 86400, size=100)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _cmd_hash_stats()
+        trimmer.reclaim_orphan_cmd_hash_dirs(pcmdir, stats, kind="pcm")
+
+        assert not os.path.exists(d)
+        assert stats["cmd_hash_dirs_removed"] == 1
+
+    def test_pcm_dir_with_gcm_leaf_untouched(self, pcmdir):
+        d = _make_pcmdir_entry(pcmdir, "f" * 16, ["math.gcm"], age_seconds=10 * 86400)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _cmd_hash_stats()
+        trimmer.reclaim_orphan_cmd_hash_dirs(pcmdir, stats, kind="pcm")
+
+        assert os.path.isdir(d), "dir with a .gcm leaf must not be reaped"
+        assert stats["cmd_hash_dirs_removed"] == 0
+
+    def test_missing_root_is_noop(self, tmp_path):
+        trimmer = CacheTrimmer(_make_args())
+        stats = _cmd_hash_stats()
+        trimmer.reclaim_orphan_cmd_hash_dirs(str(tmp_path / "nope"), stats, kind="pch")
+        assert stats["cmd_hash_dirs_removed"] == 0
+
+    def test_retry_success_credits_cmd_hash_keys(self, pchdir, monkeypatch):
+        """Fix 1 retry path: when ``_safe_locked_rmtree`` fails the first attempt
+        and succeeds on retry, the dir is queued (not lost) and ``retry_failed``
+        credits the cmd_hash counters exactly once — no double-count, no lingering
+        ``failed``. Locks the retry-entry contract the direct-success path can't."""
+        d = os.path.join(pchdir, "a" * 16)
+        _touch_temp(d, "manifest.json", age_seconds=2 * 86400, size=200)
+        _touch_temp(d, "source.H", age_seconds=2 * 86400, size=50)
+
+        call_count = {"n": 0}
+        real_rmtree = trim_cache._safe_locked_rmtree
+
+        def _flaky_rmtree(path):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return False  # first attempt fails -> queued for one retry
+            return real_rmtree(path)
+
+        monkeypatch.setattr(trim_cache, "_safe_locked_rmtree", _flaky_rmtree)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _cmd_hash_stats()
+        trimmer.reclaim_orphan_cmd_hash_dirs(pchdir, stats, kind="pch")
+
+        # First pass: nothing removed yet, the whole dir is queued for one retry.
+        assert os.path.isdir(d), "first-attempt failure must leave the dir in place"
+        assert stats["cmd_hash_dirs_removed"] == 0
+        assert len(trimmer._retry) == 1
+
+        trimmer.retry_failed()
+
+        assert not os.path.exists(d), "retry success must remove the dir"
+        assert stats["cmd_hash_dirs_removed"] == 1, "retry must credit cmd_hash_dirs_removed"
+        assert stats["cmd_hash_dir_bytes_freed"] == 250
+        assert stats["bytes_freed"] == 250
+        assert stats["failed"] == 0
+        assert len(trimmer._retry) == 0
+
+
+# ── Fix 2 (A2): rmdir emptied obj/exe 2-hex buckets ───────────────────────────
+
+
+class TestReapEmptyBuckets:
+    """A2: ``CacheTrimmer._reap_empty_buckets`` removes 2-hex bucket dirs that a
+    prior pass drained to empty (best-effort, race-safe)."""
+
+    def test_empty_bucket_removed(self, objdir):
+        bucket = os.path.join(objdir, "ab")
+        os.makedirs(bucket)
+        trimmer = CacheTrimmer(_make_args())
+        stats = {"empty_buckets_removed": 0}
+        trimmer._reap_empty_buckets(objdir, stats)
+        assert not os.path.exists(bucket), "emptied 2-hex bucket must be rmdir'd"
+        assert stats["empty_buckets_removed"] == 1
+
+    def test_nonempty_bucket_kept(self, objdir):
+        """A bucket with even one file is left; ENOTEMPTY is swallowed (no raise)."""
+        bucket = os.path.join(objdir, "ab")
+        _touch_temp(bucket, "foo.o", size=10)
+        trimmer = CacheTrimmer(_make_args())
+        stats = {"empty_buckets_removed": 0}
+        trimmer._reap_empty_buckets(objdir, stats)
+        assert os.path.isdir(bucket), "non-empty bucket must be kept"
+        assert stats["empty_buckets_removed"] == 0
+
+    def test_non_bucket_dir_ignored(self, objdir):
+        ts = os.path.join(objdir, "TraceStore")
+        os.makedirs(ts)
+        trimmer = CacheTrimmer(_make_args())
+        stats = {"empty_buckets_removed": 0}
+        trimmer._reap_empty_buckets(objdir, stats)
+        assert os.path.isdir(ts), "a non 2-hex dir is not a bucket and must be ignored"
+        assert stats["empty_buckets_removed"] == 0
+
+    def test_dry_run_counts_without_removing(self, objdir):
+        bucket = os.path.join(objdir, "cd")
+        os.makedirs(bucket)
+        trimmer = CacheTrimmer(_make_args(dry_run=True))
+        stats = {"empty_buckets_removed": 0}
+        trimmer._reap_empty_buckets(objdir, stats)
+        assert os.path.isdir(bucket), "dry-run must not remove the bucket"
+        assert stats["empty_buckets_removed"] == 1
+
+    def test_missing_root_is_noop(self, tmp_path):
+        trimmer = CacheTrimmer(_make_args())
+        stats = {"empty_buckets_removed": 0}
+        trimmer._reap_empty_buckets(str(tmp_path / "nope"), stats)
+        assert stats["empty_buckets_removed"] == 0

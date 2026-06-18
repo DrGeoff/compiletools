@@ -29,11 +29,13 @@ Three size-control behaviours layer on top of that per-bucket policy
 from __future__ import annotations
 
 import contextlib
+import functools
 import hashlib
 import json
 import os
 import re
 import shutil
+import socket
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -46,6 +48,7 @@ except ImportError:
     fcntl = None
 
 import compiletools.filesystem_utils
+import compiletools.lock_utils
 
 # Object filename format: {basename}_{file_hash_12}_{dep_hash_14}_{macro_state_hash_16}.o
 # Anchored from the END (the three hash fields have fixed widths) so the
@@ -302,10 +305,14 @@ def _scan_one_cmd_hash_dir(entry, leaf_suffixes):
     try:
         with os.scandir(entry.path) as leaf_entries:
             for leaf in leaf_entries:
-                if leaf.name.endswith(leaf_suffixes) and leaf.is_file():
-                    leaves.append(leaf.name)
+                if leaf.name.endswith(leaf_suffixes) and leaf.is_file(follow_symlinks=False):
                     ms = _entry_mtime_size(leaf)
                     if ms is not None:
+                        # Count a leaf only once its stat succeeds: a leaf that
+                        # raced to gone mid-scan must inflate neither the leaf
+                        # list nor the byte total (it falls through to the
+                        # no-leaf path, where the orphan-dir reaper handles it).
+                        leaves.append(leaf.name)
                         total_size += ms[1]
     except OSError:
         return None
@@ -480,6 +487,7 @@ class CacheTrimmer:
             "orphan_temp_bytes_freed": 0,
             "orphan_sidecars_removed": 0,
             "orphan_sidecar_bytes_freed": 0,
+            "empty_buckets_removed": 0,
             "budget_removed": 0,
             "budget_bytes_freed": 0,
             "budget_unmet_bytes": 0,
@@ -670,6 +678,8 @@ class CacheTrimmer:
             "orphan_temp_bytes_freed": 0,
             "orphan_sidecars_removed": 0,
             "orphan_sidecar_bytes_freed": 0,
+            "cmd_hash_dirs_removed": 0,
+            "cmd_hash_dir_bytes_freed": 0,
             "budget_removed": 0,
             "budget_bytes_freed": 0,
             "budget_unmet_bytes": 0,
@@ -848,6 +858,8 @@ class CacheTrimmer:
             "orphan_temp_bytes_freed": 0,
             "orphan_sidecars_removed": 0,
             "orphan_sidecar_bytes_freed": 0,
+            "cmd_hash_dirs_removed": 0,
+            "cmd_hash_dir_bytes_freed": 0,
             "budget_removed": 0,
             "budget_bytes_freed": 0,
             "budget_unmet_bytes": 0,
@@ -1019,6 +1031,7 @@ class CacheTrimmer:
             "orphan_temp_bytes_freed": 0,
             "orphan_sidecars_removed": 0,
             "orphan_sidecar_bytes_freed": 0,
+            "empty_buckets_removed": 0,
             "budget_removed": 0,
             "budget_bytes_freed": 0,
             "budget_unmet_bytes": 0,
@@ -1310,10 +1323,15 @@ class CacheTrimmer:
           removed alongside their artefact by ``cleanup_sidecars`` when trim
           evicts the artefact, but one whose artefact was *already* gone is
           invisible to the bucket scanner and stranded forever.
+        * ``<target>.lockdir`` — the NFS/Lustre lock primitive (a directory
+          holding a ``pid`` file), the analogue of ``.lock`` for those
+          filesystems. Reaped whole via ``shutil.rmtree`` once orphaned, old,
+          and with no live local holder (``_lockdir_unheld``).
 
-        For each sidecar in a bucket / cmd_hash dir whose PRIMARY artefact (the
-        path with the sidecar suffix stripped) no longer exists AND whose mtime
-        is older than ``_ORPHAN_TEMP_MIN_AGE_SECONDS``, the sidecar is removed.
+        For each sidecar — at the variant root (level 0) OR one level down in a
+        bucket / cmd_hash dir — whose PRIMARY artefact (the path with the sidecar
+        suffix stripped) no longer exists AND whose mtime is older than
+        ``_ORPHAN_TEMP_MIN_AGE_SECONDS``, the sidecar is removed.
 
         Safety properties:
 
@@ -1329,8 +1347,13 @@ class CacheTrimmer:
           ``_lock_unheld`` takes the lock non-blocking; only an unheld lock is
           reaped. ``.manifest`` / ``.result`` carry no lock semantics and are
           unlinked directly.
-        * **One-level descent only**: never recurses past the bucket / cmd_hash
-          layer.
+        * **Live-local-holder probe for ``.lockdir``**: ``_lockdir_unheld``
+          reads the recorded holder and keeps the lockdir only if a *local*
+          process with that pid is still alive — never SSH-ing a remote holder
+          (the primary-gone + age-floor gates make a live remote holder on a
+          vanished artefact impossible).
+        * **Variant-root + one-level descent**: scans entries directly under
+          ``cache_root`` (A4) and one level down; never recurses deeper.
 
         Unlike ``reclaim_orphan_temps`` this does NOT queue failures on
         ``self._retry``: that retry path routes through ``_safe_locked_unlink``,
@@ -1351,60 +1374,102 @@ class CacheTrimmer:
 
         try:
             with os.scandir(cache_root) as top_it:
-                subdirs = [e.path for e in top_it if e.is_dir(follow_symlinks=False)]
+                top_entries = list(top_it)
         except OSError:
             return  # cache_root became unreadable mid-scan; best-effort
 
-        for subdir_path in subdirs:
+        # Variant-root level (level 0): stray sidecars sitting directly under
+        # cache_root — orphan ``.lock`` / ``.lock.lock`` doubles / ``.lockdir`` /
+        # ``.manifest`` / ``.result`` — were previously never scanned (A4). The
+        # live per-variant ``.ct-traces.json`` TraceStore is inherently safe: its
+        # ``.json`` suffix matches no sidecar family, so it is never selected.
+        self._reap_sidecars_in(top_entries, stats, cutoff)
+
+        # One level down: the bucket / cmd_hash dirs.
+        for entry in top_entries:
+            if not entry.is_dir(follow_symlinks=False):
+                continue
             try:
-                with os.scandir(subdir_path) as inner_it:
-                    entries = list(inner_it)
+                with os.scandir(entry.path) as inner_it:
+                    inner_entries = list(inner_it)
             except OSError:
-                continue  # subdir vanished mid-scan; best-effort
+                continue  # subdir vanished mid-scan (or was a reaped .lockdir)
+            self._reap_sidecars_in(inner_entries, stats, cutoff)
 
-            for entry in entries:
-                name = entry.name
-                # ``.lock.excl`` / ``.lockdir`` are the locking subsystem's own
-                # bookkeeping, not per-artefact sidecars — never touch them here.
-                if name.endswith((".lock.excl", ".lockdir")):
-                    continue
-                if name.endswith(".lock"):
-                    suffix = ".lock"
-                elif name.endswith(".manifest"):
-                    suffix = ".manifest"
-                elif name.endswith(".result"):
-                    suffix = ".result"
-                else:
-                    continue
+    def _reap_sidecars_in(self, entries, stats: dict, cutoff: float) -> None:
+        """Reap orphan sidecars among ``entries`` (one directory level).
 
-                primary = entry.path[: -len(suffix)]
-                if os.path.exists(primary):
-                    continue  # artefact still cached — keep its sidecar
+        Shared by ``reclaim_orphan_sidecars``' variant-root (level 0) and
+        per-subdir (bucket / cmd_hash) passes. ``entries`` is a list of
+        ``os.DirEntry``; ``cutoff`` is the age-floor epoch. Each sidecar whose
+        primary artefact is gone and whose mtime predates ``cutoff`` is removed,
+        gated per family (``.lock`` non-blocking probe, ``.lockdir`` live-local
+        holder check). Honours ``self.dry_run`` and accumulates into
+        ``stats["orphan_sidecars_removed"]`` / ``["orphan_sidecar_bytes_freed"]``.
+        """
+        for entry in entries:
+            name = entry.name
+            # ``.lock.excl`` is the locking subsystem's own bookkeeping, not a
+            # per-artefact sidecar — never touch it.
+            if name.endswith(".lock.excl"):
+                continue
+            if name.endswith(".lockdir"):
+                suffix = ".lockdir"
+            elif name.endswith(".lock"):
+                suffix = ".lock"
+            elif name.endswith(".manifest"):
+                suffix = ".manifest"
+            elif name.endswith(".result"):
+                suffix = ".result"
+            else:
+                continue
 
-                try:
-                    st = entry.stat(follow_symlinks=False)
-                except OSError:
-                    continue  # vanished mid-scan; best-effort
-                if st.st_mtime >= cutoff:
-                    continue  # too fresh — may pair with an in-flight artefact
+            primary = entry.path[: -len(suffix)]
+            if os.path.exists(primary):
+                continue  # artefact still cached — keep its sidecar
 
-                path = entry.path
+            try:
+                st = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue  # vanished mid-scan; best-effort
+            if st.st_mtime >= cutoff:
+                continue  # too fresh — may pair with an in-flight artefact
+
+            path = entry.path
+            if suffix == ".lock":
                 # A held .lock means a peer is mid-write on this target (its
                 # artefact only momentarily absent via temp+rename); leave it.
-                if suffix == ".lock" and not _lock_unheld(path):
+                if not _lock_unheld(path):
                     continue
-
                 size = st.st_size
-                if self.verbose >= 1:
-                    action = "Would remove orphan sidecar" if self.dry_run else "Removing orphan sidecar"
-                    print(f"  {action}: {path} ({_format_size(size)})", file=self._human)
-
-                if self.dry_run:
-                    stats["orphan_sidecars_removed"] += 1
-                    stats["orphan_sidecar_bytes_freed"] += size
-                    stats["bytes_freed"] += size
+            elif suffix == ".lockdir":
+                # NFS/Lustre lock primitive: a <target>.lockdir directory. A live
+                # local holder means a peer is mid-write; leave it.
+                if not _lockdir_unheld(path):
                     continue
+                size = _lockdir_size(path)
+            else:
+                size = st.st_size
 
+            if self.verbose >= 1:
+                action = "Would remove orphan sidecar" if self.dry_run else "Removing orphan sidecar"
+                print(f"  {action}: {path} ({_format_size(size)})", file=self._human)
+
+            if self.dry_run:
+                stats["orphan_sidecars_removed"] += 1
+                stats["orphan_sidecar_bytes_freed"] += size
+                stats["bytes_freed"] += size
+                continue
+
+            if suffix == ".lockdir":
+                try:
+                    shutil.rmtree(path)
+                    removed = True
+                except FileNotFoundError:
+                    removed = True  # raced another reaper / a build's own cleanup
+                except OSError:
+                    removed = False
+            else:
                 try:
                     os.remove(path)
                     removed = True
@@ -1413,12 +1478,175 @@ class CacheTrimmer:
                 except OSError:
                     removed = False
 
-                if removed:
-                    stats["orphan_sidecars_removed"] += 1
-                    stats["orphan_sidecar_bytes_freed"] += size
-                    stats["bytes_freed"] += size
-                elif self.verbose >= 1:
-                    print(f"  Failed to remove orphan sidecar {path}", file=self._human)
+            if removed:
+                stats["orphan_sidecars_removed"] += 1
+                stats["orphan_sidecar_bytes_freed"] += size
+                stats["bytes_freed"] += size
+            elif self.verbose >= 1:
+                print(f"  Failed to remove orphan sidecar {path}", file=self._human)
+
+    def reclaim_orphan_cmd_hash_dirs(self, cache_root: str, stats: dict, *, kind: str) -> None:
+        """Remove whole PCH/PCM ``<cmd_hash>/`` dirs that hold no artefact leaf.
+
+        A crashed or superseded precompile leaves a cmd_hash dir containing only
+        companions the artefact scanner never enumerates — ``manifest.json``
+        (note: *not* ``.manifest``, so ``reclaim_orphan_sidecars`` skips it), a
+        copied ``source.H``, a ``*.gcm~`` backup, a ``*.gch.<pid>.tmp`` write
+        that never completed — but no ``.gch`` (PCH) / ``.pcm``|``.gcm`` (PCM)
+        leaf. ``_scan_one_cmd_hash_dir`` returns ``None`` for such a dir, so
+        ``trim_pchdir`` / ``trim_pcmdir`` never see it and it leaks permanently.
+        This reaper removes the entire dir, also clearing the empty-dir residue a
+        prior temp/sidecar reap can leave behind.
+
+        Safety properties:
+
+        * **No-leaf gate**: a dir with even one artefact leaf is left entirely to
+          the normal keep_count / max_age trim — never touched here.
+        * **Hard age floor** (``_ORPHAN_TEMP_MIN_AGE_SECONDS``, independent of
+          ``--max-age``): a fresh in-flight precompile is indistinguishable from
+          a crashed one (no ``.gch`` leaf yet) and its temp write holds no lock
+          ``_safe_locked_rmtree`` could catch, so only age protects it. The floor
+          is applied to the newest contained file's mtime, falling back to the
+          dir's own mtime when the dir is empty.
+        * **Lock-aware whole-dir removal**: ``_safe_locked_rmtree`` locks every
+          contained build file and re-scans for late arrivals, so a dir a peer is
+          actively repopulating is left in place and queued for one retry.
+
+        Honours ``self.dry_run`` (count-only). Accumulates into
+        ``stats["cmd_hash_dirs_removed"]`` / ``["cmd_hash_dir_bytes_freed"]``
+        (initialised by ``trim_pchdir`` / ``trim_pcmdir``).
+
+        Args:
+            cache_root: One PCH or PCM CAS root. No-op if not a directory.
+            stats: Per-cache stats dict to accumulate into.
+            kind: ``"pch"`` or ``"pcm"`` — selects the artefact leaf suffixes.
+        """
+        if not os.path.isdir(cache_root):
+            return
+
+        hash_re = _PCH_COMMAND_HASH_RE if kind == "pch" else _PCM_COMMAND_HASH_RE
+        leaf_suffixes = (".gch",) if kind == "pch" else (".pcm", ".gcm")
+        now = time.time()
+        cutoff = now - _ORPHAN_TEMP_MIN_AGE_SECONDS
+
+        try:
+            with os.scandir(cache_root) as top_it:
+                cmd_dirs = [e.path for e in top_it if e.is_dir(follow_symlinks=False) and hash_re.match(e.name)]
+        except OSError:
+            return  # cache_root became unreadable mid-scan; best-effort
+
+        for dir_path in cmd_dirs:
+            has_leaf = False
+            total_size = 0
+            newest = None
+            try:
+                with os.scandir(dir_path) as inner_it:
+                    for entry in inner_it:
+                        if not entry.is_file(follow_symlinks=False):
+                            continue
+                        if entry.name.endswith(leaf_suffixes):
+                            has_leaf = True
+                            break
+                        ms = _entry_mtime_size(entry)
+                        if ms is None:
+                            continue
+                        total_size += ms[1]
+                        if newest is None or ms[0] > newest:
+                            newest = ms[0]
+            except OSError:
+                continue  # dir vanished mid-scan; best-effort
+
+            if has_leaf:
+                continue  # a live artefact dir — normal trim owns it
+
+            if newest is None:
+                # Empty dir: fall back to the dir's own mtime for the age floor.
+                try:
+                    newest = os.stat(dir_path).st_mtime
+                except OSError:
+                    continue
+            if newest >= cutoff:
+                continue  # too fresh — may be an in-flight precompile
+
+            if self.verbose >= 1:
+                action = "Would remove orphan cmd_hash dir" if self.dry_run else "Removing orphan cmd_hash dir"
+                print(f"  {action}: {dir_path} ({_format_size(total_size)})", file=self._human)
+
+            if self.dry_run:
+                stats["cmd_hash_dirs_removed"] += 1
+                stats["cmd_hash_dir_bytes_freed"] += total_size
+                stats["bytes_freed"] += total_size
+                continue
+
+            if _safe_locked_rmtree(dir_path):
+                stats["cmd_hash_dirs_removed"] += 1
+                stats["cmd_hash_dir_bytes_freed"] += total_size
+                stats["bytes_freed"] += total_size
+            else:
+                if self.verbose >= 1:
+                    print(f"  Failed to remove orphan cmd_hash dir {dir_path} (will retry)", file=self._human)
+                self._retry.append(
+                    {
+                        "path": dir_path,
+                        "is_dir": True,
+                        "size": total_size,
+                        "stats": stats,
+                        "removed_key": "cmd_hash_dirs_removed",
+                        "bytes_key": "cmd_hash_dir_bytes_freed",
+                        "unlink_kwargs": {},
+                    }
+                )
+
+    def _reap_empty_buckets(self, cache_root: str, stats: dict) -> None:
+        """Best-effort removal of emptied 2-hex bucket dirs in an obj/exe CAS root.
+
+        The artefact and budget passes unlink files but never remove a bucket dir
+        they drain to empty, so an evicted bucket leaks one directory inode
+        (bounded at <=256 per variant per pool, but permanent). This post-pass
+        runs after every other obj/exe pass — including ``retry_failed`` — and
+        ``os.rmdir``s any now-empty 2-hex bucket (a bucket drained only on the
+        retry pass would still be non-empty if swept earlier). ``os.rmdir`` is
+        itself the atomic empty-check: a peer that
+        repopulated the bucket (``ENOTEMPTY``) or already removed it (``ENOENT``)
+        simply leaves nothing to do, and the error is swallowed.
+
+        Honours ``self.dry_run`` (counts a would-be removal without unlinking).
+        Accumulates into ``stats["empty_buckets_removed"]``.
+
+        Args:
+            cache_root: One obj or exe CAS root. No-op if not a directory.
+            stats: Per-cache stats dict to accumulate into.
+        """
+        if not os.path.isdir(cache_root):
+            return
+
+        try:
+            with os.scandir(cache_root) as top_it:
+                buckets = [e.path for e in top_it if e.is_dir(follow_symlinks=False) and _OBJ_BUCKET_RE.match(e.name)]
+        except OSError:
+            return  # cache_root became unreadable mid-scan; best-effort
+
+        for bucket in buckets:
+            if self.dry_run:
+                # rmdir would mutate, so detect emptiness explicitly here.
+                try:
+                    with os.scandir(bucket) as it:
+                        if next(it, None) is not None:
+                            continue  # not empty
+                except OSError:
+                    continue
+                if self.verbose >= 1:
+                    print(f"  Would remove empty bucket: {bucket}", file=self._human)
+                stats["empty_buckets_removed"] += 1
+                continue
+
+            try:
+                os.rmdir(bucket)
+            except OSError:
+                continue  # ENOTEMPTY (peer repopulated) / ENOENT (raced) / busy
+            if self.verbose >= 1:
+                print(f"  Removed empty bucket: {bucket}", file=self._human)
+            stats["empty_buckets_removed"] += 1
 
     # ------------------------------------------------------------------
     # Per-pool size budget (--max-size)
@@ -1627,11 +1855,14 @@ class CacheTrimmer:
 
         Returns ``[(dir_path, newest_mtime, total_dir_size, False), ...]`` — each
         cmd_hash dir is one unit and none are protected at this layer (the
-        compiler re-precompiles on the next build). ``newest_mtime`` is the max
-        leaf mtime (falling back to the dir's own mtime when it has no leaves).
+        compiler re-precompiles on the next build). ``total_dir_size`` sums ALL
+        files the dir holds (the artefact leaf plus ``manifest.json`` /
+        ``source.H`` / ``*.gcm~`` companions), so the byte budget does not
+        undercount a dir by the sidecar bytes that get freed with it.
+        ``newest_mtime`` is the max mtime over all those files (falling back to
+        the dir's own mtime only when it is truly empty).
         """
         hash_re = _PCH_COMMAND_HASH_RE if kind == "pch" else _PCM_COMMAND_HASH_RE
-        leaf_suffixes = (".gch",) if kind == "pch" else (".pcm", ".gcm")
         units: list[tuple[str, float, int, bool]] = []
         try:
             with os.scandir(cache_dir) as top_it:
@@ -1644,7 +1875,7 @@ class CacheTrimmer:
             try:
                 with os.scandir(entry.path) as leaf_it:
                     for leaf in leaf_it:
-                        if not leaf.name.endswith(leaf_suffixes) or not leaf.is_file():
+                        if not leaf.is_file():
                             continue
                         ms = _entry_mtime_size(leaf)
                         if ms is None:
@@ -1694,6 +1925,21 @@ class CacheTrimmer:
                 sidecar_str += f" ({_format_size(cache_stats['orphan_sidecar_bytes_freed'])} freed)"
             print(sidecar_str, file=self._human)
 
+    def _print_cmd_hash_dir_lines(self, cache_stats):
+        """Print the no-leaf cmd_hash-dir reclamation line (pch/pcm only; no-op
+        when nothing was reaped or the key is absent)."""
+        if cache_stats.get("cmd_hash_dirs_removed"):
+            line = f"    Orphan dirs:     {cache_stats['cmd_hash_dirs_removed']}"
+            if cache_stats.get("cmd_hash_dir_bytes_freed"):
+                line += f" ({_format_size(cache_stats['cmd_hash_dir_bytes_freed'])} freed)"
+            print(line, file=self._human)
+
+    def _print_empty_bucket_lines(self, cache_stats):
+        """Print the emptied 2-hex bucket reclamation line (obj/exe only; no-op
+        when nothing was reaped or the key is absent)."""
+        if cache_stats.get("empty_buckets_removed"):
+            print(f"    Empty buckets:   {cache_stats['empty_buckets_removed']}", file=self._human)
+
     def print_summary(self, objdir_stats=None, pchdir_stats=None, pcmdir_stats=None, exedir_stats=None):
         """Print a formatted summary of trimming results."""
         total_freed = 0
@@ -1720,6 +1966,7 @@ class CacheTrimmer:
                     orphan_str += f" ({_format_size(objdir_stats['orphan_temp_bytes_freed'])} freed)"
                 print(orphan_str, file=self._human)
             self._print_orphan_sidecar_lines(objdir_stats)
+            self._print_empty_bucket_lines(objdir_stats)
             self._print_budget_lines(objdir_stats)
 
         if pchdir_stats is not None:
@@ -1740,6 +1987,7 @@ class CacheTrimmer:
                     orphan_str += f" ({_format_size(pchdir_stats['orphan_temp_bytes_freed'])} freed)"
                 print(orphan_str, file=self._human)
             self._print_orphan_sidecar_lines(pchdir_stats)
+            self._print_cmd_hash_dir_lines(pchdir_stats)
             self._print_budget_lines(pchdir_stats)
 
         if pcmdir_stats is not None:
@@ -1760,6 +2008,7 @@ class CacheTrimmer:
                     orphan_str += f" ({_format_size(pcmdir_stats['orphan_temp_bytes_freed'])} freed)"
                 print(orphan_str, file=self._human)
             self._print_orphan_sidecar_lines(pcmdir_stats)
+            self._print_cmd_hash_dir_lines(pcmdir_stats)
             self._print_budget_lines(pcmdir_stats)
 
         if exedir_stats is not None:
@@ -1780,6 +2029,7 @@ class CacheTrimmer:
                     orphan_str += f" ({_format_size(exedir_stats['orphan_temp_bytes_freed'])} freed)"
                 print(orphan_str, file=self._human)
             self._print_orphan_sidecar_lines(exedir_stats)
+            self._print_empty_bucket_lines(exedir_stats)
             self._print_budget_lines(exedir_stats)
 
         # The summary line aggregates whatever was actually scanned.
@@ -1886,6 +2136,65 @@ def _lock_unheld(path: str) -> bool:
         return True
     finally:
         os.close(fd)
+
+
+@functools.lru_cache(maxsize=1)
+def _local_host_identities() -> tuple[str, str]:
+    """This host's ``(fqdn, short hostname)``, resolved once.
+
+    ``_lockdir_unheld`` runs once per orphan ``.lockdir`` and a pool can hold
+    many, while ``socket.getfqdn()`` may do a reverse-DNS round trip — so the
+    pair is computed lazily on first use and cached for the process.
+    """
+    return (socket.getfqdn() or socket.gethostname(), socket.gethostname())
+
+
+def _lockdir_unheld(path: str) -> bool:
+    """Return True iff the ``.lockdir`` lock directory ``path`` has no live
+    *local* holder and is therefore safe to remove.
+
+    NFS/Lustre use a ``<target>.lockdir`` directory (holding a ``pid`` file
+    ``host:pid[:start_time]``) as the lock primitive instead of a ``.lock``
+    file, so ``_lock_unheld``'s fcntl/flock probe does not apply. We cannot take
+    the lockdir lock race-free from here, so the test is liveness of the
+    recorded holder:
+
+    * a **local, live** holder (pid exists, start_time matches when recorded)
+      → held → False;
+    * anything else — no/unreadable ``pid`` file, a holder on another host, or
+      a dead local pid → True.
+
+    A remote or dead holder is deliberately NOT SSH-probed (unlike
+    ``ct-cleanup-locks``): the caller gates removal on primary-gone + the 1-day
+    age floor, and a build legitimately holding a lockdir on a vanished artefact
+    for over a day is impossible. This keeps the reaper free of any cross-host
+    calls.
+    """
+    host, pid, start_time = compiletools.lock_utils.read_lock_info(path)
+    if pid is None:
+        return True  # no readable holder recorded -> safe
+    fqdn, hostname = _local_host_identities()
+    if host not in (fqdn, hostname):
+        return True  # holder is on another host -> never SSH-probe
+    return not compiletools.lock_utils.is_process_alive_local(pid, start_time)
+
+
+def _lockdir_size(path: str) -> int:
+    """Total size of the regular files inside a ``.lockdir`` (its ``pid`` file),
+    for byte accounting. Best-effort: 0 on any error (incl. ``path`` not being a
+    directory)."""
+    total = 0
+    try:
+        with os.scandir(path) as it:
+            for e in it:
+                try:
+                    if e.is_file(follow_symlinks=False):
+                        total += e.stat(follow_symlinks=False).st_size
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return total
 
 
 def _safe_locked_unlink(path, *, skip_if_nlink_above=None):
@@ -2999,7 +3308,12 @@ def trim_one_variant(
     ``reclaim_orphan_sidecars``, then ``retry_failed`` once.
     ``reclaim_orphan_sidecars`` runs last so it also reaps the lock/manifest/
     result sidecars of artefacts the budget pass just evicted — one mechanism
-    covers the backlog and prevents recurrence for all four pools.
+    covers the backlog and prevents recurrence for all four pools. When a retry
+    actually fired, obj/exe sidecars are re-reaped after ``retry_failed`` to clear
+    the ``.lock`` residue a retried removal leaves behind (the lock strategies
+    never unlink the base lockfile), and the obj/exe empty-bucket sweep
+    (``_reap_empty_buckets``) runs last so a bucket drained — and its lock
+    residue cleared — only on the retry pass is still reclaimed this run.
     ``current_hashes`` (the git-current object hash
     set) is loaded by the caller ONCE and passed in — it is
     variant-independent.
@@ -3034,6 +3348,7 @@ def trim_one_variant(
         trimmer.reclaim_orphan_temps(cas_pchdir, s)
         trimmer.enforce_budget(cas_pchdir, s, kind="pch")
         trimmer.reclaim_orphan_sidecars(cas_pchdir, s)
+        trimmer.reclaim_orphan_cmd_hash_dirs(cas_pchdir, s, kind="pch")
         if s["total_dirs_scanned"] == 0:
             warn_if_suspicious_cas_dir(cas_pchdir, "pchdir", label, verbose=args.verbose)
         stats["pchdir"] = s
@@ -3045,6 +3360,7 @@ def trim_one_variant(
         trimmer.reclaim_orphan_temps(cas_pcmdir, s)
         trimmer.enforce_budget(cas_pcmdir, s, kind="pcm")
         trimmer.reclaim_orphan_sidecars(cas_pcmdir, s)
+        trimmer.reclaim_orphan_cmd_hash_dirs(cas_pcmdir, s, kind="pcm")
         if s["total_dirs_scanned"] == 0:
             warn_if_suspicious_cas_dir(cas_pcmdir, "pcmdir", label, verbose=args.verbose)
         stats["pcmdir"] = s
@@ -3060,7 +3376,31 @@ def trim_one_variant(
             warn_if_suspicious_cas_dir(cas_exedir, "exedir", label, verbose=args.verbose)
         stats["exedir"] = s
 
+    had_retries = bool(trimmer._retry)
     trimmer.retry_failed()
+
+    # A retried obj/exe removal leaves its ``<target>.lock`` sidecar behind: the
+    # lock strategies deliberately never unlink the base lockfile (a peer may
+    # still hold the same inode), and ``reclaim_orphan_sidecars`` already ran
+    # *before* the retry, so it could not have reaped it. When a retry actually
+    # fired, re-reap obj/exe sidecars once so the now-orphaned lock is cleared
+    # this run and ``_reap_empty_buckets`` can reclaim the bucket the retry
+    # drained — instead of leaving both for the next run. Gated on ``had_retries``
+    # (rare) so the common path pays no second stat-walk.
+    if had_retries:
+        if do_objdir:
+            trimmer.reclaim_orphan_sidecars(cas_objdir, stats["objdir"])
+        if do_exedir:
+            trimmer.reclaim_orphan_sidecars(cas_exedir, stats["exedir"])
+
+    # Reap drained obj/exe buckets as the very last step — after retry_failed and
+    # the residue re-reap — so a bucket emptied late is still reclaimed this run.
+    # Accumulates into the same per-pool stats the obj/exe passes wrote.
+    if do_objdir:
+        trimmer._reap_empty_buckets(cas_objdir, stats["objdir"])
+    if do_exedir:
+        trimmer._reap_empty_buckets(cas_exedir, stats["exedir"])
+
     return {"trimmer": trimmer, **stats}
 
 
