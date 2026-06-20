@@ -8,7 +8,7 @@ Safely profile ct-cake performance using temporary git worktrees
 
 :Author: drgeoffathome@gmail.com
 :Date:   2025-11-26
-:Version: 10.1.9
+:Version: 10.1.10
 :Manual section: 1
 :Manual group: developers
 
