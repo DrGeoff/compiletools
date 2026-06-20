@@ -179,6 +179,14 @@ version=${tag#*v}
 pushd "$ctdd" >/dev/null
 rm -rf dist build *.egg-info || true
 uv build
+
+# Ensure PYPI_API_TOKEN is set for publishing
+if [[ -z "${PYPI_API_TOKEN:-}" ]]; then
+    echo "Error: PYPI_API_TOKEN is not set in the environment." >&2
+    popd >/dev/null
+    exit 1
+fi
+
 # Example ~/.pypirc for token-based PyPI auth:
 # [distutils]
 # index-servers = pypi
