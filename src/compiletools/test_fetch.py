@@ -8,17 +8,24 @@ import shutil
 import subprocess
 import tempfile
 
+import configargparse
 import pytest
 
+import compiletools.apptools
+import compiletools.headerdeps
+from compiletools.build_context import BuildContext
 from compiletools.fetch import (
     FetchError,
     GitExternal,
     ResolvedExternal,
     derive_name,
+    extract_git_externals,
+    fetch_externals,
     parse_git_declaration,
     parse_git_value,
     resolve_external,
 )
+from compiletools.testhelper import requires_functional_compiler
 
 # ---------------------------------------------------------------------------
 # parse_git_value — worked examples from the spec
@@ -748,3 +755,252 @@ def test_resolved_external_is_frozen() -> None:
     res = ResolvedExternal(name="x", url="u", ref=None, path="/p", source="managed", on_disk_ref=None)
     with pytest.raises(dataclasses.FrozenInstanceError):
         res.name = "y"  # type: ignore[misc]
+
+
+# ===========================================================================
+# Source-scanning + fixpoint driver (Task 3)
+#
+# Drives the real file_analyzer / headerdeps machinery over on-disk sources.
+# A functional C++ compiler is required because DirectHeaderDeps probes the
+# compiler for its built-in macro set; the headerdeps walk itself is direct
+# (no compilation). All git operations stay local via file:// bare repos.
+# ===========================================================================
+
+
+def _make_args(verbose: int = 0) -> object:
+    """Build a realistic args namespace for headerdeps / file_analyzer.
+
+    Mirrors the established headerdeps test pattern: register the headerdeps
+    argument surface on a configargparse parser and run it through
+    ``apptools.parseargs`` so every attribute the analysis machinery expects
+    (CXX, CPPFLAGS, magic, headerdeps, verbose, exemarkers, …) is populated.
+    """
+    cap = configargparse.ArgumentParser(
+        conflict_handler="resolve",
+        args_for_setting_config_path=["-c", "--config"],
+        ignore_unknown_config_file_keys=True,
+    )
+    compiletools.headerdeps.add_arguments(cap)
+    compiletools.apptools.add_common_arguments(cap)
+    argv = ["--headerdeps", "direct"]
+    if verbose:
+        argv += ["--verbose", str(verbose)]
+    return compiletools.apptools.parseargs(cap, argv, context=BuildContext())
+
+
+def _make_bare_with_files(root: str, name: str, files: dict[str, str]) -> dict:
+    """Create a bare git repo named *name* whose initial commit holds *files*.
+
+    *files* maps relative path -> file content. Returns a dict with ``url``
+    (file:// URL), ``bare``, ``work``, and ``sha`` (the single commit's SHA).
+    """
+    work = os.path.join(root, name + "-work")
+    bare = os.path.join(root, name + ".git")
+    os.makedirs(work)
+    _git(root, "init", "-q", "-b", "master", work)
+    for rel, content in files.items():
+        dest = os.path.join(work, rel)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, "w") as fh:
+            fh.write(content)
+    _git(work, "add", "-A")
+    _git(work, "commit", "-q", "-m", "init")
+    sha = _git(work, "rev-parse", "HEAD")
+    _git(root, "clone", "-q", "--bare", work, bare)
+    _git(bare, "symbolic-ref", "HEAD", "refs/heads/master")
+    return {"url": "file://" + bare, "bare": bare, "work": work, "sha": sha}
+
+
+@requires_functional_compiler
+def test_fetch_externals_single() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        ext = _make_bare_with_files(root, "mylib", {"foo.h": "#pragma once\nint foo();\n"})
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        main = os.path.join(root, "main.cpp")
+        with open(main, "w") as fh:
+            fh.write(f'//#GIT={ext["url"]}@master\n#include "mylib/foo.h"\nint main() {{ return foo(); }}\n')
+
+        results = fetch_externals([main], _make_args(), BuildContext(), externals_dir=externals)
+
+        assert [r.name for r in results] == ["mylib"]
+        res = results[0]
+        assert res.source == "managed"
+        assert res.path == os.path.join(externals, "mylib")
+        assert os.path.isfile(os.path.join(res.path, "foo.h"))
+        assert res.on_disk_ref == ext["sha"]
+
+
+@requires_functional_compiler
+def test_fetch_externals_transitive() -> None:
+    """The key test: extA's own header declares //#GIT for extB.
+
+    Proves the fixpoint + include augmentation traverse INTO a fetched
+    external to discover deps-of-deps.
+    """
+    with tempfile.TemporaryDirectory() as root:
+        ext_b = _make_bare_with_files(root, "extB", {"b.h": "#pragma once\nint b();\n"})
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        # extA's header both declares extB and includes it.
+        ext_a = _make_bare_with_files(
+            root,
+            "extA",
+            {"a.h": f'#pragma once\n//#GIT={ext_b["url"]}@master\n#include "extB/b.h"\nint a();\n'},
+        )
+        main = os.path.join(root, "main.cpp")
+        with open(main, "w") as fh:
+            fh.write(f'//#GIT={ext_a["url"]}@master\n#include "extA/a.h"\nint main() {{ return a(); }}\n')
+
+        results = fetch_externals([main], _make_args(), BuildContext(), externals_dir=externals)
+
+        names = sorted(r.name for r in results)
+        assert names == ["extA", "extB"], f"expected both externals fetched, got {names}"
+        assert os.path.isfile(os.path.join(externals, "extA", "a.h"))
+        assert os.path.isfile(os.path.join(externals, "extB", "b.h"))
+
+
+@requires_functional_compiler
+def test_fetch_externals_duplicate_name_different_url_errors() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        # Two repos whose URL basenames BOTH derive to 'mylib' (a name
+        # collision) but whose URLs differ — placing the second under a
+        # subdir keeps its basename 'mylib.git'.
+        ext1 = _make_bare_with_files(root, "mylib", {"foo.h": "#pragma once\n"})
+        sub = os.path.join(root, "sub")
+        os.makedirs(sub)
+        ext2 = _make_bare_with_files(sub, "mylib", {"bar.h": "#pragma once\n"})
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+
+        main = os.path.join(root, "main.cpp")
+        other = os.path.join(root, "other.cpp")
+        with open(main, "w") as fh:
+            fh.write(f"//#GIT={ext1['url']}@master\nint main() {{ return 0; }}\n")
+        with open(other, "w") as fh:
+            fh.write(f"//#GIT={ext2['url']}@master\nvoid f() {{}}\n")
+
+        with pytest.raises(FetchError) as excinfo:
+            fetch_externals([main, other], _make_args(), BuildContext(), externals_dir=externals)
+        msg = str(excinfo.value)
+        assert "mylib" in msg
+        assert ext1["url"] in msg
+        assert ext2["url"] in msg
+
+
+@requires_functional_compiler
+def test_fetch_externals_same_name_same_url_deduped() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        ext = _make_bare_with_files(root, "mylib", {"foo.h": "#pragma once\n"})
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        main = os.path.join(root, "main.cpp")
+        other = os.path.join(root, "other.cpp")
+        decl = f"//#GIT={ext['url']}@master\n"
+        with open(main, "w") as fh:
+            fh.write(decl + "int main() { return 0; }\n")
+        with open(other, "w") as fh:
+            fh.write(decl + "void f() {}\n")
+
+        results = fetch_externals([main, other], _make_args(), BuildContext(), externals_dir=externals)
+        assert [r.name for r in results] == ["mylib"]
+
+
+@requires_functional_compiler
+def test_fetch_externals_override_uses_local_path() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        ext = _make_bare_with_files(root, "mylib", {"foo.h": "#pragma once\n"})
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        # A pre-existing local checkout to override with.
+        local = os.path.join(root, "mylocal")
+        _git(root, "clone", "-q", ext["url"], local)
+
+        main = os.path.join(root, "main.cpp")
+        with open(main, "w") as fh:
+            fh.write(f"//#GIT={ext['url']}@master\nint main() {{ return 0; }}\n")
+
+        results = fetch_externals(
+            [main],
+            _make_args(),
+            BuildContext(),
+            externals_dir=externals,
+            overrides={"mylib": local},
+        )
+        assert len(results) == 1
+        res = results[0]
+        assert res.source == "override"
+        assert res.path == local
+        # Nothing cloned into the managed location.
+        assert not os.path.exists(os.path.join(externals, "mylib"))
+
+
+@requires_functional_compiler
+def test_fetch_externals_no_fetch_missing_errors() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        ext = _make_bare_with_files(root, "mylib", {"foo.h": "#pragma once\n"})
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        main = os.path.join(root, "main.cpp")
+        with open(main, "w") as fh:
+            fh.write(f"//#GIT={ext['url']}@master\nint main() {{ return 0; }}\n")
+
+        with pytest.raises(FetchError) as excinfo:
+            fetch_externals([main], _make_args(), BuildContext(), externals_dir=externals, no_fetch=True)
+        assert "mylib" in str(excinfo.value)
+
+
+@requires_functional_compiler
+def test_fetch_externals_second_call_no_network() -> None:
+    """A second fetch with everything already present does no network."""
+    with tempfile.TemporaryDirectory() as root:
+        ext = _make_bare_with_files(root, "mylib", {"foo.h": "#pragma once\nint foo();\n"})
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        main = os.path.join(root, "main.cpp")
+        with open(main, "w") as fh:
+            fh.write(f'//#GIT={ext["url"]}@master\n#include "mylib/foo.h"\nint main() {{ return foo(); }}\n')
+
+        fetch_externals([main], _make_args(), BuildContext(), externals_dir=externals)
+        # Make the remote unreachable; the second resolve must still succeed.
+        shutil.rmtree(ext["bare"])
+
+        results = fetch_externals([main], _make_args(), BuildContext(), externals_dir=externals)
+        assert [r.name for r in results] == ["mylib"]
+        assert results[0].on_disk_ref == ext["sha"]
+
+
+@requires_functional_compiler
+def test_fetch_externals_malformed_value_errors() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        main = os.path.join(root, "main.cpp")
+        with open(main, "w") as fh:
+            # Trailing '@' with empty ref → parse_git_declaration raises ValueError.
+            fh.write("//#GIT=https://example.com/x.git@\nint main() { return 0; }\n")
+
+        with pytest.raises(FetchError) as excinfo:
+            fetch_externals([main], _make_args(), BuildContext(), externals_dir=externals)
+        assert main in str(excinfo.value)
+
+
+def test_extract_git_externals_tolerates_missing_file() -> None:
+    """A file the registry cannot resolve yields [] rather than aborting."""
+    with tempfile.TemporaryDirectory() as root:
+        missing = os.path.join(root, "does-not-exist.cpp")
+        assert extract_git_externals(missing, _make_args(), BuildContext()) == []
+
+
+@requires_functional_compiler
+def test_extract_git_externals_skips_non_git_flags() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        src = os.path.join(root, "main.cpp")
+        with open(src, "w") as fh:
+            fh.write(
+                "//#CXXFLAGS=-O2\n//#GIT=https://example.com/mylib.git@v1\n//#LDFLAGS=-lm\nint main() { return 0; }\n"
+            )
+        externals_found = extract_git_externals(src, _make_args(), BuildContext())
+        assert externals_found == [GitExternal(name="mylib", url="https://example.com/mylib.git", ref="v1")]

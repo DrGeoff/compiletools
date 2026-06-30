@@ -28,6 +28,7 @@ such refs should pin to a tag or a commit SHA instead.
 
 from __future__ import annotations
 
+import copy
 import os
 import subprocess
 import sys
@@ -39,6 +40,8 @@ __all__ = [
     "GitExternal",
     "ResolvedExternal",
     "derive_name",
+    "extract_git_externals",
+    "fetch_externals",
     "parse_git_declaration",
     "parse_git_value",
     "resolve_external",
@@ -561,3 +564,258 @@ def resolve_external(
     if not os.path.exists(target):
         return _clone_missing(ext, target, no_fetch=no_fetch, verbose=verbose)
     return _handle_present(ext, target, no_fetch=no_fetch, update=update, verbose=verbose)
+
+
+# ===========================================================================
+# Source-scanning + fixpoint driver
+# ===========================================================================
+#
+# These functions discover //#GIT= declarations in a target's reachable
+# on-disk sources and resolve each one, iterating to a fixpoint so that an
+# external whose OWN sources declare further //#GIT= externals are fetched
+# too (deps-of-deps).  They are pure orchestration over the parsing layer,
+# the resolver layer, and the file_analyzer / headerdeps machinery; no
+# argparse / CLI wiring lives here (that is a later task).
+
+# Bound the fixpoint loop. A correct run terminates after at most one round
+# per distinct external (each round must discover a NEW name or stop), so a
+# realistic dependency graph converges in a handful of rounds. The cap turns
+# a hypothetical non-converging cycle (e.g. a bug that keeps re-deriving the
+# same name as "new") into a clear error rather than an infinite loop.
+_MAX_FIXPOINT_ROUNDS = 50
+
+
+def extract_git_externals(filepath: str, args, context) -> list[GitExternal]:
+    """Return a :class:`GitExternal` for every ``//#GIT=`` flag in *filepath*.
+
+    Analyzes a single file via the file_analyzer machinery and parses each
+    ``//#GIT=`` magic flag into a :class:`GitExternal`.  Non-GIT magic flags
+    are ignored.
+
+    Error policy:
+        * A failure to *analyze* the file at all (missing from the registry,
+          unreadable, …) is tolerated: it is logged at high verbosity and an
+          empty list is returned, so one malformed file cannot abort a whole
+          scan.
+        * A malformed ``//#GIT=`` *value* is NOT tolerated — the
+          :class:`ValueError` from :func:`parse_git_declaration` is wrapped in
+          a :class:`FetchError` that names the declaring file, so the user sees
+          exactly which declaration is broken.
+
+    Args:
+        filepath: Path to the source file to scan.
+        args:     The parsed args namespace (file-analyzer attributes such as
+                  ``exemarkers`` / ``max_read_size`` must be present;
+                  ``set_analyzer_args`` is expected to have been called).
+        context:  The :class:`~compiletools.build_context.BuildContext`.
+
+    Returns:
+        A list of :class:`GitExternal`, one per ``//#GIT=`` declaration, in
+        source order.
+    """
+    from compiletools.file_analyzer import analyze_file, set_analyzer_args
+    from compiletools.global_hash_registry import get_file_hash
+
+    # analyze_file requires analyzer args on the context. fetch_externals sets
+    # them via headerdeps construction, but a standalone caller may not have, so
+    # set them once here if absent (idempotent for the common shared-context case).
+    if context.analyzer_args is None:
+        set_analyzer_args(args, context)
+
+    try:
+        content_hash = get_file_hash(filepath, context)
+        result = analyze_file(content_hash, context)
+    except Exception as exc:
+        verbose = getattr(args, "verbose", 0)
+        if verbose >= 2:
+            print(f"ct-fetch: warning: could not analyze '{filepath}' for //#GIT= flags: {exc}", file=sys.stderr)
+        return []
+
+    externals: list[GitExternal] = []
+    for magic_flag in result.magic_flags:
+        if str(magic_flag["key"]) != "GIT":
+            continue
+        value = str(magic_flag["value"])
+        try:
+            externals.append(parse_git_declaration(value))
+        except ValueError as exc:
+            raise FetchError(f"{filepath}: malformed //#GIT= declaration '{value}': {exc}") from exc
+    return externals
+
+
+def _augmented_headerdeps(args, context, *, externals_dir: str, resolved_roots: list[str]):
+    """Build a headerdeps instance whose include search reaches into externals.
+
+    Returns ``compiletools.headerdeps.create`` over a deep copy of *args* with
+    extra ``-I`` flags appended to ``CPPFLAGS`` so the dependency walker can
+    traverse INTO already-fetched externals (to discover their transitive
+    ``#include`` graph and the further ``//#GIT=`` declarations it reaches).
+
+    The caller's *args* (and its frozen ``args.flags``) are never mutated — the
+    augmentation lives only on the deep copy, strictly local to the scan.
+    DirectHeaderDeps derives its project include paths from ``CPPFLAGS`` (see
+    ``headerdeps._initialize_includes_and_macros``), so appending ``-I`` tokens
+    there is the supported way to widen the search path.
+    """
+    import compiletools.headerdeps
+
+    scan_args = copy.deepcopy(args)
+    include_dirs = [externals_dir]
+    for root in resolved_roots:
+        include_dirs.append(root)
+        include_dirs.append(os.path.join(root, "include"))
+
+    extra = " ".join(f"-I{d}" for d in include_dirs)
+    existing = getattr(scan_args, "CPPFLAGS", "") or ""
+    scan_args.CPPFLAGS = (existing + " " + extra).strip() if existing else extra
+
+    return compiletools.headerdeps.create(scan_args, context=context)
+
+
+def _reachable_sources(target_files: list[str], headerdeps, args) -> list[str]:
+    """Enumerate the reachable on-disk source set for *target_files*.
+
+    For each target, collect the file itself plus every header headerdeps can
+    resolve from it.  ``headerdeps.process`` tolerates includes that do not
+    resolve on disk (external headers that have not been fetched yet), so a
+    not-yet-present include simply contributes nothing this round.  A target
+    that cannot be processed at all is skipped with a high-verbosity warning.
+
+    Returns a de-duplicated list in stable discovery order.
+    """
+    seen: set[str] = set()
+    ordered: list[str] = []
+
+    def _add(path: str) -> None:
+        if path not in seen:
+            seen.add(path)
+            ordered.append(path)
+
+    verbose = getattr(args, "verbose", 0)
+    for target in target_files:
+        _add(target)
+        try:
+            headers = headerdeps.process(target, frozenset())
+        except Exception as exc:
+            if verbose >= 2:
+                print(f"ct-fetch: warning: header scan of '{target}' failed: {exc}", file=sys.stderr)
+            continue
+        for header in headers:
+            _add(header)
+    return ordered
+
+
+def fetch_externals(
+    target_files: list[str],
+    args,
+    context,
+    *,
+    externals_dir: str,
+    overrides: dict[str, str] | None = None,
+    no_fetch: bool = False,
+    update: bool = False,
+    verbose: int = 0,
+) -> list[ResolvedExternal]:
+    """Discover and resolve every ``//#GIT=`` external reachable from *target_files*.
+
+    Iterates to a fixpoint: each round enumerates the current reachable source
+    set, scans it for ``//#GIT=`` declarations, and resolves any newly-seen
+    external.  Because resolving an external places its sources on disk and the
+    include search is widened to reach into it, a subsequent round can discover
+    ``//#GIT=`` declarations in that external's own sources (deps-of-deps).  The
+    loop ends when a round adds no new external name.
+
+    Args:
+        target_files:  Absolute paths of the build target sources to scan.
+        args:          Parsed args namespace (file-analyzer + headerdeps
+                       attributes present).  Never mutated.
+        context:       The :class:`~compiletools.build_context.BuildContext`.
+        externals_dir: Absolute directory under which each ``<name>`` lives
+                       (typically the parent of the gitroot; the caller
+                       computes it).
+        overrides:     Optional ``name -> local path`` map (from ``--git-path``
+                       / ``CT_GIT_PATH_<name>``); a matched name is used
+                       verbatim instead of being cloned.
+        no_fetch:      Offline mode — a missing managed external is a hard error.
+        update:        Pull/fast-forward branch (and no-ref) externals.
+        verbose:       Verbosity level passed through to :func:`resolve_external`.
+
+    Returns:
+        A list of :class:`ResolvedExternal` in discovery order.
+
+    Raises:
+        FetchError: For a duplicate name with conflicting URLs, a malformed
+                    ``//#GIT=`` value, a runaway fixpoint, or any failure
+                    propagated from :func:`resolve_external`.
+    """
+    assert os.path.isabs(externals_dir), f"externals_dir must be absolute, got '{externals_dir}'"
+    overrides = overrides or {}
+
+    resolved: dict[str, ResolvedExternal] = {}
+    declared: dict[str, GitExternal] = {}
+    declared_files: dict[str, str] = {}  # name -> first declaring file (best-effort diagnostics)
+
+    for _round in range(_MAX_FIXPOINT_ROUNDS):
+        headerdeps = _augmented_headerdeps(
+            args,
+            context,
+            externals_dir=externals_dir,
+            resolved_roots=[r.path for r in resolved.values()],
+        )
+        reachable = _reachable_sources(target_files, headerdeps, args)
+
+        new_names: list[GitExternal] = []
+        for source_file in reachable:
+            for ext in extract_git_externals(source_file, args, context):
+                prior = declared.get(ext.name)
+                if prior is None:
+                    declared[ext.name] = ext
+                    declared_files[ext.name] = source_file
+                    if ext.name not in resolved:
+                        new_names.append(ext)
+                    continue
+                # Same name seen before — must agree on URL.
+                if prior.url != ext.url:
+                    raise FetchError(
+                        f"conflicting //#GIT= declarations for external '{ext.name}': "
+                        f"'{prior.url}' (in {declared_files.get(ext.name, '?')}) vs "
+                        f"'{ext.url}' (in {source_file})"
+                    )
+                # Same name + same URL but a differing ref: first declaration wins.
+                if prior.ref != ext.ref:
+                    _warn(
+                        f"external '{ext.name}' ({ext.url}): conflicting refs "
+                        f"'{prior.ref}' (in {declared_files.get(ext.name, '?')}) vs "
+                        f"'{ext.ref}' (in {source_file}); keeping '{prior.ref}'."
+                    )
+                # Otherwise an exact duplicate — silently deduped.
+
+        if not new_names:
+            break
+
+        for ext in new_names:
+            resolved[ext.name] = resolve_external(
+                ext,
+                externals_dir=externals_dir,
+                override_path=overrides.get(ext.name),
+                no_fetch=no_fetch,
+                update=update,
+                verbose=verbose,
+            )
+
+        # Fetching just changed the filesystem under externals_dir. wrappedos'
+        # stat-like queries are globally @functools.cache'd by path, so a
+        # "file missing" answer cached while an external header did not yet
+        # exist would otherwise stick — making the NEXT round's _find_include
+        # blind to the freshly-cloned sources and breaking transitive
+        # discovery. Drop those caches so the next round re-stats from disk.
+        import compiletools.wrappedos
+
+        compiletools.wrappedos.clear_cache()
+    else:
+        raise FetchError(
+            f"//#GIT= resolution did not converge after {_MAX_FIXPOINT_ROUNDS} rounds; "
+            f"resolved so far: {sorted(resolved)}"
+        )
+
+    return list(resolved.values())
