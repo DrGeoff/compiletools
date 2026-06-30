@@ -1,12 +1,23 @@
-"""Tests for fetch.py — pure parsing layer for //#GIT= declarations."""
+"""Tests for fetch.py — parsing primitives and the git resolver for //#GIT= declarations."""
 
 from __future__ import annotations
 
 import dataclasses
+import os
+import subprocess
+import tempfile
 
 import pytest
 
-from compiletools.fetch import GitExternal, derive_name, parse_git_declaration, parse_git_value
+from compiletools.fetch import (
+    FetchError,
+    GitExternal,
+    ResolvedExternal,
+    derive_name,
+    parse_git_declaration,
+    parse_git_value,
+    resolve_external,
+)
 
 # ---------------------------------------------------------------------------
 # parse_git_value — worked examples from the spec
@@ -225,3 +236,488 @@ def test_git_external_inequality_on_ref() -> None:
     a = GitExternal(name="mylib", url="https://example.com/mylib.git", ref="v1")
     b = GitExternal(name="mylib", url="https://example.com/mylib.git", ref=None)
     assert a != b
+
+
+# ===========================================================================
+# Resolver + git operations (Task 2)
+#
+# All git operations are exercised against *local* bare repos cloned via
+# file:// URLs — no network access required, fully deterministic.
+# ===========================================================================
+
+
+def _git(cwd: str, *args: str) -> str:
+    """Run a git command in *cwd*, return stripped stdout. Raise on failure."""
+    return subprocess.check_output(
+        ["git", *args],
+        cwd=cwd,
+        stderr=subprocess.STDOUT,
+        universal_newlines=True,
+        env=_git_env(),
+    ).strip()
+
+
+def _git_env() -> dict:
+    """Deterministic git environment: fixed identity, no global config bleed."""
+    env = dict(os.environ)
+    env.update(
+        {
+            "GIT_AUTHOR_NAME": "ct-test",
+            "GIT_AUTHOR_EMAIL": "ct-test@example.com",
+            "GIT_COMMITTER_NAME": "ct-test",
+            "GIT_COMMITTER_EMAIL": "ct-test@example.com",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "HOME": env.get("HOME", "/tmp"),
+        }
+    )
+    return env
+
+
+def _make_bare_origin(root: str) -> dict:
+    """Build a bare git repo with a known history and return ref metadata.
+
+    History layout:
+        c1 (master)            tag: v1
+        c2 (master, branch tip)
+        cf (feature)           branched off c1
+
+    Returns a dict with keys: ``url`` (file:// URL of the bare repo),
+    ``c1``, ``c2``, ``cf`` (full SHAs), ``default_branch`` (the bare repo's
+    HEAD branch name).
+    """
+    work = os.path.join(root, "work")
+    bare = os.path.join(root, "origin.git")
+    os.makedirs(work)
+    _git(root, "init", "-q", "-b", "master", work)
+
+    with open(os.path.join(work, "a.txt"), "w") as fh:
+        fh.write("one\n")
+    _git(work, "add", "a.txt")
+    _git(work, "commit", "-q", "-m", "c1")
+    c1 = _git(work, "rev-parse", "HEAD")
+    _git(work, "tag", "v1")
+
+    # feature branch off c1
+    _git(work, "checkout", "-q", "-b", "feature")
+    with open(os.path.join(work, "feat.txt"), "w") as fh:
+        fh.write("feat\n")
+    _git(work, "add", "feat.txt")
+    _git(work, "commit", "-q", "-m", "cf")
+    cf = _git(work, "rev-parse", "HEAD")
+
+    # second commit on master
+    _git(work, "checkout", "-q", "master")
+    with open(os.path.join(work, "a.txt"), "w") as fh:
+        fh.write("two\n")
+    _git(work, "add", "a.txt")
+    _git(work, "commit", "-q", "-m", "c2")
+    c2 = _git(work, "rev-parse", "HEAD")
+
+    # Publish a bare clone to serve as the remote origin.
+    _git(root, "clone", "-q", "--bare", work, bare)
+    # Ensure the bare repo's HEAD points at master.
+    _git(bare, "symbolic-ref", "HEAD", "refs/heads/master")
+    # Wire the work tree to push back to the bare repo (used by _advance_branch
+    # to simulate the remote advancing past a previously-taken clone).
+    _git(work, "remote", "add", "origin", bare)
+
+    return {
+        "url": "file://" + bare,
+        "bare": bare,
+        "work": work,
+        "c1": c1,
+        "c2": c2,
+        "cf": cf,
+        "default_branch": "master",
+    }
+
+
+def _read_file(path: str) -> str:
+    with open(path) as fh:
+        return fh.read()
+
+
+# ---------------------------------------------------------------------------
+# Clone-when-missing
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_clone_when_missing_no_ref() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        ext = GitExternal(name="mylib", url=origin["url"], ref=None)
+        externals = os.path.join(root, "externals")
+        res = resolve_external(ext, externals_dir=externals)
+
+        assert res.source == "managed"
+        assert res.path == os.path.join(externals, "mylib")
+        assert os.path.isdir(os.path.join(res.path, ".git"))
+        # Default branch checked out → second master commit.
+        assert res.on_disk_ref == origin["c2"]
+        assert _read_file(os.path.join(res.path, "a.txt")) == "two\n"
+
+
+def test_resolve_clone_when_missing_with_tag() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        ext = GitExternal(name="mylib", url=origin["url"], ref="v1")
+        externals = os.path.join(root, "externals")
+        res = resolve_external(ext, externals_dir=externals)
+
+        assert res.on_disk_ref == origin["c1"]
+        assert _read_file(os.path.join(res.path, "a.txt")) == "one\n"
+
+
+def test_resolve_clone_when_missing_with_sha() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        ext = GitExternal(name="mylib", url=origin["url"], ref=origin["c1"])
+        externals = os.path.join(root, "externals")
+        res = resolve_external(ext, externals_dir=externals)
+
+        assert res.on_disk_ref == origin["c1"]
+
+
+def test_resolve_clone_when_missing_with_branch() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        ext = GitExternal(name="mylib", url=origin["url"], ref="feature")
+        externals = os.path.join(root, "externals")
+        res = resolve_external(ext, externals_dir=externals)
+
+        assert res.on_disk_ref == origin["cf"]
+        assert os.path.isfile(os.path.join(res.path, "feat.txt"))
+
+
+# ---------------------------------------------------------------------------
+# Present + at-ref → no network (verified by deleting the remote first)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_present_at_ref_no_network() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        ext = GitExternal(name="mylib", url=origin["url"], ref="v1")
+        externals = os.path.join(root, "externals")
+        resolve_external(ext, externals_dir=externals)
+
+        # Make the remote unreachable; a no-network resolve must still succeed.
+        import shutil
+
+        shutil.rmtree(origin["bare"])
+
+        res = resolve_external(ext, externals_dir=externals)
+        assert res.on_disk_ref == origin["c1"]
+
+
+def test_resolve_present_no_ref_no_network() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        ext = GitExternal(name="mylib", url=origin["url"], ref=None)
+        externals = os.path.join(root, "externals")
+        resolve_external(ext, externals_dir=externals)
+
+        import shutil
+
+        shutil.rmtree(origin["bare"])
+
+        res = resolve_external(ext, externals_dir=externals)
+        assert res.on_disk_ref == origin["c2"]
+
+
+# ---------------------------------------------------------------------------
+# Present + immutable ref differs → fetch + checkout updates HEAD
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_present_tag_differs_checks_out() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        externals = os.path.join(root, "externals")
+        # First clone at the default branch (c2).
+        resolve_external(GitExternal(name="mylib", url=origin["url"], ref=None), externals_dir=externals)
+        # Now request tag v1 (== c1); already-local tag, checkout without fetch.
+        res = resolve_external(GitExternal(name="mylib", url=origin["url"], ref="v1"), externals_dir=externals)
+        assert res.on_disk_ref == origin["c1"]
+
+
+def test_resolve_present_sha_not_local_fetches() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        externals = os.path.join(root, "externals")
+        resolve_external(GitExternal(name="mylib", url=origin["url"], ref="v1"), externals_dir=externals)
+        # A commit created on origin AFTER the clone is not present locally;
+        # resolving it must trigger a fetch + checkout.
+        new_sha = _advance_branch(origin, "master", "later\n")
+        res = resolve_external(GitExternal(name="mylib", url=origin["url"], ref=new_sha), externals_dir=externals)
+        assert res.on_disk_ref == new_sha
+
+
+# ---------------------------------------------------------------------------
+# Present + branch differs
+# ---------------------------------------------------------------------------
+
+
+def _advance_branch(origin: dict, branch: str, content: str) -> str:
+    """Add a commit to *branch* in the origin's work tree, push it to the bare
+    repo, and return the new SHA. Lets a local clone fall behind the remote.
+    """
+    work = origin["work"]
+    _git(work, "checkout", "-q", branch)
+    with open(os.path.join(work, f"{branch}-extra.txt"), "w") as fh:
+        fh.write(content)
+    _git(work, "add", "-A")
+    _git(work, "commit", "-q", "-m", f"advance {branch}")
+    sha = _git(work, "rev-parse", "HEAD")
+    _git(work, "push", "-q", "origin", branch)
+    return sha
+
+
+def test_resolve_present_branch_differs_no_update_warns(capsys: pytest.CaptureFixture) -> None:
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        externals = os.path.join(root, "externals")
+        target = os.path.join(externals, "mylib")
+        # Clone branch feature (local branch tip == cf), then detach HEAD onto
+        # c1 so HEAD differs from the local branch tip.
+        resolve_external(GitExternal(name="mylib", url=origin["url"], ref="feature"), externals_dir=externals)
+        _git(target, "checkout", "-q", "--detach", origin["c1"])
+        assert _git(target, "rev-parse", "HEAD") == origin["c1"]
+
+        res = resolve_external(GitExternal(name="mylib", url=origin["url"], ref="feature"), externals_dir=externals)
+        # Left as-is (still detached at c1), not switched to the branch tip.
+        assert res.on_disk_ref == origin["c1"]
+        err = capsys.readouterr().err
+        assert "feature" in err
+        assert "mylib" in err
+
+
+def test_resolve_present_branch_differs_with_update_fast_forwards() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        externals = os.path.join(root, "externals")
+        resolve_external(GitExternal(name="mylib", url=origin["url"], ref="feature"), externals_dir=externals)
+        # Advance the remote feature branch so the local clone is behind.
+        new_tip = _advance_branch(origin, "feature", "more\n")
+
+        res = resolve_external(
+            GitExternal(name="mylib", url=origin["url"], ref="feature"),
+            externals_dir=externals,
+            update=True,
+        )
+        assert res.on_disk_ref == new_tip
+
+
+def test_resolve_present_no_ref_update_pulls() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        externals = os.path.join(root, "externals")
+        externals_target = os.path.join(externals, "mylib")
+        resolve_external(GitExternal(name="mylib", url=origin["url"], ref=None), externals_dir=externals)
+        assert _git(externals_target, "rev-parse", "HEAD") == origin["c2"]
+        # Advance the remote default branch so the local clone is behind.
+        new_tip = _advance_branch(origin, "master", "three\n")
+
+        res = resolve_external(
+            GitExternal(name="mylib", url=origin["url"], ref=None),
+            externals_dir=externals,
+            update=True,
+        )
+        assert res.on_disk_ref == new_tip
+
+
+# ---------------------------------------------------------------------------
+# no_fetch + missing → error naming external + url + git clone command
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_no_fetch_missing_errors() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        externals = os.path.join(root, "externals")
+        ext = GitExternal(name="mylib", url=origin["url"], ref="v1")
+        with pytest.raises(FetchError) as excinfo:
+            resolve_external(ext, externals_dir=externals, no_fetch=True)
+        msg = str(excinfo.value)
+        assert "mylib" in msg
+        assert origin["url"] in msg
+        assert "git clone" in msg
+        assert "--git-path" in msg
+
+
+def test_resolve_no_fetch_present_sha_not_local_errors() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        externals = os.path.join(root, "externals")
+        resolve_external(GitExternal(name="mylib", url=origin["url"], ref="v1"), externals_dir=externals)
+        # Create a commit on origin the clone never received.
+        new_sha = _advance_branch(origin, "master", "future\n")
+        with pytest.raises(FetchError) as excinfo:
+            resolve_external(
+                GitExternal(name="mylib", url=origin["url"], ref=new_sha),
+                externals_dir=externals,
+                no_fetch=True,
+            )
+        assert "mylib" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# override_path
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_override_path_used_untouched() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        externals = os.path.join(root, "externals")
+        override = os.path.join(root, "mylocal")
+        _git(root, "clone", "-q", origin["url"], override)
+        _git(override, "checkout", "-q", origin["c1"])
+        before = _git(override, "rev-parse", "HEAD")
+
+        res = resolve_external(
+            GitExternal(name="mylib", url=origin["url"], ref="v1"),
+            externals_dir=externals,
+            override_path=override,
+        )
+        assert res.source == "override"
+        assert res.path == override
+        assert res.on_disk_ref == before
+        # Nothing was cloned into the managed location.
+        assert not os.path.exists(os.path.join(externals, "mylib"))
+        # The override checkout is untouched.
+        assert _git(override, "rev-parse", "HEAD") == before
+
+
+def test_resolve_override_path_missing_errors() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        externals = os.path.join(root, "externals")
+        ext = GitExternal(name="mylib", url=origin["url"], ref="v1")
+        missing = os.path.join(root, "does-not-exist")
+        with pytest.raises(FetchError) as excinfo:
+            resolve_external(ext, externals_dir=externals, override_path=missing)
+        msg = str(excinfo.value)
+        assert "--git-path" in msg
+        assert "mylib" in msg
+
+
+def test_resolve_override_path_non_git_dir() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        externals = os.path.join(root, "externals")
+        override = os.path.join(root, "plaindir")
+        os.makedirs(override)
+        with open(os.path.join(override, "x.txt"), "w") as fh:
+            fh.write("hi\n")
+        res = resolve_external(
+            GitExternal(name="mylib", url=origin["url"], ref="v1"),
+            externals_dir=externals,
+            override_path=override,
+        )
+        assert res.source == "override"
+        assert res.path == override
+        assert res.on_disk_ref is None
+
+
+# ---------------------------------------------------------------------------
+# Dirty tree + checkout required → refuse
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_dirty_tree_checkout_required_refuses() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        externals = os.path.join(root, "externals")
+        target = os.path.join(externals, "mylib")
+        resolve_external(GitExternal(name="mylib", url=origin["url"], ref=None), externals_dir=externals)
+        # Dirty the work tree.
+        with open(os.path.join(target, "a.txt"), "w") as fh:
+            fh.write("dirty\n")
+        with pytest.raises(FetchError) as excinfo:
+            resolve_external(GitExternal(name="mylib", url=origin["url"], ref="v1"), externals_dir=externals)
+        msg = str(excinfo.value)
+        assert "mylib" in msg
+        # File still dirty, unchanged.
+        assert _read_file(os.path.join(target, "a.txt")) == "dirty\n"
+
+
+def test_resolve_dirty_tree_update_branch_refuses() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        externals = os.path.join(root, "externals")
+        target = os.path.join(externals, "mylib")
+        resolve_external(GitExternal(name="mylib", url=origin["url"], ref="feature"), externals_dir=externals)
+        _git(target, "reset", "-q", "--hard", origin["c1"])
+        with open(os.path.join(target, "feat.txt"), "w") as fh:
+            fh.write("dirty\n")
+        with pytest.raises(FetchError):
+            resolve_external(
+                GitExternal(name="mylib", url=origin["url"], ref="feature"),
+                externals_dir=externals,
+                update=True,
+            )
+
+
+# ---------------------------------------------------------------------------
+# ref not found → error
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_ref_not_found_on_clone_errors() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        externals = os.path.join(root, "externals")
+        ext = GitExternal(name="mylib", url=origin["url"], ref="nonexistent-ref")
+        with pytest.raises(FetchError) as excinfo:
+            resolve_external(ext, externals_dir=externals)
+        msg = str(excinfo.value)
+        assert "mylib" in msg
+
+
+def test_resolve_clone_bad_url_errors() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        externals = os.path.join(root, "externals")
+        bad_url = "file://" + os.path.join(root, "no-such-repo.git")
+        ext = GitExternal(name="mylib", url=bad_url, ref=None)
+        with pytest.raises(FetchError) as excinfo:
+            resolve_external(ext, externals_dir=externals)
+        msg = str(excinfo.value)
+        assert "mylib" in msg
+        assert bad_url in msg
+
+
+# ---------------------------------------------------------------------------
+# target present but not a git work tree → use as-is, warn, source managed
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_target_present_non_git_warns(capsys: pytest.CaptureFixture) -> None:
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        externals = os.path.join(root, "externals")
+        target = os.path.join(externals, "mylib")
+        os.makedirs(target)
+        marker = os.path.join(target, "user-file.txt")
+        with open(marker, "w") as fh:
+            fh.write("precious\n")
+
+        res = resolve_external(GitExternal(name="mylib", url=origin["url"], ref="v1"), externals_dir=externals)
+        assert res.source == "managed"
+        assert res.path == target
+        assert res.on_disk_ref is None
+        # Nothing destroyed.
+        assert os.path.isfile(marker)
+        err = capsys.readouterr().err
+        assert "mylib" in err
+
+
+# ---------------------------------------------------------------------------
+# ResolvedExternal dataclass
+# ---------------------------------------------------------------------------
+
+
+def test_resolved_external_is_frozen() -> None:
+    res = ResolvedExternal(name="x", url="u", ref=None, path="/p", source="managed", on_disk_ref=None)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        res.name = "y"  # type: ignore[misc]
