@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import copy
 import os
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -665,7 +666,7 @@ def _augmented_headerdeps(args, context, *, externals_dir: str, resolved_roots: 
         include_dirs.append(root)
         include_dirs.append(os.path.join(root, "include"))
 
-    extra = " ".join(f"-I{d}" for d in include_dirs)
+    extra = " ".join(f"-I{shlex.quote(d)}" for d in include_dirs)
     existing = getattr(scan_args, "CPPFLAGS", "") or ""
     scan_args.CPPFLAGS = (existing + " " + extra).strip() if existing else extra
 
@@ -755,67 +756,77 @@ def fetch_externals(
     declared: dict[str, GitExternal] = {}
     declared_files: dict[str, str] = {}  # name -> first declaring file (best-effort diagnostics)
 
-    for _round in range(_MAX_FIXPOINT_ROUNDS):
-        headerdeps = _augmented_headerdeps(
-            args,
-            context,
-            externals_dir=externals_dir,
-            resolved_roots=[r.path for r in resolved.values()],
-        )
-        reachable = _reachable_sources(target_files, headerdeps, args)
-
-        new_names: list[GitExternal] = []
-        for source_file in reachable:
-            for ext in extract_git_externals(source_file, args, context):
-                prior = declared.get(ext.name)
-                if prior is None:
-                    declared[ext.name] = ext
-                    declared_files[ext.name] = source_file
-                    if ext.name not in resolved:
-                        new_names.append(ext)
-                    continue
-                # Same name seen before — must agree on URL.
-                if prior.url != ext.url:
-                    raise FetchError(
-                        f"conflicting //#GIT= declarations for external '{ext.name}': "
-                        f"'{prior.url}' (in {declared_files.get(ext.name, '?')}) vs "
-                        f"'{ext.url}' (in {source_file})"
-                    )
-                # Same name + same URL but a differing ref: first declaration wins.
-                if prior.ref != ext.ref:
-                    _warn(
-                        f"external '{ext.name}' ({ext.url}): conflicting refs "
-                        f"'{prior.ref}' (in {declared_files.get(ext.name, '?')}) vs "
-                        f"'{ext.ref}' (in {source_file}); keeping '{prior.ref}'."
-                    )
-                # Otherwise an exact duplicate — silently deduped.
-
-        if not new_names:
-            break
-
-        for ext in new_names:
-            resolved[ext.name] = resolve_external(
-                ext,
+    # Each round builds an _augmented_headerdeps over a deepcopy of args, and
+    # HeaderDepsBase.__init__ stashes that throwaway deepcopy into
+    # context.analyzer_args. Capture the caller's prior value (possibly None)
+    # and restore it on exit (even on FetchError) so a caller reading
+    # context.analyzer_args after fetch_externals returns sees its original
+    # args, not the last round's throwaway deepcopy.
+    prior_analyzer_args = context.analyzer_args
+    try:
+        for _round in range(_MAX_FIXPOINT_ROUNDS):
+            headerdeps = _augmented_headerdeps(
+                args,
+                context,
                 externals_dir=externals_dir,
-                override_path=overrides.get(ext.name),
-                no_fetch=no_fetch,
-                update=update,
-                verbose=verbose,
+                resolved_roots=[r.path for r in resolved.values()],
+            )
+            reachable = _reachable_sources(target_files, headerdeps, args)
+
+            new_names: list[GitExternal] = []
+            for source_file in reachable:
+                for ext in extract_git_externals(source_file, args, context):
+                    prior = declared.get(ext.name)
+                    if prior is None:
+                        declared[ext.name] = ext
+                        declared_files[ext.name] = source_file
+                        if ext.name not in resolved:
+                            new_names.append(ext)
+                        continue
+                    # Same name seen before — must agree on URL.
+                    if prior.url != ext.url:
+                        raise FetchError(
+                            f"conflicting //#GIT= declarations for external '{ext.name}': "
+                            f"'{prior.url}' (in {declared_files.get(ext.name, '?')}) vs "
+                            f"'{ext.url}' (in {source_file})"
+                        )
+                    # Same name + same URL but a differing ref: first declaration wins.
+                    if prior.ref != ext.ref:
+                        _warn(
+                            f"external '{ext.name}' ({ext.url}): conflicting refs "
+                            f"'{prior.ref}' (in {declared_files.get(ext.name, '?')}) vs "
+                            f"'{ext.ref}' (in {source_file}); keeping '{prior.ref}'."
+                        )
+                    # Otherwise an exact duplicate — silently deduped.
+
+            if not new_names:
+                break
+
+            for ext in new_names:
+                resolved[ext.name] = resolve_external(
+                    ext,
+                    externals_dir=externals_dir,
+                    override_path=overrides.get(ext.name),
+                    no_fetch=no_fetch,
+                    update=update,
+                    verbose=verbose,
+                )
+
+            # Fetching just changed the filesystem under externals_dir. wrappedos'
+            # stat-like queries are globally @functools.cache'd by path, so a
+            # "file missing" answer cached while an external header did not yet
+            # exist would otherwise stick — making the NEXT round's _find_include
+            # blind to the freshly-cloned sources and breaking transitive
+            # discovery. Drop those caches so the next round re-stats from disk.
+            import compiletools.wrappedos
+
+            compiletools.wrappedos.clear_cache()
+        else:
+            raise FetchError(
+                f"//#GIT= resolution did not converge after {_MAX_FIXPOINT_ROUNDS} rounds; "
+                f"resolved so far: {sorted(resolved)}"
             )
 
-        # Fetching just changed the filesystem under externals_dir. wrappedos'
-        # stat-like queries are globally @functools.cache'd by path, so a
-        # "file missing" answer cached while an external header did not yet
-        # exist would otherwise stick — making the NEXT round's _find_include
-        # blind to the freshly-cloned sources and breaking transitive
-        # discovery. Drop those caches so the next round re-stats from disk.
-        import compiletools.wrappedos
-
-        compiletools.wrappedos.clear_cache()
-    else:
-        raise FetchError(
-            f"//#GIT= resolution did not converge after {_MAX_FIXPOINT_ROUNDS} rounds; "
-            f"resolved so far: {sorted(resolved)}"
-        )
-
-    return list(resolved.values())
+        return list(resolved.values())
+    finally:
+        context.analyzer_args = prior_analyzer_args

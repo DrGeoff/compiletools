@@ -985,11 +985,86 @@ def test_fetch_externals_malformed_value_errors() -> None:
         assert main in str(excinfo.value)
 
 
+@requires_functional_compiler
 def test_extract_git_externals_tolerates_missing_file() -> None:
     """A file the registry cannot resolve yields [] rather than aborting."""
     with tempfile.TemporaryDirectory() as root:
         missing = os.path.join(root, "does-not-exist.cpp")
         assert extract_git_externals(missing, _make_args(), BuildContext()) == []
+
+
+@requires_functional_compiler
+def test_augmented_headerdeps_quotes_spaces_in_include_dirs() -> None:
+    """A resolved root containing a space must round-trip through headerdeps.
+
+    _augmented_headerdeps appends ``-I<dir>`` tokens to CPPFLAGS; the
+    downstream headerdeps walker recovers them via shlex (split_command_cached).
+    Without shlex.quote, ``-I/work dir/foo`` would split into two broken tokens
+    and the include path would be lost. We exercise the exact seam: build the
+    augmented headerdeps over a space-bearing externals dir, then re-parse its
+    CPPFLAGS through the same _extract_include_paths_from_flags the walker uses
+    and assert the original path survives intact.
+    """
+    from compiletools.fetch import _augmented_headerdeps
+    from compiletools.headerdeps import HeaderDepsBase
+
+    with tempfile.TemporaryDirectory() as root:
+        externals = os.path.join(root, "ex ternals")  # space in the path
+        os.makedirs(externals)
+        space_root = os.path.join(root, "resolved root")  # another space
+        os.makedirs(space_root)
+
+        hd = _augmented_headerdeps(
+            _make_args(),
+            BuildContext(),
+            externals_dir=externals,
+            resolved_roots=[space_root],
+        )
+        recovered = HeaderDepsBase._extract_include_paths_from_flags(hd.args.CPPFLAGS)
+        assert externals in recovered
+        assert space_root in recovered
+        assert os.path.join(space_root, "include") in recovered
+
+
+@requires_functional_compiler
+def test_fetch_externals_restores_context_analyzer_args() -> None:
+    """After fetch_externals returns, context.analyzer_args is the prior value.
+
+    fetch_externals builds an _augmented_headerdeps over a deepcopy of args each
+    round; HeaderDepsBase.__init__ stores that throwaway deepcopy into
+    context.analyzer_args. The caller's context must be left holding whatever it
+    held before (here None), not the last round's deepcopy.
+    """
+    with tempfile.TemporaryDirectory() as root:
+        ext = _make_bare_with_files(root, "mylib", {"foo.h": "#pragma once\nint foo();\n"})
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        main = os.path.join(root, "main.cpp")
+        with open(main, "w") as fh:
+            fh.write(f'//#GIT={ext["url"]}@master\n#include "mylib/foo.h"\nint main() {{ return foo(); }}\n')
+
+        context = BuildContext()
+        assert context.analyzer_args is None
+        fetch_externals([main], _make_args(), context, externals_dir=externals)
+        assert context.analyzer_args is None
+
+
+@requires_functional_compiler
+def test_fetch_externals_restores_context_analyzer_args_on_error() -> None:
+    """The restore happens in a finally, so it holds even when fetch_externals raises."""
+    with tempfile.TemporaryDirectory() as root:
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        main = os.path.join(root, "main.cpp")
+        with open(main, "w") as fh:
+            # Trailing '@' → malformed //#GIT= → FetchError mid-fixpoint.
+            fh.write("//#GIT=https://example.com/x.git@\nint main() { return 0; }\n")
+
+        context = BuildContext()
+        assert context.analyzer_args is None
+        with pytest.raises(FetchError):
+            fetch_externals([main], _make_args(), context, externals_dir=externals)
+        assert context.analyzer_args is None
 
 
 @requires_functional_compiler
