@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import shutil
 import subprocess
 import tempfile
 
@@ -252,13 +253,20 @@ def _git(cwd: str, *args: str) -> str:
         ["git", *args],
         cwd=cwd,
         stderr=subprocess.STDOUT,
-        universal_newlines=True,
+        text=True,
         env=_git_env(),
     ).strip()
 
 
 def _git_env() -> dict:
-    """Deterministic git environment: fixed identity, no global config bleed."""
+    """Deterministic git environment: fixed identity, no ambient-config bleed.
+
+    Disabling both the system (``GIT_CONFIG_NOSYSTEM``) and global
+    (``GIT_CONFIG_GLOBAL=os.devnull``, git >= 2.32) config layers keeps a CI
+    machine's ``/etc/gitconfig`` or a developer's ``~/.gitconfig`` (e.g.
+    ``commit.gpgsign=true`` or ``transfer.fsckObjects=true``) from breaking
+    the bare-repo setup and clones.
+    """
     env = dict(os.environ)
     env.update(
         {
@@ -267,6 +275,7 @@ def _git_env() -> dict:
             "GIT_COMMITTER_NAME": "ct-test",
             "GIT_COMMITTER_EMAIL": "ct-test@example.com",
             "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
             "HOME": env.get("HOME", "/tmp"),
         }
     )
@@ -337,6 +346,21 @@ def _read_file(path: str) -> str:
         return fh.read()
 
 
+def _advance_branch(origin: dict, branch: str, content: str) -> str:
+    """Add a commit to *branch* in the origin's work tree, push it to the bare
+    repo, and return the new SHA. Lets a local clone fall behind the remote.
+    """
+    work = origin["work"]
+    _git(work, "checkout", "-q", branch)
+    with open(os.path.join(work, f"{branch}-extra.txt"), "w") as fh:
+        fh.write(content)
+    _git(work, "add", "-A")
+    _git(work, "commit", "-q", "-m", f"advance {branch}")
+    sha = _git(work, "rev-parse", "HEAD")
+    _git(work, "push", "-q", "origin", branch)
+    return sha
+
+
 # ---------------------------------------------------------------------------
 # Clone-when-missing
 # ---------------------------------------------------------------------------
@@ -402,8 +426,6 @@ def test_resolve_present_at_ref_no_network() -> None:
         resolve_external(ext, externals_dir=externals)
 
         # Make the remote unreachable; a no-network resolve must still succeed.
-        import shutil
-
         shutil.rmtree(origin["bare"])
 
         res = resolve_external(ext, externals_dir=externals)
@@ -416,8 +438,6 @@ def test_resolve_present_no_ref_no_network() -> None:
         ext = GitExternal(name="mylib", url=origin["url"], ref=None)
         externals = os.path.join(root, "externals")
         resolve_external(ext, externals_dir=externals)
-
-        import shutil
 
         shutil.rmtree(origin["bare"])
 
@@ -456,21 +476,6 @@ def test_resolve_present_sha_not_local_fetches() -> None:
 # ---------------------------------------------------------------------------
 # Present + branch differs
 # ---------------------------------------------------------------------------
-
-
-def _advance_branch(origin: dict, branch: str, content: str) -> str:
-    """Add a commit to *branch* in the origin's work tree, push it to the bare
-    repo, and return the new SHA. Lets a local clone fall behind the remote.
-    """
-    work = origin["work"]
-    _git(work, "checkout", "-q", branch)
-    with open(os.path.join(work, f"{branch}-extra.txt"), "w") as fh:
-        fh.write(content)
-    _git(work, "add", "-A")
-    _git(work, "commit", "-q", "-m", f"advance {branch}")
-    sha = _git(work, "rev-parse", "HEAD")
-    _git(work, "push", "-q", "origin", branch)
-    return sha
 
 
 def test_resolve_present_branch_differs_no_update_warns(capsys: pytest.CaptureFixture) -> None:
@@ -657,6 +662,28 @@ def test_resolve_dirty_tree_update_branch_refuses() -> None:
                 externals_dir=externals,
                 update=True,
             )
+
+
+def test_resolve_dirty_tree_update_no_ref_refuses() -> None:
+    """Symmetry with the branch case: ref=None + --update on a dirty tree
+    must refuse the pull rather than clobber local changes.
+    """
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        externals = os.path.join(root, "externals")
+        target = os.path.join(externals, "mylib")
+        resolve_external(GitExternal(name="mylib", url=origin["url"], ref=None), externals_dir=externals)
+        with open(os.path.join(target, "a.txt"), "w") as fh:
+            fh.write("dirty\n")
+        with pytest.raises(FetchError) as excinfo:
+            resolve_external(
+                GitExternal(name="mylib", url=origin["url"], ref=None),
+                externals_dir=externals,
+                update=True,
+            )
+        assert "mylib" in str(excinfo.value)
+        # Local changes preserved.
+        assert _read_file(os.path.join(target, "a.txt")) == "dirty\n"
 
 
 # ---------------------------------------------------------------------------

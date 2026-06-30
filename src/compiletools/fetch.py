@@ -32,6 +32,7 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass
+from typing import Literal
 
 __all__ = [
     "FetchError",
@@ -210,13 +211,30 @@ class ResolvedExternal:
     url: str
     ref: str | None
     path: str
-    source: str
+    source: Literal["managed", "override"]
     on_disk_ref: str | None
 
 
 def _warn(message: str) -> None:
     """Emit a non-fatal warning to stderr."""
     print(f"ct-fetch: warning: {message}", file=sys.stderr)
+
+
+def _git_env() -> dict[str, str]:
+    """Return an environment that neutralises ambient git configuration.
+
+    A user's ``~/.gitconfig`` or a machine's ``/etc/gitconfig`` can carry
+    settings (``commit.gpgsign``, ``transfer.fsckObjects``, custom
+    ``url.*.insteadOf`` rewrites, …) that change clone/fetch/checkout
+    behaviour and would make external resolution non-deterministic across
+    machines. We disable both the system and global config layers so a
+    resolve depends only on the remote and the per-repo config a clone
+    creates. ``GIT_CONFIG_GLOBAL`` requires git >= 2.32.
+    """
+    env = dict(os.environ)
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    return env
 
 
 def _run_git(args: list[str], *, cwd: str | None, ext: GitExternal) -> subprocess.CompletedProcess:
@@ -235,13 +253,14 @@ def _run_git(args: list[str], *, cwd: str | None, ext: GitExternal) -> subproces
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            env=_git_env(),
         )
     except FileNotFoundError as exc:
         raise FetchError(f"external '{ext.name}' ({ext.url}): 'git' is not installed or not on PATH") from exc
     except OSError as exc:
         raise FetchError(f"external '{ext.name}' ({ext.url}): failed to execute git {' '.join(args)}: {exc}") from exc
     except subprocess.CalledProcessError as exc:
-        output = (exc.output or "").strip()
+        output = exc.output.strip()
         raise FetchError(f"external '{ext.name}' ({ext.url}): git {' '.join(args)} failed:\n{output}") from exc
 
 
@@ -255,6 +274,7 @@ def _is_git_work_tree(path: str) -> bool:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
+            env=_git_env(),
         )
     except (OSError, subprocess.CalledProcessError):
         return False
@@ -271,6 +291,7 @@ def _current_commit(path: str) -> str | None:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
+            env=_git_env(),
         )
     except (OSError, subprocess.CalledProcessError):
         return None
@@ -278,16 +299,30 @@ def _current_commit(path: str) -> str | None:
     return sha or None
 
 
-def _is_dirty(path: str) -> bool:
-    """Return True if the work tree at *path* has uncommitted changes."""
-    result = subprocess.run(
-        ["git", "status", "--porcelain"],
-        cwd=path,
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
+def _is_dirty(ext: GitExternal, path: str) -> bool:
+    """Return True if the work tree at *path* has uncommitted changes.
+
+    Raises :class:`FetchError` (naming the external) if ``git status`` cannot
+    be run — otherwise a raw traceback would escape without identifying which
+    external failed.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=path,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=_git_env(),
+        )
+    except FileNotFoundError as exc:
+        raise FetchError(f"external '{ext.name}' ({ext.url}): 'git' is not installed or not on PATH") from exc
+    except OSError as exc:
+        raise FetchError(f"external '{ext.name}' ({ext.url}): failed to run git status in '{path}': {exc}") from exc
+    except subprocess.CalledProcessError as exc:
+        output = exc.output.strip()
+        raise FetchError(f"external '{ext.name}' ({ext.url}): git status in '{path}' failed:\n{output}") from exc
     return bool(result.stdout.strip())
 
 
@@ -306,6 +341,7 @@ def _rev_parse_verify(path: str, ref: str) -> str | None:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
+            env=_git_env(),
         )
     except (OSError, subprocess.CalledProcessError):
         return None
@@ -385,7 +421,7 @@ def _checkout_immutable(ext: GitExternal, target: str, *, no_fetch: bool, verbos
     if resolved is not None and resolved == _current_commit(target):
         return  # Already at the requested ref; no network.
 
-    if _is_dirty(target):
+    if _is_dirty(ext, target):
         raise FetchError(
             f"external '{ext.name}' ({ext.url}): work tree at '{target}' has "
             f"uncommitted changes; refusing to check out '{ref}' and clobber them."
@@ -427,7 +463,7 @@ def _handle_branch(ext: GitExternal, target: str, *, update: bool, verbose: int)
             )
         return
 
-    if _is_dirty(target):
+    if _is_dirty(ext, target):
         raise FetchError(
             f"external '{ext.name}' ({ext.url}): work tree at '{target}' has "
             f"uncommitted changes; refusing to update branch '{ref}'."
@@ -443,7 +479,7 @@ def _handle_no_ref(ext: GitExternal, target: str, *, update: bool, verbose: int)
     """Handle ``ref is None`` on a present work tree: pull current branch on --update."""
     if not update:
         return
-    if _is_dirty(target):
+    if _is_dirty(ext, target):
         raise FetchError(
             f"external '{ext.name}' ({ext.url}): work tree at '{target}' has uncommitted changes; refusing to pull."
         )
@@ -517,6 +553,7 @@ def resolve_external(
                     failure, offline-and-absent, dirty-tree clobber,
                     missing override path, …).
     """
+    assert os.path.isabs(externals_dir), f"externals_dir must be absolute, got '{externals_dir}'"
     if override_path is not None:
         return _resolve_override(ext, override_path)
 
