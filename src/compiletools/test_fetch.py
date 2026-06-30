@@ -99,6 +99,37 @@ def test_parse_git_value_trailing_at_scp_raises() -> None:
         parse_git_value("git@github.com:me/mylib.git@")
 
 
+def test_parse_git_value_no_separator_raises() -> None:
+    """A degenerate value with neither '/' nor ':' is not a valid git URL.
+
+    Without a separator, sep == -1 and the old code silently mis-split
+    'git@host' into url='git', ref='host'. A real git URL always carries
+    a ':' (scp/scheme) or '/' (path), so reject such input outright.
+    """
+    with pytest.raises(ValueError, match="separator"):
+        parse_git_value("git@host")
+
+
+# ---------------------------------------------------------------------------
+# parse_git_value — documented v1 limitation (pin current behavior)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_git_value_branch_ref_with_slash_not_supported() -> None:
+    """v1 LIMITATION: a branch ref containing '/' defeats the separator
+    heuristic, so the '@feature' part stays glued onto the URL and ref is
+    None.
+
+    This test pins the CURRENT (intentionally-limited) behavior. When a
+    future task adds proper support for slash-bearing refs, this test is
+    the one to update — the URL should then become 'git@host:repo.git'
+    with ref 'feature/foo'.
+    """
+    url, ref = parse_git_value("git@host:repo.git@feature/foo")
+    assert url == "git@host:repo.git@feature/foo"
+    assert ref is None
+
+
 # ---------------------------------------------------------------------------
 # derive_name — worked examples from the spec
 # ---------------------------------------------------------------------------
@@ -131,7 +162,7 @@ def test_derive_name_no_git_suffix() -> None:
 
 def test_derive_name_empty_basename_raises() -> None:
     """URL ending in '/' has an empty basename — should raise."""
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="basename is empty"):
         derive_name("https://example.com/")
 
 
@@ -153,6 +184,24 @@ def test_parse_git_declaration_https_no_ref() -> None:
 def test_parse_git_declaration_file_with_ref() -> None:
     result = parse_git_declaration("file:///tmp/x/mylib@abc123")
     assert result == GitExternal(name="mylib", url="file:///tmp/x/mylib", ref="abc123")
+
+
+def test_parse_git_declaration_empty_string_raises() -> None:
+    """ValueError from parse_git_value propagates through the combinator."""
+    with pytest.raises(ValueError, match="empty"):
+        parse_git_declaration("")
+
+
+def test_parse_git_declaration_trailing_at_raises() -> None:
+    """ValueError for an empty ref propagates through the combinator."""
+    with pytest.raises(ValueError, match="ref"):
+        parse_git_declaration("https://github.com/me/mylib.git@")
+
+
+def test_parse_git_declaration_empty_basename_raises() -> None:
+    """ValueError from derive_name (URL ending in '/') propagates."""
+    with pytest.raises(ValueError, match="basename is empty"):
+        parse_git_declaration("https://example.com/")
 
 
 # ---------------------------------------------------------------------------

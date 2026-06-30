@@ -73,14 +73,22 @@ def parse_git_value(value: str) -> tuple[str, str | None]:
         suffix is present.
 
     Raises:
-        ValueError: If *value* is empty or whitespace-only, or if a
-                    trailing ``@`` is present with an empty ref.
+        ValueError: If *value* is empty or whitespace-only, if it lacks
+                    both a ``/`` and a ``:`` separator (not a valid git
+                    URL), or if a trailing ``@`` is present with an empty
+                    ref.
     """
     value = value.strip()
     if not value:
         raise ValueError("GIT flag value is empty or whitespace-only")
 
     sep = max(value.rfind("/"), value.rfind(":"))
+    if sep == -1:
+        # No '/' and no ':' — not a valid git URL. Rejecting here avoids
+        # the degenerate mis-split of e.g. 'git@host' into ('git', 'host'),
+        # since find('@', 0) would otherwise treat the user/host '@' as the
+        # ref separator.
+        raise ValueError(f"GIT flag value '{value}' is not a valid git URL: it has no '/' or ':' separator")
     at_idx = value.find("@", sep + 1)
 
     if at_idx == -1:
