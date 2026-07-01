@@ -1116,6 +1116,28 @@ def test_present_checkout_origin_mismatch_warns(capsys) -> None:
         assert "origin" in err and "mylib" in err
 
 
+def test_normalize_remote_url_folds_equivalent_spellings() -> None:
+    """scp-vs-ssh, host case, user@ prefix, and trailing '/'/'.git' fold to one
+    canonical form so the origin-mismatch check does not warn spuriously;
+    genuinely different remotes (and case-differing paths) stay distinct."""
+    n = fetch._normalize_remote_url
+    canonical = n("https://github.com/org/repo")
+    # Equivalent spellings of the SAME remote.
+    assert n("https://github.com/org/repo.git") == canonical
+    assert n("https://github.com/org/repo/") == canonical
+    assert n("git@github.com:org/repo.git") == canonical
+    assert n("ssh://git@github.com/org/repo") == canonical
+    assert n("https://GitHub.com/org/repo") == canonical
+    assert n("git://github.com/org/repo.git") == canonical
+    # Genuinely different remotes must NOT fold together.
+    assert n("https://github.com/org/other") != canonical
+    assert n("https://gitlab.com/org/repo") != canonical
+    # Repo paths are case-sensitive on most forges — keep them distinct.
+    assert n("https://github.com/org/Repo") != canonical
+    # file:// URLs fold on their path (scheme + trailing '/'/'.git' stripped).
+    assert n("file:///srv/x/mylib.git") == n("file:///srv/x/mylib/")
+
+
 @requires_functional_compiler
 def test_fetch_externals_parallel_resolves_all_in_declaration_order() -> None:
     """Multiple independent externals discovered in one round are resolved in a

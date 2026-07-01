@@ -154,6 +154,32 @@ def test_main_default_clones_and_summarizes(monkeypatch, capsys) -> None:
 
 
 @requires_functional_compiler
+def test_main_keyboardinterrupt_exits_cleanly(monkeypatch, capsys) -> None:
+    """A Ctrl-C/SIGTERM during the parallel-clone window surfaces as a
+    KeyboardInterrupt from _resolve_new's forwarding handler; main() must exit
+    cleanly (rc 0, no traceback), matching signal_handler's exit outside that
+    window. Simulated by making fetch_externals raise KeyboardInterrupt."""
+    with tempfile.TemporaryDirectory() as root:
+        ext = _make_bare_with_files(root, "extlib", {"include/extlib.h": "#pragma once\nint extfn();\n"})
+        externals_dir = os.path.join(root, "externals")
+        os.makedirs(externals_dir)
+        main_repo = _make_main_repo(
+            root,
+            f'//#GIT={ext["url"]}@master\n#include "extlib.h"\nint main() {{ return extfn(); }}\n',
+        )
+        monkeypatch.chdir(main_repo)
+        _neutralise_git(monkeypatch)
+
+        def _interrupt(*args, **kwargs):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(fetch, "fetch_externals", _interrupt)
+        rc = fetch.main(_pinned_argv(main_repo, ["main.cpp", "--externals-dir", externals_dir]))
+        assert rc == 0
+        assert "interrupt" in capsys.readouterr().err.lower()
+
+
+@requires_functional_compiler
 def test_main_empty_targets_is_noop(monkeypatch, capsys) -> None:
     """No on-disk targets: helpful stderr note, returns 0, no crash."""
     with tempfile.TemporaryDirectory() as root:

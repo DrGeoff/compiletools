@@ -548,11 +548,49 @@ def _origin_url(path: str) -> str | None:
 
 
 def _normalize_remote_url(url: str) -> str:
-    """Normalize a git URL for equality comparison (strip trailing '/' and '.git')."""
-    url = url.rstrip("/")
-    if url.endswith(".git"):
-        url = url[: -len(".git")]
-    return url
+    """Best-effort canonicalization of a git URL for equality comparison.
+
+    Folds the spellings that commonly denote the SAME remote so the
+    origin-mismatch check in :func:`_handle_present` does not warn spuriously:
+    an explicit transport scheme (``https://`` / ``ssh://`` / ``git://`` /
+    ``file://``), an scp-style ``user@host:path`` vs ``ssh://user@host/path``,
+    a ``user@`` credential prefix, host-name case, and a trailing ``/`` or
+    ``.git``. It is deliberately conservative — it never reports two genuinely
+    different remotes as equal — and it does NOT resolve ``url.*.insteadOf``
+    rewrites or DNS aliases, so an exotic equivalent pair may still warn (the
+    warning is harmless; the checkout is used either way).
+    """
+    u = url.strip()
+    scheme_sep = u.find("://")
+    if scheme_sep != -1:
+        # Explicit transport scheme: drop it (https/ssh/git/file all denote the
+        # same remote once host+path match).
+        u = u[scheme_sep + 3 :]
+    else:
+        # scp-style shorthand ``user@host:path`` -> ``user@host/path``. Only the
+        # first ':' separates host from path (git refnames/paths can't contain
+        # ':'), and it must come after any ``user@`` so ``git@host:org/x`` maps
+        # onto the ``ssh://git@host/org/x`` form above.
+        at = u.find("@")
+        colon = u.find(":")
+        if colon != -1 and (at == -1 or colon > at):
+            u = u[:colon] + "/" + u[colon + 1 :]
+    # Strip a leading ``user@`` credential (before the first '/').
+    at = u.find("@")
+    first_slash = u.find("/")
+    if at != -1 and (first_slash == -1 or at < first_slash):
+        u = u[at + 1 :]
+    # Lowercase the host (hosts are case-insensitive); keep the path verbatim
+    # (repo paths are case-sensitive on most forges).
+    first_slash = u.find("/")
+    if first_slash == -1:
+        u = u.lower()
+    else:
+        u = u[:first_slash].lower() + u[first_slash:]
+    u = u.rstrip("/")
+    if u.endswith(".git"):
+        u = u[: -len(".git")]
+    return u
 
 
 def _is_dirty(ext: GitExternal, path: str) -> bool:
@@ -1909,6 +1947,15 @@ def main(argv=None) -> int:
             # offending external and its URL.
             print(f"Error: {err}", file=sys.stderr)
             return 1
+        except KeyboardInterrupt:
+            # During the parallel-clone window, _resolve_new installs a handler
+            # that forwards SIGINT/SIGTERM to the git children and then raises
+            # KeyboardInterrupt on the main thread (BaseException, so it escapes
+            # the FetchError handler above). The children are already killed;
+            # exit cleanly here — matching signal_handler's sys.exit(0) used
+            # OUTSIDE that window — instead of dumping a traceback.
+            print("ct-fetch: interrupted.", file=sys.stderr)
+            return 0
         finally:
             # Clear memcaches so repeated in-process main() calls in tests don't
             # cross-contaminate. fetch_externals / gather_external_status own their

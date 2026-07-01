@@ -21,6 +21,7 @@ import time
 # RuntimeError gives the user a clear "this strategy needs fcntl" message rather
 # than an opaque ``AttributeError: 'NoneType' object has no attribute 'lockf'``).
 import types
+from collections.abc import Callable
 from typing import Optional
 
 import compiletools.apptools
@@ -707,8 +708,8 @@ def _run_with_signal_forwarding(
     *,
     env: dict[str, str] | None = None,
     capture_output: bool = False,
-    on_child_start=None,
-    on_child_end=None,
+    on_child_start: Callable[[int], None] | None = None,
+    on_child_end: Callable[[int], None] | None = None,
 ) -> subprocess.CompletedProcess:
     """Run cmd as a subprocess in a new session, forwarding SIGINT/SIGTERM
     to the child's process group, and reaping the child before returning.
