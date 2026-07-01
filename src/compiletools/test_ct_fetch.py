@@ -390,6 +390,52 @@ def test_gather_external_status_dirty(monkeypatch) -> None:
 
 
 @requires_functional_compiler
+def test_gather_external_status_computes_status_once_per_external(monkeypatch) -> None:
+    """Finding 6: _status_for is computed at most once per external.
+
+    Previously gather_external_status re-ran _status_for (three git subprocesses)
+    for every accumulated external on every fixpoint round, plus a full final
+    pass — O(N * rounds). Since status never mutates the filesystem, an
+    external's on-disk state cannot change mid-run, so the value is now cached by
+    name. With a transitive graph (extA's header declares extB) requiring
+    multiple rounds, each of the two externals must be statted exactly once.
+    """
+    with tempfile.TemporaryDirectory() as root:
+        ext_b = _make_bare_with_files(root, "extB", {"b.h": "#pragma once\nint b();\n"})
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        ext_a = _make_bare_with_files(
+            root,
+            "extA",
+            {"a.h": f'#pragma once\n//#GIT={ext_b["url"]}@master\n#include "extB/b.h"\nint a();\n'},
+        )
+        main = os.path.join(root, "main.cpp")
+        with open(main, "w") as fh:
+            fh.write(f'//#GIT={ext_a["url"]}@master\n#include "extA/a.h"\nint main() {{ return a(); }}\n')
+        monkeypatch.chdir(root)
+        _neutralise_git(monkeypatch)
+
+        # Both externals present on disk so the fixpoint descends through them.
+        fetch.fetch_externals([main], _make_headerdeps_args(), BuildContext(), externals_dir=externals)
+
+        # Spy on the real _status_for, counting calls per external name.
+        real_status_for = fetch._status_for
+        calls: dict[str, int] = {}
+
+        def _spy(ext, **kwargs):
+            calls[ext.name] = calls.get(ext.name, 0) + 1
+            return real_status_for(ext, **kwargs)
+
+        monkeypatch.setattr(fetch, "_status_for", _spy)
+
+        statuses = gather_external_status([main], _make_headerdeps_args(), BuildContext(), externals_dir=externals)
+
+        assert sorted(s.name for s in statuses) == ["extA", "extB"]
+        # Each external's status is computed exactly once, not once-per-round.
+        assert calls == {"extA": 1, "extB": 1}, calls
+
+
+@requires_functional_compiler
 def test_gather_external_status_none_declared(monkeypatch) -> None:
     with tempfile.TemporaryDirectory() as root:
         externals = os.path.join(root, "externals")

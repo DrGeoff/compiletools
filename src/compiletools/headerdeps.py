@@ -39,13 +39,22 @@ def clear_include_list_cache(context):
     context.include_list_cache.clear()
 
 
-def create(args, context):
-    """HeaderDeps Factory"""
+def create(args, context, *, extra_include_dirs=None):
+    """HeaderDeps Factory.
+
+    Args:
+        args:    Parsed args namespace.
+        context: The :class:`~compiletools.build_context.BuildContext`.
+        extra_include_dirs: Optional list of additional ``-I`` search
+            directories to widen the header walk beyond what ``args.CPPFLAGS``
+            declares (used by ``fetch._augmented_headerdeps`` to reach INTO
+            already-fetched externals without deep-copying / mutating *args*).
+    """
     classname = args.headerdeps.title() + "HeaderDeps"
     if args.verbose >= 4:
         print("Creating " + classname + " to process header dependencies.")
     depsclass = globals()[classname]
-    return depsclass(args, context=context)
+    return depsclass(args, context=context, extra_include_dirs=extra_include_dirs)
 
 
 def add_arguments(cap):
@@ -77,9 +86,15 @@ class HeaderDepsBase:
     searching classes.  This really should be an abstract base class.
     """
 
-    def __init__(self, args, context):
+    def __init__(self, args, context, *, extra_include_dirs=None):
         self.args = args
         self.context = context
+        # Extra -I search dirs appended to whatever args.CPPFLAGS declares.
+        # This is the supported way to widen the header search without mutating
+        # or deep-copying args (see fetch._augmented_headerdeps): the list is
+        # threaded straight into the derived class's include list / preprocessor
+        # command, never back into args.CPPFLAGS.
+        self._extra_include_dirs: list[str] = list(extra_include_dirs or [])
         # Set analyzer args for file_analyzer caching
         set_analyzer_args(args, context)
 
@@ -171,8 +186,8 @@ class HeaderDepsBase:
 class DirectHeaderDeps(HeaderDepsBase):
     """Create a tree structure that shows the header include tree"""
 
-    def __init__(self, args, context):
-        HeaderDepsBase.__init__(self, args, context=context)
+    def __init__(self, args, context, *, extra_include_dirs=None):
+        HeaderDepsBase.__init__(self, args, context=context, extra_include_dirs=extra_include_dirs)
 
         # Keep track of ancestor paths so that we can do header cycle detection
         self.ancestor_paths = []
@@ -202,6 +217,11 @@ class DirectHeaderDeps(HeaderDepsBase):
             # Grab the include paths from the CPPFLAGS, excluding system paths.
             # Use proper shell parsing instead of regex to handle quoted paths with spaces
             self._includes = self._extract_include_paths_from_flags(self.args.CPPFLAGS)
+            # Append any caller-supplied extra -I dirs (e.g. fetch reaching into
+            # already-cloned externals). Kept as raw path strings so paths with
+            # spaces survive without a shlex round-trip through CPPFLAGS.
+            if self._extra_include_dirs:
+                self._includes = self._includes + list(self._extra_include_dirs)
 
             if self.args.verbose >= 3:
                 print("Includes=" + str(self._includes))
@@ -464,9 +484,17 @@ class DirectHeaderDeps(HeaderDepsBase):
 class CppHeaderDeps(HeaderDepsBase):
     """Using the C Pre Processor, create the list of headers that the given file depends upon."""
 
-    def __init__(self, args, context):
-        HeaderDepsBase.__init__(self, args, context=context)
+    def __init__(self, args, context, *, extra_include_dirs=None):
+        HeaderDepsBase.__init__(self, args, context=context, extra_include_dirs=extra_include_dirs)
         self.preprocessor = compiletools.preprocessor.PreProcessor(args)
+        # CppHeaderDeps drives cpp -MM off args.CPPFLAGS directly; feed extra
+        # -I dirs to the preprocessor command line rather than args (no mutation).
+        # PreProcessor.process naively .split()s its args (as it already does for
+        # CPPFLAGS), so these are emitted unquoted for consistency — a space in
+        # an include path is unsupported on the cpp path either way, the same
+        # pre-existing limitation CPPFLAGS has. DirectHeaderDeps (the default,
+        # and what fetch uses) keeps raw strings and handles spaces fine.
+        self._extra_include_args = " ".join(f"-I{d}" for d in self._extra_include_dirs)
 
     def process(self, filename: str, macro_cache_key: MacroCacheKey) -> list[str]:
         """Process using cpp -MM (raises error if macro_cache_key non-empty).
@@ -501,7 +529,8 @@ class CppHeaderDeps(HeaderDepsBase):
         if any(realpath_obj.is_relative_to(syspath) for syspath in system_paths):
             return []
 
-        output = self.preprocessor.process(realpath, extraargs="-MM")
+        extraargs = "-MM " + self._extra_include_args if self._extra_include_args else "-MM"
+        output = self.preprocessor.process(realpath, extraargs=extraargs)
 
         # output will be something like
         # test_direct_include.o: tests/test_direct_include.cpp

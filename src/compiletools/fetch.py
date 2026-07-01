@@ -28,9 +28,8 @@ such refs should pin to a tag or a commit SHA instead.
 
 from __future__ import annotations
 
-import copy
+import concurrent.futures
 import os
-import shlex
 import shutil
 import signal
 import subprocess
@@ -879,6 +878,14 @@ def resolve_external(
 # same name as "new") into a clear error rather than an infinite loop.
 _MAX_FIXPOINT_ROUNDS = 50
 
+# Upper bound on the thread pool used to resolve (clone/fetch) the externals
+# newly discovered in a single fixpoint round. The externals in a round are
+# independent (unique names, per-target FileLock sidecars, separate git
+# endpoints, each writing only its own result), so they resolve concurrently.
+# Capped small: fetch work is network/disk-bound and the count per round is
+# typically tiny; the effective worker count is min(len(new), this cap).
+_MAX_FETCH_WORKERS = 8
+
 
 def extract_git_externals(filepath: str, args, context) -> list[GitExternal]:
     """Return a :class:`GitExternal` for every ``//#GIT=`` flag in *filepath*.
@@ -941,30 +948,27 @@ def extract_git_externals(filepath: str, args, context) -> list[GitExternal]:
 def _augmented_headerdeps(args, context, *, externals_dir: str, resolved_roots: list[str]):
     """Build a headerdeps instance whose include search reaches into externals.
 
-    Returns ``compiletools.headerdeps.create`` over a deep copy of *args* with
-    extra ``-I`` flags appended to ``CPPFLAGS`` so the dependency walker can
-    traverse INTO already-fetched externals (to discover their transitive
+    Returns ``compiletools.headerdeps.create`` with the external include dirs
+    passed through the ``extra_include_dirs`` parameter so the dependency walker
+    can traverse INTO already-fetched externals (to discover their transitive
     ``#include`` graph and the further ``//#GIT=`` declarations it reaches).
 
-    The caller's *args* (and its frozen ``args.flags``) are never mutated — the
-    augmentation lives only on the deep copy, strictly local to the scan.
-    DirectHeaderDeps derives its project include paths from ``CPPFLAGS`` (see
-    ``headerdeps._initialize_includes_and_macros``), so appending ``-I`` tokens
-    there is the supported way to widen the search path.
+    The caller's *args* (and its frozen ``args.flags``) are never mutated and
+    never copied — the extra dirs are threaded straight into the headerdeps
+    instance's include list (``_initialize_includes_and_macros`` for
+    DirectHeaderDeps) / preprocessor command (CppHeaderDeps), not back into
+    ``CPPFLAGS``. This is why ``BuildContext`` no longer needs a
+    ``__deepcopy__``: nothing here deep-copies an args namespace that would drag
+    the live context along.
     """
     import compiletools.headerdeps
 
-    scan_args = copy.deepcopy(args)
     include_dirs = [externals_dir]
     for root in resolved_roots:
         include_dirs.append(root)
         include_dirs.append(os.path.join(root, "include"))
 
-    extra = " ".join(f"-I{shlex.quote(d)}" for d in include_dirs)
-    existing = getattr(scan_args, "CPPFLAGS", "") or ""
-    scan_args.CPPFLAGS = (existing + " " + extra).strip() if existing else extra
-
-    return compiletools.headerdeps.create(scan_args, context=context)
+    return compiletools.headerdeps.create(args, context=context, extra_include_dirs=include_dirs)
 
 
 def _reachable_sources(target_files: list[str], headerdeps, args) -> list[str]:
@@ -998,6 +1002,80 @@ def _reachable_sources(target_files: list[str], headerdeps, args) -> list[str]:
         for header in headers:
             _add(header)
     return ordered
+
+
+def _fixpoint_scan(
+    target_files: list[str],
+    args,
+    context,
+    *,
+    externals_dir: str,
+    root_selector,
+    scan_round,
+    on_not_converged,
+) -> None:
+    """Shared bounded fixpoint driver for the two ``//#GIT=`` scanners.
+
+    :func:`fetch_externals` and :func:`gather_external_status` share the same
+    round loop: build an include-augmented headerdeps that reaches into the
+    already-known roots, enumerate the reachable on-disk sources, discover
+    ``//#GIT=`` declarations, act on the newly-seen ones, and clear
+    ``wrappedos``' path cache between rounds so freshly-fetched sources become
+    visible to the next round's ``_find_include``. The bound
+    (:data:`_MAX_FIXPOINT_ROUNDS`) turns a hypothetical non-converging cycle
+    into a clear error instead of an infinite loop.
+
+    The three callbacks carry the ONLY behaviour that differs between callers
+    (this is why the two loops were previously hand-synced duplicates):
+
+    * ``root_selector() -> list[str]`` — which already-known roots to widen the
+      header search into. fetch widens into every resolved/cloned root; status
+      widens only into roots ALREADY present on disk (it never fetches to expand
+      the graph). Evaluated fresh each round.
+    * ``scan_round(reachable_sources) -> bool`` — record the round's
+      newly-declared externals (deduping by name) and perform the per-mode
+      action: fetch resolves the new externals (cloning them in parallel) and
+      RAISES :class:`FetchError` on a conflicting URL/ref; status only records
+      and WARNS on a conflict, never raising (``--status`` is a report). Returns
+      True while a round discovered new work (loop continues) and False once the
+      scan converges (loop breaks BEFORE the cache clear, matching the original
+      hand-written loops).
+    * ``on_not_converged() -> FetchError`` — build the mode-specific
+      runaway-loop error, raised when the round bound is hit.
+
+    ``HeaderDepsBase.__init__`` (invoked via ``_augmented_headerdeps`` →
+    ``headerdeps.create``) calls ``set_analyzer_args(args, context)``, which
+    mutates ``context.analyzer_args`` to the real *args*. The try/finally
+    restores the caller's prior value even on error, so a caller reading
+    ``context.analyzer_args`` after the scan sees whatever it held before.
+    """
+    prior_analyzer_args = context.analyzer_args
+    try:
+        for _round in range(_MAX_FIXPOINT_ROUNDS):
+            headerdeps = _augmented_headerdeps(
+                args,
+                context,
+                externals_dir=externals_dir,
+                resolved_roots=root_selector(),
+            )
+            reachable = _reachable_sources(target_files, headerdeps, args)
+            if not scan_round(reachable):
+                break
+
+            # Fetching (or merely declaring a possibly-present external) can
+            # change the filesystem under externals_dir. wrappedos' stat-like
+            # queries are globally @functools.cache'd by path, so a "file
+            # missing" answer cached while an external header did not yet exist
+            # would otherwise stick — blinding the NEXT round's _find_include to
+            # the freshly-available sources and breaking transitive discovery.
+            # Drop those caches so the next round re-stats from disk.
+            import compiletools.wrappedos
+
+            compiletools.wrappedos.clear_cache()
+        else:
+            raise on_not_converged()
+    finally:
+        context.analyzer_args = prior_analyzer_args
 
 
 def fetch_externals(
@@ -1051,136 +1129,146 @@ def fetch_externals(
     declared_files: dict[str, str] = {}  # name -> first declaring file (best-effort diagnostics)
     declared_lower: dict[str, str] = {}  # lowercased name -> first-declared original-cased name (N3)
 
-    # Each round builds an _augmented_headerdeps over a deepcopy of args, and
-    # HeaderDepsBase.__init__ stashes that throwaway deepcopy into
-    # context.analyzer_args. Capture the caller's prior value (possibly None)
-    # and restore it on exit (even on FetchError) so a caller reading
-    # context.analyzer_args after fetch_externals returns sees its original
-    # args, not the last round's throwaway deepcopy.
-    prior_analyzer_args = context.analyzer_args
-    try:
-        # NOTE: this fixpoint loop is intentionally kept in lockstep with the
-        # one in gather_external_status. Both share the same skeleton
-        # (_MAX_FIXPOINT_ROUNDS, _augmented_headerdeps / _reachable_sources /
-        # extract_git_externals, the dedup-by-name rule, and a
-        # wrappedos.clear_cache() at the end of each round). They intentionally
-        # DIFFER on two points: root-selection (fetch widens the search into
-        # every resolved/cloned root; status widens only into roots already
-        # present on disk) and conflict-handling (fetch RAISES on a conflicting
-        # URL and warns on a conflicting ref; status only WARNS in both cases,
-        # never raising, since --status is a report). Keep the two in sync when
-        # editing the shared skeleton; do NOT extract a shared generator.
-        for _round in range(_MAX_FIXPOINT_ROUNDS):
-            headerdeps = _augmented_headerdeps(
-                args,
-                context,
+    # --- fetch-mode axes for the shared _fixpoint_scan driver ---------------
+    # See _fixpoint_scan for the shared skeleton these three callbacks plug into.
+    # fetch differs from status by: widening the search into every RESOLVED root,
+    # RAISING on any conflict, and cloning newly-discovered externals (here, in
+    # parallel).
+
+    def _root_selector() -> list[str]:
+        # fetch reaches into every already-resolved/cloned root.
+        return [r.path for r in resolved.values()]
+
+    def _resolve_one(ext: GitExternal) -> ResolvedExternal:
+        # Override keys are normalized to lowercase in parse_git_path_overrides;
+        # ext.name (from derive_name) preserves the URL-basename case, so
+        # lowercase it here to match case-insensitively.
+        override_path = overrides.get(ext.name.lower())
+        if override_path is not None:
+            # User-owned checkout: never cloned/mutated here, so no lock.
+            return resolve_external(
+                ext,
                 externals_dir=externals_dir,
-                resolved_roots=[r.path for r in resolved.values()],
+                override_path=override_path,
+                no_fetch=no_fetch,
+                update=update,
+                verbose=verbose,
             )
-            reachable = _reachable_sources(target_files, headerdeps, args)
+        # A1: serialize the exists->clone/checkout path against concurrent
+        # ct-cake/ct-fetch peers cloning into the same managed dir. Lock a
+        # SIDECAR (<target>.lock), never the target itself — locking the target
+        # would create an empty dir a peer make treats as up-to-date. No-op
+        # unless --file-locking is enabled. The lock lives INSIDE the worker so
+        # each parallel external acquires its own sidecar independently.
+        import compiletools.locking
 
-            new_names: list[GitExternal] = []
-            for source_file in reachable:
-                for ext in extract_git_externals(source_file, args, context):
-                    prior = declared.get(ext.name)
-                    if prior is None:
-                        # N3: overrides key on the lowercased name, so two names
-                        # that differ only in case would silently share one
-                        # override (and one on-disk dir on a case-insensitive
-                        # FS). Reject the collision up front, naming both files.
-                        lower = ext.name.lower()
-                        clash = declared_lower.get(lower)
-                        if clash is not None and clash != ext.name:
-                            raise FetchError(
-                                f"case-colliding //#GIT= external names '{clash}' "
-                                f"(in {declared_files.get(clash, '?')}) vs '{ext.name}' "
-                                f"(in {source_file}); names must be unique case-insensitively "
-                                "because --git-path / CT_GIT_PATH_* overrides key on the "
-                                "lowercased name."
-                            )
-                        declared[ext.name] = ext
-                        declared_files[ext.name] = source_file
-                        declared_lower[lower] = ext.name
-                        if ext.name not in resolved:
-                            new_names.append(ext)
-                        continue
-                    # Same name seen before — must agree on URL.
-                    if prior.url != ext.url:
-                        raise FetchError(
-                            f"conflicting //#GIT= declarations for external '{ext.name}': "
-                            f"'{prior.url}' (in {declared_files.get(ext.name, '?')}) vs "
-                            f"'{ext.url}' (in {source_file})"
-                        )
-                    # Same name + same URL but a differing ref: hard error, naming
-                    # both declaring files (N2). Symmetric with the conflicting-URL
-                    # raise above — a build must not silently pick one of two
-                    # requested refs. (gather_external_status stays a tolerant warn:
-                    # --status is a report and never raises.)
-                    if prior.ref != ext.ref:
-                        raise FetchError(
-                            f"conflicting //#GIT= refs for external '{ext.name}' ({ext.url}): "
-                            f"'{prior.ref}' (in {declared_files.get(ext.name, '?')}) vs "
-                            f"'{ext.ref}' (in {source_file})"
-                        )
-                    # Otherwise an exact duplicate — silently deduped.
+        target = os.path.join(externals_dir, ext.name)
+        with compiletools.locking.FileLock(target + ".lock", args):
+            return resolve_external(
+                ext,
+                externals_dir=externals_dir,
+                override_path=None,
+                no_fetch=no_fetch,
+                update=update,
+                verbose=verbose,
+            )
 
-            if not new_names:
-                break
-
-            import compiletools.locking
-
+    def _resolve_new(new_names: list[GitExternal]) -> None:
+        # The new externals in a round are independent, so resolve them in a
+        # bounded thread pool. Determinism is preserved two ways: results are
+        # assigned into `resolved` in declaration order (so list(resolved) keeps
+        # discovery order), and on failure the FIRST error in declaration order
+        # is re-raised (so a conflicting/broken external surfaces the same
+        # FetchError it would have sequentially). Every worker is awaited, so no
+        # exception is swallowed.
+        max_workers = min(len(new_names), _MAX_FETCH_WORKERS)
+        if max_workers <= 1:
             for ext in new_names:
-                # Override keys are normalized to lowercase in
-                # parse_git_path_overrides; ext.name (from derive_name) preserves
-                # the URL-basename case, so lowercase it here to match
-                # case-insensitively.
-                override_path = overrides.get(ext.name.lower())
-                if override_path is not None:
-                    # User-owned checkout: never cloned/mutated here, so no lock.
-                    resolved[ext.name] = resolve_external(
-                        ext,
-                        externals_dir=externals_dir,
-                        override_path=override_path,
-                        no_fetch=no_fetch,
-                        update=update,
-                        verbose=verbose,
-                    )
+                resolved[ext.name] = _resolve_one(ext)
+            return
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            submitted = [(ext, executor.submit(_resolve_one, ext)) for ext in new_names]
+            computed: dict[str, ResolvedExternal] = {}
+            first_error: BaseException | None = None
+            for ext, future in submitted:
+                try:
+                    computed[ext.name] = future.result()
+                except BaseException as exc:  # re-raised below, deterministically
+                    if first_error is None:
+                        first_error = exc
+            if first_error is not None:
+                raise first_error
+        for ext in new_names:
+            resolved[ext.name] = computed[ext.name]
+
+    def _scan_round(reachable: list[str]) -> bool:
+        new_names: list[GitExternal] = []
+        for source_file in reachable:
+            for ext in extract_git_externals(source_file, args, context):
+                prior = declared.get(ext.name)
+                if prior is None:
+                    # N3: overrides key on the lowercased name, so two names that
+                    # differ only in case would silently share one override (and
+                    # one on-disk dir on a case-insensitive FS). Reject the
+                    # collision up front, naming both files.
+                    lower = ext.name.lower()
+                    clash = declared_lower.get(lower)
+                    if clash is not None and clash != ext.name:
+                        raise FetchError(
+                            f"case-colliding //#GIT= external names '{clash}' "
+                            f"(in {declared_files.get(clash, '?')}) vs '{ext.name}' "
+                            f"(in {source_file}); names must be unique case-insensitively "
+                            "because --git-path / CT_GIT_PATH_* overrides key on the "
+                            "lowercased name."
+                        )
+                    declared[ext.name] = ext
+                    declared_files[ext.name] = source_file
+                    declared_lower[lower] = ext.name
+                    if ext.name not in resolved:
+                        new_names.append(ext)
                     continue
-                # A1: serialize the exists->clone/checkout path against concurrent
-                # ct-cake/ct-fetch peers cloning into the same managed dir. Lock a
-                # SIDECAR (<target>.lock), never the target itself — locking the
-                # target would create an empty dir a peer make treats as
-                # up-to-date. No-op unless --file-locking is enabled.
-                target = os.path.join(externals_dir, ext.name)
-                with compiletools.locking.FileLock(target + ".lock", args):
-                    resolved[ext.name] = resolve_external(
-                        ext,
-                        externals_dir=externals_dir,
-                        override_path=None,
-                        no_fetch=no_fetch,
-                        update=update,
-                        verbose=verbose,
+                # Same name seen before — must agree on URL.
+                if prior.url != ext.url:
+                    raise FetchError(
+                        f"conflicting //#GIT= declarations for external '{ext.name}': "
+                        f"'{prior.url}' (in {declared_files.get(ext.name, '?')}) vs "
+                        f"'{ext.url}' (in {source_file})"
                     )
+                # Same name + same URL but a differing ref: hard error, naming
+                # both declaring files (N2). Symmetric with the conflicting-URL
+                # raise above — a build must not silently pick one of two
+                # requested refs. (gather_external_status stays a tolerant warn:
+                # --status is a report and never raises.)
+                if prior.ref != ext.ref:
+                    raise FetchError(
+                        f"conflicting //#GIT= refs for external '{ext.name}' ({ext.url}): "
+                        f"'{prior.ref}' (in {declared_files.get(ext.name, '?')}) vs "
+                        f"'{ext.ref}' (in {source_file})"
+                    )
+                # Otherwise an exact duplicate — silently deduped.
 
-            # Fetching just changed the filesystem under externals_dir. wrappedos'
-            # stat-like queries are globally @functools.cache'd by path, so a
-            # "file missing" answer cached while an external header did not yet
-            # exist would otherwise stick — making the NEXT round's _find_include
-            # blind to the freshly-cloned sources and breaking transitive
-            # discovery. Drop those caches so the next round re-stats from disk.
-            import compiletools.wrappedos
+        if not new_names:
+            return False
+        _resolve_new(new_names)
+        return True
 
-            compiletools.wrappedos.clear_cache()
-        else:
-            raise FetchError(
-                f"//#GIT= resolution did not converge after {_MAX_FIXPOINT_ROUNDS} rounds; "
-                f"resolved so far: {sorted(resolved)}. Declaring files: "
-                f"{ {n: declared_files.get(n, '?') for n in sorted(declared)} }"
-            )
+    def _not_converged() -> FetchError:
+        return FetchError(
+            f"//#GIT= resolution did not converge after {_MAX_FIXPOINT_ROUNDS} rounds; "
+            f"resolved so far: {sorted(resolved)}. Declaring files: "
+            f"{ {n: declared_files.get(n, '?') for n in sorted(declared)} }"
+        )
 
-        return list(resolved.values())
-    finally:
-        context.analyzer_args = prior_analyzer_args
+    _fixpoint_scan(
+        target_files,
+        args,
+        context,
+        externals_dir=externals_dir,
+        root_selector=_root_selector,
+        scan_round=_scan_round,
+        on_not_converged=_not_converged,
+    )
+    return list(resolved.values())
 
 
 # ===========================================================================
@@ -1306,90 +1394,83 @@ def gather_external_status(
     declared: dict[str, GitExternal] = {}
     declared_files: dict[str, str] = {}  # name -> first declaring file (best-effort diagnostics)
     ordered_names: list[str] = []
+    # status is report-only and never mutates the filesystem, so an external's
+    # on-disk state cannot change mid-run. Compute each ExternalStatus at most
+    # once and reuse it across rounds (root selection) and in the final pass,
+    # instead of re-running its three git subprocesses N*rounds times.
+    status_cache: dict[str, ExternalStatus] = {}
 
-    prior_analyzer_args = context.analyzer_args
-    try:
-        # NOTE: this fixpoint loop is intentionally kept in lockstep with the
-        # one in fetch_externals. Both share the same skeleton
-        # (_MAX_FIXPOINT_ROUNDS, _augmented_headerdeps / _reachable_sources /
-        # extract_git_externals, the dedup-by-name rule, and a
-        # wrappedos.clear_cache() at the end of each round). They intentionally
-        # DIFFER on two points: root-selection (fetch widens the search into
-        # every resolved/cloned root; status widens only into roots already
-        # present on disk) and conflict-handling (fetch RAISES on a conflicting
-        # URL and warns on a conflicting ref; status only WARNS in both cases,
-        # never raising, since --status is a report). Keep the two in sync when
-        # editing the shared skeleton; do NOT extract a shared generator.
-        for _round in range(_MAX_FIXPOINT_ROUNDS):
-            # Reach into whatever externals are already present on disk (never
-            # fetch to widen the graph). A present external's own sources can
-            # declare further externals we should report.
-            present_roots = [
-                s.path
-                for s in (
-                    _status_for(ext, externals_dir=externals_dir, override_path=overrides.get(ext.name.lower()))
-                    for ext in declared.values()
-                )
-                if s.state != "missing"
-            ]
-            headerdeps = _augmented_headerdeps(
-                args,
-                context,
-                externals_dir=externals_dir,
-                resolved_roots=present_roots,
-            )
-            reachable = _reachable_sources(target_files, headerdeps, args)
+    def _status_cached(ext: GitExternal) -> ExternalStatus:
+        st = status_cache.get(ext.name)
+        if st is None:
+            st = _status_for(ext, externals_dir=externals_dir, override_path=overrides.get(ext.name.lower()))
+            status_cache[ext.name] = st
+        return st
 
-            new_found = False
-            for source_file in reachable:
-                for ext in extract_git_externals(source_file, args, context):
-                    prior = declared.get(ext.name)
-                    if prior is None:
-                        declared[ext.name] = ext
-                        declared_files[ext.name] = source_file
-                        ordered_names.append(ext.name)
-                        new_found = True
-                        continue
-                    # Same name seen before. In report mode we never raise on a
-                    # conflict (mirrors fetch_externals' wording, but tolerant):
-                    # first declaration wins and the conflict is surfaced as a
-                    # warning so --status does not silently hide it.
-                    if prior.url != ext.url:
-                        _warn(
-                            f"conflicting //#GIT= declarations for external '{ext.name}': "
-                            f"'{prior.url}' (in {declared_files.get(ext.name, '?')}) vs "
-                            f"'{ext.url}' (in {source_file}); keeping '{prior.url}'."
-                        )
-                    elif prior.ref != ext.ref:
-                        _warn(
-                            f"external '{ext.name}' ({ext.url}): conflicting refs "
-                            f"'{prior.ref}' (in {declared_files.get(ext.name, '?')}) vs "
-                            f"'{ext.ref}' (in {source_file}); keeping '{prior.ref}'."
-                        )
-                    # Otherwise an exact duplicate — silently deduped.
+    # --- status-mode axes for the shared _fixpoint_scan driver --------------
+    # See _fixpoint_scan for the shared skeleton these callbacks plug into.
+    # status differs from fetch by: widening the search only into roots ALREADY
+    # PRESENT on disk (it never fetches to expand the graph), and only WARNING on
+    # a conflict rather than raising (--status is a report).
 
-            if not new_found:
-                break
+    def _root_selector() -> list[str]:
+        # Reach into whatever externals are already present on disk (never fetch
+        # to widen the graph). A present external's own sources can declare
+        # further externals we should report.
+        roots: list[str] = []
+        for ext in declared.values():
+            st = _status_cached(ext)
+            if st.state != "missing":
+                roots.append(st.path)
+        return roots
 
-            # A freshly-declared external might already be present on disk; drop
-            # wrappedos' cached "missing" answers so the next round's header scan
-            # can reach into it (mirrors fetch_externals' cache discipline).
-            import compiletools.wrappedos
+    def _scan_round(reachable: list[str]) -> bool:
+        new_found = False
+        for source_file in reachable:
+            for ext in extract_git_externals(source_file, args, context):
+                prior = declared.get(ext.name)
+                if prior is None:
+                    declared[ext.name] = ext
+                    declared_files[ext.name] = source_file
+                    ordered_names.append(ext.name)
+                    new_found = True
+                    continue
+                # Same name seen before. In report mode we never raise on a
+                # conflict (mirrors fetch_externals' wording, but tolerant):
+                # first declaration wins and the conflict is surfaced as a
+                # warning so --status does not silently hide it.
+                if prior.url != ext.url:
+                    _warn(
+                        f"conflicting //#GIT= declarations for external '{ext.name}': "
+                        f"'{prior.url}' (in {declared_files.get(ext.name, '?')}) vs "
+                        f"'{ext.url}' (in {source_file}); keeping '{prior.url}'."
+                    )
+                elif prior.ref != ext.ref:
+                    _warn(
+                        f"external '{ext.name}' ({ext.url}): conflicting refs "
+                        f"'{prior.ref}' (in {declared_files.get(ext.name, '?')}) vs "
+                        f"'{ext.ref}' (in {source_file}); keeping '{prior.ref}'."
+                    )
+                # Otherwise an exact duplicate — silently deduped.
+        return new_found
 
-            compiletools.wrappedos.clear_cache()
-        else:
-            raise FetchError(
-                f"//#GIT= status enumeration did not converge after {_MAX_FIXPOINT_ROUNDS} rounds; "
-                f"found so far: {sorted(declared)}. Declaring files: "
-                f"{ {n: declared_files.get(n, '?') for n in sorted(declared)} }"
-            )
+    def _not_converged() -> FetchError:
+        return FetchError(
+            f"//#GIT= status enumeration did not converge after {_MAX_FIXPOINT_ROUNDS} rounds; "
+            f"found so far: {sorted(declared)}. Declaring files: "
+            f"{ {n: declared_files.get(n, '?') for n in sorted(declared)} }"
+        )
 
-        return [
-            _status_for(declared[name], externals_dir=externals_dir, override_path=overrides.get(name.lower()))
-            for name in ordered_names
-        ]
-    finally:
-        context.analyzer_args = prior_analyzer_args
+    _fixpoint_scan(
+        target_files,
+        args,
+        context,
+        externals_dir=externals_dir,
+        root_selector=_root_selector,
+        scan_round=_scan_round,
+        on_not_converged=_not_converged,
+    )
+    return [_status_cached(declared[name]) for name in ordered_names]
 
 
 # ===========================================================================
