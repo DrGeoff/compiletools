@@ -686,11 +686,16 @@ def _checkout_immutable(ext: GitExternal, target: str, *, no_fetch: bool, verbos
     _run_git(["checkout", "--end-of-options", ref], cwd=target, ext=ext)
 
 
-def _handle_branch(ext: GitExternal, target: str, *, update: bool, verbose: int) -> None:
+def _handle_branch(ext: GitExternal, target: str, *, no_fetch: bool, update: bool, verbose: int) -> None:
     """Handle a branch ref on a present work tree.
 
     Without ``update``: if HEAD differs from the branch tip, leave as-is
     and warn. With ``update``: refuse on dirty, else fetch + fast-forward.
+
+    ``no_fetch`` is the unconditional offline guarantee (higher precedence
+    than ``update``): an ``--update`` fast-forward needs the network, so it
+    is a hard error offline. The ``not update`` path is already fully offline
+    and is left untouched.
 
     Caller guarantees ``ext.ref`` is non-None (a branch name).
     """
@@ -709,6 +714,11 @@ def _handle_branch(ext: GitExternal, target: str, *, update: bool, verbose: int)
             )
         return
 
+    if no_fetch:
+        raise FetchError(
+            f"external '{ext.name}' ({ext.url}): branch '{ref}' at '{target}' "
+            f"cannot be updated because --no-fetch was given (offline)."
+        )
     if _is_dirty(ext, target):
         raise FetchError(
             f"external '{ext.name}' ({ext.url}): work tree at '{target}' has "
@@ -721,10 +731,21 @@ def _handle_branch(ext: GitExternal, target: str, *, update: bool, verbose: int)
     _run_git(["merge", "--ff-only", "--end-of-options", f"origin/{ref}"], cwd=target, ext=ext)
 
 
-def _handle_no_ref(ext: GitExternal, target: str, *, update: bool, verbose: int) -> None:
-    """Handle ``ref is None`` on a present work tree: pull current branch on --update."""
+def _handle_no_ref(ext: GitExternal, target: str, *, no_fetch: bool, update: bool, verbose: int) -> None:
+    """Handle ``ref is None`` on a present work tree: pull current branch on --update.
+
+    ``no_fetch`` is the unconditional offline guarantee (higher precedence
+    than ``update``): the ``--update`` pull needs the network, so it is a hard
+    error offline. The ``not update`` path is already fully offline and is
+    left untouched.
+    """
     if not update:
         return
+    if no_fetch:
+        raise FetchError(
+            f"external '{ext.name}' ({ext.url}): work tree at '{target}' cannot "
+            f"be updated because --no-fetch was given (offline)."
+        )
     # A detached HEAD has no upstream branch to pull; `git pull --ff-only` would
     # fail with git's opaque "You are not currently on a branch." Detect it and
     # explain the pin/unpin situation instead (A21).
@@ -773,7 +794,7 @@ def _handle_present(ext: GitExternal, target: str, *, no_fetch: bool, update: bo
         )
 
     if ext.ref is None:
-        _handle_no_ref(ext, target, update=update, verbose=verbose)
+        _handle_no_ref(ext, target, no_fetch=no_fetch, update=update, verbose=verbose)
     elif _is_tag(target, ext.ref):
         # A tag is immutable — route it to _checkout_immutable BEFORE the branch
         # check (A22). Testing tag first means a name that exists as both a tag
@@ -786,7 +807,7 @@ def _handle_present(ext: GitExternal, target: str, *, no_fetch: bool, update: bo
             )
         _checkout_immutable(ext, target, no_fetch=no_fetch, verbose=verbose)
     elif _is_branch(target, ext.ref):
-        _handle_branch(ext, target, update=update, verbose=verbose)
+        _handle_branch(ext, target, no_fetch=no_fetch, update=update, verbose=verbose)
     else:
         # Bare SHA (or an unknown ref that is neither branch, tag, nor
         # resolvable SHA — the latter surfaces as a named checkout failure).
