@@ -415,24 +415,37 @@ def _run_git(args: list[str], *, cwd: str | None, ext: GitExternal) -> subproces
     explicitly (never ``os.chdir``), and both ``CalledProcessError`` and
     ``OSError`` (``git`` not installed) are caught and re-raised as a named
     :class:`FetchError`.
+
+    Lock safety: the mutating git operations (``clone``/``fetch``/
+    ``checkout``/``merge``/``pull``) run while ``fetch_externals`` holds a
+    ``<target>.lock`` sidecar. Running them through
+    :func:`compiletools.locking._run_with_signal_forwarding` puts the git
+    child in its own session and forwards SIGINT/SIGTERM to it, so a parent
+    interrupt during a long network clone cannot orphan a git process that
+    keeps writing to the target after the lock is released — the same
+    protection ``atomic_compile``/``atomic_link`` rely on. ``capture_output``
+    preserves this function's contract of folding git's output into the
+    raised :class:`FetchError` on non-zero exit.
     """
+    import compiletools.locking
+
     try:
-        return subprocess.run(
+        result = compiletools.locking._run_with_signal_forwarding(
             ["git", *args],
             cwd=cwd,
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
             env=_git_env(),
+            capture_output=True,
         )
     except FileNotFoundError as exc:
         raise FetchError(f"external '{ext.name}' ({ext.url}): 'git' is not installed or not on PATH") from exc
     except OSError as exc:
         raise FetchError(f"external '{ext.name}' ({ext.url}): failed to execute git {' '.join(args)}: {exc}") from exc
-    except subprocess.CalledProcessError as exc:
-        output = exc.output.strip()
+
+    if result.returncode != 0:
+        output = (result.stdout or "").strip()
+        exc = subprocess.CalledProcessError(result.returncode, ["git", *args], output=result.stdout)
         raise FetchError(f"external '{ext.name}' ({ext.url}): git {' '.join(args)} failed:\n{output}") from exc
+    return result
 
 
 def _is_git_work_tree(path: str) -> bool:

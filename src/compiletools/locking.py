@@ -701,13 +701,23 @@ class FileLock:
         return False  # Don't suppress exceptions
 
 
-def _run_with_signal_forwarding(cmd: list[str], cwd: str | None = None) -> subprocess.CompletedProcess:
+def _run_with_signal_forwarding(
+    cmd: list[str],
+    cwd: str | None = None,
+    *,
+    env: dict[str, str] | None = None,
+    capture_output: bool = False,
+) -> subprocess.CompletedProcess:
     """Run cmd as a subprocess in a new session, forwarding SIGINT/SIGTERM
     to the child's process group, and reaping the child before returning.
 
-    Stdout/stderr inherit the parent's fds so compiler diagnostics stream
-    to the user in real time (rather than being captured and only surfaced
-    on failure).
+    By default stdout/stderr inherit the parent's fds so compiler diagnostics
+    stream to the user in real time (rather than being captured and only
+    surfaced on failure). With ``capture_output=True`` the child's stdout is
+    captured (stderr merged into it) and returned as
+    ``CompletedProcess.stdout`` (a ``str`` — the child runs in text mode);
+    used by callers that need the child's output to build an error message
+    (e.g. ``fetch._run_git`` folds failed ``git`` output into a ``FetchError``).
 
     Why this exists: subprocess.run does not put the child in a new session
     and does not reap the child if the parent receives a signal. If the
@@ -715,6 +725,9 @@ def _run_with_signal_forwarding(cmd: list[str], cwd: str | None = None) -> subpr
     orphan that continues writing to the (now unlocked) target — a peer can
     grab the lock and clobber the target while the orphan runs. This wrapper
     ensures the lock-holding caller never returns until its child has exited.
+    The same hazard applies to ``fetch.fetch_externals``, which drives
+    ``git clone``/``fetch``/``checkout`` under a ``<target>.lock`` sidecar:
+    an orphaned clone would keep writing to the target after the lock is gone.
 
     The child runs in its own process group (start_new_session=True) so we
     can signal it via os.killpg without also signalling ourselves. SIGINT
@@ -725,8 +738,19 @@ def _run_with_signal_forwarding(cmd: list[str], cwd: str | None = None) -> subpr
     ``cwd`` (when set) is passed to ``subprocess.Popen`` so the child runs
     from that directory — used by the PCH precompile rule to keep gcc's
     PCH path-table workspace-relative. See ``BuildRule.cwd``.
+
+    ``env`` (when set) replaces the child's environment (as with
+    ``subprocess.Popen(env=)``); callers that only need to add/remove a few
+    variables should pass a copy of ``os.environ`` with their edits.
     """
-    proc = subprocess.Popen(cmd, start_new_session=True, cwd=cwd)
+    popen_kwargs: dict = {"start_new_session": True, "cwd": cwd}
+    if env is not None:
+        popen_kwargs["env"] = env
+    if capture_output:
+        popen_kwargs["stdout"] = subprocess.PIPE
+        popen_kwargs["stderr"] = subprocess.STDOUT
+        popen_kwargs["text"] = True
+    proc = subprocess.Popen(cmd, **popen_kwargs)
 
     def _forward(signum, frame):
         try:
@@ -734,10 +758,16 @@ def _run_with_signal_forwarding(cmd: list[str], cwd: str | None = None) -> subpr
         except (OSError, ProcessLookupError):
             pass
 
+    stdout_data: str | None = None
     try:
         with compiletools.apptools.graceful_shutdown(_forward, signal.SIGINT, signal.SIGTERM):
-            proc.wait()
-        return subprocess.CompletedProcess(cmd, proc.returncode, None, None)
+            if capture_output:
+                # communicate() (not wait()) so a child that fills the stdout
+                # pipe buffer cannot deadlock against our blocking wait.
+                stdout_data, _ = proc.communicate()
+            else:
+                proc.wait()
+        return subprocess.CompletedProcess(cmd, proc.returncode, stdout_data, None)
     finally:
         if proc.poll() is None:
             try:

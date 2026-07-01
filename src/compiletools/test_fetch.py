@@ -6,8 +6,13 @@ import argparse
 import dataclasses
 import os
 import shutil
+import signal
 import subprocess
+import sys
 import tempfile
+import textwrap
+import time
+from unittest.mock import patch
 
 import configargparse
 import pytest
@@ -1777,3 +1782,121 @@ def test_fetch_externals_locks_managed_target_sidecar(monkeypatch: pytest.Monkey
     overridden_lock = os.path.join(externals, "overridden.lock")
     assert managed_lock in locked_paths
     assert overridden_lock not in locked_paths
+
+
+# ---------------------------------------------------------------------------
+# _run_git lock safety: git subprocesses must run through the lock-safe
+# signal-forwarding helper (a new session + SIGINT/SIGTERM forwarding), so a
+# parent interrupt during a network clone held under a <target>.lock sidecar
+# cannot orphan a git child that keeps writing to the (now-unlocked) target.
+# ---------------------------------------------------------------------------
+
+
+def test_run_git_runs_in_new_session() -> None:
+    """_run_git must spawn git via subprocess.Popen with start_new_session=True
+    so signals can be forwarded to the git child's process group. A bare
+    subprocess.run (the pre-fix implementation) never sets start_new_session,
+    leaving a killed parent's git child orphaned under the released lock."""
+    ext = GitExternal(name="mylib", url="file:///nowhere", ref=None)
+    with patch("subprocess.Popen") as mock_popen:
+        proc = mock_popen.return_value
+        proc.returncode = 0
+        proc.poll.return_value = 0
+        proc.communicate.return_value = ("", None)
+        proc.wait.return_value = 0
+        proc.__enter__ = lambda self_: self_
+        proc.__exit__ = lambda self_, *a: False
+        try:
+            fetch._run_git(["clone", "x", "y"], cwd=None, ext=ext)
+        except Exception:
+            pass
+        assert mock_popen.called, "subprocess.Popen was never called"
+        assert any(call.kwargs.get("start_new_session") is True for call in mock_popen.call_args_list), (
+            "git subprocess was not started with start_new_session=True — signals "
+            f"cannot be forwarded to the git child. Calls: {[c.kwargs for c in mock_popen.call_args_list]}"
+        )
+
+
+@pytest.mark.skipif(not hasattr(os, "killpg"), reason="POSIX-only signal forwarding")
+def test_sigterm_during_run_git_is_forwarded_to_git_child(tmp_path) -> None:
+    """End-to-end: a worker calls _run_git against a fake long-running `git`
+    shim that traps SIGTERM. After SIGTERM-ing the worker, the trap-marker
+    must appear (the git child received TERM via process-group forwarding) and
+    the done-marker must NOT (the child did not run to completion as an orphan)."""
+    shim_dir = tmp_path / "shim"
+    shim_dir.mkdir()
+    ready_marker = tmp_path / "READY"
+    trap_marker = tmp_path / "TRAPPED"
+    done_marker = tmp_path / "DONE"
+    worker_script = tmp_path / "worker.py"
+
+    git_shim = shim_dir / "git"
+    git_shim.write_text(
+        textwrap.dedent(f"""\
+        #!/bin/sh
+        touch {ready_marker}
+        trap 'touch {trap_marker}; exit 143' TERM
+        sleep 5
+        touch {done_marker}
+        """)
+    )
+    git_shim.chmod(0o755)
+
+    repo_src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    worker_script.write_text(
+        textwrap.dedent(f"""
+        import os, sys
+        sys.path.insert(0, {repo_src!r})
+        os.environ["PATH"] = {str(shim_dir)!r} + os.pathsep + os.environ.get("PATH", "")
+        from compiletools.fetch import _run_git, GitExternal
+        ext = GitExternal(name="mylib", url="file:///nowhere", ref=None)
+        try:
+            _run_git(["clone", "file:///nowhere", "dest"], cwd=None, ext=ext)
+        except SystemExit:
+            raise
+        except Exception:
+            pass
+    """)
+    )
+
+    proc = subprocess.Popen(
+        [sys.executable, str(worker_script)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        deadline = time.time() + 15
+        while not ready_marker.exists() and time.time() < deadline:
+            time.sleep(0.05)
+        assert ready_marker.exists(), "git shim never started (worker did not reach _run_git)"
+        time.sleep(0.5)
+
+        proc.send_signal(signal.SIGTERM)
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
+            proc.wait()
+            pytest.fail("Worker did not exit promptly after SIGTERM")
+    finally:
+        if proc.poll() is None:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
+            proc.wait()
+
+    # Long enough that DONE would appear if the git child ran to completion as
+    # an orphan (sleep 5 in the shim), but bounded so the test stays fast.
+    time.sleep(6.0)
+
+    assert trap_marker.exists(), (
+        "git child never received SIGTERM — signal was not forwarded to the git child's process group"
+    )
+    assert not done_marker.exists(), (
+        "git child ran to completion as an orphan — worker exited without killing its git child"
+    )
