@@ -261,6 +261,51 @@ def ensure_lock_helper_in_path():
         )
 
 
+@pytest.fixture(scope="session")
+def _hermetic_git_global_config(tmp_path_factory):
+    """Session-wide throwaway empty gitconfig used to shadow the developer's
+    real ``~/.gitconfig`` for every test (see ``_hermetic_git_env``).
+
+    A real empty file (not ``/dev/null``) so that any git operation that happens
+    to stat/read GIT_CONFIG_GLOBAL sees a valid, deterministic, empty config.
+    """
+    path = tmp_path_factory.mktemp("hermetic-git") / "gitconfig"
+    path.write_text("")
+    return str(path)
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_git_env(monkeypatch, _hermetic_git_global_config):
+    """Isolate every test's git subprocesses from ambient system/global gitconfig.
+
+    Production ``fetch._git_env()`` DELIBERATELY no longer neutralises ambient
+    git config (it dropped ``GIT_CONFIG_NOSYSTEM`` / ``GIT_CONFIG_GLOBAL`` so
+    enterprise auth, credential helpers, ``url.*.insteadOf`` and proxies keep
+    working). That intentional product decision makes the *test suite's*
+    determinism depend on each test independently re-injecting the isolation vars
+    into the env of any git / ct-fetch / ct-cake subprocess it spawns — ad hoc
+    and easy to forget. This autouse fixture does it once, centrally, for every
+    test: it points GIT_CONFIG_GLOBAL at a throwaway empty file, disables system
+    config (GIT_CONFIG_NOSYSTEM + GIT_CONFIG_SYSTEM), and supplies a fixed commit
+    identity. Any subprocess a test spawns inherits ``os.environ`` and is
+    therefore hermetic regardless of the host's ``/etc/gitconfig`` or
+    ``~/.gitconfig`` (``transfer.fsckObjects``, ``url.*.insteadOf``,
+    ``init.defaultBranch``, ``commit.gpgsign``, ``core.hooksPath``, ...).
+
+    This mutates ``os.environ`` (via monkeypatch, auto-restored on teardown), NOT
+    the dict returned by ``fetch._git_env()``. The production ``_git_env``
+    regression tests inspect that return value and ``delenv`` the relevant vars
+    in their own body before calling it, so they are unaffected by this fixture.
+    """
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", _hermetic_git_global_config)
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "ct-test")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "ct-test@example.com")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "ct-test")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "ct-test@example.com")
+
+
 @pytest.fixture(scope="function")
 def pkgconfig_env(monkeypatch):
     """Set PKG_CONFIG_PATH to shared test pkg-config directory.
