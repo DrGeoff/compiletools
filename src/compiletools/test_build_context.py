@@ -6,44 +6,28 @@ so these exercise its documented contracts directly.
 
 from __future__ import annotations
 
-import copy
-import types
-
 from compiletools.build_context import BuildContext
 
 
-def test_deepcopy_returns_self() -> None:
-    """copy.deepcopy(ctx) must return the SAME context, not a clone.
+def test_no_custom_deepcopy_hook() -> None:
+    """BuildContext must NOT define a custom ``__deepcopy__``.
 
-    A BuildContext holds per-build caches whose values are not deep-copyable
-    (stringzilla.Str, a BuildTimer owning a threading.Lock). Some code paths
-    deep-copy an args namespace that transitively references the live context
-    via args._context (e.g. fetch._augmented_headerdeps). Sharing the one
-    context by reference is what keeps that deepcopy cheap and non-crashing.
+    The former identity-aliasing ``__deepcopy__`` (return self) existed solely
+    so ``fetch._augmented_headerdeps`` could ``copy.deepcopy`` an args namespace
+    that transitively referenced the live context. That deepcopy is gone (fetch
+    now threads external include dirs through ``headerdeps.create``'s
+    ``extra_include_dirs`` parameter), so the class-wide aliasing hook — a latent
+    trap on a shared type — is removed. Guard against it silently returning.
     """
+    assert "__deepcopy__" not in vars(BuildContext), (
+        "BuildContext should not redefine __deepcopy__; the fetch deepcopy that required it has been removed."
+    )
+
+
+def test_restore_pkg_config_path_is_idempotent_when_nothing_applied() -> None:
+    """restore_pkg_config_path is a no-op when no override was applied."""
     ctx = BuildContext()
-    copied = copy.deepcopy(ctx)
-    assert copied is ctx, "BuildContext.__deepcopy__ must return self (identity contract)"
-
-
-def test_deepcopy_of_namespace_shares_context_but_copies_siblings() -> None:
-    """Deep-copying an args-like namespace keeps the SAME context by reference
-    while genuinely deep-copying sibling mutable attributes.
-
-    This is the exact shape fetch._augmented_headerdeps relies on: it
-    ``copy.deepcopy``s args (which carries ``_context``) to append throwaway
-    ``-I`` flags, and passes the *real* context through explicitly. The context
-    must survive as the shared live object; unrelated mutable state must not.
-    """
-    ctx = BuildContext()
-    ns = types.SimpleNamespace(_context=ctx, siblings=["a", "b"])
-
-    copied = copy.deepcopy(ns)
-
-    # The context is shared by reference (return-self contract).
-    assert copied._context is ctx
-    # A sibling mutable attribute is genuinely deep-copied, not aliased.
-    assert copied.siblings == ["a", "b"]
-    assert copied.siblings is not ns.siblings
-    copied.siblings.append("c")
-    assert ns.siblings == ["a", "b"]
+    assert ctx._original_pkg_config_path is None
+    ctx.restore_pkg_config_path()  # must not raise
+    assert ctx._original_pkg_config_path is None
+    assert ctx.pkg_config_overrides_applied is False

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import dataclasses
 import os
 import shutil
@@ -770,7 +771,7 @@ def test_resolved_external_is_frozen() -> None:
 # ===========================================================================
 
 
-def _make_args(verbose: int = 0) -> object:
+def _make_args(verbose: int = 0) -> argparse.Namespace:
     """Build a realistic args namespace for headerdeps / file_analyzer.
 
     Mirrors the established headerdeps test pattern: register the headerdeps
@@ -1014,6 +1015,57 @@ def test_fetch_externals_second_call_no_network() -> None:
 
 
 @requires_functional_compiler
+def test_fetch_externals_parallel_resolves_all_in_declaration_order() -> None:
+    """Multiple independent externals discovered in one round are resolved in a
+    thread pool, yet the result list stays in stable declaration order.
+
+    All three externals are declared in a single source file, so they are
+    discovered in the same fixpoint round and handed to the parallel resolver at
+    once. This exercises finding 7 (bounded ThreadPoolExecutor) and pins the
+    deterministic ordering contract.
+    """
+    with tempfile.TemporaryDirectory() as root:
+        exts = [
+            _make_bare_with_files(root, name, {f"{name}.h": "#pragma once\n"}) for name in ("alpha", "beta", "gamma")
+        ]
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        main = os.path.join(root, "main.cpp")
+        with open(main, "w") as fh:
+            decls = "".join(f"//#GIT={e['url']}@master\n" for e in exts)
+            fh.write(decls + "int main() { return 0; }\n")
+
+        results = fetch_externals([main], _make_args(), BuildContext(), externals_dir=externals)
+
+        # Declaration order (alpha, beta, gamma) is preserved despite parallelism.
+        assert [r.name for r in results] == ["alpha", "beta", "gamma"]
+        for name in ("alpha", "beta", "gamma"):
+            assert os.path.isfile(os.path.join(externals, name, f"{name}.h"))
+
+
+@requires_functional_compiler
+def test_fetch_externals_parallel_one_bad_url_raises_fetcherror() -> None:
+    """A failure in any parallel worker surfaces as a FetchError naming the
+    offender; a good peer resolving concurrently does not mask it."""
+    with tempfile.TemporaryDirectory() as root:
+        good = _make_bare_with_files(root, "goodlib", {"g.h": "#pragma once\n"})
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        main = os.path.join(root, "main.cpp")
+        with open(main, "w") as fh:
+            fh.write(
+                f"//#GIT={good['url']}@master\n"
+                f"//#GIT=file://{root}/does-not-exist-repo.git@master\n"
+                "int main() { return 0; }\n"
+            )
+
+        with pytest.raises(FetchError) as excinfo:
+            fetch_externals([main], _make_args(), BuildContext(), externals_dir=externals, no_fetch=False)
+        # The named offender is the missing repo (its derived name).
+        assert "does-not-exist-repo" in str(excinfo.value)
+
+
+@requires_functional_compiler
 def test_fetch_externals_malformed_value_errors() -> None:
     with tempfile.TemporaryDirectory() as root:
         externals = os.path.join(root, "externals")
@@ -1037,19 +1089,17 @@ def test_extract_git_externals_tolerates_missing_file() -> None:
 
 
 @requires_functional_compiler
-def test_augmented_headerdeps_quotes_spaces_in_include_dirs() -> None:
-    """A resolved root containing a space must round-trip through headerdeps.
+def test_augmented_headerdeps_threads_include_dirs_without_deepcopy() -> None:
+    """_augmented_headerdeps no longer deep-copies args, and the external
+    include dirs (spaces and all) reach the headerdeps search list.
 
-    _augmented_headerdeps appends ``-I<dir>`` tokens to CPPFLAGS; the
-    downstream headerdeps walker recovers them via shlex (split_command_cached).
-    Without shlex.quote, ``-I/work dir/foo`` would split into two broken tokens
-    and the include path would be lost. We exercise the exact seam: build the
-    augmented headerdeps over a space-bearing externals dir, then re-parse its
-    CPPFLAGS through the same _extract_include_paths_from_flags the walker uses
-    and assert the original path survives intact.
+    The extra dirs are passed through ``headerdeps.create(extra_include_dirs=)``
+    and land directly on the DirectHeaderDeps include list as raw path strings —
+    no shlex round-trip through CPPFLAGS — so a path with a space survives. And
+    because there is no deepcopy, the headerdeps instance holds the caller's
+    real args object, and args.CPPFLAGS is left untouched.
     """
     from compiletools.fetch import _augmented_headerdeps
-    from compiletools.headerdeps import HeaderDepsBase
 
     with tempfile.TemporaryDirectory() as root:
         externals = os.path.join(root, "ex ternals")  # space in the path
@@ -1057,26 +1107,39 @@ def test_augmented_headerdeps_quotes_spaces_in_include_dirs() -> None:
         space_root = os.path.join(root, "resolved root")  # another space
         os.makedirs(space_root)
 
+        args = _make_args()
+        cppflags_before = args.CPPFLAGS
         hd = _augmented_headerdeps(
-            _make_args(),
+            args,
             BuildContext(),
             externals_dir=externals,
             resolved_roots=[space_root],
         )
-        recovered = HeaderDepsBase._extract_include_paths_from_flags(hd.args.CPPFLAGS)
-        assert externals in recovered
-        assert space_root in recovered
-        assert os.path.join(space_root, "include") in recovered
+
+        # No deepcopy: the headerdeps holds the caller's real args object.
+        assert hd.args is args
+        # The caller's flags are not mutated.
+        assert cppflags_before == args.CPPFLAGS
+
+        # The extra include dirs are threaded through verbatim...
+        assert externals in hd._extra_include_dirs
+        assert space_root in hd._extra_include_dirs
+        assert os.path.join(space_root, "include") in hd._extra_include_dirs
+        # ...and appended to the DirectHeaderDeps include search list (raw
+        # strings, so the embedded spaces survive intact).
+        assert externals in hd.includes
+        assert space_root in hd.includes
+        assert os.path.join(space_root, "include") in hd.includes
 
 
 @requires_functional_compiler
 def test_fetch_externals_restores_context_analyzer_args() -> None:
     """After fetch_externals returns, context.analyzer_args is the prior value.
 
-    fetch_externals builds an _augmented_headerdeps over a deepcopy of args each
-    round; HeaderDepsBase.__init__ stores that throwaway deepcopy into
-    context.analyzer_args. The caller's context must be left holding whatever it
-    held before (here None), not the last round's deepcopy.
+    Each round's _augmented_headerdeps -> headerdeps.create ->
+    HeaderDepsBase.__init__ calls set_analyzer_args(args, context), which stores
+    the real args into context.analyzer_args. The caller's context must be left
+    holding whatever it held before (here None) via the try/finally restore.
     """
     with tempfile.TemporaryDirectory() as root:
         ext = _make_bare_with_files(root, "mylib", {"foo.h": "#pragma once\nint foo();\n"})
@@ -1644,11 +1707,7 @@ def test_fetch_externals_locks_managed_target_sidecar(monkeypatch: pytest.Monkey
 
         main = os.path.join(root, "main.cpp")
         with open(main, "w") as fh:
-            fh.write(
-                f"//#GIT={managed['url']}@master\n"
-                f"//#GIT={overridden['url']}@master\n"
-                "int main() { return 0; }\n"
-            )
+            fh.write(f"//#GIT={managed['url']}@master\n//#GIT={overridden['url']}@master\nint main() {{ return 0; }}\n")
 
         fetch_externals(
             [main],
