@@ -22,8 +22,10 @@ from compiletools.fetch import (
     extract_git_externals,
     fetch_externals,
     parse_git_declaration,
+    parse_git_path_overrides,
     parse_git_value,
     resolve_external,
+    resolve_externals_dir,
 )
 from compiletools.testhelper import requires_functional_compiler
 
@@ -1079,3 +1081,111 @@ def test_extract_git_externals_skips_non_git_flags() -> None:
             )
         externals_found = extract_git_externals(src, _make_args(), BuildContext())
         assert externals_found == [GitExternal(name="mylib", url="https://example.com/mylib.git", ref="v1")]
+
+
+# ===========================================================================
+# Pure config helpers (Task 11): parse_git_path_overrides + resolve_externals_dir
+# ===========================================================================
+
+
+def test_parse_git_path_overrides_empty() -> None:
+    assert parse_git_path_overrides([], {}) == {}
+
+
+def test_parse_git_path_overrides_cli_only() -> None:
+    result = parse_git_path_overrides(["foo=/abs/foo", "bar=/abs/bar"], {})
+    assert result == {"foo": "/abs/foo", "bar": "/abs/bar"}
+
+
+def test_parse_git_path_overrides_cli_relative_is_absolutized() -> None:
+    result = parse_git_path_overrides(["foo=rel/foo"], {})
+    assert result["foo"] == os.path.abspath("rel/foo")
+    assert os.path.isabs(result["foo"])
+
+
+def test_parse_git_path_overrides_env_only() -> None:
+    result = parse_git_path_overrides([], {"CT_GIT_PATH_FOO": "/p"})
+    assert result == {"foo": "/p"}
+
+
+def test_parse_git_path_overrides_env_suffix_lowercased() -> None:
+    """The suffix after CT_GIT_PATH_ is lowercased to match a derived name."""
+    result = parse_git_path_overrides([], {"CT_GIT_PATH_MyLib": "/p"})
+    assert result == {"mylib": "/p"}
+
+
+def test_parse_git_path_overrides_cli_overrides_env() -> None:
+    result = parse_git_path_overrides(["foo=/cli"], {"CT_GIT_PATH_FOO": "/env"})
+    assert result == {"foo": "/cli"}
+
+
+def test_parse_git_path_overrides_cli_name_case_normalized() -> None:
+    """A CLI NAME is lowercased so it lines up with the env-suffix rule."""
+    result = parse_git_path_overrides(["Foo=/cli"], {"CT_GIT_PATH_FOO": "/env"})
+    assert result == {"foo": "/cli"}
+
+
+def test_parse_git_path_overrides_ignores_unrelated_env() -> None:
+    result = parse_git_path_overrides([], {"PATH": "/usr/bin", "CT_GIT_PATH_X": "/x"})
+    assert result == {"x": "/x"}
+
+
+def test_parse_git_path_overrides_no_equals_raises() -> None:
+    with pytest.raises(FetchError, match="NAME=PATH"):
+        parse_git_path_overrides(["noequals"], {})
+
+
+def test_parse_git_path_overrides_empty_name_raises() -> None:
+    with pytest.raises(FetchError, match="empty NAME"):
+        parse_git_path_overrides(["=/p"], {})
+
+
+def test_parse_git_path_overrides_empty_path_raises() -> None:
+    with pytest.raises(FetchError, match="empty PATH"):
+        parse_git_path_overrides(["foo="], {})
+
+
+def test_resolve_externals_dir_explicit_is_absolutized() -> None:
+    assert resolve_externals_dir("/abs/ex", "/some/gitroot") == "/abs/ex"
+    assert resolve_externals_dir("rel/ex", "/some/gitroot") == os.path.abspath("rel/ex")
+
+
+def test_resolve_externals_dir_default_is_parent_of_gitroot() -> None:
+    assert resolve_externals_dir(None, "/home/u/proj") == "/home/u"
+    assert resolve_externals_dir("", "/home/u/proj") == "/home/u"
+
+
+# ===========================================================================
+# CLI surface (Task 11): add_fetch_arguments
+# ===========================================================================
+
+
+def test_add_fetch_arguments_parses_dests() -> None:
+    cap = configargparse.ArgumentParser()
+    compiletools.apptools.add_fetch_arguments(cap)
+    args = cap.parse_args(
+        ["--no-fetch", "--update", "--externals-dir", "/x", "--git-path", "a=/b", "--git-path", "c=/d"]
+    )
+    assert args.no_fetch is True
+    assert args.update is True
+    assert args.externals_dir == "/x"
+    assert args.git_paths == ["a=/b", "c=/d"]
+
+
+def test_add_fetch_arguments_defaults() -> None:
+    cap = configargparse.ArgumentParser()
+    compiletools.apptools.add_fetch_arguments(cap)
+    args = cap.parse_args([])
+    assert args.no_fetch is False
+    assert args.update is False
+    assert args.externals_dir is None
+    assert args.git_paths == []
+
+
+def test_add_fetch_arguments_idempotent() -> None:
+    """Calling twice on the same parser must not raise (guard short-circuits)."""
+    cap = configargparse.ArgumentParser()
+    compiletools.apptools.add_fetch_arguments(cap)
+    compiletools.apptools.add_fetch_arguments(cap)
+    args = cap.parse_args(["--no-fetch"])
+    assert args.no_fetch is True

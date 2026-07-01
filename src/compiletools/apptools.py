@@ -122,6 +122,9 @@ from compiletools.apptools_argparse import (
     add_common_arguments as add_common_arguments,
 )
 from compiletools.apptools_argparse import (
+    add_fetch_arguments as add_fetch_arguments,
+)
+from compiletools.apptools_argparse import (
     add_link_arguments as add_link_arguments,
 )
 from compiletools.apptools_argparse import (

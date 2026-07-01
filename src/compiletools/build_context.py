@@ -75,6 +75,24 @@ class BuildContext:
         # str means we saved that prior value. None means no override active.
         self._original_pkg_config_path: str | bool | None = None
 
+    def __deepcopy__(self, memo):
+        """Return self: a BuildContext is a per-build session singleton.
+
+        The context holds per-build caches whose values are not deep-copyable
+        (``stringzilla.Str`` objects) or meaningful to duplicate (a
+        ``BuildTimer`` owning a ``threading.Lock``). Some code paths
+        ``copy.deepcopy`` an args namespace that transitively references the
+        live context via ``args._context`` -- notably
+        ``fetch._augmented_headerdeps``, which deep-copies args only to append
+        throwaway ``-I`` flags for a header scan and passes the *real* context
+        through to ``headerdeps.create`` explicitly (never consulting the
+        copy's ``_context``). Sharing the one context by reference keeps that
+        deepcopy working and cheap, and matches the intent: fetch mutates and
+        restores state on the single live context, not a private clone.
+        """
+        memo[id(self)] = self
+        return self
+
     def restore_pkg_config_path(self) -> None:
         """Undo any PKG_CONFIG_PATH mutation made by
         ``apptools._setup_pkg_config_overrides`` against this context.

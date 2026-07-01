@@ -800,6 +800,61 @@ def add_otel_export_arguments(cap):
     )
 
 
+def add_fetch_arguments(cap):
+    """Register the ``//#GIT=`` external-fetch flags on *cap*.
+
+    This is the single canonical declaration point for the externals-fetch
+    surface (``--no-fetch``, ``--update``, ``--externals-dir``,
+    ``--git-path``).  ``ct-cake`` (via ``cake.py``) and the standalone
+    ``ct-fetch`` entry point both delegate here so the flags are defined in
+    exactly one place.
+
+    Safe to call more than once on the same parser.
+    """
+    if _parser_has_option(cap, "--no-fetch"):
+        return
+    compiletools.utils.add_flag_argument(
+        parser=cap,
+        name="no-fetch",
+        dest="no_fetch",
+        default=False,
+        help="Offline: error if a //#GIT external is missing; never clone/fetch.",
+    )
+    compiletools.utils.add_flag_argument(
+        parser=cap,
+        name="update",
+        dest="update",
+        default=False,
+        help="Pull/fast-forward branch/unpinned externals before building.",
+    )
+    cap.add_argument(
+        "--externals-dir",
+        dest="externals_dir",
+        default=None,
+        env_var="CT_EXTERNALS_DIR",
+        help=(
+            "Directory under which //#GIT externals are cloned (default: the "
+            "parent dir of the git root, i.e. siblings ../<name>)."
+        ),
+    )
+    cap.add_argument(
+        "--git-path",
+        dest="git_paths",
+        action="append",
+        default=[],
+        metavar="NAME=PATH",
+        # CLI/config-only on the configargparse side: per-external overrides
+        # come from the dedicated CT_GIT_PATH_<NAME> variables (resolved in
+        # fetch.parse_git_path_overrides), not from a single env var bound to
+        # this multi-valued append option.
+        env_var=compiletools.utils.ENV_VAR_DISABLED,
+        help=(
+            "Override an external's location: NAME=absolute/path (repeatable; "
+            "or set CT_GIT_PATH_<NAME>). CLI wins over env."
+        ),
+    )
+
+
 def _user_passed_no_timing(argv: list[str] | None) -> bool:
     """Return True iff the user explicitly passed ``--no-timing`` on the
     command line.

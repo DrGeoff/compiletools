@@ -9,6 +9,7 @@ import compiletools.apptools
 import compiletools.compilation_database
 import compiletools.configutils
 import compiletools.diagnostics
+import compiletools.fetch
 import compiletools.filelist
 import compiletools.filesystem_utils
 import compiletools.findtargets
@@ -71,6 +72,87 @@ class Cake:
         correctly
         """
         compiletools.apptools.registercallback(Cake._hide_makefilename)
+
+    def _fetch_and_register_externals(self):
+        """Auto-clone //#GIT= externals and register their include dirs.
+
+        Collects the settled target source files, drives
+        ``fetch.fetch_externals`` to clone/update every reachable //#GIT=
+        external to a fixpoint, then appends each resolved external's root
+        (and its ``include/`` subdir, when present) plus ``externals_dir`` to
+        ``args.INCLUDE``.
+
+        Returns ``True`` if anything was appended to ``args.INCLUDE`` (so the
+        caller re-runs ``substitutions()`` to redistribute INCLUDE into the
+        *FLAGS and re-finalize the frozen ``args.flags``), else ``False``.
+
+        Mutating ``args.INCLUDE`` (not a frozen flag slot) and letting the
+        downstream ``substitutions()`` re-run is the sanctioned way to widen
+        the include path post-parseargs without tripping
+        ``check_flag_string_drift``.
+
+        v1 limitation: a SINGLE static/dynamic library target that itself
+        includes an external header may under-discover, because the single-lib
+        implied-source expansion in ``process()`` runs before this fetch step.
+        This is rare and headerdeps tolerates the missing include.
+
+        A ``fetch.FetchError`` propagates unchanged; ``main()`` renders it as a
+        clean fatal error (non-zero exit) rather than a traceback.
+        """
+        target_files = []
+        seen = set()
+        for group in (self.args.filename, self.args.static, self.args.dynamic, self.args.tests):
+            for path in group or []:
+                if path and path not in seen and compiletools.wrappedos.isfile(path):
+                    seen.add(path)
+                    target_files.append(path)
+
+        if not target_files:
+            return False
+
+        gitroot = compiletools.git_utils.find_git_root()
+        externals_dir = compiletools.fetch.resolve_externals_dir(getattr(self.args, "externals_dir", None), gitroot)
+        overrides = compiletools.fetch.parse_git_path_overrides(getattr(self.args, "git_paths", []) or [])
+        resolved = compiletools.fetch.fetch_externals(
+            target_files,
+            self.args,
+            self.context,
+            externals_dir=externals_dir,
+            overrides=overrides,
+            no_fetch=getattr(self.args, "no_fetch", False),
+            update=getattr(self.args, "update", False),
+            verbose=self.args.verbose,
+        )
+
+        if not resolved:
+            return False
+
+        # Build the new include-dir list. fetch just created these directories,
+        # so isdir() must read live state -- use os.path.isdir directly rather
+        # than the cached wrappedos wrapper (a cached "missing" answer from a
+        # pre-fetch probe would be stale).
+        existing = set(self.args.INCLUDE.split())
+        new_dirs = []
+
+        def _add(directory):
+            if directory and directory not in existing:
+                existing.add(directory)
+                new_dirs.append(directory)
+
+        for r in resolved:
+            _add(r.path)
+            include_subdir = os.path.join(r.path, "include")
+            if os.path.isdir(include_subdir):
+                _add(include_subdir)
+        _add(externals_dir)
+
+        if not new_dirs:
+            return False
+
+        self.args.INCLUDE = (self.args.INCLUDE + " " + " ".join(new_dirs)).strip()
+        if self.args.verbose > 4:
+            print("Cake registered //#GIT= external include dirs: " + " ".join(new_dirs))
+        return True
 
     def _createctobjs(self):
         """Has to be separate because --auto fiddles with the args"""
@@ -186,6 +268,11 @@ class Cake:
         )
 
         compiletools.apptools.add_otel_export_arguments(cap)
+
+        # //#GIT= external-fetch flags (--no-fetch / --update /
+        # --externals-dir / --git-path). Single declaration point lives in
+        # apptools_argparse; ct-fetch delegates to the same helper.
+        compiletools.apptools.add_fetch_arguments(cap)
 
         cap.add_argument(
             "--ccache-statslog",
@@ -615,6 +702,17 @@ class Cake:
                     ):
                         findtargets = compiletools.findtargets.FindTargets(self.args, context=self.context)
                         findtargets.process(self.args)
+                        recreateobjs = True
+
+                    # Auto-clone any //#GIT= externals reachable from the now-final
+                    # target list and register their include dirs. Must run AFTER
+                    # single-lib expansion and --auto discovery (so the target set
+                    # is settled) but BEFORE the recreateobjs re-substitution: it
+                    # mutates args.INCLUDE only, and the substitutions() re-run
+                    # below redistributes INCLUDE into the *FLAGS and re-finalizes
+                    # the frozen args.flags -- the sanctioned path that keeps
+                    # check_flag_string_drift happy.
+                    if self._fetch_and_register_externals():
                         recreateobjs = True
 
                     if recreateobjs:

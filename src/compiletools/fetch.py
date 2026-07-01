@@ -44,9 +44,15 @@ __all__ = [
     "extract_git_externals",
     "fetch_externals",
     "parse_git_declaration",
+    "parse_git_path_overrides",
     "parse_git_value",
     "resolve_external",
+    "resolve_externals_dir",
 ]
+
+# Prefix of the per-external location-override environment variable. The
+# external's name (lowercased) is appended: ``CT_GIT_PATH_<NAME>``.
+_ENV_OVERRIDE_PREFIX = "CT_GIT_PATH_"
 
 
 class FetchError(Exception):
@@ -187,6 +193,91 @@ def parse_git_declaration(value: str) -> GitExternal:
     url, ref = parse_git_value(value)
     name = derive_name(url)
     return GitExternal(name=name, url=url, ref=ref)
+
+
+def parse_git_path_overrides(git_paths: list[str], environ=None) -> dict[str, str]:
+    """Build a ``name -> absolute path`` override map for //#GIT externals.
+
+    Two contributing sources, in increasing precedence:
+
+    * **Environment** — any variable named ``CT_GIT_PATH_<NAME>`` contributes
+      ``<name>`` lowercased -> ``os.path.abspath(value)``.  The suffix after
+      the prefix is lowercased so ``CT_GIT_PATH_FOO`` and ``CT_GIT_PATH_foo``
+      both map the override onto the external whose derived name is ``foo``.
+    * **CLI** — each *git_paths* entry is ``"NAME=PATH"``; it contributes
+      ``NAME`` -> ``os.path.abspath(PATH)``.  A CLI entry OVERRIDES an env
+      entry for the same name.
+
+    Name normalization
+    ~~~~~~~~~~~~~~~~~~
+    Both halves normalize the key the same way: **lowercased**.  Env suffixes
+    are lowercased (env var names are conventionally upper-case yet must map
+    onto a derived external name), and CLI names are lowercased to match, so
+    ``--git-path Foo=/p`` and ``CT_GIT_PATH_FOO`` both target the external
+    ``foo``.  :func:`derive_name` lower-cases nothing, so an external whose
+    URL basename is mixed-case would need its override key spelled in the same
+    lowercased form — documented here and consistent across both sources.
+
+    Args:
+        git_paths: The ``args.git_paths`` list (each ``"NAME=PATH"``); may be
+                   empty.
+        environ:   Environment mapping to read ``CT_GIT_PATH_*`` from; defaults
+                   to :data:`os.environ`.  Pass an explicit dict in tests to
+                   avoid mutating the real environment.
+
+    Returns:
+        A ``name -> absolute path`` dict.
+
+    Raises:
+        FetchError: If a CLI entry lacks ``=``, or has an empty name or empty
+                    path.
+    """
+    if environ is None:
+        environ = os.environ
+
+    overrides: dict[str, str] = {}
+
+    # Env first (lowest precedence), so a later CLI entry for the same name wins.
+    for key, value in environ.items():
+        if not key.startswith(_ENV_OVERRIDE_PREFIX):
+            continue
+        name = key[len(_ENV_OVERRIDE_PREFIX) :].lower()
+        if not name or not value:
+            continue
+        overrides[name] = os.path.abspath(value)
+
+    for entry in git_paths:
+        if "=" not in entry:
+            raise FetchError(f"--git-path entry '{entry}' is malformed; expected NAME=PATH")
+        name, _, path = entry.partition("=")
+        name = name.strip().lower()
+        path = path.strip()
+        if not name:
+            raise FetchError(f"--git-path entry '{entry}' has an empty NAME; expected NAME=PATH")
+        if not path:
+            raise FetchError(f"--git-path entry '{entry}' has an empty PATH; expected NAME=PATH")
+        overrides[name] = os.path.abspath(path)
+
+    return overrides
+
+
+def resolve_externals_dir(explicit: str | None, gitroot: str) -> str:
+    """Decide the directory under which //#GIT externals are cloned.
+
+    Args:
+        explicit: An explicit ``--externals-dir`` / ``CT_EXTERNALS_DIR`` value,
+                  or ``None`` when the user supplied nothing.
+        gitroot:  The project's git root (used only when *explicit* is falsy).
+
+    Returns:
+        An absolute path.  When *explicit* is truthy it is returned as
+        ``os.path.abspath(explicit)``; otherwise the default is the **parent
+        directory of the git root** — the "sibling" layout where each external
+        ``<name>`` lives next to the project as ``../<name>``.
+    """
+    if explicit:
+        return os.path.abspath(explicit)
+    return os.path.dirname(os.path.abspath(gitroot))
 
 
 # ===========================================================================
