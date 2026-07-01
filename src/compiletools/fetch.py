@@ -1297,8 +1297,13 @@ def fetch_externals(
         first_error: BaseException | None = None
         with compiletools.apptools.graceful_shutdown(_handler, signal.SIGINT, signal.SIGTERM):
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                submitted = [(ext, executor.submit(_resolve_one, ext)) for ext in new_names]
                 try:
+                    # Submit INSIDE the try so an interrupt arriving mid-submission
+                    # still reaches the cancel handler below (otherwise it would
+                    # escape to ThreadPoolExecutor.__exit__'s default
+                    # shutdown(wait=True) with no cancel_futures, letting queued
+                    # clones run to completion).
+                    submitted = [(ext, executor.submit(_resolve_one, ext)) for ext in new_names]
                     for ext, future in submitted:
                         try:
                             computed[ext.name] = future.result()
