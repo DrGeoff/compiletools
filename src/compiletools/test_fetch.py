@@ -1127,6 +1127,27 @@ def test_fetch_externals_parallel_one_bad_url_raises_fetcherror() -> None:
 
 
 @requires_functional_compiler
+def test_fetch_externals_parallel_first_bad_url_in_declaration_order_wins() -> None:
+    """With two failing externals discovered in the same parallel round, the
+    FetchError names the FIRST one in declaration order (deterministic, matching
+    a sequential run), regardless of which worker thread fails first."""
+    with tempfile.TemporaryDirectory() as root:
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        main = os.path.join(root, "main.cpp")
+        with open(main, "w") as fh:
+            fh.write(
+                f"//#GIT=file://{root}/first-missing.git@master\n"
+                f"//#GIT=file://{root}/second-missing.git@master\n"
+                "int main() { return 0; }\n"
+            )
+        with pytest.raises(FetchError) as excinfo:
+            fetch_externals([main], _make_args(), BuildContext(), externals_dir=externals)
+        assert "first-missing" in str(excinfo.value)
+        assert "second-missing" not in str(excinfo.value)
+
+
+@requires_functional_compiler
 def test_fetch_externals_malformed_value_errors() -> None:
     with tempfile.TemporaryDirectory() as root:
         externals = os.path.join(root, "externals")
@@ -1899,4 +1920,119 @@ def test_sigterm_during_run_git_is_forwarded_to_git_child(tmp_path) -> None:
     )
     assert not done_marker.exists(), (
         "git child ran to completion as an orphan — worker exited without killing its git child"
+    )
+
+
+@pytest.mark.skipif(not hasattr(os, "killpg"), reason="POSIX-only signal forwarding")
+def test_sigterm_during_parallel_fetch_forwards_to_all_git_children(tmp_path) -> None:
+    """Two externals cloned in one parallel round: a SIGTERM to the fetch
+    process must reach BOTH git children (their TRAP markers appear) and neither
+    may run to completion as an orphan (no DONE markers). This is the parallel
+    counterpart to the single-child _run_git SIGTERM test and pins finding 1's
+    fix (worker-spawned git children are registered and force-killed)."""
+    shim_dir = tmp_path / "shim"
+    shim_dir.mkdir()
+    externals = tmp_path / "externals"
+    externals.mkdir()
+
+    # A fake `git` that, for `clone` only, signals readiness, traps TERM
+    # (leaving a per-invocation marker keyed by the clone URL), and otherwise
+    # sleeps. PATH is hijacked process-wide (see worker_script below), so the
+    # SAME shim also intercepts the whole process's other real git bookkeeping
+    # calls (git-root detection, dirty-tree checks, ...); those must return
+    # fast and successfully rather than each burning 5 real seconds, or the
+    # test's fetch round would never even start within its deadline.
+    git_shim = shim_dir / "git"
+    git_shim.write_text(
+        textwrap.dedent(f"""\
+        #!/bin/sh
+        if [ "$1" != "clone" ]; then
+            exit 0
+        fi
+        # Key the marker on the clone URL (an argument ending in .git), not the
+        # clone destination: the destination is a
+        # "<name>.ct-fetch.tmp.<pid>"-suffixed temp sibling of the final target
+        # (A15 temp+rename), not a directory literally named "<name>.git".
+        urlarg=""
+        for a in "$@"; do
+            case "$a" in
+                *.git) urlarg="$a" ;;
+            esac
+        done
+        base=$(basename "$urlarg")
+        touch {tmp_path}/READY.$base
+        trap 'touch {tmp_path}/TRAPPED.$base; exit 143' TERM
+        sleep 5
+        touch {tmp_path}/DONE.$base
+        """)
+    )
+    git_shim.chmod(0o755)
+
+    main = tmp_path / "main.cpp"
+    main.write_text(
+        "//#GIT=file:///nowhere/alpha.git@master\n//#GIT=file:///nowhere/beta.git@master\nint main() { return 0; }\n"
+    )
+
+    repo_src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    worker_script = tmp_path / "worker.py"
+    worker_script.write_text(
+        textwrap.dedent(f"""
+        import os, sys
+        sys.path.insert(0, {repo_src!r})
+        os.environ["PATH"] = {str(shim_dir)!r} + os.pathsep + os.environ.get("PATH", "")
+        import configargparse
+        import compiletools.apptools, compiletools.headerdeps
+        from compiletools.build_context import BuildContext
+        from compiletools.fetch import fetch_externals
+        cap = configargparse.ArgumentParser(conflict_handler="resolve")
+        compiletools.headerdeps.add_arguments(cap)
+        compiletools.apptools.add_common_arguments(cap)
+        args = compiletools.apptools.parseargs(cap, ["--headerdeps", "direct"], context=BuildContext())
+        try:
+            fetch_externals([{str(main)!r}], args, BuildContext(), externals_dir={str(externals)!r})
+        except SystemExit:
+            raise
+        except BaseException:
+            pass
+    """)
+    )
+
+    proc = subprocess.Popen(
+        [sys.executable, str(worker_script)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        deadline = time.time() + 20
+        while (
+            not ((tmp_path / "READY.alpha.git").exists() and (tmp_path / "READY.beta.git").exists())
+            and time.time() < deadline
+        ):
+            time.sleep(0.05)
+        assert (tmp_path / "READY.alpha.git").exists() and (tmp_path / "READY.beta.git").exists(), (
+            "both git children did not start (parallel round did not spawn two clones)"
+        )
+        time.sleep(0.5)
+        proc.send_signal(signal.SIGTERM)
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            proc.wait()
+            pytest.fail("fetch process did not exit promptly after SIGTERM")
+    finally:
+        if proc.poll() is None:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
+            proc.wait()
+
+    time.sleep(6.0)  # long enough that DONE would appear if a child orphaned
+    assert (tmp_path / "TRAPPED.alpha.git").exists() and (tmp_path / "TRAPPED.beta.git").exists(), (
+        "not every git child received SIGTERM — worker-spawned children were not registered/forwarded"
+    )
+    assert not (tmp_path / "DONE.alpha.git").exists() and not (tmp_path / "DONE.beta.git").exists(), (
+        "a git child ran to completion as an orphan after the fetch process was signalled"
     )

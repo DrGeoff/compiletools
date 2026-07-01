@@ -29,11 +29,13 @@ such refs should pin to a tag or a commit SHA instead.
 from __future__ import annotations
 
 import concurrent.futures
+import contextvars
 import os
 import shutil
 import signal
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from typing import Literal
 
@@ -429,12 +431,16 @@ def _run_git(args: list[str], *, cwd: str | None, ext: GitExternal) -> subproces
     """
     import compiletools.locking
 
+    run_ctx = _git_run_ctx.get()
+    children = run_ctx.children if run_ctx is not None else None
     try:
         result = compiletools.locking._run_with_signal_forwarding(
             ["git", *args],
             cwd=cwd,
             env=_git_env(),
             capture_output=True,
+            on_child_start=children.add if children is not None else None,
+            on_child_end=children.discard if children is not None else None,
         )
     except FileNotFoundError as exc:
         raise FetchError(f"external '{ext.name}' ({ext.url}): 'git' is not installed or not on PATH") from exc
@@ -921,6 +927,55 @@ _MAX_FIXPOINT_ROUNDS = 50
 _MAX_FETCH_WORKERS = 8
 
 
+class _LiveChildren:
+    """Thread-safe registry of live git child process-group ids.
+
+    Populated from worker threads (via ``_run_with_signal_forwarding``'s
+    ``on_child_start`` / ``on_child_end`` hooks) so a single MAIN-thread signal
+    handler installed around the parallel resolve can forward SIGINT/SIGTERM to
+    every worker-spawned git child. The in-worker ``graceful_shutdown``
+    forwarder inside ``_run_with_signal_forwarding`` is a no-op off the main
+    thread, so without this the workers' clones would orphan on interrupt.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._pgids: set[int] = set()
+
+    def add(self, pgid: int) -> None:
+        with self._lock:
+            self._pgids.add(pgid)
+
+    def discard(self, pgid: int) -> None:
+        with self._lock:
+            self._pgids.discard(pgid)
+
+    def forward(self, signum: int) -> None:
+        with self._lock:
+            pgids = list(self._pgids)
+        for pgid in pgids:
+            try:
+                os.killpg(pgid, signum)
+            except (OSError, ProcessLookupError):
+                pass
+
+
+@dataclass(frozen=True)
+class _GitRunContext:
+    """Per-resolve context threaded to ``_run_git`` via a ContextVar.
+
+    Set at the top of ``_resolve_one`` (which runs IN the worker thread for the
+    parallel path), read by ``_run_git`` in the same thread/stack. Avoids
+    threading extra params through ``resolve_external`` and every ``_handle_*``.
+    """
+
+    children: _LiveChildren | None = None
+
+
+# Default git run context (no registered children); overridden per resolve.
+_git_run_ctx: contextvars.ContextVar[_GitRunContext | None] = contextvars.ContextVar("_git_run_ctx", default=None)
+
+
 def extract_git_externals(filepath: str, args, context) -> list[GitExternal]:
     """Return a :class:`GitExternal` for every ``//#GIT=`` flag in *filepath*.
 
@@ -1173,39 +1228,47 @@ def fetch_externals(
         # fetch reaches into every already-resolved/cloned root.
         return [r.path for r in resolved.values()]
 
-    def _resolve_one(ext: GitExternal) -> ResolvedExternal:
-        # Override keys are normalized to lowercase in parse_git_path_overrides;
-        # ext.name (from derive_name) preserves the URL-basename case, so
-        # lowercase it here to match case-insensitively.
-        override_path = overrides.get(ext.name.lower())
-        if override_path is not None:
-            # User-owned checkout: never cloned/mutated here, so no lock.
-            return resolve_external(
-                ext,
-                externals_dir=externals_dir,
-                override_path=override_path,
-                no_fetch=no_fetch,
-                update=update,
-                verbose=verbose,
-            )
-        # A1: serialize the exists->clone/checkout path against concurrent
-        # ct-cake/ct-fetch peers cloning into the same managed dir. Lock a
-        # SIDECAR (<target>.lock), never the target itself — locking the target
-        # would create an empty dir a peer make treats as up-to-date. No-op
-        # unless --file-locking is enabled. The lock lives INSIDE the worker so
-        # each parallel external acquires its own sidecar independently.
-        import compiletools.locking
+    live_children = _LiveChildren()
 
-        target = os.path.join(externals_dir, ext.name)
-        with compiletools.locking.FileLock(target + ".lock", args):
-            return resolve_external(
-                ext,
-                externals_dir=externals_dir,
-                override_path=None,
-                no_fetch=no_fetch,
-                update=update,
-                verbose=verbose,
-            )
+    def _resolve_one(ext: GitExternal) -> ResolvedExternal:
+        token = _git_run_ctx.set(_GitRunContext(children=live_children))
+        try:
+            # Override keys are normalized to lowercase in
+            # parse_git_path_overrides; ext.name (from derive_name) preserves
+            # the URL-basename case, so lowercase it here to match
+            # case-insensitively.
+            override_path = overrides.get(ext.name.lower())
+            if override_path is not None:
+                # User-owned checkout: never cloned/mutated here, so no lock.
+                return resolve_external(
+                    ext,
+                    externals_dir=externals_dir,
+                    override_path=override_path,
+                    no_fetch=no_fetch,
+                    update=update,
+                    verbose=verbose,
+                )
+            # A1: serialize the exists->clone/checkout path against concurrent
+            # ct-cake/ct-fetch peers cloning into the same managed dir. Lock a
+            # SIDECAR (<target>.lock), never the target itself — locking the
+            # target would create an empty dir a peer make treats as
+            # up-to-date. No-op unless --file-locking is enabled. The lock
+            # lives INSIDE the worker so each parallel external acquires its
+            # own sidecar independently.
+            import compiletools.locking
+
+            target = os.path.join(externals_dir, ext.name)
+            with compiletools.locking.FileLock(target + ".lock", args):
+                return resolve_external(
+                    ext,
+                    externals_dir=externals_dir,
+                    override_path=None,
+                    no_fetch=no_fetch,
+                    update=update,
+                    verbose=verbose,
+                )
+        finally:
+            _git_run_ctx.reset(token)
 
     def _resolve_new(new_names: list[GitExternal]) -> None:
         # The new externals in a round are independent, so resolve them in a
@@ -1220,18 +1283,39 @@ def fetch_externals(
             for ext in new_names:
                 resolved[ext.name] = _resolve_one(ext)
             return
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            submitted = [(ext, executor.submit(_resolve_one, ext)) for ext in new_names]
-            computed: dict[str, ResolvedExternal] = {}
-            first_error: BaseException | None = None
-            for ext, future in submitted:
+
+        import compiletools.apptools
+
+        def _handler(signum, _frame):
+            # Forward to every live worker-spawned git child, then interrupt the
+            # main thread. KeyboardInterrupt is a BaseException, so the result
+            # loop below (which catches only Exception) lets it propagate.
+            live_children.forward(signum)
+            raise KeyboardInterrupt
+
+        computed: dict[str, ResolvedExternal] = {}
+        first_error: BaseException | None = None
+        with compiletools.apptools.graceful_shutdown(_handler, signal.SIGINT, signal.SIGTERM):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                submitted = [(ext, executor.submit(_resolve_one, ext)) for ext in new_names]
                 try:
-                    computed[ext.name] = future.result()
-                except BaseException as exc:  # re-raised below, deterministically
-                    if first_error is None:
-                        first_error = exc
-            if first_error is not None:
-                raise first_error
+                    for ext, future in submitted:
+                        try:
+                            computed[ext.name] = future.result()
+                        except Exception as exc:  # only real failures; not interrupts
+                            if first_error is None:
+                                first_error = exc
+                                # M5: stop wasting network on not-yet-started peers.
+                                executor.shutdown(wait=False, cancel_futures=True)
+                except BaseException:
+                    # Interrupt (KeyboardInterrupt/SystemExit): children already
+                    # signalled by _handler; cancel any queued clones and let the
+                    # already-running workers finish (their FileLocks demand it)
+                    # before propagating.
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    raise
+        if first_error is not None:
+            raise first_error
         for ext in new_names:
             resolved[ext.name] = computed[ext.name]
 
@@ -1258,8 +1342,9 @@ def fetch_externals(
                     declared[ext.name] = ext
                     declared_files[ext.name] = source_file
                     declared_lower[lower] = ext.name
-                    if ext.name not in resolved:
-                        new_names.append(ext)
+                    # First time this name is declared, so it cannot already be
+                    # in `resolved` (which only holds previously-declared names).
+                    new_names.append(ext)
                     continue
                 # Same name seen before — must agree on URL.
                 if prior.url != ext.url:
