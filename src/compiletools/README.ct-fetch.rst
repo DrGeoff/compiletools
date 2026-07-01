@@ -82,9 +82,12 @@ substring after the rightmost ``/`` or ``:``, with a single trailing
 * ``https://github.com/me/mylib.git`` -> ``mylib``
 * ``file:///tmp/x/mylib`` -> ``mylib``
 
-A URL that ends in ``/`` (empty basename) is rejected. This derived name
-is the key used by ``--git-path`` and ``CT_GIT_PATH_<NAME>`` overrides
-(matched case-insensitively).
+A URL that ends in ``/`` (empty basename) is rejected, as is any URL whose
+basename would be an unsafe directory name (``.``, ``..``, a dot-leading
+name, or one containing a path separator) — such a name could otherwise
+escape the externals directory. This derived name is the key used by
+``--git-path`` and ``CT_GIT_PATH_<NAME>`` overrides (matched
+case-insensitively).
 
 Externals directory
 -------------------
@@ -97,6 +100,30 @@ Because externals live OUTSIDE the gitroot, they are not part of the
 project's own content-addressable cache identity — consistent with
 compiletools' per-workspace caching model.
 
+Authentication (private and enterprise hosts)
+---------------------------------------------
+compiletools performs no authentication of its own: it runs plain ``git``
+against your ``//#GIT=`` URLs and **honours your ambient git
+configuration**. Whatever lets you ``git clone`` the URL by hand — an
+``https`` credential helper, an ssh key/agent, a ``url.*.insteadOf``
+rewrite, or an HTTP(S) proxy configured in ``~/.gitconfig`` /
+``/etc/gitconfig`` — is exactly what the fetch step uses. A ``//#GIT=``
+pointing at a private or corporate host therefore "just works" once you
+have authenticated; no extra flags are required.
+
+Two guardrails are applied on top of your configuration:
+
+* **Fail fast, never hang.** Git runs with ``GIT_TERMINAL_PROMPT=0`` and
+  (for the ssh transport) ``-o BatchMode=yes``, so an external you cannot
+  authenticate to fails with a clear error instead of blocking the build
+  on an interactive username/password or host-key prompt. If you have
+  already set ``GIT_SSH_COMMAND``, your value is preserved.
+* **No ambient-repo hijack.** Any inherited ``GIT_DIR`` /
+  ``GIT_WORK_TREE`` / ``GIT_INDEX_FILE`` / ``GIT_OBJECT_DIRECTORY`` /
+  ``GIT_COMMON_DIR`` / ``GIT_NAMESPACE`` is dropped before operating on an
+  external, so a run inside a git hook or CI step cannot accidentally act
+  on the enclosing repository instead of the external.
+
 Transitive externals
 ---------------------
 Discovery iterates to a fixpoint: an external's own headers may declare
@@ -107,16 +134,28 @@ so a chain of externals is resolved in a handful of rounds.
 Safety
 ------
 * ``--update`` refuses to clobber a **dirty** working tree: if a managed
-  external has uncommitted changes, the update is a hard error rather
-  than a forced checkout.
+  external has **tracked** uncommitted changes, the update is a hard
+  error rather than a forced checkout. Untracked files (build artifacts,
+  editor scratch) do NOT count as dirty and never block an update.
 * An immutable ref (tag or SHA) is only checked out when the tree is
-  clean; a no-op when HEAD already matches.
+  clean; a no-op when HEAD already matches. A ref that is both a tag and
+  a branch name is treated as the (immutable) tag, with a warning.
+* A clone or checkout that fails partway leaves **no** partial checkout
+  behind: an external is staged in a temporary sibling directory and
+  renamed into place only on full success.
 * A non-git directory that already sits at a managed location is used
-  as-is (never cloned over) with a warning.
-* Two ``//#GIT=`` declarations of the **same name with different URLs**
-  are a hard error. The same name with a **different ref** warns and the
-  first declaration wins. (In ``--status`` mode both cases only warn —
-  a status report never fails.)
+  as-is (never cloned over) with a warning — except under ``--update``,
+  where compiletools cannot manage a non-git directory and reports a
+  hard error.
+* Two ``//#GIT=`` declarations of the **same name** are a hard error when
+  they disagree — whether on the **URL** or on the **ref** — and the
+  error names both declaring files. Two externals whose derived names
+  collide only in case (e.g. ``mylib`` and ``MyLib``) are also a hard
+  error, because overrides key on the lowercased name. (In ``--status``
+  mode a URL/ref conflict only warns — a status report never fails.)
+* A malformed value is rejected up front: a URL or ref that begins with
+  ``-`` (which git would misread as an option) and a URL with no ``/``
+  or ``:`` separator are refused with a clear message.
 
 OPTIONS
 =======
@@ -133,7 +172,14 @@ OPTIONS
 ``--update``
     Pull / fast-forward branch and unpinned externals to their latest
     tip before reporting. Immutable (tag/SHA) externals are already
-    deterministic and are left as-is. Refuses on a dirty tree.
+    deterministic and are left as-is. Refuses on a dirty tree, on a
+    managed location that is a non-git directory, and on a branch
+    external whose HEAD is detached (the checkout was pinned and then
+    unpinned) — the last with a clear message rather than git's opaque
+    "not currently on a branch". Note that **without** ``--update`` a
+    branch external is compared against its possibly-stale
+    remote-tracking tip, so an upstream force-push is not detected until
+    the next ``--update``.
 
 ``--status``
     Report the on-disk state of each ``//#GIT`` external
@@ -151,8 +197,10 @@ OPTIONS
     or set ``CT_GIT_PATH_<NAME>``). CLI wins over env. A matched external
     is used verbatim from the given path — never cloned, fetched, or
     checked out — so this points compiletools at an existing local
-    checkout (e.g. one you are actively editing). ``NAME`` is matched
-    case-insensitively against the URL-derived external name.
+    checkout (e.g. one you are actively editing). The ``PATH`` must be an
+    existing directory; a missing path or a non-directory is a hard
+    error. ``NAME`` is matched case-insensitively against the URL-derived
+    external name.
 
 MODES
 =====
@@ -194,10 +242,13 @@ EXIT CODES
 1
     A ``FetchError`` — e.g. git not installed, a clone/checkout failure,
     an external missing under ``--no-fetch``, a dirty-tree clobber
-    refused by ``--update``, a missing ``--git-path`` target, conflicting
-    URLs for the same external name, a malformed ``//#GIT=`` value, or a
-    non-converging fixpoint. The message names the offending external and
-    its URL; no traceback is printed.
+    refused by ``--update``, a ``--git-path`` target that is missing or
+    is not a directory, conflicting URLs **or** refs for the same
+    external name, two names that collide only in case, a non-git
+    directory or a detached-HEAD branch external under ``--update``, a
+    malformed ``//#GIT=`` value (leading ``-`` or missing separator), or
+    a non-converging fixpoint. The message names the offending external
+    and its URL; no traceback is printed.
 2
     Argument-parsing failure (e.g. an unknown flag).
 

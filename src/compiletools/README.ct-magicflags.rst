@@ -171,6 +171,10 @@ The known magic flags are::
                  .gch file. The path is resolved relative to the source file.
     READMACROS   Read macro definitions from specified file before evaluating
                  conditional compilation. Useful for system headers.
+    GIT          Declare an external git repository to fold into the build
+                 (``//#GIT=<url>[@<ref>]``). compiletools clones it and adds
+                 its root (and ``include/``) to the include path. Consumed by
+                 the fetch step, not the flag slots. See ct-fetch(1).
     ===========  ==============================================================
 
 **Note:** Magic flags with arbitrary keys (not listed above) are also accepted

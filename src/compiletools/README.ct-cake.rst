@@ -131,6 +131,27 @@ add, say:
 Because the code and build flags are defined so close to each other, its
 much easier to tweak the compilation locally.
 
+External git repositories (//#GIT=)
+-----------------------------------
+
+A ``//#GIT=<url>[@<ref>]`` magic comment folds an external git repository
+into the build without imposing git submodules or subtrees on the project.
+During an ``--auto`` build ct-cake scans every target (and its transitive
+headers) for ``//#GIT=`` declarations, clones each external as a sibling of
+the git root, and widens the include path to fold the external's sources
+into the build — so the main repository can ``#include`` and link them:
+
+.. code-block:: cpp
+
+    //#GIT=https://github.com/me/mylib.git
+    #include "mylib/widget.h"
+
+The fetch honours your ambient git configuration, so a URL on a private or
+enterprise host "just works" once you have authenticated. See ``ct-fetch``
+(1) for the full syntax, the externals-directory and authentication rules,
+``--git-path`` overrides, and standalone priming of externals ahead of a
+build.
+
 CPPFLAGS and CXXFLAGS
 ---------------------
 
@@ -1006,4 +1027,4 @@ The non-recursive Makefile generation was informed by:
 
 SEE ALSO
 ========
-``compiletools`` (1), ``ct-timing-report`` (1), ``ct-otel`` (1), ``ct-list-variants`` (1), ``ct-config`` (1), ``ct-trim-cache`` (1), ``ct-cas-publish`` (1)
+``compiletools`` (1), ``ct-fetch`` (1), ``ct-timing-report`` (1), ``ct-otel`` (1), ``ct-list-variants`` (1), ``ct-config`` (1), ``ct-trim-cache`` (1), ``ct-cas-publish`` (1)
