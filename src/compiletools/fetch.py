@@ -37,12 +37,15 @@ from dataclasses import dataclass
 from typing import Literal
 
 __all__ = [
+    "ExternalStatus",
     "FetchError",
     "GitExternal",
     "ResolvedExternal",
     "derive_name",
     "extract_git_externals",
     "fetch_externals",
+    "gather_external_status",
+    "main",
     "parse_git_declaration",
     "parse_git_path_overrides",
     "parse_git_value",
@@ -927,3 +930,316 @@ def fetch_externals(
         return list(resolved.values())
     finally:
         context.analyzer_args = prior_analyzer_args
+
+
+# ===========================================================================
+# Report-only status (never clones/updates, never raises on a missing external)
+# ===========================================================================
+
+
+@dataclass(frozen=True)
+class ExternalStatus:
+    """The report-only, tolerant state of a declared ``//#GIT=`` external.
+
+    Attributes:
+        name:        The external's directory name (from :class:`GitExternal`).
+        url:         The git remote URL.
+        ref:         The requested ref, or ``None`` when unpinned.
+        state:       ``"present"`` (an on-disk git work tree exists),
+                     ``"dirty"`` (present but with uncommitted changes), or
+                     ``"missing"`` (nothing usable on disk). A missing external
+                     is NOT an error here — it is a reported state.
+        path:        Absolute on-disk path where the external is expected to
+                     live (an override path, or ``externals_dir/name``).
+        source:      ``"managed"`` (compiletools owns the location) or
+                     ``"override"`` (user pointed at it via ``--git-path``).
+        on_disk_ref: The commit SHA currently checked out, or ``None`` when the
+                     external is missing / not a git work tree.
+    """
+
+    name: str
+    url: str
+    ref: str | None
+    state: Literal["present", "missing", "dirty"]
+    path: str
+    source: Literal["managed", "override"]
+    on_disk_ref: str | None
+
+
+def _status_for(ext: GitExternal, *, externals_dir: str, override_path: str | None) -> ExternalStatus:
+    """Compute the tolerant on-disk :class:`ExternalStatus` of a single external.
+
+    Never clones, fetches, or checks out. Never raises on a missing external —
+    it is reported as ``state="missing"``. Reuses the same git helpers the
+    resolver layer uses (:func:`_is_git_work_tree`, :func:`_current_commit`,
+    :func:`_is_dirty`).
+    """
+    if override_path is not None:
+        path = os.path.abspath(override_path)
+        source: Literal["managed", "override"] = "override"
+    else:
+        path = os.path.join(externals_dir, ext.name)
+        source = "managed"
+
+    if not os.path.exists(path) or not _is_git_work_tree(path):
+        return ExternalStatus(
+            name=ext.name,
+            url=ext.url,
+            ref=ext.ref,
+            state="missing",
+            path=path,
+            source=source,
+            on_disk_ref=None,
+        )
+
+    on_disk_ref = _current_commit(path)
+    # _is_dirty raises FetchError only when git status itself fails; in the
+    # report path a present-but-unqueryable tree is still "present".
+    try:
+        dirty = _is_dirty(ext, path)
+    except FetchError:
+        dirty = False
+    return ExternalStatus(
+        name=ext.name,
+        url=ext.url,
+        ref=ext.ref,
+        state="dirty" if dirty else "present",
+        path=path,
+        source=source,
+        on_disk_ref=on_disk_ref,
+    )
+
+
+def gather_external_status(
+    target_files: list[str],
+    args,
+    context,
+    *,
+    externals_dir: str,
+    overrides: dict[str, str] | None = None,
+) -> list[ExternalStatus]:
+    """Report the tolerant on-disk state of every reachable ``//#GIT=`` external.
+
+    Unlike :func:`fetch_externals`, this NEVER clones, fetches, or checks out,
+    and NEVER raises on a missing external — a missing external is reported as
+    ``state="missing"``. It enumerates declared externals to a fixpoint the
+    same way :func:`fetch_externals` does, but only transitively reaches into
+    externals that are ALREADY present on disk (it does not fetch to expand the
+    graph). A malformed ``//#GIT=`` value still raises :class:`FetchError`
+    (via :func:`extract_git_externals`), since that is a source-code defect the
+    user must see.
+
+    Args:
+        target_files:  Absolute paths of the build target sources to scan.
+        args:          Parsed args namespace. Never mutated.
+        context:       The :class:`~compiletools.build_context.BuildContext`.
+        externals_dir: Absolute directory under which each ``<name>`` lives.
+        overrides:     Optional ``name -> local path`` map.
+
+    Returns:
+        A list of :class:`ExternalStatus` in discovery order (deduped by name).
+    """
+    assert os.path.isabs(externals_dir), f"externals_dir must be absolute, got '{externals_dir}'"
+    overrides = overrides or {}
+
+    declared: dict[str, GitExternal] = {}
+    ordered_names: list[str] = []
+
+    prior_analyzer_args = context.analyzer_args
+    try:
+        for _round in range(_MAX_FIXPOINT_ROUNDS):
+            # Reach into whatever externals are already present on disk (never
+            # fetch to widen the graph). A present external's own sources can
+            # declare further externals we should report.
+            present_roots = [
+                s.path
+                for s in (
+                    _status_for(ext, externals_dir=externals_dir, override_path=overrides.get(ext.name.lower()))
+                    for ext in declared.values()
+                )
+                if s.state != "missing"
+            ]
+            headerdeps = _augmented_headerdeps(
+                args,
+                context,
+                externals_dir=externals_dir,
+                resolved_roots=present_roots,
+            )
+            reachable = _reachable_sources(target_files, headerdeps, args)
+
+            new_found = False
+            for source_file in reachable:
+                for ext in extract_git_externals(source_file, args, context):
+                    if ext.name in declared:
+                        continue
+                    declared[ext.name] = ext
+                    ordered_names.append(ext.name)
+                    new_found = True
+
+            if not new_found:
+                break
+
+            # A freshly-declared external might already be present on disk; drop
+            # wrappedos' cached "missing" answers so the next round's header scan
+            # can reach into it (mirrors fetch_externals' cache discipline).
+            import compiletools.wrappedos
+
+            compiletools.wrappedos.clear_cache()
+        else:
+            raise FetchError(
+                f"//#GIT= status enumeration did not converge after {_MAX_FIXPOINT_ROUNDS} rounds; "
+                f"found so far: {sorted(declared)}"
+            )
+
+        return [
+            _status_for(declared[name], externals_dir=externals_dir, override_path=overrides.get(name.lower()))
+            for name in ordered_names
+        ]
+    finally:
+        context.analyzer_args = prior_analyzer_args
+
+
+# ===========================================================================
+# CLI entry point
+# ===========================================================================
+
+
+def _collect_target_files(args) -> list[str]:
+    """Flatten existing on-disk source files from the target arg groups.
+
+    Mirrors ``Cake._fetch_and_register_externals``: de-duplicates across
+    ``filename`` / ``static`` / ``dynamic`` / ``tests`` and drops any entry
+    that is falsy or not an on-disk file.
+    """
+    import compiletools.wrappedos
+
+    target_files: list[str] = []
+    seen: set[str] = set()
+    for group in (args.filename, args.static, args.dynamic, args.tests):
+        for path in group or []:
+            if path and path not in seen and compiletools.wrappedos.isfile(path):
+                seen.add(path)
+                target_files.append(path)
+    return target_files
+
+
+def _print_status_report(statuses: list[ExternalStatus]) -> None:
+    """Print a stable, greppable one-line-per-external status report to stdout."""
+    if not statuses:
+        print("ct-fetch: no //#GIT= externals declared by the given targets.")
+        return
+    for st in statuses:
+        ref = st.ref if st.ref is not None else "-"
+        on_disk = st.on_disk_ref if st.on_disk_ref is not None else "-"
+        print(f"{st.name}\t{ref}\t{st.state}\t{on_disk}\t{st.path}")
+
+
+def _print_resolved_summary(resolved: list[ResolvedExternal]) -> None:
+    """Print a concise one-line-per-external summary of resolved externals."""
+    if not resolved:
+        print("ct-fetch: no //#GIT= externals declared by the given targets.")
+        return
+    for r in resolved:
+        ref = r.ref if r.ref is not None else "-"
+        print(f"{r.name}\t{ref}\t{r.source}\t{r.path}")
+
+
+def main(argv=None) -> int:
+    """Entry point for ``ct-fetch``.
+
+    Clones/updates/reports the ``//#GIT=`` externals reachable from the given
+    target source files WITHOUT running a build.
+
+    Modes (mutually-exclusive precedence, highest first):
+        * ``--status``   — report-only; never clones/updates and never fails on
+                           a missing external (reported as ``missing``).
+        * ``--no-fetch`` — verify presence offline; a missing external is a
+                           hard error (:class:`FetchError`).
+        * ``--update``   — clone missing externals and pull/fast-forward branch
+                           (and unpinned) externals to their latest tip.
+        * default        — clone any missing external; leave present ones as-is.
+    """
+    import compiletools.apptools
+    import compiletools.git_utils
+    import compiletools.headerdeps
+    import compiletools.utils
+    import compiletools.wrappedos
+    from compiletools.build_context import BuildContext
+
+    cap = compiletools.apptools.create_parser(
+        "Clone/update/report //#GIT= external git repos without running a build",
+        argv=argv,
+    )
+    # headerdeps.add_arguments pulls in add_common_arguments (verbose, CXX,
+    # CPPFLAGS, ...) and file_analyzer.add_arguments (exemarkers, max_read_size)
+    # — exactly what fetch_externals' headerdeps walk and extract_git_externals'
+    # analyze_file require. Target arguments supply the source files to scan;
+    # the fetch-control flags (--no-fetch/--update/--externals-dir/--git-path)
+    # come from the shared apptools registrar. magicflags/hunter are NOT needed:
+    # fetch's discovery uses headerdeps + file_analyzer directly.
+    compiletools.apptools.add_target_arguments(cap)
+    compiletools.headerdeps.add_arguments(cap)
+    compiletools.apptools.add_fetch_arguments(cap)
+    compiletools.utils.add_flag_argument(
+        parser=cap,
+        name="status",
+        dest="status",
+        default=False,
+        help="Report the on-disk state of each //#GIT external (present/missing/dirty); never clone or update.",
+    )
+
+    context = BuildContext()
+    args = compiletools.apptools.parseargs(cap, argv, context=context)
+
+    headerdeps = None
+    try:
+        target_files = _collect_target_files(args)
+        if not target_files:
+            print(
+                "ct-fetch: no target source files given (or none exist on disk); nothing to do.",
+                file=sys.stderr,
+            )
+            return 0
+
+        gitroot = compiletools.git_utils.find_git_root()
+        externals_dir = resolve_externals_dir(getattr(args, "externals_dir", None), gitroot)
+        overrides = parse_git_path_overrides(getattr(args, "git_paths", []) or [])
+
+        if getattr(args, "status", False):
+            # Report-only: never clones/updates, never raises on a missing external.
+            statuses = gather_external_status(
+                target_files,
+                args,
+                context,
+                externals_dir=externals_dir,
+                overrides=overrides,
+            )
+            _print_status_report(statuses)
+            return 0
+
+        resolved = fetch_externals(
+            target_files,
+            args,
+            context,
+            externals_dir=externals_dir,
+            overrides=overrides,
+            no_fetch=getattr(args, "no_fetch", False),
+            update=getattr(args, "update", False),
+            verbose=args.verbose,
+        )
+        _print_resolved_summary(resolved)
+        return 0
+    except FetchError as err:
+        # Match cake.main()'s FetchError handler: plain "Error:" prefix, stderr,
+        # non-zero exit, no traceback. FetchError messages already name the
+        # offending external and its URL.
+        print(f"Error: {err}", file=sys.stderr)
+        return 1
+    finally:
+        # Clear memcaches so repeated in-process main() calls in tests don't
+        # cross-contaminate (mirrors filelist.main).
+        compiletools.wrappedos.clear_cache()
+        compiletools.utils.clear_cache()
+        compiletools.git_utils.clear_cache()
+        if headerdeps is not None:
+            headerdeps.clear_cache()
