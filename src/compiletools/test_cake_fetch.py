@@ -13,6 +13,7 @@ fetch fixpoint drives headerdeps, which probes the compiler for built-ins.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import tempfile
 
@@ -180,6 +181,131 @@ def test_fetch_step_no_fetch_offline_surfaces_fetcherror(monkeypatch) -> None:
         assert "extlib" in str(excinfo.value)
         # Nothing was cloned.
         assert not os.path.exists(os.path.join(externals_dir, "extlib"))
+
+
+@requires_functional_compiler
+def test_filelist_does_not_clone_missing_external(monkeypatch) -> None:
+    """--filelist is a read-only query: it MUST NOT trigger a live network
+    clone of a not-yet-present //#GIT= external. Instead it runs the fetch
+    step under offline (no_fetch) semantics -- present externals are used,
+    a missing one fails fast with a FetchError rather than cloning."""
+    with tempfile.TemporaryDirectory() as root:
+        ext = _make_bare_with_files(root, "extlib", {"include/extlib.h": "#pragma once\nint extfn();\n"})
+        externals_dir = os.path.join(root, "externals")
+        os.makedirs(externals_dir)
+        main_repo = _make_main_repo(
+            root,
+            f'//#GIT={ext["url"]}@master\n#include "extlib.h"\nint main() {{ return extfn(); }}\n',
+        )
+
+        monkeypatch.chdir(main_repo)
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+
+        context = BuildContext()
+        # Note: no --no-fetch on the command line; --filelist alone must be
+        # enough to keep the fetch step offline.
+        args = _build_cake_args(
+            main_repo, ["--filename", "main.cpp", "--externals-dir", externals_dir, "--filelist"], context
+        )
+        cake = compiletools.cake.Cake(args, context=context)
+
+        with pytest.raises(FetchError) as excinfo:
+            cake._fetch_and_register_externals()
+        assert "extlib" in str(excinfo.value)
+        # The read-only query performed no network clone.
+        assert not os.path.exists(os.path.join(externals_dir, "extlib"))
+
+
+@requires_functional_compiler
+def test_filelist_uses_present_external_without_network(monkeypatch, capsys) -> None:
+    """--filelist with an already-present external produces a complete file
+    list (including the external's implied source) and never hits the
+    network -- proven by deleting the bare origin before the run."""
+    with tempfile.TemporaryDirectory() as root:
+        ext = _make_bare_with_files(
+            root,
+            "extlib",
+            {
+                "extlib.h": "#pragma once\nint extfn();\n",
+                "extlib.cpp": '#include "extlib.h"\nint extfn() { return 0; }\n',
+            },
+        )
+        externals_dir = os.path.join(root, "externals")
+        os.makedirs(externals_dir)
+        main_repo = _make_main_repo(
+            root,
+            f'//#GIT={ext["url"]}@master\n#include "extlib.h"\nint main() {{ return extfn(); }}\n',
+        )
+
+        # Pre-clone the external so it is already present on disk, then delete
+        # the bare origin: any attempt to reach the network would now fail.
+        clone = os.path.join(externals_dir, "extlib")
+        _git(root, "clone", "-q", ext["bare"], clone)
+        shutil.rmtree(ext["bare"])
+
+        monkeypatch.chdir(main_repo)
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+
+        context = BuildContext()
+        args = _build_cake_args(
+            main_repo, ["--filename", "main.cpp", "--externals-dir", externals_dir, "--filelist"], context
+        )
+        cake = compiletools.cake.Cake(args, context=context)
+        cake.process()
+
+        out = capsys.readouterr().out
+        # The external's implementation source shows up in the file list.
+        assert os.path.join(clone, "extlib.cpp") in out
+
+
+@requires_functional_compiler
+def test_single_static_lib_picks_up_external_implied_source(monkeypatch) -> None:
+    """A single-source static-lib target whose header pulls in an external
+    that provides the matching implementation .cpp must, after the fetch
+    step widens the include path, re-discover that implementation source and
+    add it to args.static (the FINDING 5 ordering gap)."""
+    with tempfile.TemporaryDirectory() as root:
+        # External provides a co-located header + implementation so the
+        # implied-source (foo.h -> foo.cpp) rule can reach the .cpp once the
+        # external root is on the include path.
+        ext = _make_bare_with_files(
+            root,
+            "extlib",
+            {
+                "extlib.h": "#pragma once\nint extfn();\n",
+                "extlib.cpp": '#include "extlib.h"\nint extfn() { return 0; }\n',
+            },
+        )
+        externals_dir = os.path.join(root, "externals")
+        os.makedirs(externals_dir)
+
+        # Single-source static-lib seed: its header include pulls in the
+        # external, whose implied source is only reachable post-fetch.
+        main_repo = os.path.join(root, "main")
+        os.makedirs(main_repo)
+        _git(main_repo, "init", "-q", "-b", "master", ".")
+        with open(os.path.join(main_repo, "mylib.cpp"), "w") as fh:
+            fh.write(f'//#GIT={ext["url"]}@master\n#include "extlib.h"\nint mylibfn() {{ return extfn(); }}\n')
+        _git(main_repo, "add", "-A")
+        _git(main_repo, "commit", "-q", "-m", "main")
+
+        monkeypatch.chdir(main_repo)
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+
+        context = BuildContext()
+        args = _build_cake_args(main_repo, ["--static", "mylib.cpp", "--externals-dir", externals_dir], context)
+        cake = compiletools.cake.Cake(args, context=context)
+        cake._discover_targets()
+
+        clone = os.path.join(externals_dir, "extlib")
+        # The external's implementation source was folded into the static-lib
+        # source set despite the seed being a single file at discovery start.
+        ext_impl = os.path.join(clone, "extlib.cpp")
+        static_realpaths = {os.path.realpath(p) for p in args.static}
+        assert os.path.realpath(ext_impl) in static_realpaths
 
 
 @requires_functional_compiler

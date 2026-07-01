@@ -91,10 +91,13 @@ class Cake:
         the include path post-parseargs without tripping
         ``check_flag_string_drift``.
 
-        v1 limitation: a SINGLE static/dynamic library target that itself
-        includes an external header may under-discover, because the single-lib
-        implied-source expansion in ``process()`` runs before this fetch step.
-        This is rare and headerdeps tolerates the missing include.
+        ``--filelist`` is a read-only query (list the source files that WOULD
+        be built) and must not have a surprising network side effect. In that
+        mode the fetch step runs offline (``no_fetch``): an already-present
+        external is still folded in (so the list stays complete), but a
+        not-yet-cloned external fails fast with a ``fetch.FetchError`` rather
+        than triggering a live ``git clone``. Run ``ct-fetch`` (or a plain
+        ``ct-cake``) first to populate externals, then re-query the filelist.
 
         A ``fetch.FetchError`` propagates unchanged; ``main()`` renders it as a
         clean fatal error (non-zero exit) rather than a traceback.
@@ -109,13 +112,17 @@ class Cake:
         gitroot = compiletools.git_utils.find_git_root()
         externals_dir = compiletools.fetch.resolve_externals_dir(getattr(self.args, "externals_dir", None), gitroot)
         overrides = compiletools.fetch.parse_git_path_overrides(getattr(self.args, "git_paths", []) or [])
+        # --filelist is a read-only source-listing query: force offline so it
+        # never performs a network clone as a side effect. Present externals are
+        # still used; a missing one fails fast (see method docstring).
+        no_fetch = getattr(self.args, "no_fetch", False) or bool(getattr(self.args, "filelist", False))
         resolved = compiletools.fetch.fetch_externals(
             target_files,
             self.args,
             self.context,
             externals_dir=externals_dir,
             overrides=overrides,
-            no_fetch=getattr(self.args, "no_fetch", False),
+            no_fetch=no_fetch,
             update=getattr(self.args, "update", False),
             verbose=self.args.verbose,
         )
@@ -149,6 +156,112 @@ class Cake:
         if self.args.verbose > 4:
             print("Cake registered //#GIT= external include dirs: " + " ".join(new_dirs))
         return True
+
+    def _discover_targets(self):
+        """Settle the final target set and (re)create the ct helper objects.
+
+        Runs the single-file library implied-source expansion, ``--auto``
+        target discovery, and the ``//#GIT=`` external fetch, then re-runs
+        ``substitutions()`` and rebuilds the ct objects whenever any of those
+        steps changed the args. Mutates ``self.args`` and populates
+        ``self.namer`` / ``self.headerdeps`` / ``self.magicparser`` /
+        ``self.hunter``.
+
+        The single-lib expansion runs a first pass BEFORE the fetch step (so
+        the fetched externals reachable from the seed's headers are seen by the
+        fetch scan), and a second pass AFTER the fetch step widened the include
+        path (so implied sources that only become reachable through a
+        freshly-cloned external's headers are still folded in). The two-pass
+        design is what closes the earlier ordering gap where a single-source
+        library never re-scanned once an external widened INCLUDE.
+        """
+        created_ctobjs = False
+        recreateobjs = False
+
+        # Remember the single-file library seeds. The first-pass expansion
+        # below grows the list past length 1, so the ``len() == 1`` guard can
+        # never re-fire; the seeds let the post-fetch second pass re-scan.
+        static_lib_seed = None
+        dynamic_lib_seed = None
+
+        if self.args.static and len(self.args.static) == 1:
+            static_lib_seed = self.args.static[0]
+            if not created_ctobjs:
+                self._createctobjs()
+                created_ctobjs = True
+            assert self.hunter is not None
+            self.args.static.extend(self.hunter.required_source_files(static_lib_seed))
+            recreateobjs = True
+
+        if self.args.dynamic and len(self.args.dynamic) == 1:
+            dynamic_lib_seed = self.args.dynamic[0]
+            if not created_ctobjs:
+                self._createctobjs()
+                created_ctobjs = True
+            assert self.hunter is not None
+            self.args.dynamic.extend(self.hunter.required_source_files(dynamic_lib_seed))
+            recreateobjs = True
+
+        if self.args.auto and not any([self.args.filename, self.args.static, self.args.dynamic, self.args.tests]):
+            findtargets = compiletools.findtargets.FindTargets(self.args, context=self.context)
+            findtargets.process(self.args)
+            recreateobjs = True
+
+        # Auto-clone any //#GIT= externals reachable from the now-final target
+        # list and register their include dirs. Must run AFTER single-lib
+        # expansion and --auto discovery (so the target set is settled) but
+        # BEFORE the recreateobjs re-substitution: it mutates args.INCLUDE only,
+        # and the substitutions() re-run below redistributes INCLUDE into the
+        # *FLAGS and re-finalizes the frozen args.flags -- the sanctioned path
+        # that keeps check_flag_string_drift happy.
+        externals_changed = self._fetch_and_register_externals()
+        if externals_changed:
+            recreateobjs = True
+
+        if recreateobjs:
+            # Since we've fiddled with the args, run the substitutions again.
+            # Primarily, this fixes the --includes for the git root of the
+            # targets. And recreate the ct objects.
+            if self.args.verbose > 4:
+                print("Cake recreating objects and reparsing for second stage processing")
+            compiletools.apptools.substitutions(self.args, verbose=0)
+            self._createctobjs()
+            created_ctobjs = True
+        elif not created_ctobjs:
+            self._createctobjs()
+
+        # Second pass: now that externals have been fetched, the include path
+        # widened, and the hunter recreated over that wider path, re-scan the
+        # single-file library seed(s). Implied sources that live inside a
+        # freshly-cloned external were invisible to the first-pass expansion
+        # (the external's headers were unresolvable then), so pick them up now.
+        if externals_changed:
+            self._reexpand_single_lib_seeds(static_lib_seed, dynamic_lib_seed)
+
+    def _reexpand_single_lib_seeds(self, static_lib_seed, dynamic_lib_seed):
+        """Re-scan single-file library seeds after externals widened INCLUDE.
+
+        Merges any newly-reachable implied sources into ``args.static`` /
+        ``args.dynamic``. Idempotent: sources already discovered in the
+        first pass are not duplicated.
+        """
+        assert self.hunter is not None
+        if static_lib_seed is not None:
+            self._merge_new_sources(self.args.static, self.hunter.required_source_files(static_lib_seed))
+        if dynamic_lib_seed is not None:
+            self._merge_new_sources(self.args.dynamic, self.hunter.required_source_files(dynamic_lib_seed))
+
+    @staticmethod
+    def _merge_new_sources(target_list, discovered):
+        """Append entries of *discovered* not already present in *target_list*
+        (preserving order, deduping on realpath so a differently-spelled path
+        for an already-listed source is not added twice)."""
+        existing = {compiletools.wrappedos.realpath(p) for p in target_list}
+        for src in discovered:
+            real = compiletools.wrappedos.realpath(src)
+            if real not in existing:
+                existing.add(real)
+                target_list.append(src)
 
     def _createctobjs(self):
         """Has to be separate because --auto fiddles with the args"""
@@ -675,54 +788,7 @@ class Cake:
                     print("Early scanning. Cake determining targets and implied files")
 
                 with timer.phase("target_discovery"):
-                    created_ctobjs = False
-                    recreateobjs = False
-                    if self.args.static and len(self.args.static) == 1:
-                        if not created_ctobjs:
-                            self._createctobjs()
-                            created_ctobjs = True
-                        assert self.hunter is not None
-                        self.args.static.extend(self.hunter.required_source_files(self.args.static[0]))
-                        recreateobjs = True
-
-                    if self.args.dynamic and len(self.args.dynamic) == 1:
-                        if not created_ctobjs:
-                            self._createctobjs()
-                            created_ctobjs = True
-                        assert self.hunter is not None
-                        self.args.dynamic.extend(self.hunter.required_source_files(self.args.dynamic[0]))
-                        recreateobjs = True
-
-                    if self.args.auto and not any(
-                        [self.args.filename, self.args.static, self.args.dynamic, self.args.tests]
-                    ):
-                        findtargets = compiletools.findtargets.FindTargets(self.args, context=self.context)
-                        findtargets.process(self.args)
-                        recreateobjs = True
-
-                    # Auto-clone any //#GIT= externals reachable from the now-final
-                    # target list and register their include dirs. Must run AFTER
-                    # single-lib expansion and --auto discovery (so the target set
-                    # is settled) but BEFORE the recreateobjs re-substitution: it
-                    # mutates args.INCLUDE only, and the substitutions() re-run
-                    # below redistributes INCLUDE into the *FLAGS and re-finalizes
-                    # the frozen args.flags -- the sanctioned path that keeps
-                    # check_flag_string_drift happy.
-                    if self._fetch_and_register_externals():
-                        recreateobjs = True
-
-                    if recreateobjs:
-                        # Since we've fiddled with the args,
-                        # run the substitutions again
-                        # Primarily, this fixes the --includes for the git root of the
-                        # targets. And recreate the ct objects
-                        if self.args.verbose > 4:
-                            print("Cake recreating objects and reparsing for second stage processing")
-                        compiletools.apptools.substitutions(self.args, verbose=0)
-                        self._createctobjs()
-                        created_ctobjs = True
-                    elif not created_ctobjs:
-                        self._createctobjs()
+                    self._discover_targets()
 
                 compiletools.apptools.verboseprintconfig(self.args)
 
