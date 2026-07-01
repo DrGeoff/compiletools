@@ -123,10 +123,7 @@ class Cake:
         if not resolved:
             return False
 
-        # Build the new include-dir list. fetch just created these directories,
-        # so isdir() must read live state -- use os.path.isdir directly rather
-        # than the cached wrappedos wrapper (a cached "missing" answer from a
-        # pre-fetch probe would be stale).
+        # Build the new include-dir list from the just-fetched externals.
         existing = set(self.args.INCLUDE.split())
         new_dirs = []
 
@@ -138,6 +135,9 @@ class Cake:
         for r in resolved:
             _add(r.path)
             include_subdir = os.path.join(r.path, "include")
+            # NOT cached: fetch just created this directory, so isdir() must
+            # read live state -- a cached wrappedos "missing" answer from a
+            # pre-fetch probe would be stale.
             if os.path.isdir(include_subdir):
                 _add(include_subdir)
         _add(externals_dir)
