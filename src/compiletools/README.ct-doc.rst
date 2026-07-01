@@ -84,9 +84,9 @@ Two example trees ship with the package:
 
 * ``src/compiletools/examples-features/`` — focused, fixture-style
   projects for individual magic-flag annotations and config features
-  (``//#PKG-CONFIG=``, ``//#LDFLAGS=``, ``//#PCH=``, append-style
-  variables, …). Useful as copy-paste templates when adding the same
-  feature to your own project.
+  (``//#PKG-CONFIG=``, ``//#LDFLAGS=``, ``//#PCH=``, ``//#GIT=``,
+  append-style variables, …). Useful as copy-paste templates when adding
+  the same feature to your own project.
 
 The ``examples_registry`` Python module (``example_path()``,
 ``example_file()``) maps these trees from test code; tests under
@@ -98,7 +98,8 @@ KEY FEATURES
 
 **Magic Comments**
     Embed build requirements directly in source files using special comments
-    like ``//#LDFLAGS=-lpthread`` or ``//#PKG-CONFIG=zlib``. See ct-magicflags(1).
+    like ``//#LDFLAGS=-lpthread`` or ``//#PKG-CONFIG=zlib``, or pull in an
+    external git repository with ``//#GIT=<url>``. See ct-magicflags(1).
 
 **Automatic Dependency Detection**
     Traces #include statements to determine what to compile and link.
@@ -157,6 +158,10 @@ CORE TOOLS
 
 **ct-magicflags**
     Show magic flags extracted from source files.
+
+**ct-fetch**
+    Clone, update, or report the ``//#GIT=`` external git repositories a
+    target tree depends on, without running a build.
 
 **ct-headertree**
     Visualize include dependency structure.
@@ -265,6 +270,7 @@ SEE ALSO
 * ct-cppdeps
 * ct-create-makefile
 * ct-debug-pcm-hash-inputs
+* ct-fetch
 * ct-filelist
 * ct-findtargets
 * ct-git-sha-report
