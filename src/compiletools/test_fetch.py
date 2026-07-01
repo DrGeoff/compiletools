@@ -576,6 +576,62 @@ def test_resolve_no_fetch_present_sha_not_local_errors() -> None:
         assert "mylib" in str(excinfo.value)
 
 
+def test_resolve_no_fetch_present_branch_update_errors_offline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """no_fetch must veto a branch --update: raise offline, run no network git."""
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        externals = os.path.join(root, "externals")
+        # Clone the feature branch (present, on-branch work tree).
+        resolve_external(GitExternal(name="mylib", url=origin["url"], ref="feature"), externals_dir=externals)
+        # Advance the remote so an actual --update would fast-forward.
+        _advance_branch(origin, "feature", "more\n")
+
+        # Any network/mutating git op (fetch/checkout/merge/pull/clone) goes
+        # through _run_git; make it explode so the test proves none ran.
+        def _boom(*_args, **_kwargs):
+            raise AssertionError("network git op attempted under no_fetch")
+
+        monkeypatch.setattr(fetch, "_run_git", _boom)
+
+        with pytest.raises(FetchError) as excinfo:
+            resolve_external(
+                GitExternal(name="mylib", url=origin["url"], ref="feature"),
+                externals_dir=externals,
+                no_fetch=True,
+                update=True,
+            )
+        msg = str(excinfo.value)
+        assert "mylib" in msg
+        assert "no-fetch" in msg.lower() or "offline" in msg.lower()
+
+
+def test_resolve_no_fetch_present_no_ref_update_errors_offline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """no_fetch must veto a no-ref --update pull: raise offline, run no network git."""
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        externals = os.path.join(root, "externals")
+        # Clone with no ref (tracks the default branch).
+        resolve_external(GitExternal(name="mylib", url=origin["url"], ref=None), externals_dir=externals)
+        # Advance the remote so an actual --update would pull.
+        _advance_branch(origin, "master", "three\n")
+
+        def _boom(*_args, **_kwargs):
+            raise AssertionError("network git op attempted under no_fetch")
+
+        monkeypatch.setattr(fetch, "_run_git", _boom)
+
+        with pytest.raises(FetchError) as excinfo:
+            resolve_external(
+                GitExternal(name="mylib", url=origin["url"], ref=None),
+                externals_dir=externals,
+                no_fetch=True,
+                update=True,
+            )
+        msg = str(excinfo.value)
+        assert "mylib" in msg
+        assert "no-fetch" in msg.lower() or "offline" in msg.lower()
+
+
 # ---------------------------------------------------------------------------
 # override_path
 # ---------------------------------------------------------------------------
@@ -1644,11 +1700,7 @@ def test_fetch_externals_locks_managed_target_sidecar(monkeypatch: pytest.Monkey
 
         main = os.path.join(root, "main.cpp")
         with open(main, "w") as fh:
-            fh.write(
-                f"//#GIT={managed['url']}@master\n"
-                f"//#GIT={overridden['url']}@master\n"
-                "int main() { return 0; }\n"
-            )
+            fh.write(f"//#GIT={managed['url']}@master\n//#GIT={overridden['url']}@master\nint main() {{ return 0; }}\n")
 
         fetch_externals(
             [main],
