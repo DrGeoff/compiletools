@@ -1077,6 +1077,46 @@ def test_fetch_externals_second_call_no_network() -> None:
 
 
 @requires_functional_compiler
+def test_present_checkout_origin_mismatch_warns(capsys) -> None:
+    """A managed checkout whose origin differs from the //#GIT= url is used
+    as-is but warns (name-collision under the sibling layout)."""
+    with tempfile.TemporaryDirectory() as root:
+        # Clone repo A into externals/mylib, then declare mylib -> repo B's url.
+        # repo A is cloned into externals/mylib; the //#GIT= declaration derives
+        # the SAME name 'mylib' (its basename is mylib.git) but points at repo B.
+        repo_a = _make_bare_with_files(root, "mylib", {"a.h": "#pragma once\n"})
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        subprocess.check_call(
+            ["git", "clone", "-q", repo_a["url"], os.path.join(externals, "mylib")],
+            env=fetch._git_env(),
+        )
+        # repo B: a distinct repo whose bare dir basename is also 'mylib' so its
+        # derived external name collides with the present checkout of repo A.
+        repo_b_work = os.path.join(root, "b-work")
+        os.makedirs(repo_b_work)
+        subprocess.check_call(["git", "init", "-q", "-b", "master", repo_b_work], env=fetch._git_env())
+        with open(os.path.join(repo_b_work, "b.h"), "w") as fh:
+            fh.write("#pragma once\n")
+        subprocess.check_call(["git", "add", "-A"], cwd=repo_b_work, env=fetch._git_env())
+        subprocess.check_call(["git", "commit", "-q", "-m", "b"], cwd=repo_b_work, env=fetch._git_env())
+        repo_b_bare = os.path.join(root, "bdir", "mylib.git")
+        os.makedirs(os.path.dirname(repo_b_bare))
+        subprocess.check_call(["git", "clone", "-q", "--bare", repo_b_work, repo_b_bare], env=fetch._git_env())
+
+        main = os.path.join(root, "main.cpp")
+        with open(main, "w") as fh:
+            # No ref -> no update -> the present checkout is used as-is (a no-op),
+            # so the only observable effect is the origin-mismatch warning.
+            fh.write(f"//#GIT=file://{repo_b_bare}\nint main() {{ return 0; }}\n")
+
+        results = fetch_externals([main], _make_args(), BuildContext(), externals_dir=externals)
+        assert [r.name for r in results] == ["mylib"]
+        err = capsys.readouterr().err
+        assert "origin" in err and "mylib" in err
+
+
+@requires_functional_compiler
 def test_fetch_externals_parallel_resolves_all_in_declaration_order() -> None:
     """Multiple independent externals discovered in one round are resolved in a
     thread pool, yet the result list stays in stable declaration order.

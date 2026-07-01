@@ -526,6 +526,32 @@ def _current_commit(path: str) -> str | None:
     return sha or None
 
 
+def _origin_url(path: str) -> str | None:
+    """Return the ``origin`` remote URL of the repo at *path*, best-effort."""
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=path,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            env=_git_env(),
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    url = result.stdout.strip()
+    return url or None
+
+
+def _normalize_remote_url(url: str) -> str:
+    """Normalize a git URL for equality comparison (strip trailing '/' and '.git')."""
+    url = url.rstrip("/")
+    if url.endswith(".git"):
+        url = url[: -len(".git")]
+    return url
+
+
 def _is_dirty(ext: GitExternal, path: str) -> bool:
     """Return True if the work tree at *path* has uncommitted changes.
 
@@ -830,6 +856,16 @@ def _handle_present(ext: GitExternal, target: str, *, no_fetch: bool, update: bo
             path=os.path.abspath(target),
             source="managed",
             on_disk_ref=None,
+        )
+
+    origin = _origin_url(target)
+    if origin is not None and _normalize_remote_url(origin) != _normalize_remote_url(ext.url):
+        _warn(
+            f"external '{ext.name}': managed checkout at '{target}' has origin "
+            f"'{origin}' but the //#GIT= declaration requests '{ext.url}'; using the "
+            f"existing checkout as-is. If two projects declare different externals "
+            f"under the same name, disambiguate with --externals-dir or "
+            f"--git-path {ext.name}=<path>."
         )
 
     if ext.ref is None:
