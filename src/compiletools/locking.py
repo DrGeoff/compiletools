@@ -707,6 +707,8 @@ def _run_with_signal_forwarding(
     *,
     env: dict[str, str] | None = None,
     capture_output: bool = False,
+    on_child_start=None,
+    on_child_end=None,
 ) -> subprocess.CompletedProcess:
     """Run cmd as a subprocess in a new session, forwarding SIGINT/SIGTERM
     to the child's process group, and reaping the child before returning.
@@ -742,6 +744,15 @@ def _run_with_signal_forwarding(
     ``env`` (when set) replaces the child's environment (as with
     ``subprocess.Popen(env=)``); callers that only need to add/remove a few
     variables should pass a copy of ``os.environ`` with their edits.
+
+    ``on_child_start`` / ``on_child_end`` (when set) are called with the
+    child's process-group id (an ``int``) once just after spawn and once after
+    the child is reaped. They let a caller that runs this helper OFF the main
+    thread (e.g. fetch's parallel clone workers, where the in-body
+    ``graceful_shutdown`` forwarder is a no-op) register each live child in a
+    thread-safe collection so a single main-thread handler can forward signals
+    to every worker-spawned child. Neither fires if the child's pgid cannot be
+    resolved (already-exited child).
     """
     popen_kwargs: dict = {"start_new_session": True, "cwd": cwd}
     if env is not None:
@@ -751,6 +762,13 @@ def _run_with_signal_forwarding(
         popen_kwargs["stderr"] = subprocess.STDOUT
         popen_kwargs["text"] = True
     proc = subprocess.Popen(cmd, **popen_kwargs)
+
+    try:
+        child_pgid: int | None = os.getpgid(proc.pid)
+    except (OSError, ProcessLookupError):
+        child_pgid = None
+    if on_child_start is not None and child_pgid is not None:
+        on_child_start(child_pgid)
 
     def _forward(signum, frame):
         try:
@@ -778,6 +796,8 @@ def _run_with_signal_forwarding(
                 proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 pass
+        if on_child_end is not None and child_pgid is not None:
+            on_child_end(child_pgid)
 
 
 class _NullLock:

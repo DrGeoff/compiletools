@@ -26,6 +26,7 @@ from compiletools.fetch import (
     GitExternal,
     ResolvedExternal,
     derive_name,
+    extract_git_allow_protocols,
     extract_git_externals,
     fetch_externals,
     parse_git_declaration,
@@ -1076,6 +1077,46 @@ def test_fetch_externals_second_call_no_network() -> None:
 
 
 @requires_functional_compiler
+def test_present_checkout_origin_mismatch_warns(capsys) -> None:
+    """A managed checkout whose origin differs from the //#GIT= url is used
+    as-is but warns (name-collision under the sibling layout)."""
+    with tempfile.TemporaryDirectory() as root:
+        # Clone repo A into externals/mylib, then declare mylib -> repo B's url.
+        # repo A is cloned into externals/mylib; the //#GIT= declaration derives
+        # the SAME name 'mylib' (its basename is mylib.git) but points at repo B.
+        repo_a = _make_bare_with_files(root, "mylib", {"a.h": "#pragma once\n"})
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        subprocess.check_call(
+            ["git", "clone", "-q", repo_a["url"], os.path.join(externals, "mylib")],
+            env=fetch._git_env(),
+        )
+        # repo B: a distinct repo whose bare dir basename is also 'mylib' so its
+        # derived external name collides with the present checkout of repo A.
+        repo_b_work = os.path.join(root, "b-work")
+        os.makedirs(repo_b_work)
+        subprocess.check_call(["git", "init", "-q", "-b", "master", repo_b_work], env=fetch._git_env())
+        with open(os.path.join(repo_b_work, "b.h"), "w") as fh:
+            fh.write("#pragma once\n")
+        subprocess.check_call(["git", "add", "-A"], cwd=repo_b_work, env=fetch._git_env())
+        subprocess.check_call(["git", "commit", "-q", "-m", "b"], cwd=repo_b_work, env=fetch._git_env())
+        repo_b_bare = os.path.join(root, "bdir", "mylib.git")
+        os.makedirs(os.path.dirname(repo_b_bare))
+        subprocess.check_call(["git", "clone", "-q", "--bare", repo_b_work, repo_b_bare], env=fetch._git_env())
+
+        main = os.path.join(root, "main.cpp")
+        with open(main, "w") as fh:
+            # No ref -> no update -> the present checkout is used as-is (a no-op),
+            # so the only observable effect is the origin-mismatch warning.
+            fh.write(f"//#GIT=file://{repo_b_bare}\nint main() {{ return 0; }}\n")
+
+        results = fetch_externals([main], _make_args(), BuildContext(), externals_dir=externals)
+        assert [r.name for r in results] == ["mylib"]
+        err = capsys.readouterr().err
+        assert "origin" in err and "mylib" in err
+
+
+@requires_functional_compiler
 def test_fetch_externals_parallel_resolves_all_in_declaration_order() -> None:
     """Multiple independent externals discovered in one round are resolved in a
     thread pool, yet the result list stays in stable declaration order.
@@ -1127,6 +1168,27 @@ def test_fetch_externals_parallel_one_bad_url_raises_fetcherror() -> None:
 
 
 @requires_functional_compiler
+def test_fetch_externals_parallel_first_bad_url_in_declaration_order_wins() -> None:
+    """With two failing externals discovered in the same parallel round, the
+    FetchError names the FIRST one in declaration order (deterministic, matching
+    a sequential run), regardless of which worker thread fails first."""
+    with tempfile.TemporaryDirectory() as root:
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        main = os.path.join(root, "main.cpp")
+        with open(main, "w") as fh:
+            fh.write(
+                f"//#GIT=file://{root}/first-missing.git@master\n"
+                f"//#GIT=file://{root}/second-missing.git@master\n"
+                "int main() { return 0; }\n"
+            )
+        with pytest.raises(FetchError) as excinfo:
+            fetch_externals([main], _make_args(), BuildContext(), externals_dir=externals)
+        assert "first-missing" in str(excinfo.value)
+        assert "second-missing" not in str(excinfo.value)
+
+
+@requires_functional_compiler
 def test_fetch_externals_malformed_value_errors() -> None:
     with tempfile.TemporaryDirectory() as root:
         externals = os.path.join(root, "externals")
@@ -1147,6 +1209,33 @@ def test_extract_git_externals_tolerates_missing_file() -> None:
     with tempfile.TemporaryDirectory() as root:
         missing = os.path.join(root, "does-not-exist.cpp")
         assert extract_git_externals(missing, _make_args(), BuildContext()) == []
+
+
+@requires_functional_compiler
+def test_git_declaration_in_dead_conditional_is_still_extracted() -> None:
+    """//#GIT= is extracted regardless of preprocessor conditionals: a
+    declaration inside `#if 0` is still discovered. This is intentional
+    (evaluating conditionals may require the not-yet-fetched external's own
+    headers) and is pinned here so a future change is deliberate."""
+    with tempfile.TemporaryDirectory() as root:
+        src = os.path.join(root, "main.cpp")
+        with open(src, "w") as fh:
+            fh.write("#if 0\n//#GIT=file:///x/deadlib.git\n#endif\nint main() { return 0; }\n")
+        exts = extract_git_externals(src, _make_args(), BuildContext())
+        assert [e.name for e in exts] == ["deadlib"]
+
+
+@requires_functional_compiler
+def test_extract_git_allow_protocols_reads_declarations() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        src = os.path.join(root, "main.cpp")
+        with open(src, "w") as fh:
+            fh.write(
+                "//#GIT_ALLOW_PROTOCOL=file:git:ssh:http:https:ext\n"
+                "//#GIT=file:///x/mylib.git\n"
+                "int main() { return 0; }\n"
+            )
+        assert extract_git_allow_protocols(src, _make_args(), BuildContext()) == ["file:git:ssh:http:https:ext"]
 
 
 @requires_functional_compiler
@@ -1191,6 +1280,25 @@ def test_augmented_headerdeps_threads_include_dirs_without_deepcopy() -> None:
         assert externals in hd.includes
         assert space_root in hd.includes
         assert os.path.join(space_root, "include") in hd.includes
+
+
+@requires_functional_compiler
+def test_augmented_headerdeps_searches_externals_dir_last() -> None:
+    """externals_dir is appended LAST so a same-named dir inside a resolved root
+    is found before the broad siblings-parent dir."""
+    args = _make_args()
+    context = BuildContext()
+    hd = fetch._augmented_headerdeps(
+        args,
+        context,
+        externals_dir="/tmp/externals",
+        resolved_roots=["/tmp/externals/alpha", "/tmp/externals/beta"],
+    )
+    extra = hd._extra_include_dirs
+    assert extra[-1] == "/tmp/externals"  # externals_dir searched last
+    # Every resolved root (and its include/ subdir) precedes externals_dir.
+    assert extra.index("/tmp/externals/alpha") < extra.index("/tmp/externals")
+    assert extra.index("/tmp/externals/beta") < extra.index("/tmp/externals")
 
 
 @requires_functional_compiler
@@ -1515,6 +1623,35 @@ def test_git_env_pops_ambient_repo_pointers(monkeypatch: pytest.MonkeyPatch) -> 
         assert var not in env
 
 
+def test_git_env_sets_default_allow_protocol(monkeypatch) -> None:
+    """_git_env pins a safe default GIT_ALLOW_PROTOCOL so ext:: remote-helper
+    URLs (arbitrary command execution) are refused by git."""
+    monkeypatch.delenv("GIT_ALLOW_PROTOCOL", raising=False)
+    env = fetch._git_env()
+    assert env["GIT_ALLOW_PROTOCOL"] == "file:git:ssh:http:https"
+    assert "ext" not in env["GIT_ALLOW_PROTOCOL"].split(":")
+
+
+def test_git_env_user_env_wins_over_default(monkeypatch) -> None:
+    """A user who exported GIT_ALLOW_PROTOCOL keeps their value (setdefault)."""
+    monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "file:ext")
+    assert fetch._git_env()["GIT_ALLOW_PROTOCOL"] == "file:ext"
+
+
+def test_git_env_explicit_allow_protocol_argument(monkeypatch) -> None:
+    """An explicit allow_protocol (from //#GIT_ALLOW_PROTOCOL) widens the set."""
+    monkeypatch.delenv("GIT_ALLOW_PROTOCOL", raising=False)
+    env = fetch._git_env("file:git:ssh:http:https:ext")
+    assert "ext" in env["GIT_ALLOW_PROTOCOL"].split(":")
+
+
+def test_git_env_user_env_wins_over_explicit_argument(monkeypatch) -> None:
+    """An ambient exported GIT_ALLOW_PROTOCOL wins even over an explicit
+    allow_protocol argument (setdefault): the user's env is the final say."""
+    monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "file")
+    assert fetch._git_env("file:git:ssh:http:https:ext")["GIT_ALLOW_PROTOCOL"] == "file"
+
+
 # --- A19: _is_git_work_tree is true only at a checkout root ------------------
 
 
@@ -1784,6 +1921,81 @@ def test_fetch_externals_locks_managed_target_sidecar(monkeypatch: pytest.Monkey
     assert overridden_lock not in locked_paths
 
 
+@requires_functional_compiler
+def test_declared_allow_protocol_is_threaded_into_git_env(monkeypatch) -> None:
+    """A //#GIT_ALLOW_PROTOCOL= widening declared in a source reaches _git_env
+    for that round's clone (gather -> union -> _git_run_ctx -> _run_git)."""
+    with tempfile.TemporaryDirectory() as root:
+        ext = _make_bare_with_files(root, "mylib", {"m.h": "#pragma once\n"})
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        main = os.path.join(root, "main.cpp")
+        with open(main, "w") as fh:
+            fh.write(
+                "//#GIT_ALLOW_PROTOCOL=file:git:ssh:http:https:ext\n"
+                f"//#GIT={ext['url']}@master\n"
+                "int main() { return 0; }\n"
+            )
+
+        seen: list[str | None] = []
+        real_git_env = fetch._git_env
+
+        def _spy(allow_protocol=None):
+            seen.append(allow_protocol)
+            return real_git_env(allow_protocol)
+
+        monkeypatch.setattr(fetch, "_git_env", _spy)
+        fetch_externals([main], _make_args(), BuildContext(), externals_dir=externals)
+
+        # At least one git op ran with the widened set (the clone). The read-only
+        # helpers call _git_env() with no arg (None), so filter those out.
+        widened = [s for s in seen if s is not None]
+        assert widened, "no git op received an explicit allow_protocol"
+        assert all("ext" in s.split(":") for s in widened)
+
+
+@requires_functional_compiler
+def test_allow_protocol_from_fetched_external_header_is_ignored(monkeypatch) -> None:
+    """A //#GIT_ALLOW_PROTOCOL declared in a FETCHED external's header must NOT
+    widen the protocol set — that would re-open ext:: RCE one hop out. Only the
+    main project's own sources may widen it. extB clones fine over the default
+    `file` protocol; we assert no git op ever saw the header-declared 'evil'."""
+    with tempfile.TemporaryDirectory() as root:
+        # extB: a plain second external, cloneable over the default `file` proto.
+        extb = _make_bare_with_files(root, "extb", {"b.h": "#pragma once\n"})
+        # extA's header declares a protocol widening (evil) AND pulls extB in.
+        exta = _make_bare_with_files(
+            root,
+            "exta",
+            {
+                "a.h": (f"#pragma once\n//#GIT_ALLOW_PROTOCOL=file:git:ssh:http:https:evil\n//#GIT={extb['url']}\n"),
+            },
+        )
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        main = os.path.join(root, "main.cpp")
+        with open(main, "w") as fh:
+            fh.write(f'//#GIT={exta["url"]}\n#include "exta/a.h"\nint main() {{ return 0; }}\n')
+
+        seen: list[str | None] = []
+        real_git_env = fetch._git_env
+
+        def _spy(allow_protocol=None):
+            seen.append(allow_protocol)
+            return real_git_env(allow_protocol)
+
+        monkeypatch.setattr(fetch, "_git_env", _spy)
+        results = fetch_externals([main], _make_args(), BuildContext(), externals_dir=externals)
+
+        # Both externals were fetched (extB over the default `file` protocol).
+        assert {r.name for r in results} == {"exta", "extb"}
+        # The widening declared in extA's FETCHED header must NOT have reached any
+        # git op's allow_protocol — it is untrusted transitive input.
+        assert all("evil" not in (s or "") for s in seen), (
+            f"a fetched external's //#GIT_ALLOW_PROTOCOL widened the protocol set: {seen}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # _run_git lock safety: git subprocesses must run through the lock-safe
 # signal-forwarding helper (a new session + SIGINT/SIGTERM forwarding), so a
@@ -1899,4 +2111,119 @@ def test_sigterm_during_run_git_is_forwarded_to_git_child(tmp_path) -> None:
     )
     assert not done_marker.exists(), (
         "git child ran to completion as an orphan — worker exited without killing its git child"
+    )
+
+
+@pytest.mark.skipif(not hasattr(os, "killpg"), reason="POSIX-only signal forwarding")
+def test_sigterm_during_parallel_fetch_forwards_to_all_git_children(tmp_path) -> None:
+    """Two externals cloned in one parallel round: a SIGTERM to the fetch
+    process must reach BOTH git children (their TRAP markers appear) and neither
+    may run to completion as an orphan (no DONE markers). This is the parallel
+    counterpart to the single-child _run_git SIGTERM test and pins finding 1's
+    fix (worker-spawned git children are registered and force-killed)."""
+    shim_dir = tmp_path / "shim"
+    shim_dir.mkdir()
+    externals = tmp_path / "externals"
+    externals.mkdir()
+
+    # A fake `git` that, for `clone` only, signals readiness, traps TERM
+    # (leaving a per-invocation marker keyed by the clone URL), and otherwise
+    # sleeps. PATH is hijacked process-wide (see worker_script below), so the
+    # SAME shim also intercepts the whole process's other real git bookkeeping
+    # calls (git-root detection, dirty-tree checks, ...); those must return
+    # fast and successfully rather than each burning 5 real seconds, or the
+    # test's fetch round would never even start within its deadline.
+    git_shim = shim_dir / "git"
+    git_shim.write_text(
+        textwrap.dedent(f"""\
+        #!/bin/sh
+        if [ "$1" != "clone" ]; then
+            exit 0
+        fi
+        # Key the marker on the clone URL (an argument ending in .git), not the
+        # clone destination: the destination is a
+        # "<name>.ct-fetch.tmp.<pid>"-suffixed temp sibling of the final target
+        # (A15 temp+rename), not a directory literally named "<name>.git".
+        urlarg=""
+        for a in "$@"; do
+            case "$a" in
+                *.git) urlarg="$a" ;;
+            esac
+        done
+        base=$(basename "$urlarg")
+        touch {tmp_path}/READY.$base
+        trap 'touch {tmp_path}/TRAPPED.$base; exit 143' TERM
+        sleep 5
+        touch {tmp_path}/DONE.$base
+        """)
+    )
+    git_shim.chmod(0o755)
+
+    main = tmp_path / "main.cpp"
+    main.write_text(
+        "//#GIT=file:///nowhere/alpha.git@master\n//#GIT=file:///nowhere/beta.git@master\nint main() { return 0; }\n"
+    )
+
+    repo_src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    worker_script = tmp_path / "worker.py"
+    worker_script.write_text(
+        textwrap.dedent(f"""
+        import os, sys
+        sys.path.insert(0, {repo_src!r})
+        os.environ["PATH"] = {str(shim_dir)!r} + os.pathsep + os.environ.get("PATH", "")
+        import configargparse
+        import compiletools.apptools, compiletools.headerdeps
+        from compiletools.build_context import BuildContext
+        from compiletools.fetch import fetch_externals
+        cap = configargparse.ArgumentParser(conflict_handler="resolve")
+        compiletools.headerdeps.add_arguments(cap)
+        compiletools.apptools.add_common_arguments(cap)
+        args = compiletools.apptools.parseargs(cap, ["--headerdeps", "direct"], context=BuildContext())
+        try:
+            fetch_externals([{str(main)!r}], args, BuildContext(), externals_dir={str(externals)!r})
+        except SystemExit:
+            raise
+        except BaseException:
+            pass
+    """)
+    )
+
+    proc = subprocess.Popen(
+        [sys.executable, str(worker_script)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        deadline = time.time() + 20
+        while (
+            not ((tmp_path / "READY.alpha.git").exists() and (tmp_path / "READY.beta.git").exists())
+            and time.time() < deadline
+        ):
+            time.sleep(0.05)
+        assert (tmp_path / "READY.alpha.git").exists() and (tmp_path / "READY.beta.git").exists(), (
+            "both git children did not start (parallel round did not spawn two clones)"
+        )
+        time.sleep(0.5)
+        proc.send_signal(signal.SIGTERM)
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            proc.wait()
+            pytest.fail("fetch process did not exit promptly after SIGTERM")
+    finally:
+        if proc.poll() is None:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
+            proc.wait()
+
+    time.sleep(6.0)  # long enough that DONE would appear if a child orphaned
+    assert (tmp_path / "TRAPPED.alpha.git").exists() and (tmp_path / "TRAPPED.beta.git").exists(), (
+        "not every git child received SIGTERM — worker-spawned children were not registered/forwarded"
+    )
+    assert not (tmp_path / "DONE.alpha.git").exists() and not (tmp_path / "DONE.beta.git").exists(), (
+        "a git child ran to completion as an orphan after the fetch process was signalled"
     )

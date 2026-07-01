@@ -29,11 +29,13 @@ such refs should pin to a tag or a commit SHA instead.
 from __future__ import annotations
 
 import concurrent.futures
+import contextvars
 import os
 import shutil
 import signal
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from typing import Literal
 
@@ -44,6 +46,7 @@ __all__ = [
     "ResolvedExternal",
     "collect_target_files",
     "derive_name",
+    "extract_git_allow_protocols",
     "extract_git_externals",
     "fetch_externals",
     "gather_external_status",
@@ -58,6 +61,14 @@ __all__ = [
 # Prefix of the per-external location-override environment variable. The
 # external's name (lowercased) is appended: ``CT_GIT_PATH_<NAME>``.
 _ENV_OVERRIDE_PREFIX = "CT_GIT_PATH_"
+
+# Default set of git transport protocols permitted at fetch time. Excludes the
+# `ext::` remote-helper protocol (which git's protocol.ext.allow=user would
+# otherwise permit) because a //#GIT= url is untrusted source-file input and
+# `ext::<cmd>` is arbitrary command execution. A project that genuinely needs a
+# wider set declares it with a //#GIT_ALLOW_PROTOCOL= magic comment; a user who
+# exported GIT_ALLOW_PROTOCOL in their environment keeps their value.
+_DEFAULT_GIT_ALLOW_PROTOCOL = "file:git:ssh:http:https"
 
 
 class FetchError(Exception):
@@ -362,7 +373,7 @@ def _warn(message: str) -> None:
     print(f"ct-fetch: warning: {message}", file=sys.stderr)
 
 
-def _git_env() -> dict[str, str]:
+def _git_env(allow_protocol: str | None = None) -> dict[str, str]:
     """Return the environment for git operations on externals.
 
     Design: **honour the user's ambient git configuration.** The user's
@@ -390,11 +401,24 @@ def _git_env() -> dict[str, str]:
       that exports them, every ``_run_git(cwd=target)`` would silently operate
       on the *enclosing* repo instead of the external. We drop that family so
       ``cwd=`` is authoritative.
+    * **Restricted transport protocols.** ``GIT_ALLOW_PROTOCOL`` defaults to
+      :data:`_DEFAULT_GIT_ALLOW_PROTOCOL`, which excludes ``ext::`` (arbitrary
+      command execution) — a ``//#GIT=`` url is untrusted source-file input. A
+      project that declares ``//#GIT_ALLOW_PROTOCOL=<list>`` in its OWN
+      (first-party) sources widens the default set with the protocols it names:
+      the caller unions the declared tokens with the default and passes the
+      result here as *allow_protocol*. Declarations found in a fetched
+      external's headers are ignored (untrusted). Either way, ``setdefault``
+      means a user who has already exported ``GIT_ALLOW_PROTOCOL`` keeps their
+      own value (it wins over both the default and any declaration).
     """
     env = dict(os.environ)
     # Fail fast rather than hang on an interactive prompt.
     env["GIT_TERMINAL_PROMPT"] = "0"
     env.setdefault("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
+    # Restrict transport protocols (see _DEFAULT_GIT_ALLOW_PROTOCOL). setdefault
+    # so an explicit ambient GIT_ALLOW_PROTOCOL still wins.
+    env.setdefault("GIT_ALLOW_PROTOCOL", allow_protocol or _DEFAULT_GIT_ALLOW_PROTOCOL)
     # Never let an ambient repo pointer override our explicit cwd=target.
     for var in (
         "GIT_DIR",
@@ -429,12 +453,17 @@ def _run_git(args: list[str], *, cwd: str | None, ext: GitExternal) -> subproces
     """
     import compiletools.locking
 
+    run_ctx = _git_run_ctx.get()
+    children = run_ctx.children if run_ctx is not None else None
+    allow_protocol = run_ctx.allow_protocol if run_ctx is not None else None
     try:
         result = compiletools.locking._run_with_signal_forwarding(
             ["git", *args],
             cwd=cwd,
-            env=_git_env(),
+            env=_git_env(allow_protocol),
             capture_output=True,
+            on_child_start=children.add if children is not None else None,
+            on_child_end=children.discard if children is not None else None,
         )
     except FileNotFoundError as exc:
         raise FetchError(f"external '{ext.name}' ({ext.url}): 'git' is not installed or not on PATH") from exc
@@ -498,6 +527,32 @@ def _current_commit(path: str) -> str | None:
         return None
     sha = result.stdout.strip()
     return sha or None
+
+
+def _origin_url(path: str) -> str | None:
+    """Return the ``origin`` remote URL of the repo at *path*, best-effort."""
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=path,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            env=_git_env(),
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    url = result.stdout.strip()
+    return url or None
+
+
+def _normalize_remote_url(url: str) -> str:
+    """Normalize a git URL for equality comparison (strip trailing '/' and '.git')."""
+    url = url.rstrip("/")
+    if url.endswith(".git"):
+        url = url[: -len(".git")]
+    return url
 
 
 def _is_dirty(ext: GitExternal, path: str) -> bool:
@@ -806,6 +861,16 @@ def _handle_present(ext: GitExternal, target: str, *, no_fetch: bool, update: bo
             on_disk_ref=None,
         )
 
+    origin = _origin_url(target)
+    if origin is not None and _normalize_remote_url(origin) != _normalize_remote_url(ext.url):
+        _warn(
+            f"external '{ext.name}': managed checkout at '{target}' has origin "
+            f"'{origin}' but the //#GIT= declaration requests '{ext.url}'; using the "
+            f"existing checkout as-is. If two projects declare different externals "
+            f"under the same name, disambiguate with --externals-dir or "
+            f"--git-path {ext.name}=<path>."
+        )
+
     if ext.ref is None:
         _handle_no_ref(ext, target, no_fetch=no_fetch, update=update, verbose=verbose)
     elif _is_tag(target, ext.ref):
@@ -921,6 +986,56 @@ _MAX_FIXPOINT_ROUNDS = 50
 _MAX_FETCH_WORKERS = 8
 
 
+class _LiveChildren:
+    """Thread-safe registry of live git child process-group ids.
+
+    Populated from worker threads (via ``_run_with_signal_forwarding``'s
+    ``on_child_start`` / ``on_child_end`` hooks) so a single MAIN-thread signal
+    handler installed around the parallel resolve can forward SIGINT/SIGTERM to
+    every worker-spawned git child. The in-worker ``graceful_shutdown``
+    forwarder inside ``_run_with_signal_forwarding`` is a no-op off the main
+    thread, so without this the workers' clones would orphan on interrupt.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._pgids: set[int] = set()
+
+    def add(self, pgid: int) -> None:
+        with self._lock:
+            self._pgids.add(pgid)
+
+    def discard(self, pgid: int) -> None:
+        with self._lock:
+            self._pgids.discard(pgid)
+
+    def forward(self, signum: int) -> None:
+        with self._lock:
+            pgids = list(self._pgids)
+        for pgid in pgids:
+            try:
+                os.killpg(pgid, signum)
+            except (OSError, ProcessLookupError):
+                pass
+
+
+@dataclass(frozen=True)
+class _GitRunContext:
+    """Per-resolve context threaded to ``_run_git`` via a ContextVar.
+
+    Set at the top of ``_resolve_one`` (which runs IN the worker thread for the
+    parallel path), read by ``_run_git`` in the same thread/stack. Avoids
+    threading extra params through ``resolve_external`` and every ``_handle_*``.
+    """
+
+    children: _LiveChildren | None = None
+    allow_protocol: str | None = None
+
+
+# Default git run context (no registered children); overridden per resolve.
+_git_run_ctx: contextvars.ContextVar[_GitRunContext | None] = contextvars.ContextVar("_git_run_ctx", default=None)
+
+
 def extract_git_externals(filepath: str, args, context) -> list[GitExternal]:
     """Return a :class:`GitExternal` for every ``//#GIT=`` flag in *filepath*.
 
@@ -937,6 +1052,17 @@ def extract_git_externals(filepath: str, args, context) -> list[GitExternal]:
           :class:`ValueError` from :func:`parse_git_declaration` is wrapped in
           a :class:`FetchError` that names the declaring file, so the user sees
           exactly which declaration is broken.
+
+    Conditional-blind by design:
+        ``//#GIT=`` declarations are read from the file's raw magic flags and are
+        NOT filtered by ``#if`` / ``#ifdef`` state, unlike ``CPPFLAGS`` / other
+        magic flags. This is intentional: correctly evaluating the conditionals
+        can require headers that live inside the external we have not fetched yet
+        (a chicken-and-egg), so a declaration inside a dead ``#if 0`` branch is
+        still fetched, and pinning the SAME external to different refs in
+        mutually-exclusive ``#if`` branches is a conflicting-ref error rather
+        than a per-branch selection. Put per-configuration externals in separate
+        files, or pin one ref, to avoid the conflict.
 
     Args:
         filepath: Path to the source file to scan.
@@ -979,6 +1105,48 @@ def extract_git_externals(filepath: str, args, context) -> list[GitExternal]:
     return externals
 
 
+def extract_git_allow_protocols(filepath: str, args, context) -> list[str]:
+    """Return the raw value of every ``//#GIT_ALLOW_PROTOCOL=`` flag in *filepath*.
+
+    Each value is a git ``GIT_ALLOW_PROTOCOL`` list (colon-separated protocol
+    names, e.g. ``file:git:ssh:http:https:ext``). Non-matching magic flags are
+    ignored. A file that cannot be analyzed yields ``[]`` (tolerated, same as
+    :func:`extract_git_externals`). Malformed (empty, or a token beginning with
+    ``-``) values raise :class:`FetchError` naming the file — an option-injection
+    guard symmetric with :func:`parse_git_value`.
+    """
+    from compiletools.file_analyzer import analyze_file, set_analyzer_args
+    from compiletools.global_hash_registry import get_file_hash
+
+    if context.analyzer_args is None:
+        set_analyzer_args(args, context)
+
+    try:
+        content_hash = get_file_hash(filepath, context)
+        result = analyze_file(content_hash, context)
+    except Exception as exc:
+        if getattr(args, "verbose", 0) >= 2:
+            print(
+                f"ct-fetch: warning: could not analyze '{filepath}' for //#GIT_ALLOW_PROTOCOL=: {exc}",
+                file=sys.stderr,
+            )
+        return []
+
+    values: list[str] = []
+    for magic_flag in result.magic_flags:
+        if str(magic_flag["key"]) != "GIT_ALLOW_PROTOCOL":
+            continue
+        value = str(magic_flag["value"]).strip()
+        tokens = [t for t in value.split(":")]
+        if not value or any(not t or t.startswith("-") for t in tokens):
+            raise FetchError(
+                f"{filepath}: malformed //#GIT_ALLOW_PROTOCOL= declaration '{value}'; "
+                "expected a colon-separated list of git protocol names (e.g. file:git:https:ext)"
+            )
+        values.append(value)
+    return values
+
+
 def _augmented_headerdeps(args, context, *, externals_dir: str, resolved_roots: list[str]):
     """Build a headerdeps instance whose include search reaches into externals.
 
@@ -997,10 +1165,17 @@ def _augmented_headerdeps(args, context, *, externals_dir: str, resolved_roots: 
     """
     import compiletools.headerdeps
 
-    include_dirs = [externals_dir]
+    # Roots first, externals_dir LAST: a directory living INSIDE a resolved
+    # external (or its include/ subdir) that collides in name with a sibling
+    # under externals_dir must win, so the broad siblings-parent dir is searched
+    # only after every specific root. (extra_include_dirs are appended AFTER the
+    # project's own includes in both headerdeps flavours, so the project's own
+    # headers already outrank all of these.)
+    include_dirs: list[str] = []
     for root in resolved_roots:
         include_dirs.append(root)
         include_dirs.append(os.path.join(root, "include"))
+    include_dirs.append(externals_dir)
 
     return compiletools.headerdeps.create(args, context=context, extra_include_dirs=include_dirs)
 
@@ -1162,6 +1337,10 @@ def fetch_externals(
     declared: dict[str, GitExternal] = {}
     declared_files: dict[str, str] = {}  # name -> first declaring file (best-effort diagnostics)
     declared_lower: dict[str, str] = {}  # lowercased name -> first-declared original-cased name (N3)
+    # Union of every //#GIT_ALLOW_PROTOCOL= list declared by a reachable source.
+    # A project widens the permitted transport set (e.g. to add `ext`) by
+    # declaring it; the union is the explicit opt-in. Empty => the safe default.
+    allow_protocol_tokens: set[str] = set()
 
     # --- fetch-mode axes for the shared _fixpoint_scan driver ---------------
     # See _fixpoint_scan for the shared skeleton these three callbacks plug into.
@@ -1173,39 +1352,72 @@ def fetch_externals(
         # fetch reaches into every already-resolved/cloned root.
         return [r.path for r in resolved.values()]
 
-    def _resolve_one(ext: GitExternal) -> ResolvedExternal:
-        # Override keys are normalized to lowercase in parse_git_path_overrides;
-        # ext.name (from derive_name) preserves the URL-basename case, so
-        # lowercase it here to match case-insensitively.
-        override_path = overrides.get(ext.name.lower())
-        if override_path is not None:
-            # User-owned checkout: never cloned/mutated here, so no lock.
-            return resolve_external(
-                ext,
-                externals_dir=externals_dir,
-                override_path=override_path,
-                no_fetch=no_fetch,
-                update=update,
-                verbose=verbose,
-            )
-        # A1: serialize the exists->clone/checkout path against concurrent
-        # ct-cake/ct-fetch peers cloning into the same managed dir. Lock a
-        # SIDECAR (<target>.lock), never the target itself — locking the target
-        # would create an empty dir a peer make treats as up-to-date. No-op
-        # unless --file-locking is enabled. The lock lives INSIDE the worker so
-        # each parallel external acquires its own sidecar independently.
-        import compiletools.locking
+    def _is_first_party(source_file: str) -> bool:
+        # //#GIT_ALLOW_PROTOCOL widens the transport allow-list, DISABLING the
+        # ext:: RCE guard, so it must be honored ONLY from the main project's own
+        # sources — never from a fetched dependency's headers, which are exactly
+        # the untrusted input the default restriction defends against (a
+        # compromised https dependency could otherwise ship a header declaring
+        # `//#GIT_ALLOW_PROTOCOL=...:ext` + `//#GIT=ext::<cmd>` and the next
+        # fixpoint round would execute it). A source is first-party when it does
+        # not live inside any already-resolved external's tree. The main repo is
+        # never in `resolved`, so its own sources always qualify — even under the
+        # default externals_dir = parent-of-gitroot layout.
+        real = os.path.realpath(source_file)
+        for r in resolved.values():
+            root = os.path.realpath(r.path)
+            if real == root or real.startswith(root + os.sep):
+                return False
+        return True
 
-        target = os.path.join(externals_dir, ext.name)
-        with compiletools.locking.FileLock(target + ".lock", args):
-            return resolve_external(
-                ext,
-                externals_dir=externals_dir,
-                override_path=None,
-                no_fetch=no_fetch,
-                update=update,
-                verbose=verbose,
-            )
+    live_children = _LiveChildren()
+
+    def _resolve_one(ext: GitExternal) -> ResolvedExternal:
+        # Union the first-party-declared tokens with the default set so a
+        # declaration WIDENS (never silently narrows) the allow-list; None when
+        # nothing was declared (so _git_env uses the default).
+        if allow_protocol_tokens:
+            allow = ":".join(sorted(set(_DEFAULT_GIT_ALLOW_PROTOCOL.split(":")) | allow_protocol_tokens))
+        else:
+            allow = None
+        token = _git_run_ctx.set(_GitRunContext(children=live_children, allow_protocol=allow))
+        try:
+            # Override keys are normalized to lowercase in
+            # parse_git_path_overrides; ext.name (from derive_name) preserves
+            # the URL-basename case, so lowercase it here to match
+            # case-insensitively.
+            override_path = overrides.get(ext.name.lower())
+            if override_path is not None:
+                # User-owned checkout: never cloned/mutated here, so no lock.
+                return resolve_external(
+                    ext,
+                    externals_dir=externals_dir,
+                    override_path=override_path,
+                    no_fetch=no_fetch,
+                    update=update,
+                    verbose=verbose,
+                )
+            # A1: serialize the exists->clone/checkout path against concurrent
+            # ct-cake/ct-fetch peers cloning into the same managed dir. Lock a
+            # SIDECAR (<target>.lock), never the target itself — locking the
+            # target would create an empty dir a peer make treats as
+            # up-to-date. No-op unless --file-locking is enabled. The lock
+            # lives INSIDE the worker so each parallel external acquires its
+            # own sidecar independently.
+            import compiletools.locking
+
+            target = os.path.join(externals_dir, ext.name)
+            with compiletools.locking.FileLock(target + ".lock", args):
+                return resolve_external(
+                    ext,
+                    externals_dir=externals_dir,
+                    override_path=None,
+                    no_fetch=no_fetch,
+                    update=update,
+                    verbose=verbose,
+                )
+        finally:
+            _git_run_ctx.reset(token)
 
     def _resolve_new(new_names: list[GitExternal]) -> None:
         # The new externals in a round are independent, so resolve them in a
@@ -1220,24 +1432,55 @@ def fetch_externals(
             for ext in new_names:
                 resolved[ext.name] = _resolve_one(ext)
             return
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            submitted = [(ext, executor.submit(_resolve_one, ext)) for ext in new_names]
-            computed: dict[str, ResolvedExternal] = {}
-            first_error: BaseException | None = None
-            for ext, future in submitted:
+
+        import compiletools.apptools
+
+        def _handler(signum, _frame):
+            # Forward to every live worker-spawned git child, then interrupt the
+            # main thread. KeyboardInterrupt is a BaseException, so the result
+            # loop below (which catches only Exception) lets it propagate.
+            live_children.forward(signum)
+            raise KeyboardInterrupt
+
+        computed: dict[str, ResolvedExternal] = {}
+        first_error: BaseException | None = None
+        with compiletools.apptools.graceful_shutdown(_handler, signal.SIGINT, signal.SIGTERM):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 try:
-                    computed[ext.name] = future.result()
-                except BaseException as exc:  # re-raised below, deterministically
-                    if first_error is None:
-                        first_error = exc
-            if first_error is not None:
-                raise first_error
+                    # Submit INSIDE the try so an interrupt arriving mid-submission
+                    # still reaches the cancel handler below (otherwise it would
+                    # escape to ThreadPoolExecutor.__exit__'s default
+                    # shutdown(wait=True) with no cancel_futures, letting queued
+                    # clones run to completion).
+                    submitted = [(ext, executor.submit(_resolve_one, ext)) for ext in new_names]
+                    for ext, future in submitted:
+                        try:
+                            computed[ext.name] = future.result()
+                        except Exception as exc:  # only real failures; not interrupts
+                            if first_error is None:
+                                first_error = exc
+                                # M5: stop wasting network on not-yet-started peers.
+                                executor.shutdown(wait=False, cancel_futures=True)
+                except BaseException:
+                    # Interrupt (KeyboardInterrupt/SystemExit): children already
+                    # signalled by _handler; cancel any queued clones and let the
+                    # already-running workers finish (their FileLocks demand it)
+                    # before propagating.
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    raise
+        if first_error is not None:
+            raise first_error
         for ext in new_names:
             resolved[ext.name] = computed[ext.name]
 
     def _scan_round(reachable: list[str]) -> bool:
         new_names: list[GitExternal] = []
         for source_file in reachable:
+            # Protocol widening is only honored from first-party sources (never
+            # from a fetched external's header — that would re-open ext:: RCE).
+            if _is_first_party(source_file):
+                for value in extract_git_allow_protocols(source_file, args, context):
+                    allow_protocol_tokens.update(t for t in value.split(":") if t)
             for ext in extract_git_externals(source_file, args, context):
                 prior = declared.get(ext.name)
                 if prior is None:
@@ -1258,8 +1501,9 @@ def fetch_externals(
                     declared[ext.name] = ext
                     declared_files[ext.name] = source_file
                     declared_lower[lower] = ext.name
-                    if ext.name not in resolved:
-                        new_names.append(ext)
+                    # First time this name is declared, so it cannot already be
+                    # in `resolved` (which only holds previously-declared names).
+                    new_names.append(ext)
                     continue
                 # Same name seen before — must agree on URL.
                 if prior.url != ext.url:
