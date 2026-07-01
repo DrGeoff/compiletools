@@ -1645,6 +1645,13 @@ def test_git_env_explicit_allow_protocol_argument(monkeypatch) -> None:
     assert "ext" in env["GIT_ALLOW_PROTOCOL"].split(":")
 
 
+def test_git_env_user_env_wins_over_explicit_argument(monkeypatch) -> None:
+    """An ambient exported GIT_ALLOW_PROTOCOL wins even over an explicit
+    allow_protocol argument (setdefault): the user's env is the final say."""
+    monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "file")
+    assert fetch._git_env("file:git:ssh:http:https:ext")["GIT_ALLOW_PROTOCOL"] == "file"
+
+
 # --- A19: _is_git_work_tree is true only at a checkout root ------------------
 
 
@@ -1945,6 +1952,48 @@ def test_declared_allow_protocol_is_threaded_into_git_env(monkeypatch) -> None:
         widened = [s for s in seen if s is not None]
         assert widened, "no git op received an explicit allow_protocol"
         assert all("ext" in s.split(":") for s in widened)
+
+
+@requires_functional_compiler
+def test_allow_protocol_from_fetched_external_header_is_ignored(monkeypatch) -> None:
+    """A //#GIT_ALLOW_PROTOCOL declared in a FETCHED external's header must NOT
+    widen the protocol set — that would re-open ext:: RCE one hop out. Only the
+    main project's own sources may widen it. extB clones fine over the default
+    `file` protocol; we assert no git op ever saw the header-declared 'evil'."""
+    with tempfile.TemporaryDirectory() as root:
+        # extB: a plain second external, cloneable over the default `file` proto.
+        extb = _make_bare_with_files(root, "extb", {"b.h": "#pragma once\n"})
+        # extA's header declares a protocol widening (evil) AND pulls extB in.
+        exta = _make_bare_with_files(
+            root,
+            "exta",
+            {
+                "a.h": (f"#pragma once\n//#GIT_ALLOW_PROTOCOL=file:git:ssh:http:https:evil\n//#GIT={extb['url']}\n"),
+            },
+        )
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        main = os.path.join(root, "main.cpp")
+        with open(main, "w") as fh:
+            fh.write(f'//#GIT={exta["url"]}\n#include "exta/a.h"\nint main() {{ return 0; }}\n')
+
+        seen: list[str | None] = []
+        real_git_env = fetch._git_env
+
+        def _spy(allow_protocol=None):
+            seen.append(allow_protocol)
+            return real_git_env(allow_protocol)
+
+        monkeypatch.setattr(fetch, "_git_env", _spy)
+        results = fetch_externals([main], _make_args(), BuildContext(), externals_dir=externals)
+
+        # Both externals were fetched (extB over the default `file` protocol).
+        assert {r.name for r in results} == {"exta", "extb"}
+        # The widening declared in extA's FETCHED header must NOT have reached any
+        # git op's allow_protocol — it is untrusted transitive input.
+        assert all("evil" not in (s or "") for s in seen), (
+            f"a fetched external's //#GIT_ALLOW_PROTOCOL widened the protocol set: {seen}"
+        )
 
 
 # ---------------------------------------------------------------------------

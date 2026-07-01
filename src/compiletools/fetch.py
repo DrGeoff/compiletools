@@ -404,10 +404,13 @@ def _git_env(allow_protocol: str | None = None) -> dict[str, str]:
     * **Restricted transport protocols.** ``GIT_ALLOW_PROTOCOL`` defaults to
       :data:`_DEFAULT_GIT_ALLOW_PROTOCOL`, which excludes ``ext::`` (arbitrary
       command execution) — a ``//#GIT=`` url is untrusted source-file input. A
-      project that declares ``//#GIT_ALLOW_PROTOCOL=<list>`` widens the set to
-      exactly what it names (passed here as *allow_protocol*); either way,
-      ``setdefault`` means a user who has already exported
-      ``GIT_ALLOW_PROTOCOL`` keeps their own value.
+      project that declares ``//#GIT_ALLOW_PROTOCOL=<list>`` in its OWN
+      (first-party) sources widens the default set with the protocols it names:
+      the caller unions the declared tokens with the default and passes the
+      result here as *allow_protocol*. Declarations found in a fetched
+      external's headers are ignored (untrusted). Either way, ``setdefault``
+      means a user who has already exported ``GIT_ALLOW_PROTOCOL`` keeps their
+      own value (it wins over both the default and any declaration).
     """
     env = dict(os.environ)
     # Fail fast rather than hang on an interactive prompt.
@@ -1349,10 +1352,34 @@ def fetch_externals(
         # fetch reaches into every already-resolved/cloned root.
         return [r.path for r in resolved.values()]
 
+    def _is_first_party(source_file: str) -> bool:
+        # //#GIT_ALLOW_PROTOCOL widens the transport allow-list, DISABLING the
+        # ext:: RCE guard, so it must be honored ONLY from the main project's own
+        # sources — never from a fetched dependency's headers, which are exactly
+        # the untrusted input the default restriction defends against (a
+        # compromised https dependency could otherwise ship a header declaring
+        # `//#GIT_ALLOW_PROTOCOL=...:ext` + `//#GIT=ext::<cmd>` and the next
+        # fixpoint round would execute it). A source is first-party when it does
+        # not live inside any already-resolved external's tree. The main repo is
+        # never in `resolved`, so its own sources always qualify — even under the
+        # default externals_dir = parent-of-gitroot layout.
+        real = os.path.realpath(source_file)
+        for r in resolved.values():
+            root = os.path.realpath(r.path)
+            if real == root or real.startswith(root + os.sep):
+                return False
+        return True
+
     live_children = _LiveChildren()
 
     def _resolve_one(ext: GitExternal) -> ResolvedExternal:
-        allow = ":".join(sorted(allow_protocol_tokens)) or None
+        # Union the first-party-declared tokens with the default set so a
+        # declaration WIDENS (never silently narrows) the allow-list; None when
+        # nothing was declared (so _git_env uses the default).
+        if allow_protocol_tokens:
+            allow = ":".join(sorted(set(_DEFAULT_GIT_ALLOW_PROTOCOL.split(":")) | allow_protocol_tokens))
+        else:
+            allow = None
         token = _git_run_ctx.set(_GitRunContext(children=live_children, allow_protocol=allow))
         try:
             # Override keys are normalized to lowercase in
@@ -1449,8 +1476,11 @@ def fetch_externals(
     def _scan_round(reachable: list[str]) -> bool:
         new_names: list[GitExternal] = []
         for source_file in reachable:
-            for value in extract_git_allow_protocols(source_file, args, context):
-                allow_protocol_tokens.update(t for t in value.split(":") if t)
+            # Protocol widening is only honored from first-party sources (never
+            # from a fetched external's header — that would re-open ext:: RCE).
+            if _is_first_party(source_file):
+                for value in extract_git_allow_protocols(source_file, args, context):
+                    allow_protocol_tokens.update(t for t in value.split(":") if t)
             for ext in extract_git_externals(source_file, args, context):
                 prior = declared.get(ext.name)
                 if prior is None:

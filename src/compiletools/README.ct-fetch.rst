@@ -140,9 +140,12 @@ protocol list::
     //#GIT_ALLOW_PROTOCOL=file:git:ssh:http:https:ext
     //#GIT=ext::...
 
-The declared lists are unioned across all scanned sources. A
-``GIT_ALLOW_PROTOCOL`` you export in your own environment always wins over both
-the default and the magic comment.
+The named protocols are added to (not substituted for) the default set, and
+only declarations in your **own** project's sources are honored — a
+``//#GIT_ALLOW_PROTOCOL`` found in a fetched external's headers is ignored, so a
+dependency cannot widen the transport set on your behalf. A ``GIT_ALLOW_PROTOCOL``
+you export in your own environment always wins over both the default and any
+declaration.
 
 Transitive externals
 ---------------------
