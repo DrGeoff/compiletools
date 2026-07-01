@@ -15,7 +15,7 @@
 namespace {
 
 // The single stdin's saved settings. There is only ever one controlling
-// terminal, so this lives at file scope rather than inside RawMode -- which is
+// terminal, so this lives at file scope rather than inside RawMode — which is
 // what keeps <termios.h> out of terminal.h.
 termios g_original{};
 bool g_raw_active = false;
