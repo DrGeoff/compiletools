@@ -201,6 +201,13 @@ _EXAMPLE_PLANS: dict[str, ExamplePlan] = {
     "platform_has_include": _VANILLA,
     "separate_cpp_cxx": _VANILLA,
     "simple": _VANILLA,
+    "sudoku_tui": ExamplePlan(
+        skip_reason=(
+            "//#GIT= external-fetch example: needs a network clone of "
+            "github.com/DrGeoff/sudoku, but this matrix is hermetic. "
+            "Covered by test_e2e_sudoku_tui.py (skips when offline)."
+        ),
+    ),
     "unit_test_marker": _VANILLA,
     "version_dependent_api": _VANILLA,
     "cli_features": _VANILLA,
