@@ -53,8 +53,10 @@ class TestLockdirLock:
     def make_lock(self, tmp_path):
         """Factory that builds a LockdirLock with arbitrary arg overrides
         on the same fresh tmp_path/test.o target."""
+
         def _factory(**overrides):
             return LockdirLock(str(tmp_path / "test.o"), _make_lock_args(**overrides))
+
         return _factory
 
     def test_acquire_and_release(self, lock):
@@ -376,8 +378,10 @@ class TestFcntlLock:
     @pytest.fixture
     def make_lock(self, tmp_path):
         """Factory that builds an FcntlLock with arbitrary arg overrides."""
+
         def _factory(**overrides):
             return FcntlLock(str(tmp_path / "test.o"), _make_lock_args(**overrides))
+
         return _factory
 
     def test_acquire_and_release(self, lock):
@@ -468,8 +472,10 @@ class TestFlockLock:
     @pytest.fixture
     def make_lock(self, tmp_path):
         """Factory that builds a FlockLock with arbitrary arg overrides."""
+
         def _factory(**overrides):
             return FlockLock(str(tmp_path / "test.o"), _make_lock_args(**overrides))
+
         return _factory
 
     def test_acquire_and_release(self, lock):
@@ -539,8 +545,10 @@ class TestCIFSLock:
     @pytest.fixture
     def make_lock(self, tmp_path):
         """Factory that builds a CIFSLock with arbitrary arg overrides."""
+
         def _factory(**overrides):
             return CIFSLock(str(tmp_path / "test.o"), _make_lock_args(**overrides))
+
         return _factory
 
     def test_acquire_and_release(self, lock):
@@ -973,7 +981,6 @@ class TestAtomicLink:
 
     @staticmethod
     def _patch_runner(returncode=0, on_run=None):
-
         mock = MagicMock()
 
         def fake_run(cmd, *args, **kwargs):
@@ -1367,8 +1374,6 @@ class TestPidReuseTolerance:
     Linux (0.1s) where /proc/[pid]/stat is fine-grained, looser elsewhere."""
 
     def test_tolerance_constant_linux_is_0_1s(self):
-
-
         if sys.platform.startswith("linux"):
             assert _PID_REUSE_TOLERANCE_SECONDS == 0.1
         else:
@@ -1385,7 +1390,6 @@ class TestPidReuseTolerance:
 
         if not sys.platform.startswith("linux"):
             pytest.skip("Tighter tolerance is Linux-only")
-
 
         recorded_start = get_process_start_time(os.getpid())
         assert recorded_start is not None, "Linux test environment must expose /proc/[pid]/stat"
@@ -1574,3 +1578,22 @@ class TestSubprocessSafety:
         lock2 = FlockLock(str(target), verify_args)
         lock2.acquire()
         lock2.release()
+
+
+def test_run_with_signal_forwarding_invokes_child_registry_hooks():
+    """on_child_start/on_child_end fire once each with the child's pgid, so a
+    caller can track worker-thread-spawned children from the main thread."""
+    import compiletools.locking as locking
+
+    starts = []
+    ends = []
+    result = locking._run_with_signal_forwarding(
+        ["sh", "-c", "exit 0"],
+        capture_output=True,
+        on_child_start=starts.append,
+        on_child_end=ends.append,
+    )
+    assert result.returncode == 0
+    assert len(starts) == 1
+    assert starts == ends  # same pgid registered then unregistered
+    assert isinstance(starts[0], int)
