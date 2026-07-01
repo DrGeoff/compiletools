@@ -122,6 +122,32 @@ After `apptools.parseargs` returns, `args.flags` is a frozen `Flags` dataclass. 
 
 **Bounded fixpoint + per-round cache clear.** `_MAX_FIXPOINT_ROUNDS = 50` caps the loop: a correct run adds at least one new external name per round or stops, so a real graph converges in a handful of rounds; the cap turns a hypothetical non-converging cycle into a named `FetchError` rather than an infinite loop. At the end of every round `wrappedos.clear_cache()` drops the globally-`@functools.cache`'d stat answers — a "file missing" answer cached while an external header did not yet exist on disk would otherwise stick and blind the NEXT round's `_find_include` to the freshly-cloned sources, breaking transitive discovery (external A's headers declaring `//#GIT=` for external B).
 
+**Transport-protocol restriction + `//#GIT_ALLOW_PROTOCOL`.** `_git_env` sets
+`GIT_ALLOW_PROTOCOL=file:git:ssh:http:https` via `setdefault` (ambient env
+wins). `ext::` is excluded so an untrusted `//#GIT=ext::<cmd>` cannot execute a
+command at fetch time. A project widens the set with a `//#GIT_ALLOW_PROTOCOL=`
+magic comment (colon-separated git protocol list); `extract_git_allow_protocols`
+gathers them, `fetch_externals` unions the tokens per round, and the resulting
+string is threaded to `_run_git` via the `_git_run_ctx` ContextVar
+(`_GitRunContext.allow_protocol`).
+
+**Parallel-fetch signal safety.** Worker-thread git clones register their child
+pgid in a thread-safe `_LiveChildren` set (via
+`_run_with_signal_forwarding`'s `on_child_start`/`on_child_end` hooks, carried
+on the `_git_run_ctx` ContextVar). `_resolve_new` installs a MAIN-thread
+`graceful_shutdown` handler that forwards SIGINT/SIGTERM to every registered
+child and raises `KeyboardInterrupt`; the result loop catches only `Exception`
+so interrupts propagate, and `executor.shutdown(cancel_futures=True)` cancels
+queued clones on the first error or on interrupt. Without this the in-worker
+forwarder inside `_run_with_signal_forwarding` (a no-op off the main thread)
+would let `start_new_session=True` git children orphan on Ctrl-C / SIGTERM.
+
+**Present-checkout origin check.** `_handle_present` compares the on-disk
+`origin` (`_origin_url`, normalized by `_normalize_remote_url`) against the
+declared `ext.url` and WARNS on mismatch — the sibling-dir default layout can
+otherwise silently share `../<name>` between two projects declaring the same
+name from different URLs.
+
 **One shared `_fixpoint_scan` driver, parameterized by three callbacks.** `fetch_externals` (used by cake and `ct-fetch`'s clone/update path) and `gather_external_status` (`ct-fetch --status`) both delegate the round loop to `_fixpoint_scan(target_files, args, context, *, externals_dir, root_selector, scan_round, on_not_converged)`. The driver owns the shared skeleton: the bounded `for _round in range(_MAX_FIXPOINT_ROUNDS)`, building `_augmented_headerdeps` over the roots `root_selector()` returns, computing `_reachable_sources`, breaking when `scan_round` reports no new work, `wrappedos.clear_cache()` between rounds, the `else:` non-convergence raise, and the `context.analyzer_args` save/restore try/finally. The three callbacks (closures over each caller's own accumulator dicts) carry the ONLY behaviour that differs:
 
 - **`root_selector()`** — which already-known roots to widen the search into. fetch returns every resolved/cloned root (`[r.path for r in resolved.values()]`); status returns only roots ALREADY present on disk, since it never fetches to expand the graph.

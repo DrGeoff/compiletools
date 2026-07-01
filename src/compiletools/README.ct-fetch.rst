@@ -124,6 +124,26 @@ Two guardrails are applied on top of your configuration:
   external, so a run inside a git hook or CI step cannot accidentally act
   on the enclosing repository instead of the external.
 
+Transport protocol restriction
+------------------------------
+Because a ``//#GIT=`` URL is untrusted input read from source files (including
+the headers of transitively-fetched externals), fetch runs git with
+``GIT_ALLOW_PROTOCOL=file:git:ssh:http:https`` by default. This deliberately
+excludes git's ``ext::`` remote-helper protocol, which would otherwise execute
+an arbitrary shell command at fetch time (``//#GIT=ext::<cmd> ...``) — before
+you have reviewed anything that was fetched.
+
+If a project genuinely needs a wider protocol set, declare it with a
+``//#GIT_ALLOW_PROTOCOL=`` magic comment whose value is a colon-separated git
+protocol list::
+
+    //#GIT_ALLOW_PROTOCOL=file:git:ssh:http:https:ext
+    //#GIT=ext::...
+
+The declared lists are unioned across all scanned sources. A
+``GIT_ALLOW_PROTOCOL`` you export in your own environment always wins over both
+the default and the magic comment.
+
 Transitive externals
 ---------------------
 Discovery iterates to a fixpoint: an external's own headers may declare
@@ -172,6 +192,10 @@ Safety
 * A malformed value is rejected up front: a URL or ref that begins with
   ``-`` (which git would misread as an option) and a URL with no ``/``
   or ``:`` separator are refused with a clear message.
+* A ``//#GIT=`` URL runs through git with a restricted
+  ``GIT_ALLOW_PROTOCOL`` (``file:git:ssh:http:https``) so an ``ext::``
+  remote-helper URL cannot execute an arbitrary command at fetch time. Widen it
+  per-project with a ``//#GIT_ALLOW_PROTOCOL=`` comment when required.
 
 OPTIONS
 =======
@@ -183,7 +207,12 @@ OPTIONS
 
 ``--no-fetch``
     Offline: error if a ``//#GIT`` external is missing; never clone or
-    fetch. Use to verify that every declared external is already present.
+    fetch. ``--no-fetch`` is the unconditional offline guarantee and takes
+    precedence over ``--update``: a branch or unpinned external that would need
+    a network fetch/fast-forward to update is a **hard error** under
+    ``--no-fetch`` rather than being silently skipped. Present, already-current
+    externals are still used. Use to verify that every declared external is
+    already present.
 
 ``--update``
     Pull / fast-forward branch and unpinned externals to their latest
@@ -195,7 +224,9 @@ OPTIONS
     "not currently on a branch". Note that **without** ``--update`` a
     branch external is compared against its possibly-stale
     remote-tracking tip, so an upstream force-push is not detected until
-    the next ``--update``.
+    the next ``--update``. Combining ``--update`` with ``--no-fetch`` is a
+    hard error for any branch or unpinned external (the fast-forward needs
+    the network); pinned immutable refs already present are unaffected.
 
 ``--status``
     Report the on-disk state of each ``//#GIT`` external
@@ -304,3 +335,9 @@ SEE ALSO
 comments a file exports.
 ``ct-cake`` (1) -- the build orchestrator; runs this same fetch step
 automatically during ``--auto`` builds.
+
+When ``ct-cake --filelist`` (a read-only source listing) drives this fetch
+step, it runs **offline** (as if ``--no-fetch``): already-present externals are
+folded into the list, but a not-yet-cloned external fails fast rather than
+triggering a network clone as a side effect of a query. Run ``ct-fetch`` (or a
+plain ``ct-cake`` build) first to populate externals, then re-query.
