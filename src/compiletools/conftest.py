@@ -275,7 +275,7 @@ def _hermetic_git_global_config(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
-def _hermetic_git_env(monkeypatch, _hermetic_git_global_config):
+def _hermetic_git_env(_hermetic_git_global_config):
     """Isolate every test's git subprocesses from ambient system/global gitconfig.
 
     Production ``fetch._git_env()`` DELIBERATELY no longer neutralises ambient
@@ -292,18 +292,40 @@ def _hermetic_git_env(monkeypatch, _hermetic_git_global_config):
     ``~/.gitconfig`` (``transfer.fsckObjects``, ``url.*.insteadOf``,
     ``init.defaultBranch``, ``commit.gpgsign``, ``core.hooksPath``, ...).
 
-    This mutates ``os.environ`` (via monkeypatch, auto-restored on teardown), NOT
-    the dict returned by ``fetch._git_env()``. The production ``_git_env``
-    regression tests inspect that return value and ``delenv`` the relevant vars
-    in their own body before calling it, so they are unaffected by this fixture.
+    This mutates ``os.environ`` directly (saving/restoring the affected keys
+    itself) rather than depending on the ``monkeypatch`` fixture. That is
+    deliberate: an autouse fixture requesting ``monkeypatch`` pulls the shared
+    per-test monkeypatch instance's setup earlier, which inverts its LIFO
+    teardown relative to a test's own temp-dir fixtures — a test that did
+    ``monkeypatch.chdir(tmp)`` then has monkeypatch try to restore the (already
+    deleted) cwd after the temp dir is gone, raising ``FileNotFoundError`` on
+    teardown. Owning the env save/restore here keeps this fixture out of that
+    ordering entirely.
+
+    It mutates ``os.environ``, NOT the dict returned by ``fetch._git_env()``. The
+    production ``_git_env`` regression tests inspect that return value and
+    ``delenv`` the relevant vars in their own body before calling it, so they are
+    unaffected by this fixture.
     """
-    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
-    monkeypatch.setenv("GIT_CONFIG_GLOBAL", _hermetic_git_global_config)
-    monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
-    monkeypatch.setenv("GIT_AUTHOR_NAME", "ct-test")
-    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "ct-test@example.com")
-    monkeypatch.setenv("GIT_COMMITTER_NAME", "ct-test")
-    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "ct-test@example.com")
+    overrides = {
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": _hermetic_git_global_config,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_AUTHOR_NAME": "ct-test",
+        "GIT_AUTHOR_EMAIL": "ct-test@example.com",
+        "GIT_COMMITTER_NAME": "ct-test",
+        "GIT_COMMITTER_EMAIL": "ct-test@example.com",
+    }
+    saved = {key: os.environ.get(key) for key in overrides}
+    os.environ.update(overrides)
+    try:
+        yield
+    finally:
+        for key, previous in saved.items():
+            if previous is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = previous
 
 
 @pytest.fixture(scope="function")
