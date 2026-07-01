@@ -182,7 +182,11 @@ uv build
 
 # Ensure PYPI_API_TOKEN is set for publishing
 if [[ -z "${PYPI_API_TOKEN:-}" ]]; then
-    echo "Error: PYPI_API_TOKEN is not set in the environment." >&2
+    echo "Error: PYPI_API_TOKEN is not set in the environment. Perhaps a command line like:" >&2
+    # `withsecret` is a local secret-injection wrapper (`withsecret VAR=SECRET_NAME -- cmd`)
+    # that exports the named secret into the child's env; not part of this package. If you
+    # don't have it, set PYPI_API_TOKEN yourself or use the ~/.pypirc token below instead.
+    echo "withsecret PYPI_API_TOKEN=PYPI_API_TOKEN -- scripts/ct-release $bump_level" >&2
     popd >/dev/null
     exit 1
 fi
