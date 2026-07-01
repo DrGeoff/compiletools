@@ -99,13 +99,9 @@ class Cake:
         A ``fetch.FetchError`` propagates unchanged; ``main()`` renders it as a
         clean fatal error (non-zero exit) rather than a traceback.
         """
-        target_files = []
-        seen = set()
-        for group in (self.args.filename, self.args.static, self.args.dynamic, self.args.tests):
-            for path in group or []:
-                if path and path not in seen and compiletools.wrappedos.isfile(path):
-                    seen.add(path)
-                    target_files.append(path)
+        # Single source of truth for the "reachable targets" set, shared with
+        # fetch.main() so the two definitions cannot drift.
+        target_files = compiletools.fetch.collect_target_files(self.args)
 
         if not target_files:
             return False

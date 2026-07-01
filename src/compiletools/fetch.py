@@ -41,6 +41,7 @@ __all__ = [
     "FetchError",
     "GitExternal",
     "ResolvedExternal",
+    "collect_target_files",
     "derive_name",
     "extract_git_externals",
     "fetch_externals",
@@ -860,6 +861,17 @@ def fetch_externals(
     # args, not the last round's throwaway deepcopy.
     prior_analyzer_args = context.analyzer_args
     try:
+        # NOTE: this fixpoint loop is intentionally kept in lockstep with the
+        # one in gather_external_status. Both share the same skeleton
+        # (_MAX_FIXPOINT_ROUNDS, _augmented_headerdeps / _reachable_sources /
+        # extract_git_externals, the dedup-by-name rule, and a
+        # wrappedos.clear_cache() at the end of each round). They intentionally
+        # DIFFER on two points: root-selection (fetch widens the search into
+        # every resolved/cloned root; status widens only into roots already
+        # present on disk) and conflict-handling (fetch RAISES on a conflicting
+        # URL and warns on a conflicting ref; status only WARNS in both cases,
+        # never raising, since --status is a report). Keep the two in sync when
+        # editing the shared skeleton; do NOT extract a shared generator.
         for _round in range(_MAX_FIXPOINT_ROUNDS):
             headerdeps = _augmented_headerdeps(
                 args,
@@ -949,6 +961,12 @@ class ExternalStatus:
                      ``"dirty"`` (present but with uncommitted changes), or
                      ``"missing"`` (nothing usable on disk). A missing external
                      is NOT an error here — it is a reported state.
+                     ``"present"`` means only that an external checkout exists
+                     on disk; it does NOT guarantee the checked-out
+                     ``on_disk_ref`` matches the requested ``ref``. Compare the
+                     two columns to detect divergence. Detecting/flagging that
+                     divergence as a distinct ``"stale"`` state is a documented
+                     future enhancement.
         path:        Absolute on-disk path where the external is expected to
                      live (an override path, or ``externals_dir/name``).
         source:      ``"managed"`` (compiletools owns the location) or
@@ -1029,6 +1047,10 @@ def gather_external_status(
     (via :func:`extract_git_externals`), since that is a source-code defect the
     user must see.
 
+    In report mode, conflicting declarations of the same external are tolerated
+    (first declaration wins) and reported as a warning to stderr, rather than
+    raising as they do in :func:`fetch_externals`.
+
     Args:
         target_files:  Absolute paths of the build target sources to scan.
         args:          Parsed args namespace. Never mutated.
@@ -1043,10 +1065,22 @@ def gather_external_status(
     overrides = overrides or {}
 
     declared: dict[str, GitExternal] = {}
+    declared_files: dict[str, str] = {}  # name -> first declaring file (best-effort diagnostics)
     ordered_names: list[str] = []
 
     prior_analyzer_args = context.analyzer_args
     try:
+        # NOTE: this fixpoint loop is intentionally kept in lockstep with the
+        # one in fetch_externals. Both share the same skeleton
+        # (_MAX_FIXPOINT_ROUNDS, _augmented_headerdeps / _reachable_sources /
+        # extract_git_externals, the dedup-by-name rule, and a
+        # wrappedos.clear_cache() at the end of each round). They intentionally
+        # DIFFER on two points: root-selection (fetch widens the search into
+        # every resolved/cloned root; status widens only into roots already
+        # present on disk) and conflict-handling (fetch RAISES on a conflicting
+        # URL and warns on a conflicting ref; status only WARNS in both cases,
+        # never raising, since --status is a report). Keep the two in sync when
+        # editing the shared skeleton; do NOT extract a shared generator.
         for _round in range(_MAX_FIXPOINT_ROUNDS):
             # Reach into whatever externals are already present on disk (never
             # fetch to widen the graph). A present external's own sources can
@@ -1070,11 +1104,30 @@ def gather_external_status(
             new_found = False
             for source_file in reachable:
                 for ext in extract_git_externals(source_file, args, context):
-                    if ext.name in declared:
+                    prior = declared.get(ext.name)
+                    if prior is None:
+                        declared[ext.name] = ext
+                        declared_files[ext.name] = source_file
+                        ordered_names.append(ext.name)
+                        new_found = True
                         continue
-                    declared[ext.name] = ext
-                    ordered_names.append(ext.name)
-                    new_found = True
+                    # Same name seen before. In report mode we never raise on a
+                    # conflict (mirrors fetch_externals' wording, but tolerant):
+                    # first declaration wins and the conflict is surfaced as a
+                    # warning so --status does not silently hide it.
+                    if prior.url != ext.url:
+                        _warn(
+                            f"conflicting //#GIT= declarations for external '{ext.name}': "
+                            f"'{prior.url}' (in {declared_files.get(ext.name, '?')}) vs "
+                            f"'{ext.url}' (in {source_file}); keeping '{prior.url}'."
+                        )
+                    elif prior.ref != ext.ref:
+                        _warn(
+                            f"external '{ext.name}' ({ext.url}): conflicting refs "
+                            f"'{prior.ref}' (in {declared_files.get(ext.name, '?')}) vs "
+                            f"'{ext.ref}' (in {source_file}); keeping '{prior.ref}'."
+                        )
+                    # Otherwise an exact duplicate — silently deduped.
 
             if not new_found:
                 break
@@ -1104,12 +1157,15 @@ def gather_external_status(
 # ===========================================================================
 
 
-def _collect_target_files(args) -> list[str]:
+def collect_target_files(args) -> list[str]:
     """Flatten existing on-disk source files from the target arg groups.
 
-    Mirrors ``Cake._fetch_and_register_externals``: de-duplicates across
-    ``filename`` / ``static`` / ``dynamic`` / ``tests`` and drops any entry
-    that is falsy or not an on-disk file.
+    Single source of truth for the "reachable targets" set, shared verbatim by
+    :func:`main` and ``Cake._fetch_and_register_externals``: de-duplicates
+    across ``filename`` / ``static`` / ``dynamic`` / ``tests`` and drops any
+    entry that is falsy or not an on-disk file. Both call sites MUST agree on
+    this definition, so they call this one function rather than reimplementing
+    the loop.
     """
     import compiletools.wrappedos
 
@@ -1191,9 +1247,8 @@ def main(argv=None) -> int:
     context = BuildContext()
     args = compiletools.apptools.parseargs(cap, argv, context=context)
 
-    headerdeps = None
     try:
-        target_files = _collect_target_files(args)
+        target_files = collect_target_files(args)
         if not target_files:
             print(
                 "ct-fetch: no target source files given (or none exist on disk); nothing to do.",
@@ -1237,9 +1292,8 @@ def main(argv=None) -> int:
         return 1
     finally:
         # Clear memcaches so repeated in-process main() calls in tests don't
-        # cross-contaminate (mirrors filelist.main).
+        # cross-contaminate. fetch_externals / gather_external_status own their
+        # headerdeps internally, so there is no headerdeps cache to clear here.
         compiletools.wrappedos.clear_cache()
         compiletools.utils.clear_cache()
         compiletools.git_utils.clear_cache()
-        if headerdeps is not None:
-            headerdeps.clear_cache()

@@ -417,3 +417,150 @@ def test_gather_external_status_malformed_raises(monkeypatch) -> None:
 
         with pytest.raises(FetchError):
             gather_external_status([main], _make_headerdeps_args(), BuildContext(), externals_dir=externals)
+
+
+# ---------------------------------------------------------------------------
+# --status — transitive discovery through a PRESENT external
+# ---------------------------------------------------------------------------
+
+
+@requires_functional_compiler
+def test_main_status_descends_through_present_external(monkeypatch, capsys) -> None:
+    """--status walks INTO an already-present external to discover its own externals.
+
+    Graph A -> B: the main target declares //#GIT for A; A's own header declares
+    //#GIT for B. With A and B both cloned, --status must report BOTH as present
+    (i.e. the present_roots expansion descended through A to reach B). Then, with
+    B removed from disk, --status must still report A present and B missing
+    without raising.
+    """
+    with tempfile.TemporaryDirectory() as root:
+        b = _make_bare_with_files(root, "beta", {"include/beta.h": "#pragma once\nint beta();\n"})
+        # A's header declares //#GIT for B, so scanning INTO A discovers B.
+        a = _make_bare_with_files(
+            root,
+            "alpha",
+            {"include/alpha.h": f"//#GIT={b['url']}@master\n#pragma once\nint alpha();\n"},
+        )
+        externals_dir = os.path.join(root, "externals")
+        os.makedirs(externals_dir)
+        main_repo = _make_main_repo(
+            root,
+            f'//#GIT={a["url"]}@master\n#include "alpha.h"\nint main() {{ return alpha(); }}\n',
+        )
+        monkeypatch.chdir(main_repo)
+        _neutralise_git(monkeypatch)
+
+        # Default fetch clones A and (transitively, through A) B.
+        assert fetch.main(_pinned_argv(main_repo, ["main.cpp", "--externals-dir", externals_dir])) == 0
+        assert os.path.isdir(os.path.join(externals_dir, "alpha"))
+        assert os.path.isdir(os.path.join(externals_dir, "beta"))
+        capsys.readouterr()  # drain
+
+        # --status must descend through the PRESENT alpha to also report beta.
+        assert fetch.main(_pinned_argv(main_repo, ["main.cpp", "--externals-dir", externals_dir, "--status"])) == 0
+        out = capsys.readouterr().out
+        alpha_lines = [ln for ln in out.splitlines() if ln.startswith("alpha\t")]
+        beta_lines = [ln for ln in out.splitlines() if ln.startswith("beta\t")]
+        assert len(alpha_lines) == 1 and "present" in alpha_lines[0]
+        assert len(beta_lines) == 1 and "present" in beta_lines[0]
+
+        # Remove B from disk; --status still reports A present, B missing, no raise.
+        import shutil
+
+        shutil.rmtree(os.path.join(externals_dir, "beta"))
+        assert fetch.main(_pinned_argv(main_repo, ["main.cpp", "--externals-dir", externals_dir, "--status"])) == 0
+        out = capsys.readouterr().out
+        alpha_lines = [ln for ln in out.splitlines() if ln.startswith("alpha\t")]
+        beta_lines = [ln for ln in out.splitlines() if ln.startswith("beta\t")]
+        assert len(alpha_lines) == 1 and "present" in alpha_lines[0]
+        assert len(beta_lines) == 1 and "missing" in beta_lines[0]
+
+
+# ---------------------------------------------------------------------------
+# --status — conflict handling (tolerant warning, never raises)
+# ---------------------------------------------------------------------------
+
+
+@requires_functional_compiler
+def test_main_status_conflict_warns_does_not_raise(monkeypatch, capsys) -> None:
+    """Two targets declaring the same NAME with different URLs.
+
+    --status must return 0, report the (first-wins) external, and write a
+    conflict WARNING naming the external to STDERR (not stdout) without raising.
+    The corresponding non-status mode must RAISE FetchError on the same input,
+    pinning the intended divergence.
+    """
+    with tempfile.TemporaryDirectory() as root:
+        # Two distinct bare repos whose URL basename derives to the same name.
+        first = _make_bare_with_files(root, "conflib", {"include/conflib.h": "#pragma once\nint c1();\n"})
+        other_dir = os.path.join(root, "otherplace")
+        os.makedirs(other_dir)
+        second = _make_bare_with_files(other_dir, "conflib", {"include/conflib.h": "#pragma once\nint c2();\n"})
+        assert first["url"] != second["url"]
+
+        externals_dir = os.path.join(root, "externals")
+        os.makedirs(externals_dir)
+        main_repo = _make_main_repo(root, f"//#GIT={first['url']}@master\nint main() {{ return 0; }}\n")
+        # A second target file declares the same name with a different URL.
+        with open(os.path.join(main_repo, "other.cpp"), "w") as fh:
+            fh.write(f"//#GIT={second['url']}@master\nint other() {{ return 0; }}\n")
+        _git(main_repo, "add", "-A")
+        _git(main_repo, "commit", "-q", "-m", "add other")
+        monkeypatch.chdir(main_repo)
+        _neutralise_git(monkeypatch)
+
+        targets = ["main.cpp", "other.cpp", "--externals-dir", externals_dir]
+
+        # --status: tolerant. Returns 0, reports first-wins, warns on stderr.
+        rc = fetch.main(_pinned_argv(main_repo, [*targets, "--status"]))
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "conflib" in captured.out  # reported (first-wins)
+        assert "conflib" in captured.err  # conflict warning names the external
+        assert "conflict" in captured.err.lower()
+        assert first["url"] in captured.err and second["url"] in captured.err
+
+        # Non-status mode: the SAME conflicting input is fatal.
+        rc = fetch.main(_pinned_argv(main_repo, targets))
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "Error:" in captured.err
+        assert "conflib" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# --status — override redirect (source="override")
+# ---------------------------------------------------------------------------
+
+
+@requires_functional_compiler
+def test_main_status_override_redirects(monkeypatch, capsys) -> None:
+    """An external overridden via --git-path is reported source=override at that path."""
+    with tempfile.TemporaryDirectory() as root:
+        ext = _make_bare_with_files(root, "extlib", {"include/extlib.h": "#pragma once\nint extfn();\n"})
+        externals_dir = os.path.join(root, "externals")
+        os.makedirs(externals_dir)
+        # A pre-existing checkout the user points --git-path at.
+        override = os.path.join(root, "myextlib")
+        _git(root, "clone", "-q", ext["bare"], override)
+        main_repo = _make_main_repo(
+            root,
+            f'//#GIT={ext["url"]}@master\n#include "extlib.h"\nint main() {{ return extfn(); }}\n',
+        )
+        monkeypatch.chdir(main_repo)
+        _neutralise_git(monkeypatch)
+
+        rc = fetch.main(
+            _pinned_argv(
+                main_repo,
+                ["main.cpp", "--externals-dir", externals_dir, "--git-path", f"extlib={override}", "--status"],
+            )
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        line = next(ln for ln in out.splitlines() if ln.startswith("extlib\t"))
+        assert "present" in line
+        assert os.path.abspath(override) in line
+        # The managed location was never created.
+        assert not os.path.exists(os.path.join(externals_dir, "extlib"))
