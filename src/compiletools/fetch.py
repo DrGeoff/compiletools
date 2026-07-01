@@ -31,6 +31,8 @@ from __future__ import annotations
 import copy
 import os
 import shlex
+import shutil
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -116,8 +118,10 @@ def parse_git_value(value: str) -> tuple[str, str | None]:
     Raises:
         ValueError: If *value* is empty or whitespace-only, if it lacks
                     both a ``/`` and a ``:`` separator (not a valid git
-                    URL), or if a trailing ``@`` is present with an empty
-                    ref.
+                    URL), if a trailing ``@`` is present with an empty ref,
+                    or if the url/ref begins with ``-`` (a git-option
+                    injection guard; git-check-ref-format forbids a leading
+                    ``-`` in refs and no git URL begins with one).
     """
     value = value.strip()
     if not value:
@@ -133,15 +137,35 @@ def parse_git_value(value: str) -> tuple[str, str | None]:
     at_idx = value.find("@", sep + 1)
 
     if at_idx == -1:
-        return value, None
+        url, ref = value, None
+    else:
+        url = value[:at_idx]
+        ref = value[at_idx + 1 :]
+        if not ref:
+            raise ValueError(
+                f"GIT flag value '{value}' has a trailing '@' with an empty ref; "
+                "specify a branch, tag, or commit SHA after '@'"
+            )
 
-    url = value[:at_idx]
-    ref = value[at_idx + 1 :]
-    if not ref:
-        raise ValueError(
-            f"GIT flag value '{value}' has a trailing '@' with an empty ref; "
-            "specify a branch, tag, or commit SHA after '@'"
-        )
+    # Option-injection guard: a url or ref beginning with '-' would be
+    # interpreted by git as an option (e.g. a ref '--upload-pack=<cmd>' is a
+    # known RCE vector). No legitimate git URL starts with '-', and
+    # git-check-ref-format forbids a leading '-' in a ref, so reject both here
+    # with a clear message (belt; the _run_git argv also uses
+    # '--end-of-options' as suspenders).
+    if url.startswith("-"):
+        raise ValueError(f"GIT flag value '{value}': url '{url}' may not begin with '-'")
+    if ref is not None:
+        if ref.startswith("-"):
+            raise ValueError(f"GIT flag value '{value}': ref '{ref}' may not begin with '-'")
+        if ":" in ref:
+            # git refnames cannot contain ':'; a ':' here means the separator
+            # heuristic mis-split an unusual value. Surface it clearly rather
+            # than letting a garbage url/ref reach git.
+            raise ValueError(
+                f"GIT flag value '{value}': ref '{ref}' contains ':' (invalid ref); check the //#GIT= url@ref syntax"
+            )
+
     return url, ref
 
 
@@ -161,7 +185,11 @@ def derive_name(url: str) -> str:
 
     Raises:
         ValueError: If the derived name is empty (e.g. the URL ends
-                    with ``/``).
+                    with ``/``), or is unsafe as a directory name — ``.``,
+                    ``..``, a name beginning with ``.``, or one containing a
+                    path separator. Such a name would let ``os.path.join``
+                    escape the externals dir (e.g. a URL ending ``.../..``
+                    yields ``..``), so it is rejected here.
 
     Examples:
         ``git@github.com:me/mylib.git`` → ``mylib``
@@ -175,6 +203,13 @@ def derive_name(url: str) -> str:
         basename = basename[: -len(".git")]
     if not basename:
         raise ValueError(f"Cannot derive a name from URL '{url}': the basename is empty")
+    # Reject names that would escape externals_dir or resolve to it: '.'/'..',
+    # any name with a path separator, and dot-leading names (hidden / unusual,
+    # and '..'-family). derive_name's basename never contains '/' because sep is
+    # the rightmost '/', but a ':'-derived scp path or a '\' could, so guard
+    # both separators explicitly.
+    if basename in (".", "..") or basename.startswith(".") or "/" in basename or os.sep in basename:
+        raise ValueError(f"Cannot derive a safe directory name from URL '{url}': derived name '{basename}' is unsafe")
     return basename
 
 
@@ -234,9 +269,16 @@ def parse_git_path_overrides(git_paths: list[str], environ=None) -> dict[str, st
     Returns:
         A ``name -> absolute path`` dict.
 
+    Empty-value asymmetry (A14)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    An empty ``CT_GIT_PATH_<NAME>`` env value (or empty suffix) is silently
+    **skipped** — an exported-but-empty env var is a common shell accident and
+    must not abort a build. An empty CLI ``NAME=`` / ``=PATH`` instead **raises**:
+    a CLI flag is a deliberate act, so a malformed one is surfaced immediately.
+
     Raises:
         FetchError: If a CLI entry lacks ``=``, or has an empty name or empty
-                    path.
+                    path. (Empty env entries are skipped, not raised — see above.)
     """
     if environ is None:
         environ = os.environ
@@ -322,19 +364,48 @@ def _warn(message: str) -> None:
 
 
 def _git_env() -> dict[str, str]:
-    """Return an environment that neutralises ambient git configuration.
+    """Return the environment for git operations on externals.
 
-    A user's ``~/.gitconfig`` or a machine's ``/etc/gitconfig`` can carry
-    settings (``commit.gpgsign``, ``transfer.fsckObjects``, custom
-    ``url.*.insteadOf`` rewrites, …) that change clone/fetch/checkout
-    behaviour and would make external resolution non-deterministic across
-    machines. We disable both the system and global config layers so a
-    resolve depends only on the remote and the per-repo config a clone
-    creates. ``GIT_CONFIG_GLOBAL`` requires git >= 2.32.
+    Design: **honour the user's ambient git configuration.** The user's
+    ``~/.gitconfig`` and the system ``/etc/gitconfig`` carry the settings that
+    make private/enterprise hosts reachable — ``url.*.insteadOf`` rewrites,
+    HTTP(S) proxies, and credential helpers. An earlier version wiped both
+    layers (``GIT_CONFIG_GLOBAL=/dev/null``, ``GIT_CONFIG_NOSYSTEM=1``) for
+    cross-machine determinism, but that broke exactly the enterprise-auth path
+    the feature is meant to support: a ``//#GIT=`` URL pointing at a corporate
+    host should "just work" once the user has authenticated, with no extra
+    flags. We accept that resolution now depends on the user's git config —
+    that is their explicit choice, in keeping with the feature's philosophy of
+    supporting the environment the user already has.
+
+    We still adjust two families of variables:
+
+    * **Fail-fast, never hang.** ``GIT_TERMINAL_PROMPT=0`` turns an
+      unauthenticated/private external into an immediate clear failure instead
+      of a build that blocks forever on an interactive username/password or
+      host-key prompt. ``GIT_SSH_COMMAND`` gets ``-o BatchMode=yes`` for the
+      ssh transport — but only via ``setdefault`` so a user who has already set
+      ``GIT_SSH_COMMAND`` keeps their value.
+    * **No ambient-repo hijack.** git honours ``GIT_DIR`` / ``GIT_WORK_TREE`` /
+      etc. over ``cwd=``, so if ct-fetch runs inside a git hook or a CI step
+      that exports them, every ``_run_git(cwd=target)`` would silently operate
+      on the *enclosing* repo instead of the external. We drop that family so
+      ``cwd=`` is authoritative.
     """
     env = dict(os.environ)
-    env["GIT_CONFIG_NOSYSTEM"] = "1"
-    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    # Fail fast rather than hang on an interactive prompt.
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env.setdefault("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
+    # Never let an ambient repo pointer override our explicit cwd=target.
+    for var in (
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_COMMON_DIR",
+        "GIT_NAMESPACE",
+    ):
+        env.pop(var, None)
     return env
 
 
@@ -366,10 +437,21 @@ def _run_git(args: list[str], *, cwd: str | None, ext: GitExternal) -> subproces
 
 
 def _is_git_work_tree(path: str) -> bool:
-    """Return True if *path* is the top level of a git work tree."""
+    """Return True only if *path* is itself the **top level** of a git work tree.
+
+    Uses ``git rev-parse --show-toplevel`` and requires it to equal
+    ``realpath(path)``. ``--is-inside-work-tree`` is deliberately NOT used: it
+    returns true for *any* directory nested inside an enclosing work tree even
+    when the directory has no ``.git`` of its own. If a managed external target
+    happened to sit under the host project's work tree (a non-default
+    ``--externals-dir``), that laxer check would make ``_handle_present`` treat
+    a plain subdirectory as a managed checkout and run fetch/checkout/merge with
+    ``cwd=target`` — git would walk up to the host ``.git`` and mutate the host
+    repo. Requiring the toplevel to be *this* path closes that hijack.
+    """
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "--is-inside-work-tree"],
+            ["git", "rev-parse", "--show-toplevel"],
             cwd=path,
             check=True,
             stdout=subprocess.PIPE,
@@ -379,7 +461,13 @@ def _is_git_work_tree(path: str) -> bool:
         )
     except (OSError, subprocess.CalledProcessError):
         return False
-    return result.stdout.strip() == "true"
+    toplevel = result.stdout.strip()
+    if not toplevel:
+        return False
+    # NOT cached: this is a live host-repo-hijack guard (A19). A stale cached
+    # realpath could let a checkout git just created (or a swapped symlink) pass
+    # as a work-tree root when it is not -- the safety check must read live state.
+    return os.path.realpath(toplevel) == os.path.realpath(path)
 
 
 def _current_commit(path: str) -> str | None:
@@ -403,13 +491,18 @@ def _current_commit(path: str) -> str | None:
 def _is_dirty(ext: GitExternal, path: str) -> bool:
     """Return True if the work tree at *path* has uncommitted changes.
 
+    Only *tracked* modifications count as dirty: ``--untracked-files=no`` is
+    passed so build artifacts / IDE files dropped into the external's checkout
+    do not wedge ``--update`` (A9). A tracked-file modification still blocks,
+    protecting real local edits from being clobbered.
+
     Raises :class:`FetchError` (naming the external) if ``git status`` cannot
     be run — otherwise a raw traceback would escape without identifying which
     external failed.
     """
     try:
         result = subprocess.run(
-            ["git", "status", "--porcelain"],
+            ["git", "status", "--porcelain", "--untracked-files=no"],
             cwd=path,
             check=True,
             stdout=subprocess.PIPE,
@@ -450,6 +543,28 @@ def _rev_parse_verify(path: str, ref: str) -> str | None:
     return sha or None
 
 
+def _current_branch(path: str) -> str | None:
+    """Return the checked-out branch name, or ``None`` if HEAD is detached.
+
+    Uses ``git symbolic-ref -q --short HEAD``: exit 0 with the short branch
+    name on a branch, non-zero (empty) on a detached HEAD.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "symbolic-ref", "-q", "--short", "HEAD"],
+            cwd=path,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            env=_git_env(),
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    name = result.stdout.strip()
+    return name or None
+
+
 def _is_branch(path: str, ref: str) -> bool:
     """Return True if *ref* names a local or remote-tracking branch."""
     for candidate in (f"refs/heads/{ref}", f"refs/remotes/origin/{ref}"):
@@ -458,9 +573,22 @@ def _is_branch(path: str, ref: str) -> bool:
     return False
 
 
+def _is_tag(path: str, ref: str) -> bool:
+    """Return True if *ref* names a tag (checked under ``refs/tags/``)."""
+    return _rev_parse_verify(path, f"refs/tags/{ref}") is not None
+
+
 def _resolve_override(ext: GitExternal, override_path: str) -> ResolvedExternal:
     """Handle the ``override_path`` case: use verbatim, never mutate."""
-    if not os.path.exists(override_path):
+    # Must be a directory: os.path.exists would also accept a regular file,
+    # silently mis-configuring the include search into a non-checkout (A5).
+    # NOT cached: the user-owned override path is read live (a pre-probe cached
+    # "missing"/"file" answer could be stale by the time we validate it).
+    if not os.path.isdir(override_path):
+        if os.path.exists(override_path):
+            raise FetchError(
+                f"external '{ext.name}' ({ext.url}): --git-path target '{override_path}' is not a directory."
+            )
         raise FetchError(f"external '{ext.name}' ({ext.url}): --git-path target missing: '{override_path}'")
     on_disk_ref = _current_commit(override_path) if _is_git_work_tree(override_path) else None
     return ResolvedExternal(
@@ -486,13 +614,31 @@ def _clone_missing(ext: GitExternal, target: str, *, no_fetch: bool, verbose: in
     if verbose:
         print(f"ct-fetch: cloning external '{ext.name}' from {ext.url} into {target}")
     os.makedirs(os.path.dirname(target), exist_ok=True)
-    _run_git(["clone", ext.url, target], cwd=None, ext=ext)
-    if ext.ref is not None:
-        # The ref may live on the remote but not be checked out by a plain
-        # clone (e.g. a non-default branch or a bare SHA on another branch).
-        if _rev_parse_verify(target, ext.ref) is None:
-            _run_git(["fetch", "origin", ext.ref], cwd=target, ext=ext)
-        _run_git(["checkout", ext.ref], cwd=target, ext=ext)
+    # A15: clone + ref-checkout into a temp sibling, then atomically rename to
+    # target ONLY on full success. A clone that succeeds but whose ref
+    # fetch/checkout then fails would otherwise leave a partial checkout at
+    # target that a later run treats as "present" and never repairs. The temp
+    # is a sibling (same dir → rename is atomic, no cross-device copy) tagged
+    # with the pid so concurrent peers (already serialized by the caller's
+    # FileLock) never share it. Any failure removes the temp and re-raises.
+    tmp = f"{target}.ct-fetch.tmp.{os.getpid()}"
+    if os.path.lexists(tmp):
+        shutil.rmtree(tmp, ignore_errors=True)
+    try:
+        # '--end-of-options' guards the untrusted url positional against option
+        # injection (git >= 2.24). parse_git_value already rejects a leading-dash
+        # url/ref; this is defense-in-depth.
+        _run_git(["clone", "--end-of-options", ext.url, tmp], cwd=None, ext=ext)
+        if ext.ref is not None:
+            # The ref may live on the remote but not be checked out by a plain
+            # clone (e.g. a non-default branch or a bare SHA on another branch).
+            if _rev_parse_verify(tmp, ext.ref) is None:
+                _run_git(["fetch", "origin", "--end-of-options", ext.ref], cwd=tmp, ext=ext)
+            _run_git(["checkout", "--end-of-options", ext.ref], cwd=tmp, ext=ext)
+        os.rename(tmp, target)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
     return _managed_result(ext, target)
 
 
@@ -536,9 +682,9 @@ def _checkout_immutable(ext: GitExternal, target: str, *, no_fetch: bool, verbos
             )
         if verbose:
             print(f"ct-fetch: fetching ref '{ref}' for external '{ext.name}'")
-        _run_git(["fetch", "origin", ref], cwd=target, ext=ext)
+        _run_git(["fetch", "origin", "--end-of-options", ref], cwd=target, ext=ext)
 
-    _run_git(["checkout", ref], cwd=target, ext=ext)
+    _run_git(["checkout", "--end-of-options", ref], cwd=target, ext=ext)
 
 
 def _handle_branch(ext: GitExternal, target: str, *, update: bool, verbose: int) -> None:
@@ -571,15 +717,25 @@ def _handle_branch(ext: GitExternal, target: str, *, update: bool, verbose: int)
         )
     if verbose:
         print(f"ct-fetch: updating branch '{ref}' for external '{ext.name}'")
-    _run_git(["fetch", "origin", ref], cwd=target, ext=ext)
-    _run_git(["checkout", ref], cwd=target, ext=ext)
-    _run_git(["merge", "--ff-only", f"origin/{ref}"], cwd=target, ext=ext)
+    _run_git(["fetch", "origin", "--end-of-options", ref], cwd=target, ext=ext)
+    _run_git(["checkout", "--end-of-options", ref], cwd=target, ext=ext)
+    _run_git(["merge", "--ff-only", "--end-of-options", f"origin/{ref}"], cwd=target, ext=ext)
 
 
 def _handle_no_ref(ext: GitExternal, target: str, *, update: bool, verbose: int) -> None:
     """Handle ``ref is None`` on a present work tree: pull current branch on --update."""
     if not update:
         return
+    # A detached HEAD has no upstream branch to pull; `git pull --ff-only` would
+    # fail with git's opaque "You are not currently on a branch." Detect it and
+    # explain the pin/unpin situation instead (A21).
+    if _current_branch(target) is None:
+        raise FetchError(
+            f"external '{ext.name}' ({ext.url}): work tree at '{target}' is on a "
+            f"detached HEAD (no branch to fast-forward). It was likely pinned to a "
+            f"specific commit or tag; pin the //#GIT= declaration to that ref, or "
+            f"check out a branch in '{target}' manually before running --update."
+        )
     if _is_dirty(ext, target):
         raise FetchError(
             f"external '{ext.name}' ({ext.url}): work tree at '{target}' has uncommitted changes; refusing to pull."
@@ -592,6 +748,16 @@ def _handle_no_ref(ext: GitExternal, target: str, *, update: bool, verbose: int)
 def _handle_present(ext: GitExternal, target: str, *, no_fetch: bool, update: bool, verbose: int) -> ResolvedExternal:
     """Handle a managed target that already exists on disk."""
     if not _is_git_work_tree(target):
+        # A6: under --update the user explicitly asked to update this location,
+        # but compiletools can't manage a non-git directory — surface that as a
+        # hard error rather than silently doing nothing.
+        if update:
+            raise FetchError(
+                f"external '{ext.name}' ({ext.url}): --update was requested but "
+                f"the managed location '{target}' is not a git work tree; "
+                f"compiletools cannot update it. Remove it, or point "
+                f"--git-path {ext.name}=<path> at a real checkout."
+            )
         # User-placed (or otherwise non-git) directory. Never clobber it.
         _warn(
             f"external '{ext.name}' ({ext.url}): a non-git directory already "
@@ -609,12 +775,22 @@ def _handle_present(ext: GitExternal, target: str, *, no_fetch: bool, update: bo
 
     if ext.ref is None:
         _handle_no_ref(ext, target, update=update, verbose=verbose)
+    elif _is_tag(target, ext.ref):
+        # A tag is immutable — route it to _checkout_immutable BEFORE the branch
+        # check (A22). Testing tag first means a name that exists as both a tag
+        # and a branch resolves to the tag (deterministic pin) rather than being
+        # fast-forwarded like a branch; warn so the collision is visible.
+        if _is_branch(target, ext.ref):
+            _warn(
+                f"external '{ext.name}' ({ext.url}): ref '{ext.ref}' is both a "
+                f"tag and a branch; treating it as the (immutable) tag."
+            )
+        _checkout_immutable(ext, target, no_fetch=no_fetch, verbose=verbose)
     elif _is_branch(target, ext.ref):
         _handle_branch(ext, target, update=update, verbose=verbose)
     else:
-        # SHA or tag — both immutable. (An unknown ref that is neither a
-        # branch, tag, nor resolvable SHA falls here and surfaces as a
-        # named checkout failure.)
+        # Bare SHA (or an unknown ref that is neither branch, tag, nor
+        # resolvable SHA — the latter surfaces as a named checkout failure).
         _checkout_immutable(ext, target, no_fetch=no_fetch, verbose=verbose)
 
     return _managed_result(ext, target)
@@ -659,6 +835,27 @@ def resolve_external(
         return _resolve_override(ext, override_path)
 
     target = os.path.join(externals_dir, ext.name)
+    # Defense-in-depth against a name that escapes externals_dir (derive_name
+    # already rejects '.'/'..'/separators, so this should be unreachable for a
+    # parsed external, but a hand-built GitExternal could bypass that).
+    # NOT cached: this is a security containment boundary (N1); it must resolve
+    # symlinks against live state, not a possibly-stale cached realpath.
+    anchor = os.path.realpath(externals_dir)
+    resolved_target = os.path.realpath(target)  # NOT cached: see above (N1 boundary)
+    if resolved_target != anchor and not resolved_target.startswith(anchor + os.sep):
+        raise FetchError(
+            f"external '{ext.name}' ({ext.url}): resolved target '{resolved_target}' "
+            f"escapes the externals directory '{anchor}'; refusing to proceed."
+        )
+    # A broken symlink at the managed location: os.path.exists follows the link
+    # and reports False, so we would otherwise enter _clone_missing and git
+    # would fail with an opaque exit-128 that never mentions the symlink.
+    if os.path.islink(target) and not os.path.exists(target):
+        raise FetchError(
+            f"external '{ext.name}' ({ext.url}): a broken symlink exists at the "
+            f"managed location '{target}'; remove it (or point --git-path {ext.name}=<path> "
+            f"at a real checkout) and retry."
+        )
     if not os.path.exists(target):
         return _clone_missing(ext, target, no_fetch=no_fetch, verbose=verbose)
     return _handle_present(ext, target, no_fetch=no_fetch, update=update, verbose=verbose)
@@ -852,6 +1049,7 @@ def fetch_externals(
     resolved: dict[str, ResolvedExternal] = {}
     declared: dict[str, GitExternal] = {}
     declared_files: dict[str, str] = {}  # name -> first declaring file (best-effort diagnostics)
+    declared_lower: dict[str, str] = {}  # lowercased name -> first-declared original-cased name (N3)
 
     # Each round builds an _augmented_headerdeps over a deepcopy of args, and
     # HeaderDepsBase.__init__ stashes that throwaway deepcopy into
@@ -886,8 +1084,23 @@ def fetch_externals(
                 for ext in extract_git_externals(source_file, args, context):
                     prior = declared.get(ext.name)
                     if prior is None:
+                        # N3: overrides key on the lowercased name, so two names
+                        # that differ only in case would silently share one
+                        # override (and one on-disk dir on a case-insensitive
+                        # FS). Reject the collision up front, naming both files.
+                        lower = ext.name.lower()
+                        clash = declared_lower.get(lower)
+                        if clash is not None and clash != ext.name:
+                            raise FetchError(
+                                f"case-colliding //#GIT= external names '{clash}' "
+                                f"(in {declared_files.get(clash, '?')}) vs '{ext.name}' "
+                                f"(in {source_file}); names must be unique case-insensitively "
+                                "because --git-path / CT_GIT_PATH_* overrides key on the "
+                                "lowercased name."
+                            )
                         declared[ext.name] = ext
                         declared_files[ext.name] = source_file
+                        declared_lower[lower] = ext.name
                         if ext.name not in resolved:
                             new_names.append(ext)
                         continue
@@ -898,31 +1111,56 @@ def fetch_externals(
                             f"'{prior.url}' (in {declared_files.get(ext.name, '?')}) vs "
                             f"'{ext.url}' (in {source_file})"
                         )
-                    # Same name + same URL but a differing ref: first declaration wins.
+                    # Same name + same URL but a differing ref: hard error, naming
+                    # both declaring files (N2). Symmetric with the conflicting-URL
+                    # raise above — a build must not silently pick one of two
+                    # requested refs. (gather_external_status stays a tolerant warn:
+                    # --status is a report and never raises.)
                     if prior.ref != ext.ref:
-                        _warn(
-                            f"external '{ext.name}' ({ext.url}): conflicting refs "
+                        raise FetchError(
+                            f"conflicting //#GIT= refs for external '{ext.name}' ({ext.url}): "
                             f"'{prior.ref}' (in {declared_files.get(ext.name, '?')}) vs "
-                            f"'{ext.ref}' (in {source_file}); keeping '{prior.ref}'."
+                            f"'{ext.ref}' (in {source_file})"
                         )
                     # Otherwise an exact duplicate — silently deduped.
 
             if not new_names:
                 break
 
+            import compiletools.locking
+
             for ext in new_names:
-                resolved[ext.name] = resolve_external(
-                    ext,
-                    externals_dir=externals_dir,
-                    # Override keys are normalized to lowercase in
-                    # parse_git_path_overrides; ext.name (from derive_name)
-                    # preserves the URL-basename case, so lowercase it here to
-                    # match case-insensitively.
-                    override_path=overrides.get(ext.name.lower()),
-                    no_fetch=no_fetch,
-                    update=update,
-                    verbose=verbose,
-                )
+                # Override keys are normalized to lowercase in
+                # parse_git_path_overrides; ext.name (from derive_name) preserves
+                # the URL-basename case, so lowercase it here to match
+                # case-insensitively.
+                override_path = overrides.get(ext.name.lower())
+                if override_path is not None:
+                    # User-owned checkout: never cloned/mutated here, so no lock.
+                    resolved[ext.name] = resolve_external(
+                        ext,
+                        externals_dir=externals_dir,
+                        override_path=override_path,
+                        no_fetch=no_fetch,
+                        update=update,
+                        verbose=verbose,
+                    )
+                    continue
+                # A1: serialize the exists->clone/checkout path against concurrent
+                # ct-cake/ct-fetch peers cloning into the same managed dir. Lock a
+                # SIDECAR (<target>.lock), never the target itself — locking the
+                # target would create an empty dir a peer make treats as
+                # up-to-date. No-op unless --file-locking is enabled.
+                target = os.path.join(externals_dir, ext.name)
+                with compiletools.locking.FileLock(target + ".lock", args):
+                    resolved[ext.name] = resolve_external(
+                        ext,
+                        externals_dir=externals_dir,
+                        override_path=None,
+                        no_fetch=no_fetch,
+                        update=update,
+                        verbose=verbose,
+                    )
 
             # Fetching just changed the filesystem under externals_dir. wrappedos'
             # stat-like queries are globally @functools.cache'd by path, so a
@@ -936,7 +1174,8 @@ def fetch_externals(
         else:
             raise FetchError(
                 f"//#GIT= resolution did not converge after {_MAX_FIXPOINT_ROUNDS} rounds; "
-                f"resolved so far: {sorted(resolved)}"
+                f"resolved so far: {sorted(resolved)}. Declaring files: "
+                f"{ {n: declared_files.get(n, '?') for n in sorted(declared)} }"
             )
 
         return list(resolved.values())
@@ -1141,7 +1380,8 @@ def gather_external_status(
         else:
             raise FetchError(
                 f"//#GIT= status enumeration did not converge after {_MAX_FIXPOINT_ROUNDS} rounds; "
-                f"found so far: {sorted(declared)}"
+                f"found so far: {sorted(declared)}. Declaring files: "
+                f"{ {n: declared_files.get(n, '?') for n in sorted(declared)} }"
             )
 
         return [
@@ -1166,6 +1406,12 @@ def collect_target_files(args) -> list[str]:
     entry that is falsy or not an on-disk file. Both call sites MUST agree on
     this definition, so they call this one function rather than reimplementing
     the loop.
+
+    Note: the ``isfile`` check reads ``wrappedos``' path cache. In a single CLI
+    run this is correct (the cache is fresh). Only an in-process re-entry (tests
+    calling ``main`` repeatedly, or a caller that created a target file mid-run)
+    could observe a stale "missing" answer — ``main`` and the test harness clear
+    the cache between runs, so this is a test/re-entry concern only (A13).
     """
     import compiletools.wrappedos
 
@@ -1198,6 +1444,11 @@ def _print_resolved_summary(resolved: list[ResolvedExternal]) -> None:
     for r in resolved:
         ref = r.ref if r.ref is not None else "-"
         print(f"{r.name}\t{ref}\t{r.source}\t{r.path}")
+
+
+def signal_handler(_signum, _frame):
+    """Exit cleanly on SIGINT/SIGPIPE (mirrors ``cake.signal_handler``)."""
+    sys.exit(0)
 
 
 def main(argv=None) -> int:
@@ -1236,6 +1487,10 @@ def main(argv=None) -> int:
     compiletools.apptools.add_target_arguments(cap)
     compiletools.headerdeps.add_arguments(cap)
     compiletools.apptools.add_fetch_arguments(cap)
+    # Registers --file-locking so fetch_externals' FileLock around the managed
+    # clone/checkout path is active (A1). Without it args.file_locking is absent
+    # and FileLock silently no-ops. ct-cake gets this via its backend parser.
+    compiletools.apptools.add_locking_arguments(cap)
     compiletools.utils.add_flag_argument(
         parser=cap,
         name="status",
@@ -1247,53 +1502,58 @@ def main(argv=None) -> int:
     context = BuildContext()
     args = compiletools.apptools.parseargs(cap, argv, context=context)
 
-    try:
-        target_files = collect_target_files(args)
-        if not target_files:
-            print(
-                "ct-fetch: no target source files given (or none exist on disk); nothing to do.",
-                file=sys.stderr,
-            )
-            return 0
+    # Install graceful SIGINT/SIGPIPE handlers for the duration of the run
+    # (A11 / CLAUDE.md signal rule): a Ctrl-C during a clone exits cleanly
+    # instead of dumping a traceback, and the FileLock's own signal forwarding
+    # tears the child git down. Mirrors cake.main()'s wrapper.
+    with compiletools.apptools.graceful_shutdown(signal_handler, signal.SIGINT, signal.SIGPIPE):
+        try:
+            target_files = collect_target_files(args)
+            if not target_files:
+                print(
+                    "ct-fetch: no target source files given (or none exist on disk); nothing to do.",
+                    file=sys.stderr,
+                )
+                return 0
 
-        gitroot = compiletools.git_utils.find_git_root()
-        externals_dir = resolve_externals_dir(getattr(args, "externals_dir", None), gitroot)
-        overrides = parse_git_path_overrides(getattr(args, "git_paths", []) or [])
+            gitroot = compiletools.git_utils.find_git_root()
+            externals_dir = resolve_externals_dir(getattr(args, "externals_dir", None), gitroot)
+            overrides = parse_git_path_overrides(getattr(args, "git_paths", []) or [])
 
-        if getattr(args, "status", False):
-            # Report-only: never clones/updates, never raises on a missing external.
-            statuses = gather_external_status(
+            if getattr(args, "status", False):
+                # Report-only: never clones/updates, never raises on a missing external.
+                statuses = gather_external_status(
+                    target_files,
+                    args,
+                    context,
+                    externals_dir=externals_dir,
+                    overrides=overrides,
+                )
+                _print_status_report(statuses)
+                return 0
+
+            resolved = fetch_externals(
                 target_files,
                 args,
                 context,
                 externals_dir=externals_dir,
                 overrides=overrides,
+                no_fetch=getattr(args, "no_fetch", False),
+                update=getattr(args, "update", False),
+                verbose=args.verbose,
             )
-            _print_status_report(statuses)
+            _print_resolved_summary(resolved)
             return 0
-
-        resolved = fetch_externals(
-            target_files,
-            args,
-            context,
-            externals_dir=externals_dir,
-            overrides=overrides,
-            no_fetch=getattr(args, "no_fetch", False),
-            update=getattr(args, "update", False),
-            verbose=args.verbose,
-        )
-        _print_resolved_summary(resolved)
-        return 0
-    except FetchError as err:
-        # Match cake.main()'s FetchError handler: plain "Error:" prefix, stderr,
-        # non-zero exit, no traceback. FetchError messages already name the
-        # offending external and its URL.
-        print(f"Error: {err}", file=sys.stderr)
-        return 1
-    finally:
-        # Clear memcaches so repeated in-process main() calls in tests don't
-        # cross-contaminate. fetch_externals / gather_external_status own their
-        # headerdeps internally, so there is no headerdeps cache to clear here.
-        compiletools.wrappedos.clear_cache()
-        compiletools.utils.clear_cache()
-        compiletools.git_utils.clear_cache()
+        except FetchError as err:
+            # Match cake.main()'s FetchError handler: plain "Error:" prefix, stderr,
+            # non-zero exit, no traceback. FetchError messages already name the
+            # offending external and its URL.
+            print(f"Error: {err}", file=sys.stderr)
+            return 1
+        finally:
+            # Clear memcaches so repeated in-process main() calls in tests don't
+            # cross-contaminate. fetch_externals / gather_external_status own their
+            # headerdeps internally, so there is no headerdeps cache to clear here.
+            compiletools.wrappedos.clear_cache()
+            compiletools.utils.clear_cache()
+            compiletools.git_utils.clear_cache()

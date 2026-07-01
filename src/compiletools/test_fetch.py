@@ -12,6 +12,7 @@ import configargparse
 import pytest
 
 import compiletools.apptools
+import compiletools.fetch as fetch
 import compiletools.headerdeps
 from compiletools.build_context import BuildContext
 from compiletools.fetch import (
@@ -1165,6 +1166,32 @@ def test_parse_git_path_overrides_cli_name_case_normalized() -> None:
     assert result == {"foo": "/cli"}
 
 
+def test_parse_git_path_overrides_accumulate_and_cli_over_env() -> None:
+    """A17: multiple --git-path entries and multiple CT_GIT_PATH_* env vars
+    accumulate into one map; where a name is set by both, CLI wins.
+    """
+    result = parse_git_path_overrides(
+        ["foo=/cli/foo", "baz=/cli/baz"],
+        {"CT_GIT_PATH_FOO": "/env/foo", "CT_GIT_PATH_BAR": "/env/bar"},
+    )
+    assert result == {
+        "foo": "/cli/foo",  # CLI overrides the env entry of the same name
+        "bar": "/env/bar",  # env-only survives
+        "baz": "/cli/baz",  # cli-only survives
+    }
+
+
+def test_parse_git_path_overrides_empty_env_skipped_cli_raises() -> None:
+    """A14: an empty CT_GIT_PATH_* env value is intentionally skipped, while an
+    empty CLI PATH raises — the documented asymmetry.
+    """
+    # Empty env value → skipped (not an error, not present).
+    assert parse_git_path_overrides([], {"CT_GIT_PATH_FOO": ""}) == {}
+    # Empty CLI PATH → hard error.
+    with pytest.raises(FetchError, match="empty PATH"):
+        parse_git_path_overrides(["foo="], {})
+
+
 def test_parse_git_path_overrides_ignores_unrelated_env() -> None:
     result = parse_git_path_overrides([], {"PATH": "/usr/bin", "CT_GIT_PATH_X": "/x"})
     assert result == {"x": "/x"}
@@ -1229,3 +1256,409 @@ def test_add_fetch_arguments_idempotent() -> None:
     compiletools.apptools.add_fetch_arguments(cap)
     args = cap.parse_args(["--no-fetch"])
     assert args.no_fetch is True
+
+
+# ===========================================================================
+# Parallax hardening regressions (no compiler required)
+# ===========================================================================
+#
+# One test per confirmed finding in docs/parallax/PARALLAX_1681e545.json. These
+# exercise the parsing primitives and the git resolver directly (file:// bare
+# repos); the fixpoint-driver findings (N2, N3, A1-lock, A11) live in
+# test_ct_fetch.py where the full headerdeps pipeline / a compiler is available.
+
+
+# --- A2: git option-injection guard (leading-dash url/ref) ------------------
+
+
+def test_parse_git_value_leading_dash_url_rejected() -> None:
+    """A2: a url beginning with '-' would be read by git as an option."""
+    with pytest.raises(ValueError) as excinfo:
+        parse_git_value("--upload-pack=/bin/sh/x")
+    assert "-" in str(excinfo.value)
+
+
+def test_parse_git_value_leading_dash_ref_rejected() -> None:
+    """A2: a ref beginning with '-' (e.g. '--upload-pack=<cmd>') is an RCE vector."""
+    with pytest.raises(ValueError) as excinfo:
+        parse_git_value("https://example.com/x.git@--upload-pack=evil")
+    assert "may not begin with '-'" in str(excinfo.value)
+
+
+def test_end_of_options_present_in_git_argv() -> None:
+    """A2 suspenders: every untrusted positional is guarded by --end-of-options.
+
+    Assert the source wires the sentinel into the clone/fetch/checkout/merge
+    argv rather than a bare '--' (which git checkout reinterprets as a pathspec).
+    """
+    import inspect
+
+    src = inspect.getsource(fetch)
+    assert "--end-of-options" in src
+    # '--' as a positional guard is the wrong token for checkout; ensure the
+    # clone/fetch/checkout/merge calls use the sentinel, not a bare separator.
+    for call in ('"clone", "--end-of-options"', '"checkout", "--end-of-options"'):
+        assert call in src, f"expected {call!r} in fetch.py"
+
+
+# --- N1: derive_name rejects escaping / unsafe names ------------------------
+
+
+def test_derive_name_rejects_dotdot() -> None:
+    """N1: a URL ending '/..' yields '..', which os.path.join would escape."""
+    with pytest.raises(ValueError) as excinfo:
+        derive_name("file:///tmp/x/..")
+    assert "unsafe" in str(excinfo.value)
+
+
+def test_derive_name_rejects_single_dot() -> None:
+    with pytest.raises(ValueError):
+        derive_name("file:///tmp/x/.")
+
+
+def test_derive_name_rejects_dot_leading() -> None:
+    """A hidden/dot-leading name (e.g. '.git' collision) is rejected."""
+    with pytest.raises(ValueError):
+        derive_name("file:///tmp/x/.hidden")
+
+
+def test_resolve_external_name_escape_rejected() -> None:
+    """N1 defense-in-depth: a hand-built GitExternal whose name escapes
+    externals_dir is rejected by resolve_external's containment check even
+    though derive_name would never produce such a name.
+    """
+    with tempfile.TemporaryDirectory() as root:
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        ext = GitExternal(name=os.path.join("..", "evil"), url="file:///x.git", ref=None)
+        with pytest.raises(FetchError) as excinfo:
+            resolve_external(ext, externals_dir=externals)
+        assert "escapes" in str(excinfo.value)
+
+
+# --- A7 / A8 / A20: _git_env behaviour --------------------------------------
+
+
+def test_git_env_does_not_neutralize_ambient_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A7: honour the user's git config so enterprise auth (insteadOf, proxy,
+    credential helpers) works. _git_env must NOT set GIT_CONFIG_GLOBAL /
+    GIT_CONFIG_NOSYSTEM.
+    """
+    monkeypatch.delenv("GIT_CONFIG_GLOBAL", raising=False)
+    monkeypatch.delenv("GIT_CONFIG_NOSYSTEM", raising=False)
+    env = fetch._git_env()
+    assert "GIT_CONFIG_GLOBAL" not in env
+    assert "GIT_CONFIG_NOSYSTEM" not in env
+
+
+def test_git_env_sets_fail_fast_prompt_and_ssh_batchmode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A8: never hang on an interactive prompt."""
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    env = fetch._git_env()
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
+    assert "BatchMode=yes" in env["GIT_SSH_COMMAND"]
+
+
+def test_git_env_respects_user_ssh_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A8: GIT_SSH_COMMAND is set via setdefault — a user value is preserved."""
+    monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -i /my/key")
+    env = fetch._git_env()
+    assert env["GIT_SSH_COMMAND"] == "ssh -i /my/key"
+
+
+def test_git_env_pops_ambient_repo_pointers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A20: an ambient GIT_DIR / GIT_WORK_TREE / ... must not survive, or a
+    cwd=target git op could be hijacked onto an enclosing repo.
+    """
+    for var in (
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_COMMON_DIR",
+        "GIT_NAMESPACE",
+    ):
+        monkeypatch.setenv(var, "/some/ambient/value")
+    env = fetch._git_env()
+    for var in (
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_COMMON_DIR",
+        "GIT_NAMESPACE",
+    ):
+        assert var not in env
+
+
+# --- A19: _is_git_work_tree is true only at a checkout root ------------------
+
+
+def test_is_git_work_tree_true_at_checkout_root() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        externals = os.path.join(root, "externals")
+        res = resolve_external(GitExternal(name="mylib", url=origin["url"], ref=None), externals_dir=externals)
+        assert fetch._is_git_work_tree(res.path) is True
+
+
+def test_is_git_work_tree_false_for_nested_plain_dir() -> None:
+    """A19: a plain subdirectory nested under a work tree must return False —
+    otherwise _handle_present would run git ops with cwd=subdir and git would
+    walk up to the enclosing .git (host-repo hijack).
+    """
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        externals = os.path.join(root, "externals")
+        res = resolve_external(GitExternal(name="mylib", url=origin["url"], ref=None), externals_dir=externals)
+        nested = os.path.join(res.path, "plain-subdir")
+        os.makedirs(nested)
+        assert fetch._is_git_work_tree(nested) is False
+
+
+# --- A5: --git-path override must be a directory, not a regular file ---------
+
+
+def test_resolve_override_path_is_file_raises() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        externals = os.path.join(root, "externals")
+        override_file = os.path.join(root, "afile")
+        with open(override_file, "w") as fh:
+            fh.write("not a dir\n")
+        with pytest.raises(FetchError) as excinfo:
+            resolve_external(
+                GitExternal(name="mylib", url=origin["url"], ref="v1"),
+                externals_dir=externals,
+                override_path=override_file,
+            )
+        assert "not a directory" in str(excinfo.value)
+
+
+# --- A15: a failed ref checkout leaves no partial target on disk ------------
+
+
+def test_resolve_failed_checkout_leaves_no_partial_target() -> None:
+    """A15: clone succeeds but the ref fetch/checkout fails → the temp is
+    removed and no partial checkout is left at the target (which a later run
+    would treat as 'present' and never repair).
+    """
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        externals = os.path.join(root, "externals")
+        target = os.path.join(externals, "mylib")
+        ext = GitExternal(name="mylib", url=origin["url"], ref="nonexistent-ref")
+        with pytest.raises(FetchError):
+            resolve_external(ext, externals_dir=externals)
+        assert not os.path.exists(target)
+        # No leftover temp sibling either.
+        assert not any(name.startswith("mylib.ct-fetch.tmp") for name in os.listdir(externals))
+
+
+# --- A22: a tag is routed as immutable even when a same-named branch exists --
+
+
+def test_resolve_tag_named_like_branch_routed_immutable(capsys: pytest.CaptureFixture) -> None:
+    """A22: after clone the remote branch 'shared' exists as
+    refs/remotes/origin/shared AND a tag 'shared' exists. _handle_present must
+    test tag first (immutable pin) and warn about the collision, rather than
+    fast-forwarding it as a branch.
+    """
+    with tempfile.TemporaryDirectory() as root:
+        # Build an origin with a branch 'shared' and a tag 'shared'.
+        work = os.path.join(root, "tb-work")
+        bare = os.path.join(root, "tb.git")
+        os.makedirs(work)
+        _git(root, "init", "-q", "-b", "master", work)
+        with open(os.path.join(work, "a.txt"), "w") as fh:
+            fh.write("one\n")
+        _git(work, "add", "-A")
+        _git(work, "commit", "-q", "-m", "c1")
+        _git(work, "tag", "shared")  # tag at c1
+        _git(work, "checkout", "-q", "-b", "shared")
+        with open(os.path.join(work, "a.txt"), "w") as fh:
+            fh.write("two\n")
+        _git(work, "add", "-A")
+        _git(work, "commit", "-q", "-m", "c2-on-branch")
+        _git(root, "clone", "-q", "--bare", work, bare)
+        _git(bare, "symbolic-ref", "HEAD", "refs/heads/master")
+        url = "file://" + bare
+
+        externals = os.path.join(root, "externals")
+        # First clone (default branch = master).
+        resolve_external(GitExternal(name="mylib", url=url, ref=None), externals_dir=externals)
+        # Now request 'shared' — both a tag and a branch. --update would try to
+        # fast-forward a branch, but a tag must be pinned; the collision warns.
+        resolve_external(
+            GitExternal(name="mylib", url=url, ref="shared"),
+            externals_dir=externals,
+            update=True,
+        )
+        err = capsys.readouterr().err
+        assert "both a" in err and "tag" in err
+
+
+# --- A21: detached-HEAD + --update gives a clear, actionable error -----------
+
+
+def test_resolve_detached_head_update_clear_error() -> None:
+    """A21: an external pinned to a tag/SHA is on a detached HEAD; a later
+    ref-less --update run must explain the pin/unpin situation instead of git's
+    opaque 'You are not currently on a branch.'
+    """
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        externals = os.path.join(root, "externals")
+        # Pin to a tag → detached HEAD.
+        resolve_external(GitExternal(name="mylib", url=origin["url"], ref="v1"), externals_dir=externals)
+        # Now resolve ref-less with --update.
+        with pytest.raises(FetchError) as excinfo:
+            resolve_external(
+                GitExternal(name="mylib", url=origin["url"], ref=None),
+                externals_dir=externals,
+                update=True,
+            )
+        msg = str(excinfo.value)
+        assert "detached HEAD" in msg
+        assert "mylib" in msg
+
+
+# --- A9: an untracked-only work tree is not "dirty" -------------------------
+
+
+def test_resolve_untracked_only_not_dirty_allows_update() -> None:
+    """A9: build artifacts / IDE files (untracked) must not wedge --update; only
+    tracked modifications block. A no-ref --update over an untracked-only tree
+    succeeds (pull fast-forwards) and preserves the untracked file.
+    """
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        externals = os.path.join(root, "externals")
+        target = os.path.join(externals, "mylib")
+        resolve_external(GitExternal(name="mylib", url=origin["url"], ref=None), externals_dir=externals)
+        # Drop an untracked file (not added to git).
+        stray = os.path.join(target, "build-artifact.o")
+        with open(stray, "w") as fh:
+            fh.write("junk\n")
+        # Advance the remote so --update has something to fast-forward to.
+        new_sha = _advance_branch(origin, "master", "more\n")
+        res = resolve_external(
+            GitExternal(name="mylib", url=origin["url"], ref=None),
+            externals_dir=externals,
+            update=True,
+        )
+        assert res.on_disk_ref == new_sha
+        # Untracked file survived the pull.
+        assert os.path.isfile(stray)
+
+
+# --- N2: same name + same URL but conflicting refs → hard error -------------
+
+
+@requires_functional_compiler
+def test_fetch_externals_conflicting_refs_raise() -> None:
+    """N2: two declarations of the same external at different refs must hard
+    error (symmetric with the conflicting-URL raise), naming both files. A
+    build cannot silently pick one of two requested refs.
+    """
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)  # basename 'origin', has tag v1 + master
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        main = os.path.join(root, "main.cpp")
+        other = os.path.join(root, "other.cpp")
+        with open(main, "w") as fh:
+            fh.write(f"//#GIT={origin['url']}@master\nint main() {{ return 0; }}\n")
+        with open(other, "w") as fh:
+            fh.write(f"//#GIT={origin['url']}@v1\nvoid f() {{}}\n")
+
+        with pytest.raises(FetchError) as excinfo:
+            fetch_externals([main, other], _make_args(), BuildContext(), externals_dir=externals)
+        msg = str(excinfo.value)
+        assert "conflicting" in msg and "refs" in msg
+        assert "master" in msg and "v1" in msg
+        assert main in msg and other in msg
+
+
+# --- N3: case-colliding external names → hard error -------------------------
+
+
+@requires_functional_compiler
+def test_fetch_externals_case_collision_raises() -> None:
+    """N3: names that differ only in case would silently share one override
+    (overrides key on the lowercased name) and one dir on a case-insensitive
+    FS. Reject the collision up front, naming both declaring files.
+    """
+    with tempfile.TemporaryDirectory() as root:
+        ext1 = _make_bare_with_files(root, "mylib", {"foo.h": "#pragma once\n"})
+        sub = os.path.join(root, "sub")
+        os.makedirs(sub)
+        ext2 = _make_bare_with_files(sub, "MyLib", {"bar.h": "#pragma once\n"})
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        main = os.path.join(root, "main.cpp")
+        other = os.path.join(root, "other.cpp")
+        with open(main, "w") as fh:
+            fh.write(f"//#GIT={ext1['url']}@master\nint main() {{ return 0; }}\n")
+        with open(other, "w") as fh:
+            fh.write(f"//#GIT={ext2['url']}@master\nvoid f() {{}}\n")
+
+        with pytest.raises(FetchError) as excinfo:
+            fetch_externals([main, other], _make_args(), BuildContext(), externals_dir=externals)
+        msg = str(excinfo.value)
+        assert "case-colliding" in msg
+        assert "mylib" in msg and "MyLib" in msg
+        assert main in msg and other in msg
+
+
+# --- A1: the managed clone/checkout path acquires a sidecar FileLock ---------
+
+
+@requires_functional_compiler
+def test_fetch_externals_locks_managed_target_sidecar(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A1: the exists->clone/checkout path is serialized against concurrent
+    peers by a FileLock on the <target>.lock SIDECAR (never the target). An
+    override (user-owned checkout) is NOT locked. Assert the lock is taken on
+    the sidecar for the managed external and not for the override.
+    """
+    import contextlib
+
+    import compiletools.locking
+
+    locked_paths: list[str] = []
+
+    @contextlib.contextmanager
+    def _recording_filelock(path, *_):
+        locked_paths.append(path)
+        yield
+
+    monkeypatch.setattr(compiletools.locking, "FileLock", _recording_filelock)
+
+    with tempfile.TemporaryDirectory() as root:
+        managed = _make_bare_with_files(root, "managed", {"m.h": "#pragma once\n"})
+        overridden = _make_bare_with_files(root, "overridden", {"o.h": "#pragma once\n"})
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        local = os.path.join(root, "overridden-local")
+        _git(root, "clone", "-q", overridden["url"], local)
+
+        main = os.path.join(root, "main.cpp")
+        with open(main, "w") as fh:
+            fh.write(
+                f"//#GIT={managed['url']}@master\n"
+                f"//#GIT={overridden['url']}@master\n"
+                "int main() { return 0; }\n"
+            )
+
+        fetch_externals(
+            [main],
+            _make_args(),
+            BuildContext(),
+            externals_dir=externals,
+            overrides={"overridden": local},
+        )
+
+    managed_lock = os.path.join(externals, "managed.lock")
+    overridden_lock = os.path.join(externals, "overridden.lock")
+    assert managed_lock in locked_paths
+    assert overridden_lock not in locked_paths

@@ -825,7 +825,12 @@ def add_fetch_arguments(cap):
         name="update",
         dest="update",
         default=False,
-        help="Pull/fast-forward branch/unpinned externals before building.",
+        help=(
+            "Pull/fast-forward branch/unpinned externals before building. "
+            "Without --update a present branch external is compared against its "
+            "possibly-stale remote-tracking tip (a remote force-push is not "
+            "detected until the next --update)."
+        ),
     )
     cap.add_argument(
         "--externals-dir",

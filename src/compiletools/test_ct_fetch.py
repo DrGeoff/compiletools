@@ -10,6 +10,7 @@ its built-in macros; the header walk itself does no compilation).
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import tempfile
 
@@ -564,3 +565,33 @@ def test_main_status_override_redirects(monkeypatch, capsys) -> None:
         assert os.path.abspath(override) in line
         # The managed location was never created.
         assert not os.path.exists(os.path.join(externals_dir, "extlib"))
+
+
+# ---------------------------------------------------------------------------
+# A11: main() installs graceful SIGINT/SIGPIPE handlers and restores them
+# ---------------------------------------------------------------------------
+
+
+@requires_functional_compiler
+def test_main_installs_and_restores_signal_handlers(monkeypatch) -> None:
+    """A11: main() wraps its body in apptools.graceful_shutdown, so the SIGINT
+    and SIGPIPE handlers in effect before the call are restored afterward
+    (no permanent mutation of the interpreter's signal disposition).
+    """
+    before_int = signal.getsignal(signal.SIGINT)
+    before_pipe = signal.getsignal(signal.SIGPIPE)
+    with tempfile.TemporaryDirectory() as root:
+        ext = _make_bare_with_files(root, "extlib", {"include/extlib.h": "#pragma once\nint extfn();\n"})
+        externals_dir = os.path.join(root, "externals")
+        os.makedirs(externals_dir)
+        main_repo = _make_main_repo(
+            root,
+            f'//#GIT={ext["url"]}@master\n#include "extlib.h"\nint main() {{ return extfn(); }}\n',
+        )
+        monkeypatch.chdir(main_repo)
+        _neutralise_git(monkeypatch)
+
+        rc = fetch.main(_pinned_argv(main_repo, ["main.cpp", "--externals-dir", externals_dir]))
+        assert rc == 0
+    assert signal.getsignal(signal.SIGINT) is before_int
+    assert signal.getsignal(signal.SIGPIPE) is before_pipe
