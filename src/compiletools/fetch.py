@@ -1151,10 +1151,17 @@ def _augmented_headerdeps(args, context, *, externals_dir: str, resolved_roots: 
     """
     import compiletools.headerdeps
 
-    include_dirs = [externals_dir]
+    # Roots first, externals_dir LAST: a directory living INSIDE a resolved
+    # external (or its include/ subdir) that collides in name with a sibling
+    # under externals_dir must win, so the broad siblings-parent dir is searched
+    # only after every specific root. (extra_include_dirs are appended AFTER the
+    # project's own includes in both headerdeps flavours, so the project's own
+    # headers already outrank all of these.)
+    include_dirs: list[str] = []
     for root in resolved_roots:
         include_dirs.append(root)
         include_dirs.append(os.path.join(root, "include"))
+    include_dirs.append(externals_dir)
 
     return compiletools.headerdeps.create(args, context=context, extra_include_dirs=include_dirs)
 

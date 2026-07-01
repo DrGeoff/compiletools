@@ -1269,6 +1269,25 @@ def test_augmented_headerdeps_threads_include_dirs_without_deepcopy() -> None:
 
 
 @requires_functional_compiler
+def test_augmented_headerdeps_searches_externals_dir_last() -> None:
+    """externals_dir is appended LAST so a same-named dir inside a resolved root
+    is found before the broad siblings-parent dir."""
+    args = _make_args()
+    context = BuildContext()
+    hd = fetch._augmented_headerdeps(
+        args,
+        context,
+        externals_dir="/tmp/externals",
+        resolved_roots=["/tmp/externals/alpha", "/tmp/externals/beta"],
+    )
+    extra = hd._extra_include_dirs
+    assert extra[-1] == "/tmp/externals"  # externals_dir searched last
+    # Every resolved root (and its include/ subdir) precedes externals_dir.
+    assert extra.index("/tmp/externals/alpha") < extra.index("/tmp/externals")
+    assert extra.index("/tmp/externals/beta") < extra.index("/tmp/externals")
+
+
+@requires_functional_compiler
 def test_fetch_externals_restores_context_analyzer_args() -> None:
     """After fetch_externals returns, context.analyzer_args is the prior value.
 
