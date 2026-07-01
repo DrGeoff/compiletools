@@ -1050,6 +1050,17 @@ def extract_git_externals(filepath: str, args, context) -> list[GitExternal]:
           a :class:`FetchError` that names the declaring file, so the user sees
           exactly which declaration is broken.
 
+    Conditional-blind by design:
+        ``//#GIT=`` declarations are read from the file's raw magic flags and are
+        NOT filtered by ``#if`` / ``#ifdef`` state, unlike ``CPPFLAGS`` / other
+        magic flags. This is intentional: correctly evaluating the conditionals
+        can require headers that live inside the external we have not fetched yet
+        (a chicken-and-egg), so a declaration inside a dead ``#if 0`` branch is
+        still fetched, and pinning the SAME external to different refs in
+        mutually-exclusive ``#if`` branches is a conflicting-ref error rather
+        than a per-branch selection. Put per-configuration externals in separate
+        files, or pin one ref, to avoid the conflict.
+
     Args:
         filepath: Path to the source file to scan.
         args:     The parsed args namespace (file-analyzer attributes such as

@@ -1212,6 +1212,20 @@ def test_extract_git_externals_tolerates_missing_file() -> None:
 
 
 @requires_functional_compiler
+def test_git_declaration_in_dead_conditional_is_still_extracted() -> None:
+    """//#GIT= is extracted regardless of preprocessor conditionals: a
+    declaration inside `#if 0` is still discovered. This is intentional
+    (evaluating conditionals may require the not-yet-fetched external's own
+    headers) and is pinned here so a future change is deliberate."""
+    with tempfile.TemporaryDirectory() as root:
+        src = os.path.join(root, "main.cpp")
+        with open(src, "w") as fh:
+            fh.write("#if 0\n//#GIT=file:///x/deadlib.git\n#endif\nint main() { return 0; }\n")
+        exts = extract_git_externals(src, _make_args(), BuildContext())
+        assert [e.name for e in exts] == ["deadlib"]
+
+
+@requires_functional_compiler
 def test_extract_git_allow_protocols_reads_declarations() -> None:
     with tempfile.TemporaryDirectory() as root:
         src = os.path.join(root, "main.cpp")

@@ -131,6 +131,22 @@ further ``//#GIT=`` externals, and those are fetched too (deps-of-deps).
 Each round widens the include search into the externals fetched so far,
 so a chain of externals is resolved in a handful of rounds.
 
+Preprocessor conditionals
+-------------------------
+``//#GIT=`` declarations are discovered from the raw source text and are **not**
+filtered by ``#if`` / ``#ifdef`` state (unlike ``//#CPPFLAGS=`` and the other
+magic flags). Correctly evaluating a conditional can require headers that live
+inside an external that has not been fetched yet, so discovery cannot depend on
+the conditional's outcome. Consequences:
+
+* a ``//#GIT=`` inside a dead ``#if 0`` (or an inactive platform branch) is
+  still fetched;
+* pinning the **same** external to **different** refs in mutually-exclusive
+  ``#if`` branches is a hard error (conflicting refs), not a per-branch choice.
+
+Keep per-configuration externals in separate source files, or pin a single ref,
+if you need conditional selection.
+
 Safety
 ------
 * ``--update`` refuses to clobber a **dirty** working tree: if a managed
