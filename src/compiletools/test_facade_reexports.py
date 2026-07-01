@@ -118,6 +118,7 @@ _add(
         "add_cas_directory_arguments",
         "add_output_directory_arguments",
         "add_otel_export_arguments",
+        "add_fetch_arguments",
         "add_target_arguments",
         "add_target_arguments_ex",
         "_add_xxpend_argument",

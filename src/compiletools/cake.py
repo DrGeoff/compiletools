@@ -1008,6 +1008,16 @@ def main(argv=None):
                 return 1
             else:
                 raise
+        except compiletools.fetch.FetchError as err:
+            # A //#GIT= external failed to resolve. FetchError messages already
+            # name the offending external and its URL, so print to stderr
+            # (consistent with the sibling fatal handlers above) rather than
+            # letting it fall through to the generic stdout catch-all.
+            if args.verbose < 2:
+                print(f"ct-fetch: error: {err}", file=sys.stderr)
+                return 1
+            else:
+                raise
         except Exception as err:
             if args.verbose < 2:
                 print(err)

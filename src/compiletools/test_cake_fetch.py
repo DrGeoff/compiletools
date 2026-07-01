@@ -180,3 +180,52 @@ def test_fetch_step_no_fetch_offline_surfaces_fetcherror(monkeypatch) -> None:
         assert "extlib" in str(excinfo.value)
         # Nothing was cloned.
         assert not os.path.exists(os.path.join(externals_dir, "extlib"))
+
+
+@requires_functional_compiler
+def test_main_fetcherror_returns_nonzero_and_writes_stderr(monkeypatch, capsys) -> None:
+    """The --no-fetch missing-external FetchError reaches cake.main()'s
+    dedicated handler: non-zero exit, clean message on STDERR (not STDOUT)."""
+    with tempfile.TemporaryDirectory() as root:
+        ext = _make_bare_with_files(root, "extlib", {"include/extlib.h": "#pragma once\nint extfn();\n"})
+        externals_dir = os.path.join(root, "externals")
+        os.makedirs(externals_dir)
+        main_repo = _make_main_repo(
+            root,
+            f'//#GIT={ext["url"]}@master\n#include "extlib.h"\nint main() {{ return extfn(); }}\n',
+        )
+
+        monkeypatch.chdir(main_repo)
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+
+        config = uth.create_temp_config(main_repo)
+        argv = [
+            "--config",
+            config,
+            "--exemarkers=main",
+            "--testmarkers=unittest.hpp",
+            "--filename",
+            "main.cpp",
+            "--externals-dir",
+            externals_dir,
+            "--no-fetch",
+        ]
+
+        try:
+            rc = compiletools.cake.main(argv)
+        finally:
+            # main() calls Cake.registercallback(), which appends a callback to
+            # apptools' module-global _substitutioncallbacks list. Reset it so
+            # the leaked callback can't fire against a later test's bare args.
+            uth.reset()
+        assert rc == 1
+
+        captured = capsys.readouterr()
+        # The clean fatal message went to STDERR (consistent with the sibling
+        # CalledProcessError / OSError / LDFLAGSCycleError handlers), and names
+        # the offending external.
+        assert "extlib" in captured.err
+        assert "extlib" not in captured.out
+        # Nothing was cloned.
+        assert not os.path.exists(os.path.join(externals_dir, "extlib"))

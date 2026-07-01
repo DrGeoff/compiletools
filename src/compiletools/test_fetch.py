@@ -938,6 +938,46 @@ def test_fetch_externals_override_uses_local_path() -> None:
 
 
 @requires_functional_compiler
+@pytest.mark.parametrize("override_key", ["mylib", "MyLib"])
+def test_fetch_externals_override_matches_mixed_case_name(override_key: str) -> None:
+    """A mixed-case URL basename (``MyLib`` -> derive_name ``MyLib``) is matched
+    case-insensitively by an override key given in any case.
+
+    Regression: the lookup previously used the raw ``ext.name`` while
+    parse_git_path_overrides lowercased its keys, so a mixed-case external
+    could never hit an override (silent clone attempt instead)."""
+    with tempfile.TemporaryDirectory() as root:
+        ext = _make_bare_with_files(root, "MyLib", {"foo.h": "#pragma once\n"})
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        local = os.path.join(root, "mylocal")
+        _git(root, "clone", "-q", ext["url"], local)
+
+        main = os.path.join(root, "main.cpp")
+        with open(main, "w") as fh:
+            fh.write(f"//#GIT={ext['url']}@master\nint main() {{ return 0; }}\n")
+
+        # Build the overrides dict through the real CLI parser so the whole
+        # normalization path is exercised: a user-supplied key in ANY case
+        # (mylib or MyLib) must match the MyLib-basename external.
+        overrides = parse_git_path_overrides([f"{override_key}={local}"], {})
+        results = fetch_externals(
+            [main],
+            _make_args(),
+            BuildContext(),
+            externals_dir=externals,
+            overrides=overrides,
+        )
+        assert len(results) == 1
+        res = results[0]
+        assert res.name == "MyLib"
+        assert res.source == "override"
+        assert res.path == local
+        # The override matched, so nothing was cloned into the managed location.
+        assert not os.path.exists(os.path.join(externals, "MyLib"))
+
+
+@requires_functional_compiler
 def test_fetch_externals_no_fetch_missing_errors() -> None:
     with tempfile.TemporaryDirectory() as root:
         ext = _make_bare_with_files(root, "mylib", {"foo.h": "#pragma once\n"})

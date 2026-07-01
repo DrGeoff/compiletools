@@ -210,13 +210,15 @@ def parse_git_path_overrides(git_paths: list[str], environ=None) -> dict[str, st
 
     Name normalization
     ~~~~~~~~~~~~~~~~~~
-    Both halves normalize the key the same way: **lowercased**.  Env suffixes
-    are lowercased (env var names are conventionally upper-case yet must map
-    onto a derived external name), and CLI names are lowercased to match, so
-    ``--git-path Foo=/p`` and ``CT_GIT_PATH_FOO`` both target the external
-    ``foo``.  :func:`derive_name` lower-cases nothing, so an external whose
-    URL basename is mixed-case would need its override key spelled in the same
-    lowercased form — documented here and consistent across both sources.
+    Override names are matched **case-insensitively** against the URL-derived
+    external name.  Both halves normalize the key the same way: **lowercased**.
+    Env suffixes are lowercased (env var names are conventionally upper-case)
+    and CLI names are lowercased to match, so ``--git-path Foo=/p`` and
+    ``CT_GIT_PATH_FOO`` both target the external ``foo``.  :func:`derive_name`
+    lower-cases nothing, so an external whose URL basename is mixed-case (e.g.
+    ``MyLib``) is matched by an override key given in any case; the consumer
+    (:func:`fetch_externals`) lowercases ``ext.name`` at the lookup site so the
+    two sides agree.
 
     Args:
         git_paths: The ``args.git_paths`` list (each ``"NAME=PATH"``); may be
@@ -897,7 +899,11 @@ def fetch_externals(
                 resolved[ext.name] = resolve_external(
                     ext,
                     externals_dir=externals_dir,
-                    override_path=overrides.get(ext.name),
+                    # Override keys are normalized to lowercase in
+                    # parse_git_path_overrides; ext.name (from derive_name)
+                    # preserves the URL-basename case, so lowercase it here to
+                    # match case-insensitively.
+                    override_path=overrides.get(ext.name.lower()),
                     no_fetch=no_fetch,
                     update=update,
                     verbose=verbose,
