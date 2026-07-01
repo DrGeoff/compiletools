@@ -108,9 +108,6 @@ def test_fetch_step_registers_external_include_dirs(monkeypatch) -> None:
         )
 
         monkeypatch.chdir(main_repo)
-        # Neutralise ambient git config for the in-process git calls fetch makes.
-        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
-        monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
 
         context = BuildContext()
         args = _build_cake_args(main_repo, ["--filename", "main.cpp", "--externals-dir", externals_dir], context)
@@ -167,8 +164,6 @@ def test_fetch_step_no_fetch_offline_surfaces_fetcherror(monkeypatch) -> None:
         )
 
         monkeypatch.chdir(main_repo)
-        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
-        monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
 
         context = BuildContext()
         args = _build_cake_args(
@@ -199,8 +194,6 @@ def test_filelist_does_not_clone_missing_external(monkeypatch) -> None:
         )
 
         monkeypatch.chdir(main_repo)
-        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
-        monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
 
         context = BuildContext()
         # Note: no --no-fetch on the command line; --filelist alone must be
@@ -245,8 +238,6 @@ def test_filelist_uses_present_external_without_network(monkeypatch, capsys) -> 
         shutil.rmtree(ext["bare"])
 
         monkeypatch.chdir(main_repo)
-        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
-        monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
 
         context = BuildContext()
         args = _build_cake_args(
@@ -292,8 +283,6 @@ def test_single_static_lib_picks_up_external_implied_source(monkeypatch) -> None
         _git(main_repo, "commit", "-q", "-m", "main")
 
         monkeypatch.chdir(main_repo)
-        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
-        monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
 
         context = BuildContext()
         args = _build_cake_args(main_repo, ["--static", "mylib.cpp", "--externals-dir", externals_dir], context)
@@ -322,8 +311,6 @@ def test_main_fetcherror_returns_nonzero_and_writes_stderr(monkeypatch, capsys) 
         )
 
         monkeypatch.chdir(main_repo)
-        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
-        monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
 
         config = uth.create_temp_config(main_repo)
         argv = [
