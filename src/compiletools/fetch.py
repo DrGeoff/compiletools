@@ -46,6 +46,7 @@ __all__ = [
     "ResolvedExternal",
     "collect_target_files",
     "derive_name",
+    "extract_git_allow_protocols",
     "extract_git_externals",
     "fetch_externals",
     "gather_external_status",
@@ -60,6 +61,14 @@ __all__ = [
 # Prefix of the per-external location-override environment variable. The
 # external's name (lowercased) is appended: ``CT_GIT_PATH_<NAME>``.
 _ENV_OVERRIDE_PREFIX = "CT_GIT_PATH_"
+
+# Default set of git transport protocols permitted at fetch time. Excludes the
+# `ext::` remote-helper protocol (which git's protocol.ext.allow=user would
+# otherwise permit) because a //#GIT= url is untrusted source-file input and
+# `ext::<cmd>` is arbitrary command execution. A project that genuinely needs a
+# wider set declares it with a //#GIT_ALLOW_PROTOCOL= magic comment; a user who
+# exported GIT_ALLOW_PROTOCOL in their environment keeps their value.
+_DEFAULT_GIT_ALLOW_PROTOCOL = "file:git:ssh:http:https"
 
 
 class FetchError(Exception):
@@ -364,7 +373,7 @@ def _warn(message: str) -> None:
     print(f"ct-fetch: warning: {message}", file=sys.stderr)
 
 
-def _git_env() -> dict[str, str]:
+def _git_env(allow_protocol: str | None = None) -> dict[str, str]:
     """Return the environment for git operations on externals.
 
     Design: **honour the user's ambient git configuration.** The user's
@@ -392,11 +401,21 @@ def _git_env() -> dict[str, str]:
       that exports them, every ``_run_git(cwd=target)`` would silently operate
       on the *enclosing* repo instead of the external. We drop that family so
       ``cwd=`` is authoritative.
+    * **Restricted transport protocols.** ``GIT_ALLOW_PROTOCOL`` defaults to
+      :data:`_DEFAULT_GIT_ALLOW_PROTOCOL`, which excludes ``ext::`` (arbitrary
+      command execution) — a ``//#GIT=`` url is untrusted source-file input. A
+      project that declares ``//#GIT_ALLOW_PROTOCOL=<list>`` widens the set to
+      exactly what it names (passed here as *allow_protocol*); either way,
+      ``setdefault`` means a user who has already exported
+      ``GIT_ALLOW_PROTOCOL`` keeps their own value.
     """
     env = dict(os.environ)
     # Fail fast rather than hang on an interactive prompt.
     env["GIT_TERMINAL_PROMPT"] = "0"
     env.setdefault("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
+    # Restrict transport protocols (see _DEFAULT_GIT_ALLOW_PROTOCOL). setdefault
+    # so an explicit ambient GIT_ALLOW_PROTOCOL still wins.
+    env.setdefault("GIT_ALLOW_PROTOCOL", allow_protocol or _DEFAULT_GIT_ALLOW_PROTOCOL)
     # Never let an ambient repo pointer override our explicit cwd=target.
     for var in (
         "GIT_DIR",
@@ -433,11 +452,12 @@ def _run_git(args: list[str], *, cwd: str | None, ext: GitExternal) -> subproces
 
     run_ctx = _git_run_ctx.get()
     children = run_ctx.children if run_ctx is not None else None
+    allow_protocol = run_ctx.allow_protocol if run_ctx is not None else None
     try:
         result = compiletools.locking._run_with_signal_forwarding(
             ["git", *args],
             cwd=cwd,
-            env=_git_env(),
+            env=_git_env(allow_protocol),
             capture_output=True,
             on_child_start=children.add if children is not None else None,
             on_child_end=children.discard if children is not None else None,
@@ -970,6 +990,7 @@ class _GitRunContext:
     """
 
     children: _LiveChildren | None = None
+    allow_protocol: str | None = None
 
 
 # Default git run context (no registered children); overridden per resolve.
@@ -1032,6 +1053,48 @@ def extract_git_externals(filepath: str, args, context) -> list[GitExternal]:
         except ValueError as exc:
             raise FetchError(f"{filepath}: malformed //#GIT= declaration '{value}': {exc}") from exc
     return externals
+
+
+def extract_git_allow_protocols(filepath: str, args, context) -> list[str]:
+    """Return the raw value of every ``//#GIT_ALLOW_PROTOCOL=`` flag in *filepath*.
+
+    Each value is a git ``GIT_ALLOW_PROTOCOL`` list (colon-separated protocol
+    names, e.g. ``file:git:ssh:http:https:ext``). Non-matching magic flags are
+    ignored. A file that cannot be analyzed yields ``[]`` (tolerated, same as
+    :func:`extract_git_externals`). Malformed (empty, or a token beginning with
+    ``-``) values raise :class:`FetchError` naming the file — an option-injection
+    guard symmetric with :func:`parse_git_value`.
+    """
+    from compiletools.file_analyzer import analyze_file, set_analyzer_args
+    from compiletools.global_hash_registry import get_file_hash
+
+    if context.analyzer_args is None:
+        set_analyzer_args(args, context)
+
+    try:
+        content_hash = get_file_hash(filepath, context)
+        result = analyze_file(content_hash, context)
+    except Exception as exc:
+        if getattr(args, "verbose", 0) >= 2:
+            print(
+                f"ct-fetch: warning: could not analyze '{filepath}' for //#GIT_ALLOW_PROTOCOL=: {exc}",
+                file=sys.stderr,
+            )
+        return []
+
+    values: list[str] = []
+    for magic_flag in result.magic_flags:
+        if str(magic_flag["key"]) != "GIT_ALLOW_PROTOCOL":
+            continue
+        value = str(magic_flag["value"]).strip()
+        tokens = [t for t in value.split(":")]
+        if not value or any(not t or t.startswith("-") for t in tokens):
+            raise FetchError(
+                f"{filepath}: malformed //#GIT_ALLOW_PROTOCOL= declaration '{value}'; "
+                "expected a colon-separated list of git protocol names (e.g. file:git:https:ext)"
+            )
+        values.append(value)
+    return values
 
 
 def _augmented_headerdeps(args, context, *, externals_dir: str, resolved_roots: list[str]):
@@ -1217,6 +1280,10 @@ def fetch_externals(
     declared: dict[str, GitExternal] = {}
     declared_files: dict[str, str] = {}  # name -> first declaring file (best-effort diagnostics)
     declared_lower: dict[str, str] = {}  # lowercased name -> first-declared original-cased name (N3)
+    # Union of every //#GIT_ALLOW_PROTOCOL= list declared by a reachable source.
+    # A project widens the permitted transport set (e.g. to add `ext`) by
+    # declaring it; the union is the explicit opt-in. Empty => the safe default.
+    allow_protocol_tokens: set[str] = set()
 
     # --- fetch-mode axes for the shared _fixpoint_scan driver ---------------
     # See _fixpoint_scan for the shared skeleton these three callbacks plug into.
@@ -1231,7 +1298,8 @@ def fetch_externals(
     live_children = _LiveChildren()
 
     def _resolve_one(ext: GitExternal) -> ResolvedExternal:
-        token = _git_run_ctx.set(_GitRunContext(children=live_children))
+        allow = ":".join(sorted(allow_protocol_tokens)) or None
+        token = _git_run_ctx.set(_GitRunContext(children=live_children, allow_protocol=allow))
         try:
             # Override keys are normalized to lowercase in
             # parse_git_path_overrides; ext.name (from derive_name) preserves
@@ -1327,6 +1395,8 @@ def fetch_externals(
     def _scan_round(reachable: list[str]) -> bool:
         new_names: list[GitExternal] = []
         for source_file in reachable:
+            for value in extract_git_allow_protocols(source_file, args, context):
+                allow_protocol_tokens.update(t for t in value.split(":") if t)
             for ext in extract_git_externals(source_file, args, context):
                 prior = declared.get(ext.name)
                 if prior is None:

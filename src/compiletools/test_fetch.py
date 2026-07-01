@@ -26,6 +26,7 @@ from compiletools.fetch import (
     GitExternal,
     ResolvedExternal,
     derive_name,
+    extract_git_allow_protocols,
     extract_git_externals,
     fetch_externals,
     parse_git_declaration,
@@ -1171,6 +1172,19 @@ def test_extract_git_externals_tolerates_missing_file() -> None:
 
 
 @requires_functional_compiler
+def test_extract_git_allow_protocols_reads_declarations() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        src = os.path.join(root, "main.cpp")
+        with open(src, "w") as fh:
+            fh.write(
+                "//#GIT_ALLOW_PROTOCOL=file:git:ssh:http:https:ext\n"
+                "//#GIT=file:///x/mylib.git\n"
+                "int main() { return 0; }\n"
+            )
+        assert extract_git_allow_protocols(src, _make_args(), BuildContext()) == ["file:git:ssh:http:https:ext"]
+
+
+@requires_functional_compiler
 def test_augmented_headerdeps_threads_include_dirs_without_deepcopy() -> None:
     """_augmented_headerdeps no longer deep-copies args, and the external
     include dirs (spaces and all) reach the headerdeps search list.
@@ -1536,6 +1550,28 @@ def test_git_env_pops_ambient_repo_pointers(monkeypatch: pytest.MonkeyPatch) -> 
         assert var not in env
 
 
+def test_git_env_sets_default_allow_protocol(monkeypatch) -> None:
+    """_git_env pins a safe default GIT_ALLOW_PROTOCOL so ext:: remote-helper
+    URLs (arbitrary command execution) are refused by git."""
+    monkeypatch.delenv("GIT_ALLOW_PROTOCOL", raising=False)
+    env = fetch._git_env()
+    assert env["GIT_ALLOW_PROTOCOL"] == "file:git:ssh:http:https"
+    assert "ext" not in env["GIT_ALLOW_PROTOCOL"].split(":")
+
+
+def test_git_env_user_env_wins_over_default(monkeypatch) -> None:
+    """A user who exported GIT_ALLOW_PROTOCOL keeps their value (setdefault)."""
+    monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "file:ext")
+    assert fetch._git_env()["GIT_ALLOW_PROTOCOL"] == "file:ext"
+
+
+def test_git_env_explicit_allow_protocol_argument(monkeypatch) -> None:
+    """An explicit allow_protocol (from //#GIT_ALLOW_PROTOCOL) widens the set."""
+    monkeypatch.delenv("GIT_ALLOW_PROTOCOL", raising=False)
+    env = fetch._git_env("file:git:ssh:http:https:ext")
+    assert "ext" in env["GIT_ALLOW_PROTOCOL"].split(":")
+
+
 # --- A19: _is_git_work_tree is true only at a checkout root ------------------
 
 
@@ -1803,6 +1839,39 @@ def test_fetch_externals_locks_managed_target_sidecar(monkeypatch: pytest.Monkey
     overridden_lock = os.path.join(externals, "overridden.lock")
     assert managed_lock in locked_paths
     assert overridden_lock not in locked_paths
+
+
+@requires_functional_compiler
+def test_declared_allow_protocol_is_threaded_into_git_env(monkeypatch) -> None:
+    """A //#GIT_ALLOW_PROTOCOL= widening declared in a source reaches _git_env
+    for that round's clone (gather -> union -> _git_run_ctx -> _run_git)."""
+    with tempfile.TemporaryDirectory() as root:
+        ext = _make_bare_with_files(root, "mylib", {"m.h": "#pragma once\n"})
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        main = os.path.join(root, "main.cpp")
+        with open(main, "w") as fh:
+            fh.write(
+                "//#GIT_ALLOW_PROTOCOL=file:git:ssh:http:https:ext\n"
+                f"//#GIT={ext['url']}@master\n"
+                "int main() { return 0; }\n"
+            )
+
+        seen: list[str | None] = []
+        real_git_env = fetch._git_env
+
+        def _spy(allow_protocol=None):
+            seen.append(allow_protocol)
+            return real_git_env(allow_protocol)
+
+        monkeypatch.setattr(fetch, "_git_env", _spy)
+        fetch_externals([main], _make_args(), BuildContext(), externals_dir=externals)
+
+        # At least one git op ran with the widened set (the clone). The read-only
+        # helpers call _git_env() with no arg (None), so filter those out.
+        widened = [s for s in seen if s is not None]
+        assert widened, "no git op received an explicit allow_protocol"
+        assert all("ext" in s.split(":") for s in widened)
 
 
 # ---------------------------------------------------------------------------
