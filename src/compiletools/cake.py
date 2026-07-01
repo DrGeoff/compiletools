@@ -1014,7 +1014,7 @@ def main(argv=None):
             # (consistent with the sibling fatal handlers above) rather than
             # letting it fall through to the generic stdout catch-all.
             if args.verbose < 2:
-                print(f"ct-fetch: error: {err}", file=sys.stderr)
+                print(f"Error: {err}", file=sys.stderr)
                 return 1
             else:
                 raise
