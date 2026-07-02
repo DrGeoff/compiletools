@@ -39,6 +39,8 @@ so the fetch lesson stays front and center:
 | `sudoku_tui.cpp` | the executable: splash → pencil-mark grid → one deduction per keypress |
 | `terminal.{h,cpp}` | trimmed copy of `terminal_games`' POSIX-terminal facade |
 | `test_stepper.cpp` | headless test, auto-run with every build (`testmarkers = unit_test.hpp`) — it compiles against the *external's* headers, proving dep-scanning works across the repo boundary |
+| `ct.conf` | pins `-std=c++26`, the `/tmp` externals dir, and `testmarkers = unit_test.hpp` |
+| `unit_test.hpp` | the testmarker header (`UT_REQUIRE`) whose inclusion classifies a TU as a test |
 
 ## Run it
 
@@ -68,7 +70,7 @@ bin/*/sudoku_tui my_puzzle.txt
 ## Escape hatches
 
 - **Already have a clone?** `CT_GIT_PATH_SUDOKU=~/code/sudoku ct-cake` (or
-  `--git-path sudoku=~/code/sudoku`) uses it instead of cloning.
+  `--git-path sudoku=$HOME/code/sudoku`) uses it instead of cloning.
 - **Offline?** Once the clone exists, `ct-cake --no-fetch` builds without
   touching the network. The first build with no network and no override
   fails with a `FetchError` naming the external and URL.

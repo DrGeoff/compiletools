@@ -94,6 +94,13 @@ void test_contradictory_puzzle_reports_inconsistent() {
     UT_REQUIRE(!stepper.next_step().has_value());
 }
 
+void test_already_solved_puzzle_is_solved_at_construction() {
+    Stepper stepper{
+        "534678912672195348198342567859761423426853791713924856961537284287419635345286179"};
+    UT_REQUIRE(stepper.status() == Status::Solved);
+    UT_REQUIRE(!stepper.next_step().has_value());
+}
+
 }  // namespace
 
 int main() {
@@ -102,5 +109,6 @@ int main() {
     test_snapshot_reflects_givens();
     test_invalid_input_throws();
     test_contradictory_puzzle_reports_inconsistent();
+    test_already_solved_puzzle_is_solved_at_construction();
     return 0;
 }
