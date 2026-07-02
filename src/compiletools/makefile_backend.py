@@ -21,11 +21,10 @@ from compiletools.build_backend import (
     CAS_PRODUCER_TYPES,
     BuildBackend,
     _register_make_cli_arguments,
-    cas_demoted_order_only,
     register_backend,
 )
 from compiletools.build_context import BuildContext
-from compiletools.build_graph import BuildGraph, RuleType, render_shell_recipe
+from compiletools.build_graph import BuildGraph, RuleType
 
 # Shell snippet that prints a nanosecond timestamp portably:
 #   1. Prefer bash 5+'s $EPOCHREALTIME (works on macOS/BSD where date lacks %N).
@@ -62,9 +61,22 @@ _NS_EXPR_VAR_REF = "$(CT_NS_EXPR)"
 _RM_CHUNK_SIZE = 1000
 
 
+def _make_quote(path: str) -> str:
+    """Quote *path* for use inside a Makefile recipe's shell command.
+
+    Two escaping layers apply: Make expands ``$`` first (so a literal ``$``
+    must be doubled to ``$$``), then the shell parses the surviving text
+    (``shlex.quote`` handles spaces and shell metacharacters). Paths without
+    special characters pass through unchanged.
+    """
+    return shlex.quote(path).replace("$", "$$")
+
+
 def _rm_f_chunked(paths: list[str], chunk_size: int = _RM_CHUNK_SIZE) -> list[str]:
     """Split paths into multiple ``rm -f`` invocations to stay under ARG_MAX."""
-    return ["rm -f " + " ".join(paths[i : i + chunk_size]) for i in range(0, len(paths), chunk_size)]
+    return [
+        "rm -f " + " ".join(_make_quote(p) for p in paths[i : i + chunk_size]) for i in range(0, len(paths), chunk_size)
+    ]
 
 
 @register_backend
@@ -154,11 +166,7 @@ class MakefileBackend(BuildBackend):
             for rule in graph.rules
             if rule.rule_type == RuleType.TEST and rule.output != rule.success_marker
         ]
-        framework_test_success_markers = [
-            rule.success_marker
-            for rule in graph.rules
-            if rule.rule_type == RuleType.TEST and rule.output != rule.success_marker and rule.success_marker
-        ]
+        framework_test_success_markers = self._framework_test_markers(graph)
         # Grouped-target syntax (``a b &: deps``) ships in GNU Make 4.3+
         # and runs the recipe once to produce both targets. On older Make,
         # fall back to the multi-target form (``a b: deps``), which is
@@ -190,14 +198,13 @@ class MakefileBackend(BuildBackend):
         # Ensure "all" comes first among phony rules
         phony_rules.sort(key=lambda r: (0 if r.output == "all" else 1, r.output))
 
-        cas_only = not self.args.use_mtime
         for rule in phony_rules + non_phony_rules:
             if rule.rule_type == RuleType.PHONY:
                 f.write(f".PHONY: {rule.output}\n")
 
             outputs = rule.output
             target_separator = ":"
-            if rule.rule_type == RuleType.TEST and rule.output != rule.success_marker and rule.success_marker:
+            if self._is_framework_test(rule):
                 # Framework tests with --test-xml-dir produce two observable
                 # files on success: the JUnit XML report and the .result stamp.
                 # The XML is .PRECIOUS so failed reports survive, but a later
@@ -213,10 +220,10 @@ class MakefileBackend(BuildBackend):
                 # See the multi-target TEST rule above: the phony aggregate must
                 # require the success stamps as well as XML reports, otherwise
                 # a preserved failed XML file would satisfy runtests.
-                inputs.extend(m for m in framework_test_success_markers if m not in inputs)
+                inputs = self._runtests_inputs(rule, framework_test_success_markers)
 
-            if cas_only and rule.rule_type in CAS_PRODUCER_TYPES:
-                ordering = list(rule.order_only_deps) + cas_demoted_order_only(rule)
+            if self._cas_demotes_inputs(rule):
+                ordering = self._cas_ordering_deps(rule)
                 line = f"{outputs}{target_separator}"
                 if ordering:
                     line += f" | {' '.join(ordering)}"
@@ -241,16 +248,14 @@ class MakefileBackend(BuildBackend):
     def _format_recipe(self, rule) -> str:
         """Format a BuildRule's command into a Makefile recipe string."""
         rt = rule.rule_type
+        cmd_str = self._recipe_command_str(rule)
         if rt == RuleType.COMPILE:
-            cmd_str = self._wrap_compile_cmd(rule.command, cwd=rule.cwd)
             echo_target = rule.inputs[0] if rule.inputs else rule.output
             echo_prefix = "@"
         elif rt in (RuleType.LINK, RuleType.SHARED_LIBRARY, RuleType.STATIC_LIBRARY):
-            cmd_str = self._wrap_link_cmd(rule.command)
             echo_target = rule.output
             echo_prefix = "+@"
         elif rt == RuleType.TEST:
-            cmd_str = render_shell_recipe(rule)
             # The test exe is the rule's sole real dependency: it lives in
             # ``inputs`` under legacy mtime mode and in ``order_only_deps``
             # under CAS-only mode. ``command`` is no longer a reliable
@@ -260,7 +265,6 @@ class MakefileBackend(BuildBackend):
             echo_target = (rule.inputs or rule.order_only_deps)[0]
             echo_prefix = "@"
         else:
-            cmd_str = render_shell_recipe(rule)
             echo_target = None
             echo_prefix = ""
 
@@ -324,22 +328,24 @@ class MakefileBackend(BuildBackend):
             elif rule.rule_type in (RuleType.LINK, RuleType.STATIC_LIBRARY, RuleType.SHARED_LIBRARY, RuleType.COPY):
                 all_outputs.append(rule.output)
 
-        clean_parts = [f"find {exe_dir} -type f -executable -delete 2>/dev/null"]
+        q_exe_dir = _make_quote(exe_dir)
+        q_obj_dir = _make_quote(obj_dir)
+        clean_parts = [f"find {q_exe_dir} -type f -executable -delete 2>/dev/null"]
         clean_parts.extend(_rm_f_chunked(all_outputs + all_objects))
-        clean_parts.append(f"find {obj_dir} -type d -empty -delete")
+        clean_parts.append(f"find {q_obj_dir} -type d -empty -delete")
         if exe_dir != obj_dir:
-            clean_parts.append(f"find {exe_dir} -type d -empty -delete")
+            clean_parts.append(f"find {q_exe_dir} -type d -empty -delete")
         self._write_phony_recipe(f, "clean", clean_parts)
 
         # realclean: rm -rf the per-project exe_dir, but only this build's
         # products from obj_dir (which may be shared with peer sub-projects).
         # Mirrors BuildBackend.realclean() so `make realclean` and
         # `ct-cake --realclean` are equivalent.
-        realclean_parts = [f"rm -rf {exe_dir}"]
+        realclean_parts = [f"rm -rf {q_exe_dir}"]
         if exe_dir != obj_dir:
             realclean_parts.extend(_rm_f_chunked(all_outputs + all_objects))
             if all_outputs or all_objects:
-                realclean_parts.append(f"find {obj_dir} -type d -empty -delete")
+                realclean_parts.append(f"find {q_obj_dir} -type d -empty -delete")
         self._write_phony_recipe(f, "realclean", realclean_parts)
 
     def _execute_build(self, target: str) -> None:

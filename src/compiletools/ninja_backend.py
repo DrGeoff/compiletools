@@ -8,12 +8,10 @@ import time
 
 import compiletools.filesystem_utils
 from compiletools.build_backend import (
-    CAS_PRODUCER_TYPES,
     BuildBackend,
-    cas_demoted_order_only,
     register_backend,
 )
-from compiletools.build_graph import BuildGraph, RuleType, render_shell_recipe
+from compiletools.build_graph import BuildGraph, RuleType
 
 
 @register_backend
@@ -114,13 +112,8 @@ class NinjaBackend(BuildBackend):
         # one action declare both. Without the stamp as an explicit output a
         # preserved failed XML satisfies ninja's up-to-date check on later
         # ``ninja runtests`` invocations, silently skipping the re-run.
-        framework_test_success_markers = [
-            rule.success_marker
-            for rule in graph.rules
-            if rule.rule_type == RuleType.TEST and rule.output != rule.success_marker and rule.success_marker
-        ]
+        framework_test_success_markers = self._framework_test_markers(graph)
 
-        cas_only = not self.args.use_mtime
         for rule in graph.rules:
             if rule.rule_type == RuleType.PHONY:
                 inputs = list(rule.inputs)
@@ -128,21 +121,21 @@ class NinjaBackend(BuildBackend):
                     # See the multi-output TEST rule below: the phony aggregate
                     # must require the success stamps as well as XML reports,
                     # otherwise a preserved failed XML would satisfy runtests.
-                    inputs.extend(m for m in framework_test_success_markers if m not in inputs)
+                    inputs = self._runtests_inputs(rule, framework_test_success_markers)
                 f.write(f"build {rule.output}: phony {' '.join(inputs)}\n")
             elif rule.command:
                 is_module_iface = rule.rule_type == RuleType.COMPILE and rule.output in module_iface_outputs
                 ninja_rule = "compile_module_iface_cmd" if is_module_iface else f"{rule.rule_type}_cmd"
                 outputs = rule.output
-                if rule.rule_type == RuleType.TEST and rule.output != rule.success_marker and rule.success_marker:
+                if self._is_framework_test(rule):
                     outputs = f"{rule.output} {rule.success_marker}"
-                if cas_only and rule.rule_type in CAS_PRODUCER_TYPES:
+                if self._cas_demotes_inputs(rule):
                     # CAS-only: producer's cached path encodes the cache
                     # key, so inputs become order-only — ninja builds
                     # them first but does not retrigger the producer on
                     # their mtime change.
                     line = f"build {outputs}: {ninja_rule}"
-                    ordering = list(rule.order_only_deps) + cas_demoted_order_only(rule)
+                    ordering = self._cas_ordering_deps(rule)
                     if ordering:
                         line += f" || {' '.join(ordering)}"
                 else:
@@ -156,28 +149,21 @@ class NinjaBackend(BuildBackend):
                         line += f" || {' '.join(rule.order_only_deps)}"
                 f.write(line + "\n")
 
-                if rule.rule_type == RuleType.COMPILE:
-                    if is_module_iface:
-                        # Skip -MMD -MF: module-interface rules use
-                        # -fmodule-mapper= (gcc) or --precompile -o (clang),
-                        # which conflict with depfile generation.
-                        cmd_str = self._wrap_compile_cmd(rule.command, cwd=rule.cwd)
-                    else:
-                        cmd_str = self._wrap_compile_cmd(
-                            rule.command + ["-MMD", "-MF", rule.output + ".d"], cwd=rule.cwd
-                        )
-                elif rule.rule_type in (RuleType.LINK, RuleType.STATIC_LIBRARY, RuleType.SHARED_LIBRARY):
-                    cmd_str = self._wrap_link_cmd(rule.command)
-                else:
-                    # RuleType.TEST and friends. A framework-detected test
-                    # rule's ``output`` is its JUnit XML path; a failing
-                    # framework test writes that report and *then* exits
-                    # non-zero. Ninja, unlike make, does not delete outputs on
-                    # rule failure (it only deletes them when interrupted), so
-                    # no ``.PRECIOUS`` equivalent is needed — the XML survives
-                    # a failed build. Verified by
-                    # test_ninja_framework_test_failure_preserves_xml.
-                    cmd_str = render_shell_recipe(rule)
+                # Ordinary compiles get -MMD -MF appended for ninja's depfile
+                # support; module-interface compiles must NOT (they use
+                # -fmodule-mapper= (gcc) or --precompile -o (clang), which
+                # conflict with depfile generation). For RuleType.TEST and
+                # friends: a framework-detected test rule's ``output`` is its
+                # JUnit XML path; a failing framework test writes that report
+                # and *then* exits non-zero. Ninja, unlike make, does not
+                # delete outputs on rule failure (it only deletes them when
+                # interrupted), so no ``.PRECIOUS`` equivalent is needed — the
+                # XML survives a failed build. Verified by
+                # test_ninja_framework_test_failure_preserves_xml.
+                compile_command = None
+                if rule.rule_type == RuleType.COMPILE and not is_module_iface:
+                    compile_command = rule.command + ["-MMD", "-MF", rule.output + ".d"]
+                cmd_str = self._recipe_command_str(rule, compile_command=compile_command)
                 f.write(f"  cmd = {cmd_str}\n")
             f.write("\n")
 

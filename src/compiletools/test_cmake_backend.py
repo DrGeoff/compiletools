@@ -11,7 +11,7 @@ import pytest
 import compiletools.testhelper as uth
 from compiletools.build_backend import extract_copts, extract_linkopts, get_backend_class
 from compiletools.build_graph import BuildGraph, BuildRule
-from compiletools.cmake_backend import CMakeBackend, _cmake_quote_copt, _filter_x_lang_copts, _separate_include_dirs
+from compiletools.cmake_backend import CMakeBackend, _cmake_quote, _filter_x_lang_copts, _separate_include_dirs
 
 
 class TestCMakeBackendRegistered:
@@ -282,8 +282,8 @@ class TestCMakeGenerate:
         assert "add_test(" not in content
 
 
-class TestCmakeQuoteCopt:
-    """``_cmake_quote_copt`` must produce well-formed CMake quoted arguments.
+class TestCmakeQuote:
+    """``_cmake_quote`` must produce well-formed CMake quoted arguments.
 
     Tokens are wrapped in ``"..."`` with any embedded ``"`` escaped as ``\\"``
     so that cmake's Makefile generator passes them verbatim to the compiler.
@@ -292,27 +292,27 @@ class TestCmakeQuoteCopt:
     """
 
     def test_plain_flag_unchanged(self):
-        assert _cmake_quote_copt("-O2") == '"-O2"'
+        assert _cmake_quote("-O2") == '"-O2"'
 
     def test_define_without_quotes(self):
-        assert _cmake_quote_copt("-DFOO=1") == '"-DFOO=1"'
+        assert _cmake_quote("-DFOO=1") == '"-DFOO=1"'
 
     def test_flag_with_embedded_double_quotes(self):
         # -DCT_PROJECT_VERSION="1.2.3" must survive cmake quoting so the
         # macro expands to a C string literal, not a bare number.
-        result = _cmake_quote_copt('-DCT_PROJECT_VERSION="1.2.3"')
+        result = _cmake_quote('-DCT_PROJECT_VERSION="1.2.3"')
         # Outer quotes + inner " escaped as \":
         assert result == '"-DCT_PROJECT_VERSION=\\"1.2.3\\""'
         # The malformed form (pre-fix) must not be produced.
         assert result != '"-DCT_PROJECT_VERSION="1.2.3""'
 
     def test_flag_with_string_value_name(self):
-        assert _cmake_quote_copt('-DCT_PROJECT_NAME="demo_app"') == '"-DCT_PROJECT_NAME=\\"demo_app\\""'
+        assert _cmake_quote('-DCT_PROJECT_NAME="demo_app"') == '"-DCT_PROJECT_NAME=\\"demo_app\\""'
 
     def test_backslash_escaped(self):
         # A backslash in a token is escaped so cmake does not treat it as
         # the start of an escape sequence inside a quoted arg.
-        result = _cmake_quote_copt("-DPATH=a\\b")
+        result = _cmake_quote("-DPATH=a\\b")
         assert result == '"-DPATH=a\\\\b"'
 
 
@@ -691,9 +691,7 @@ class TestCMakeExecute:
         bd = captured[0][captured[0].index("-B") + 1]
         rel_src = os.path.relpath(str(src), "/")
         expected_key = hashlib.blake2b(f"ROOT|{rel_src}".encode(), digest_size=6).hexdigest()
-        assert bd.endswith(f"cmake-build-{expected_key}"), (
-            f"expected sentinel-ROOT key {expected_key!r}; got {bd!r}"
-        )
+        assert bd.endswith(f"cmake-build-{expected_key}"), f"expected sentinel-ROOT key {expected_key!r}; got {bd!r}"
 
     def test_configure_with_ccache_wrapper(self, tmp_path):
         """``CXX='ccache g++'`` must split into COMPILER + COMPILER_LAUNCHER —

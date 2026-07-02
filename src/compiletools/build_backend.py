@@ -50,7 +50,7 @@ from compiletools.backend_command_args import (
     _COMPILE_ORDERING_INPUT_EXTS,
     _DETACHED_ARG_FLAGS,  # noqa: F401
     _LINK_ENVIRONMENT_VARS,  # noqa: F401
-    CAS_PRODUCER_TYPES,  # noqa: F401
+    CAS_PRODUCER_TYPES,
     ObjInfo,  # noqa: F401
     _link_environment_snapshot,
     _read_link_sig,
@@ -59,7 +59,7 @@ from compiletools.backend_command_args import (
     _write_link_sig,
     aggregate_rule_sources,  # noqa: F401
     build_obj_info,  # noqa: F401
-    cas_demoted_order_only,  # noqa: F401
+    cas_demoted_order_only,
     compute_link_signature,
     extract_copts,  # noqa: F401
     extract_include_paths,  # noqa: F401
@@ -171,7 +171,7 @@ from compiletools.backend_registry import (
     register_backend,  # noqa: F401
     register_backend_cli_arguments,  # noqa: F401
 )
-from compiletools.build_graph import BuildGraph, BuildRule, RuleType
+from compiletools.build_graph import BuildGraph, BuildRule, RuleType, render_shell_recipe
 from compiletools.locking import execute_compile_rule, execute_link_rule
 from compiletools.magicflags import _HARD_ORDERINGS_KEY
 from compiletools.test_framework import TestFramework
@@ -1715,6 +1715,83 @@ class BuildBackend(abc.ABC):
             return shlex.join(command)
 
         return wrap_link_with_lock(shlex.join(command), target, self.args, self._filesystem_type)
+
+    # ------------------------------------------------------------------
+    # Shared file-emitting-backend helpers (make + ninja)
+    #
+    # The Makefile and Ninja writers render the same BuildGraph semantics
+    # in different syntaxes. The pieces below are the semantic decisions
+    # they must agree on; the per-backend writers keep only the syntax.
+
+    @staticmethod
+    def _is_framework_test(rule: BuildRule) -> bool:
+        """True for a framework-detected TEST rule.
+
+        Such a rule's ``output`` is its JUnit XML report path (so the build
+        tool reruns the test when the XML is deleted) while
+        ``success_marker`` is the separate ``.result`` stamp. Tests with no
+        framework keep ``output == success_marker``.
+        """
+        return bool(rule.rule_type == RuleType.TEST and rule.output != rule.success_marker and rule.success_marker)
+
+    @classmethod
+    def _framework_test_markers(cls, graph: BuildGraph) -> list[str]:
+        """``success_marker`` paths of every framework TEST rule in *graph*.
+
+        The ``runtests`` aggregate must require these stamps as well as the
+        XML reports — a framework test writes its XML and *then* exits
+        non-zero on failure, so a preserved failed XML alone would satisfy
+        the aggregate and silently skip the re-run.
+        """
+        return [rule.success_marker for rule in graph.rules if cls._is_framework_test(rule) and rule.success_marker]
+
+    @staticmethod
+    def _runtests_inputs(rule: BuildRule, framework_test_success_markers: list[str]) -> list[str]:
+        """Inputs for the ``runtests`` phony aggregate.
+
+        The rule's own inputs plus any framework-test success stamps not
+        already present (see ``_framework_test_markers``).
+        """
+        inputs = list(rule.inputs)
+        inputs.extend(m for m in framework_test_success_markers if m not in inputs)
+        return inputs
+
+    def _cas_demotes_inputs(self, rule: BuildRule) -> bool:
+        """True when CAS-only mode demotes this rule's inputs to order-only.
+
+        A CAS producer's cached path encodes the cache key, so artefact
+        existence is the sole rebuild signal — the build tool must build
+        the inputs first but not retrigger the producer on their mtime.
+        """
+        return not self.args.use_mtime and rule.rule_type in CAS_PRODUCER_TYPES
+
+    @staticmethod
+    def _cas_ordering_deps(rule: BuildRule) -> list[str]:
+        """Combined order-only dep list for a CAS-demoted producer rule."""
+        return list(rule.order_only_deps) + cas_demoted_order_only(rule)
+
+    def _recipe_command_str(self, rule: BuildRule, compile_command: list[str] | None = None) -> str:
+        """Render *rule*'s command as a lock-wrapped shell string.
+
+        The shared recipe dispatch: COMPILE goes through
+        ``_wrap_compile_cmd`` (honouring ``rule.cwd``), the link family
+        through ``_wrap_link_cmd``, everything else through
+        ``render_shell_recipe``. ``compile_command`` overrides
+        ``rule.command`` for COMPILE rules only — ninja passes the
+        depfile-augmented argv (``-MMD -MF <out>.d``) for ordinary
+        compiles while module-interface compiles keep the bare command.
+
+        Callers must only pass rules with a command (both file-emitting
+        backends gate on ``rule.command`` before rendering a recipe).
+        """
+        assert rule.command is not None, "recipe rendering requires rule.command"
+        rt = rule.rule_type
+        if rt == RuleType.COMPILE:
+            cmd = rule.command if compile_command is None else compile_command
+            return self._wrap_compile_cmd(cmd, cwd=rule.cwd)
+        if rt in (RuleType.LINK, RuleType.SHARED_LIBRARY, RuleType.STATIC_LIBRARY):
+            return self._wrap_link_cmd(rule.command)
+        return render_shell_recipe(rule)
 
     def _all_outputs_current(self, graph: BuildGraph) -> bool:
         """Pre-check: all compile outputs exist and all link sigs match?

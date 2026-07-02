@@ -186,6 +186,31 @@ def _parse_slurm_elapsed(elapsed_str: str) -> float:
     return float(elapsed_str)
 
 
+def _parse_sacct_rows(out: str, min_fields: int):
+    """Yield ``(jid, fields)`` for each parent-job row of ``--parsable2`` sacct output.
+
+    THE shared row filter for both sacct consumers (`_collect_timing` and
+    `_query_array_task_states_status`): splits each line on ``|``, drops rows
+    with fewer than *min_fields* fields, and drops sub-step rows (JobIDs
+    containing ``.``, e.g. ``123_4.batch``) — only parent array-task entries
+    carry the whole-task state/timing. ``fields[0]`` is the JobID, already
+    ``strip()``ed with the rest of the line.
+
+    Known limitation (deliberately preserved, do not fix here): a JobID of
+    the form ``<array>_<idx>`` is expected downstream, and `_collect_timing`
+    parses the task index from it — some sacct versions emit entries this
+    filter passes but that index parse rejects (see the sacct array
+    step-entry flake).
+    """
+    for line in out.splitlines():
+        fields = line.strip().split("|")
+        if len(fields) < min_fields:
+            continue
+        if "." in fields[0]:
+            continue
+        yield fields[0], fields
+
+
 def _make_trace_entry(rule: BuildRule, context, output_hash: str | None = None) -> TraceEntry:
     """Build a TraceEntry for a successfully executed rule.
 
@@ -500,6 +525,27 @@ class ShakeBackend(BuildBackend):
         # EARLY CUTOFF
         return old_hash != new_hash
 
+    def _run_test_rule(self, rule: BuildRule, flat_cmd: list[str]) -> None:
+        """Run a TEST rule in-process and record its outcome.
+
+        Pure-argv test invocation -- NOT routed through
+        execute_compile_rule / execute_link_rule (those are for
+        lock-guarded build artefacts; a test is neither, so there are no
+        atomic-output / trace-store semantics either). flat_cmd already
+        carries TESTPREFIX + exe + framework XML argv, baked in at
+        graph-build time by _test_command_for. On success touch the
+        .result marker (always success_marker, even for framework tests);
+        on failure append to _test_failures and return so sibling rules
+        already in flight can finish -- execute() raises the aggregate
+        once the traversal returns. Shared by ShakeBackend._execute_rule
+        and SlurmBackend._run_local (tests run locally on both backends).
+        """
+        result = subprocess.run(flat_cmd)
+        if result.returncode == 0:
+            self._touch_result_marker(rule.success_marker or "")
+        else:
+            self._test_failures.append(f"{rule.output} (exit {result.returncode}): {' '.join(flat_cmd)}")
+
     def _execute_rule(self, rule: BuildRule, target: str, flat_cmd: list[str]) -> None:
         """Run the subprocess for a single build rule (called from a thread).
 
@@ -518,20 +564,7 @@ class ShakeBackend(BuildBackend):
         # span — distinct from "ran the compiler, no cache hit".
         cas_hit: bool | None = None
         if rule.rule_type == RuleType.TEST:
-            # Pure-argv test invocation -- NOT routed through
-            # execute_compile_rule / execute_link_rule (those are for
-            # lock-guarded build artefacts; a test is neither). flat_cmd
-            # already carries TESTPREFIX + exe + framework XML argv, baked in
-            # at graph-build time by _test_command_for. On success touch the
-            # .result marker (always success_marker, even for framework tests);
-            # on failure append to _test_failures and continue so sibling
-            # rules already in flight can finish -- execute() raises the
-            # aggregate once the traversal returns.
-            result = subprocess.run(flat_cmd)
-            if result.returncode == 0:
-                self._touch_result_marker(rule.success_marker or "")
-            else:
-                self._test_failures.append(f"{target} (exit {result.returncode}): {' '.join(flat_cmd)}")
+            self._run_test_rule(rule, flat_cmd)
         elif rule.rule_type == RuleType.COMPILE:
             cas_hit = execute_compile_rule(target, flat_cmd, self.args, skip_if_exists=True, cwd=rule.cwd)
         elif rule.rule_type == RuleType.LINK:
@@ -1156,13 +1189,7 @@ class SlurmBackend(ShakeBackend):
             except (subprocess.CalledProcessError, FileNotFoundError) as e:
                 logger.debug("sacct unavailable for job %s: %s", array_job_id, e)
                 continue
-            for line in out.splitlines():
-                parts = line.strip().split("|")
-                if len(parts) < 3:
-                    continue
-                jid = parts[0]
-                if "." in jid:
-                    continue  # skip sub-steps
+            for jid, parts in _parse_sacct_rows(out, min_fields=3):
                 elapsed_str = parts[1]
                 state = parts[2].split()[0]
                 if state != "COMPLETED":
@@ -1355,13 +1382,7 @@ class SlurmBackend(ShakeBackend):
             return {}, True
 
         result: dict[str, str] = {}
-        for line in out.splitlines():
-            parts = line.strip().split("|")
-            if len(parts) < 2:
-                continue
-            jid = parts[0]
-            if "." in jid:
-                continue
+        for jid, parts in _parse_sacct_rows(out, min_fields=2):
             result[jid] = parts[1].split()[0]
         return result, False
 
@@ -1561,23 +1582,14 @@ class SlurmBackend(ShakeBackend):
         flat_cmd = list(rule.command)
 
         if rule.rule_type == RuleType.TEST:
-            # Pure-argv test invocation -- NOT a build artefact, so no
-            # atomic-output / trace-store semantics. flat_cmd already carries
-            # TESTPREFIX + exe + framework XML argv, baked in at graph-build
-            # time by _test_command_for. Skip the re-run when the rule's
-            # output (the JUnit XML path for framework tests, else the
-            # .result marker) already exists: the exe bytes were tested
-            # before -- mirrors ShakeBackend and the make/ninja
-            # order-only-prereq rule. On success touch the .result marker; on
-            # failure append to _test_failures and let sibling locals finish
-            # (execute() raises the aggregate once the sweep returns).
+            # Skip the re-run when the rule's output (the JUnit XML path for
+            # framework tests, else the .result marker) already exists: the
+            # exe bytes were tested before -- mirrors ShakeBackend and the
+            # make/ninja order-only-prereq rule. See _run_test_rule for the
+            # invocation/outcome semantics.
             if not getattr(self.args, "use_mtime", False) and os.path.exists(rule.output):
                 return
-            result = subprocess.run(flat_cmd)
-            if result.returncode == 0:
-                self._touch_result_marker(rule.success_marker or "")
-            else:
-                self._test_failures.append(f"{rule.output} (exit {result.returncode}): {' '.join(flat_cmd)}")
+            self._run_test_rule(rule, flat_cmd)
             return
 
         if rule.rule_type in (RuleType.LINK, RuleType.STATIC_LIBRARY, RuleType.SHARED_LIBRARY):

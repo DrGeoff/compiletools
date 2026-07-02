@@ -27,16 +27,20 @@ from compiletools.build_backend import (
 from compiletools.build_graph import BuildGraph, RuleType
 
 
-def _cmake_quote_copt(token: str) -> str:
-    """Quote *token* for use as a CMake ``target_compile_options`` argument.
+def _cmake_quote(token: str) -> str:
+    """Quote *token* as a well-formed CMake quoted argument.
 
     CMake's quoted-argument syntax wraps the value in ``"..."`` and uses
     ``\\"`` as the escape sequence for a literal double-quote character
     inside the string.  Naively wrapping with ``f'"{token}"'`` breaks when
     *token* already contains ``"``, e.g. ``-DFOO="bar"`` would produce the
     malformed cmake syntax ``"-DFOO="bar""``.  This function escapes any
-    embedded ``"`` before adding the outer quotes so the result is always
-    a well-formed CMake quoted argument.
+    embedded ``\\`` and ``"`` before adding the outer quotes, so EVERY
+    value interpolated into the generated CMakeLists.txt (copts, paths,
+    link options, test argv) should go through it rather than a bare
+    ``f'"{token}"'``. ``$``-forms (``${CMAKE_COMMAND}``,
+    ``$<TARGET_FILE:...>``) pass through unmodified — CMake expands them
+    inside quoted arguments.
     """
     return '"' + token.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
@@ -127,7 +131,9 @@ def _emit_per_source_x_lang(f, srcs: list[str]) -> None:
     """
     for src in srcs:
         if src.endswith(".cppm"):
-            f.write(f'set_source_files_properties("{src}" PROPERTIES LANGUAGE CXX COMPILE_OPTIONS "-x;c++")\n')
+            f.write(
+                f'set_source_files_properties({_cmake_quote(src)} PROPERTIES LANGUAGE CXX COMPILE_OPTIONS "-x;c++")\n'
+            )
 
 
 def _cmake_src_rel(path: str) -> str:
@@ -267,14 +273,14 @@ class CMakeBackend(BuildBackend):
 
                 f.write(f"\nadd_library({target_name} {cmake_type}\n")
                 for s in rel_srcs:
-                    f.write(f'    "{s}"\n')
+                    f.write(f"    {_cmake_quote(s)}\n")
                 f.write(")\n")
 
                 _emit_per_source_x_lang(f, rel_srcs)
                 self._emit_compile_attrs(f, target_name, remaining_copts, include_dirs)
                 prebuilt_objs = sorted(set(rule.inputs) & prebuilt_module_obj_paths)
                 if prebuilt_objs:
-                    quoted = " ".join(f'"{p}"' for p in prebuilt_objs)
+                    quoted = " ".join(_cmake_quote(p) for p in prebuilt_objs)
                     f.write(f"target_link_libraries({target_name} PRIVATE {quoted})\n")
 
         for rule in graph.rules_by_type(RuleType.LINK):
@@ -290,7 +296,7 @@ class CMakeBackend(BuildBackend):
 
             f.write(f"\nadd_executable({target_name}\n")
             for s in rel_srcs:
-                f.write(f'    "{s}"\n')
+                f.write(f"    {_cmake_quote(s)}\n")
             f.write(")\n")
 
             _emit_per_source_x_lang(f, rel_srcs)
@@ -298,7 +304,7 @@ class CMakeBackend(BuildBackend):
 
             prebuilt_objs = sorted(set(rule.inputs) & prebuilt_module_obj_paths)
             if prebuilt_objs:
-                quoted = " ".join(f'"{p}"' for p in prebuilt_objs)
+                quoted = " ".join(_cmake_quote(p) for p in prebuilt_objs)
                 f.write(f"target_link_libraries({target_name} PRIVATE {quoted})\n")
 
             if linkopts:
@@ -319,13 +325,13 @@ class CMakeBackend(BuildBackend):
                     else:
                         other_opts.append(opt)
                 if lib_dirs:
-                    quoted = " ".join(f'"{d}"' for d in lib_dirs)
+                    quoted = " ".join(_cmake_quote(d) for d in lib_dirs)
                     f.write(f"target_link_directories({target_name} PRIVATE {quoted})\n")
                 if lib_names:
-                    quoted = " ".join(f'"{n}"' for n in lib_names)
+                    quoted = " ".join(_cmake_quote(n) for n in lib_names)
                     f.write(f"target_link_libraries({target_name} PRIVATE {quoted})\n")
                 if other_opts:
-                    quoted = " ".join(f'"{opt}"' for opt in other_opts)
+                    quoted = " ".join(_cmake_quote(opt) for opt in other_opts)
                     f.write(f"target_link_options({target_name} PRIVATE {quoted})\n")
 
         # Each RuleType.TEST rule becomes an add_custom_command whose OUTPUT is
@@ -348,7 +354,7 @@ class CMakeBackend(BuildBackend):
             test_argv = (
                 list(rule.command[:exe_idx]) + [f"$<TARGET_FILE:{target_name}>"] + list(rule.command[exe_idx + 1 :])
             )
-            argv_str = " ".join(f'"{a}"' for a in test_argv)
+            argv_str = " ".join(_cmake_quote(a) for a in test_argv)
             rule_output = _cmake_src_rel(rule.output)
             # --serialise-tests chains tests by injecting the previous test
             # rule's output into this rule's inputs/order_only_deps. Surface
@@ -356,25 +362,26 @@ class CMakeBackend(BuildBackend):
             # DEPENDS so cmake serialises the custom commands; the exe stays
             # a target DEPENDS.
             chain_deps = [d for d in (*rule.inputs[1:], *rule.order_only_deps) if d in test_outputs_set]
-            depends = " ".join([target_name, *(f'"{_cmake_src_rel(d)}"' for d in chain_deps)])
+            depends = " ".join([target_name, *(_cmake_quote(_cmake_src_rel(d)) for d in chain_deps)])
             f.write("\nadd_custom_command(\n")
-            f.write(f'    OUTPUT "{rule_output}"\n')
+            f.write(f"    OUTPUT {_cmake_quote(rule_output)}\n")
             # -E make_directory is mkdir -p: a no-op when the dir already
             # exists, required when rule.output is a JUnit XML file under
             # <xml-dir>/<variant> that no link rule created.
-            f.write(f'    COMMAND "${{CMAKE_COMMAND}}" -E make_directory "{os.path.dirname(rule_output)}"\n')
+            out_dir = os.path.dirname(rule_output)
+            f.write(f'    COMMAND "${{CMAKE_COMMAND}}" -E make_directory {_cmake_quote(out_dir)}\n')
             f.write(f"    COMMAND {argv_str}\n")
             # success_marker is always set for test rules (see _build_graph);
             # touching rule.output instead would be wrong for framework tests
             # where output is the JUnit XML, not the .result stamp.
             assert rule.success_marker is not None, "test rules always carry a success_marker"
-            f.write(f'    COMMAND "${{CMAKE_COMMAND}}" -E touch "{_cmake_src_rel(rule.success_marker)}"\n')
+            f.write(f'    COMMAND "${{CMAKE_COMMAND}}" -E touch {_cmake_quote(_cmake_src_rel(rule.success_marker))}\n')
             f.write(f"    DEPENDS {depends}\n")
             f.write("    VERBATIM\n")
             f.write(")\n")
             test_outputs.append(rule_output)
         if test_outputs:
-            deps = " ".join(f'"{o}"' for o in test_outputs)
+            deps = " ".join(_cmake_quote(o) for o in test_outputs)
             f.write(f"\nadd_custom_target(runtests ALL DEPENDS {deps})\n")
 
     @staticmethod
@@ -386,10 +393,10 @@ class CMakeBackend(BuildBackend):
     ) -> None:
         """Write ``target_compile_options`` and ``target_include_directories`` for a target."""
         if remaining_copts:
-            quoted = " ".join(_cmake_quote_copt(c) for c in remaining_copts)
+            quoted = " ".join(_cmake_quote(c) for c in remaining_copts)
             f.write(f"target_compile_options({target_name} PRIVATE {quoted})\n")
         if include_dirs:
-            quoted = " ".join(f'"{d}"' for d in include_dirs)
+            quoted = " ".join(_cmake_quote(d) for d in include_dirs)
             f.write(f"target_include_directories({target_name} PRIVATE {quoted})\n")
 
     def _all_outputs_current(self, graph: BuildGraph) -> bool:
