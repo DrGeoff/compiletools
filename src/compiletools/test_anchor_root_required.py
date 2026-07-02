@@ -77,7 +77,4 @@ def test_every_production_caller_passes_anchor_root(callee, definition_keyword):
             if "anchor_root" not in args_str:
                 line = text[: m.start()].count("\n") + 1
                 failures.append(f"{os.path.basename(path)}:{line}")
-    assert not failures, (
-        f"Production callers of {callee} must pass anchor_root=. "
-        f"Offending sites: {failures}"
-    )
+    assert not failures, f"Production callers of {callee} must pass anchor_root=. Offending sites: {failures}"

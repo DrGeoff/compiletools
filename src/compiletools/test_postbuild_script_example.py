@@ -23,7 +23,7 @@ import pytest
 
 import compiletools.testhelper as uth
 
-EXPECTED_LINE = "DEMO_ENV_VAR=hello-from-postbuild"
+EXPECTED_LINE = "DEMO_ENV_VAR=hello-from-postbuild"  # pragma: allowlist secret
 
 
 @uth.requires_functional_compiler
@@ -38,9 +38,7 @@ def test_postbuild_script_example_prints_expected_line(tmp_path):
     if not uth._backend_tool_available("make"):
         pytest.skip("make not on PATH")
 
-    workspace = uth.copy_example_workspace(
-        pathlib.Path(uth.e2e_dir()) / "postbuild_script", tmp_path / "ws"
-    )
+    workspace = uth.copy_example_workspace(pathlib.Path(uth.e2e_dir()) / "postbuild_script", tmp_path / "ws")
     cas_root = workspace  # in-tree cas layout
 
     argv = [
@@ -74,9 +72,7 @@ def test_postbuild_script_example_prints_expected_line(tmp_path):
     )
 
     assert result.returncode == 0, (
-        f"ct-cake failed (exit {result.returncode})\n"
-        f"--- stdout ---\n{result.stdout}\n"
-        f"--- stderr ---\n{result.stderr}"
+        f"ct-cake failed (exit {result.returncode})\n--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
     )
 
     # The post-build hook execs the binary, whose stdout streams up
@@ -85,10 +81,7 @@ def test_postbuild_script_example_prints_expected_line(tmp_path):
     # "(unset)" fallback (which would mean DEMO_ENV_VAR did not reach
     # the binary's process).
     stdout_lines = result.stdout.splitlines()
-    assert EXPECTED_LINE in stdout_lines, (
-        f"expected exact line {EXPECTED_LINE!r} in stdout, got:\n{result.stdout}"
-    )
+    assert EXPECTED_LINE in stdout_lines, f"expected exact line {EXPECTED_LINE!r} in stdout, got:\n{result.stdout}"
     assert "DEMO_ENV_VAR=(unset)" not in result.stdout, (
-        f"binary saw unset DEMO_ENV_VAR — post-build hook did not export it.\n"
-        f"--- stdout ---\n{result.stdout}"
+        f"binary saw unset DEMO_ENV_VAR — post-build hook did not export it.\n--- stdout ---\n{result.stdout}"
     )

@@ -27,9 +27,7 @@ def _make_argparser(*, with_magic=False, with_hunter=False):
     if with_hunter:
         hunter.add_arguments(cap)
     compiletools.apptools.add_common_arguments(cap)
-    compiletools.apptools.add_output_directory_arguments(
-        cap, variant=compiletools.configutils.extract_variant(argv=[])
-    )
+    compiletools.apptools.add_output_directory_arguments(cap, variant=compiletools.configutils.extract_variant(argv=[]))
     return cap
 
 

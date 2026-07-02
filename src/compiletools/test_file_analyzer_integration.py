@@ -331,7 +331,6 @@ class TestSourceFileUnicodeTolerance(_FileAnalyzerIntegrationBase):
         return compiletools.magicflags.DirectMagicFlags(args, headerdeps, context=ctx)
 
     def test_read_file_mmap_preserves_emdash_and_emoji(self):
-
         content = "// em-dash — and emoji 🎉 and CJK 漢字\nint main(){}\n"
         path = self.create_test_file("u.c", content)
         text, n_bytes, truncated = read_file_mmap(path, 0)
@@ -340,7 +339,6 @@ class TestSourceFileUnicodeTolerance(_FileAnalyzerIntegrationBase):
         assert truncated is False
 
     def test_read_file_traditional_preserves_emdash_and_emoji(self):
-
         content = "// em-dash — and emoji 🎉 and CJK 漢字\nint main(){}\n"
         path = self.create_test_file("u.c", content)
         text, n_bytes, truncated = read_file_traditional(path, 0)
@@ -386,7 +384,6 @@ class TestSourceFileUnicodeTolerance(_FileAnalyzerIntegrationBase):
         magicflags = self.create_magicflags_instance()
         result = magicflags.parse(main_path)
 
-
         assert sz.Str("CXXFLAGS") in result
         assert sz.Str("LDFLAGS") in result
         assert sz.Str("LIBS") in result
@@ -398,15 +395,11 @@ class TestSourceFileUnicodeTolerance(_FileAnalyzerIntegrationBase):
         """A magic-flag VALUE containing non-ASCII bytes (e.g. an
         en-dash in a ``-D`` author/version string) is unusual but legal
         UTF-8 source. Extraction must not crash; the value round-trips."""
-        main_content = (
-            '//#CXXFLAGS=-DAUTHOR="Émile" -DTAG="rocket 🚀"\n'
-            "int main() { return 0; }\n"
-        )
+        main_content = '//#CXXFLAGS=-DAUTHOR="Émile" -DTAG="rocket 🚀"\nint main() { return 0; }\n'
         main_path = self.create_test_file("main.c", main_content)
 
         magicflags = self.create_magicflags_instance()
         result = magicflags.parse(main_path)
-
 
         assert sz.Str("CXXFLAGS") in result
         value = str(result[sz.Str("CXXFLAGS")])

@@ -200,9 +200,7 @@ def test_pch_scope_diagnostics_empty_scope_still_writes(tmp_path, temp_config):
         _pch_scope_dir(tmp_path),
         f"{os.path.basename(sample)}.json",
     )
-    assert os.path.isfile(payload_path), (
-        f"expected per-PCH scope JSON at {payload_path} even with empty scope_filter"
-    )
+    assert os.path.isfile(payload_path), f"expected per-PCH scope JSON at {payload_path} even with empty scope_filter"
     with open(payload_path) as f:
         payload = json.load(f)
     assert payload["cmdline_d_macros_in_hash"] == [], (

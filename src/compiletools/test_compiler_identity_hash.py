@@ -40,6 +40,7 @@ def _make_wrapper_script(path: Path, content: str = '#!/bin/sh\nexec g++ "$@"\n'
     path.chmod(0o755)
     return path
 
+
 # ---------------------------------------------------------------------------
 # Tests 1-3: apptools.compiler_identity helper
 # ---------------------------------------------------------------------------

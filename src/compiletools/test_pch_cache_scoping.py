@@ -268,6 +268,7 @@ def test_pch_cache_key_unchanged_with_w_warning_change():
     in production calls ``args.flags.hash_relevant("cxx")``). Mirror
     that contract here by pre-filtering before each invocation.
     """
+
     def _hr(tokens):
         return compiletools.apptools.filter_hash_irrelevant_tokens(compiletools.apptools.strip_d_u_tokens(tokens))
 

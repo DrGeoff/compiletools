@@ -54,6 +54,4 @@ def test_sequential_dependency_analysis_consistency(monkeypatch):
     assert main_has_module_b_1, "main.cpp should include module_b.h (first analysis)"
     assert main_has_module_b_2, "main.cpp should include module_b.h (repeat analysis)"
     assert not clean_has_module_b, "clean_main.cpp should NOT include module_b.h"
-    assert main_has_module_b_1 == main_has_module_b_2, (
-        "main.cpp analysis should be consistent across multiple calls"
-    )
+    assert main_has_module_b_1 == main_has_module_b_2, "main.cpp analysis should be consistent across multiple calls"

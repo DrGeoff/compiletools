@@ -220,9 +220,7 @@ class TestCompilationDatabase:
 
             # Generate Makefile (disable file-locking so commands are directly comparable)
             with uth.ParserContext():
-                compiletools.makefile_backend.main(
-                    ["--config=" + temp_config_name, "--no-file-locking"] + realpaths
-                )
+                compiletools.makefile_backend.main(["--config=" + temp_config_name, "--no-file-locking"] + realpaths)
 
             # Read compilation database
             with open(comp_db_output) as f:
@@ -262,9 +260,7 @@ class TestCompilationDatabase:
 
             # Generate Makefile (disable file-locking so commands are directly comparable)
             with uth.ParserContext():
-                compiletools.makefile_backend.main(
-                    ["--config=" + temp_config_name, "--no-file-locking"] + realpaths
-                )
+                compiletools.makefile_backend.main(["--config=" + temp_config_name, "--no-file-locking"] + realpaths)
 
             # Read compilation database
             with open(comp_db_output) as f:
@@ -964,7 +960,6 @@ class TestCompilationDatabase:
         with open(makefile_name) as f:
             lines = f.readlines()
 
-
         source_token_re = re.compile(r".+\.(?:cpp|c|cc|cxx|C)\Z")
 
         for line in lines:
@@ -1138,7 +1133,6 @@ class TestCompilationDatabase:
                         assert len(include_paths) == len(unique_include_paths), (
                             f"Duplicate -I paths found: {include_paths}"
                         )
-
 
 
 def _concurrent_write_worker(work_queue, result_queue, source_file, output_file):
@@ -1362,9 +1356,7 @@ class TestConcurrentCompilationDatabase:
             with uth.ParserContext():
                 compiletools.compilation_database.main(["--config=" + temp_config_name, "--variant=gcc.debug", src])
             with uth.ParserContext():
-                compiletools.compilation_database.main(
-                    ["--config=" + temp_config_name, "--variant=clang.release", src]
-                )
+                compiletools.compilation_database.main(["--config=" + temp_config_name, "--variant=clang.release", src])
 
             cwd = os.getcwd()
             debug_path = os.path.join(cwd, "compile_commands.gcc.debug.json")
@@ -1509,8 +1501,9 @@ class TestCompilationDatabaseModuleFlags:
     Without them, IDEs report module imports as undefined."""
 
     @staticmethod
-    def _make_creator(*, cxx="g++", module_exports=(), module_implements=(),
-                      module_imports=(), module_header_imports=()):
+    def _make_creator(
+        *, cxx="g++", module_exports=(), module_implements=(), module_imports=(), module_header_imports=()
+    ):
         """Build a CompilationDatabaseCreator with hunter stubbed to return a
         synthetic FileAnalysisResult shaped only enough for ``_module_kind_flags``."""
         creator = _bare_creator(CXX=cxx)
@@ -1650,8 +1643,13 @@ class TestCompilationDatabaseDefensivePaths:
         entire TU as unparseable."""
 
         creator = _bare_creator(
-            CXX="", CC="gcc", CPPFLAGS="", CXXFLAGS="", CFLAGS="",
-            compilation_database_relative=False, verbose=0,
+            CXX="",
+            CC="gcc",
+            CPPFLAGS="",
+            CXXFLAGS="",
+            CFLAGS="",
+            compilation_database_relative=False,
+            verbose=0,
         )
 
         assert creator._get_compiler_command("/src/main.cpp") == []
@@ -1662,8 +1660,13 @@ class TestCompilationDatabaseDefensivePaths:
         entry from the CDB."""
 
         creator = _bare_creator(
-            CXX="", CC="", CPPFLAGS="", CXXFLAGS="", CFLAGS="",
-            compilation_database_relative=False, verbose=0,
+            CXX="",
+            CC="",
+            CPPFLAGS="",
+            CXXFLAGS="",
+            CFLAGS="",
+            compilation_database_relative=False,
+            verbose=0,
         )
 
         assert creator._create_command_object("/src/main.cpp") is None
@@ -1742,9 +1745,7 @@ class TestCompilationDatabaseDefensivePaths:
             assert os.path.exists(sentinel), "Sentinel file inside the directory must survive"
             # And no orphan tmp symlink left lying around.
             for entry in os.listdir(cwd):
-                assert not entry.startswith("compile_commands.json.tmp."), (
-                    f"Orphan tmp symlink left behind: {entry}"
-                )
+                assert not entry.startswith("compile_commands.json.tmp."), f"Orphan tmp symlink left behind: {entry}"
 
     def test_huntsource_exception_yields_empty_database(self):
         """If Hunter.huntsource() raises (e.g. corrupt project state),

@@ -97,14 +97,11 @@ def test_conf_dir_placeholder_expands_to_conf_file_directory(tmp_path, monkeypat
     args = _parse_with_flavor_conf("a", str(tmp_path), monkeypatch)
 
     expected_anchored = os.path.join(_conf_dir(), "pkgconfig-a")
-    assert os.path.isdir(expected_anchored), (
-        f"fixture invariant broken: {expected_anchored} missing on disk"
-    )
+    assert os.path.isdir(expected_anchored), f"fixture invariant broken: {expected_anchored} missing on disk"
 
     entries = list(args.prepend_pkg_config_path)
     assert any(os.path.realpath(e) == os.path.realpath(expected_anchored) for e in entries), (
-        f"${{CONF_DIR}} should expand to {expected_anchored!r}; "
-        f"got entries: {entries!r}"
+        f"${{CONF_DIR}} should expand to {expected_anchored!r}; got entries: {entries!r}"
     )
 
 
@@ -122,9 +119,7 @@ def test_unexpanded_conf_dir_placeholder_does_not_survive(tmp_path, monkeypatch)
     )
 
 
-def test_conf_dir_placeholder_expansion_is_independent_of_consumer_cwd(
-    tmp_path, monkeypatch
-):
+def test_conf_dir_placeholder_expansion_is_independent_of_consumer_cwd(tmp_path, monkeypatch):
     """The whole point: the resolved entries must be identical no matter
     which cwd the parser was invoked from. Parse the same conf from two
     different cwds and assert the results match exactly.
@@ -154,9 +149,7 @@ def test_conf_dir_placeholder_expansion_is_independent_of_consumer_cwd(
 # ---------------------------------------------------------------------------
 
 
-def test_pkg_config_path_env_contains_anchored_absolute_after_parseargs(
-    tmp_path, monkeypatch
-):
+def test_pkg_config_path_env_contains_anchored_absolute_after_parseargs(tmp_path, monkeypatch):
     """Once ``parseargs`` has run ``_setup_pkg_config_overrides``,
     ``os.environ['PKG_CONFIG_PATH']`` is the source of truth for every
     pkg-config subprocess in the build. With the fix in place, the
@@ -171,9 +164,7 @@ def test_pkg_config_path_env_contains_anchored_absolute_after_parseargs(
     entries = raw.split(os.pathsep)
     expected_anchored = os.path.join(_conf_dir(), "pkgconfig-b")
 
-    assert not any("${CONF_DIR}" in e for e in entries), (
-        f"Literal ${{CONF_DIR}} survived into PKG_CONFIG_PATH: {raw!r}"
-    )
+    assert not any("${CONF_DIR}" in e for e in entries), f"Literal ${{CONF_DIR}} survived into PKG_CONFIG_PATH: {raw!r}"
     assert any(os.path.realpath(e) == os.path.realpath(expected_anchored) for e in entries), (
         f"PKG_CONFIG_PATH should contain {expected_anchored!r}; got: {entries!r}"
     )
@@ -198,8 +189,7 @@ def test_each_flavor_resolves_to_its_own_pkgconfig_dir(tmp_path, monkeypatch):
         raw = os.environ.get("PKG_CONFIG_PATH", "")
         entries = raw.split(os.pathsep) if raw else []
         assert any(os.path.realpath(e) == os.path.realpath(expected_dir) for e in entries), (
-            f"flavor-{flavor}.conf should put {expected_dir!r} on "
-            f"PKG_CONFIG_PATH; got {entries!r}"
+            f"flavor-{flavor}.conf should put {expected_dir!r} on PKG_CONFIG_PATH; got {entries!r}"
         )
 
 
@@ -227,9 +217,7 @@ def test_conf_dir_placeholder_handles_multiple_occurrences_in_one_value(tmp_path
     """Multiple ``${CONF_DIR}`` tokens in the same value must all expand.
     Guards against an implementation that uses ``.replace`` with
     ``count=1`` or similar."""
-    conf, conf_dir, other_cwd = _write_conf(
-        tmp_path, "append-CXXFLAGS = -I${CONF_DIR}/include -L${CONF_DIR}/lib\n"
-    )
+    conf, conf_dir, other_cwd = _write_conf(tmp_path, "append-CXXFLAGS = -I${CONF_DIR}/include -L${CONF_DIR}/lib\n")
     args = _parse_conf(str(conf), other_cwd, monkeypatch)
 
     flat = " ".join(args.append_cxxflags) if isinstance(args.append_cxxflags, list) else str(args.append_cxxflags)
@@ -274,10 +262,7 @@ def test_segment_header_in_user_comment_does_not_poison_conf_dir(tmp_path, monke
     conf_dir = tmp_path / "axis-confs"
     conf_dir.mkdir()
     first = conf_dir / "first.conf"
-    first.write_text(
-        "# --- /some/fictional/path/conf.conf ---\n"
-        "prepend-PKG-CONFIG-PATH = ${CONF_DIR}/pkgconfig\n"
-    )
+    first.write_text("# --- /some/fictional/path/conf.conf ---\nprepend-PKG-CONFIG-PATH = ${CONF_DIR}/pkgconfig\n")
     second = conf_dir / "second.conf"
     second.write_text("# placeholder so multi-conf concatenation runs\n")
 
@@ -319,10 +304,7 @@ def _provenance_for(args: argparse.Namespace) -> dict:
     pointed message if the implementation didn't expose it."""
     parser = getattr(args, "_parser", None)
     if parser is None:
-        pytest.fail(
-            "args._parser is None — apptools.parseargs is expected to "
-            "stash the parser for provenance lookups."
-        )
+        pytest.fail("args._parser is None — apptools.parseargs is expected to stash the parser for provenance lookups.")
     getter = getattr(parser, PROVENANCE_GETTER_NAME, None)
     if getter is None:
         pytest.fail(
@@ -347,29 +329,21 @@ def test_provenance_records_source_file_for_each_conf_value(tmp_path, monkeypatc
     expected_value_substr = "pkgconfig-b"
 
     entries = prov.get("prepend-PKG-CONFIG-PATH") or prov.get("prepend_pkg_config_path") or []
-    assert entries, (
-        f"Provenance dict has no entry for prepend-PKG-CONFIG-PATH. "
-        f"Keys present: {sorted(prov.keys())!r}"
-    )
+    assert entries, f"Provenance dict has no entry for prepend-PKG-CONFIG-PATH. Keys present: {sorted(prov.keys())!r}"
     matched = [
-        e for e in entries
-        if expected_value_substr in str(e[0])
-        and os.path.realpath(e[1]) == os.path.realpath(flavor_b_conf)
+        e
+        for e in entries
+        if expected_value_substr in str(e[0]) and os.path.realpath(e[1]) == os.path.realpath(flavor_b_conf)
     ]
     assert matched, (
-        f"no provenance entry containing {expected_value_substr!r} "
-        f"sourced from {flavor_b_conf!r}; entries: {entries!r}"
+        f"no provenance entry containing {expected_value_substr!r} sourced from {flavor_b_conf!r}; entries: {entries!r}"
     )
     for entry in matched:
         lineno = entry[2]
-        assert isinstance(lineno, int) and lineno >= 1, (
-            f"lineno must be positive int (1-based); got {lineno!r}"
-        )
+        assert isinstance(lineno, int) and lineno >= 1, f"lineno must be positive int (1-based); got {lineno!r}"
 
 
-def test_provenance_records_expanded_value_not_literal_placeholder(
-    tmp_path, monkeypatch
-):
+def test_provenance_records_expanded_value_not_literal_placeholder(tmp_path, monkeypatch):
     """The provenance entry should record the **expanded** value (the
     one downstream consumers see on args), not the pre-expansion literal
     with ``${CONF_DIR}`` still in it. That way a -vv dump can be
@@ -402,11 +376,8 @@ def test_provenance_records_each_list_element_separately(tmp_path, monkeypatch):
     entries = [e for e in all_entries if os.path.realpath(e[1]) == conf_real]
     values = [str(e[0]) for e in entries]
     assert "main" in values and "_start" in values and "entry" in values, (
-        f"expected list-element entries for main/_start/entry from "
-        f"{conf_real!r}; got {entries!r}"
+        f"expected list-element entries for main/_start/entry from {conf_real!r}; got {entries!r}"
     )
     # All three entries from this conf must share the same source file and lineno.
     sources = {(os.path.realpath(e[1]), e[2]) for e in entries}
-    assert len(sources) == 1, (
-        f"list-element entries should share source_file:lineno; got: {sources!r}"
-    )
+    assert len(sources) == 1, f"list-element entries should share source_file:lineno; got: {sources!r}"

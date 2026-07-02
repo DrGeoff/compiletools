@@ -242,14 +242,12 @@ def test_object_pathname_is_sharded_by_file_hash(tmp_path):
 
     bucket_dir = os.path.basename(os.path.dirname(obj_path))
     assert bucket_dir == expected_bucket, (
-        f"Expected sharded bucket dir {expected_bucket!r} (file_hash[:2]); "
-        f"got {bucket_dir!r}. Full path: {obj_path}"
+        f"Expected sharded bucket dir {expected_bucket!r} (file_hash[:2]); got {bucket_dir!r}. Full path: {obj_path}"
     )
 
     objdir_root = os.path.dirname(os.path.dirname(obj_path))
     assert objdir_root == args.cas_objdir, (
-        f"Bucket dir should sit directly under args.cas_objdir={args.cas_objdir!r}; "
-        f"got grandparent={objdir_root!r}"
+        f"Bucket dir should sit directly under args.cas_objdir={args.cas_objdir!r}; got grandparent={objdir_root!r}"
     )
 
     # object_dir(sourcefilename) with no file_hash must still return the
@@ -316,8 +314,7 @@ def test_source_magic_produces_different_hash_with_different_flags(tmp_path):
         f"Different CPPFLAGS must produce different hash for main: {hash1_main} vs {hash2_main}"
     )
     assert hash1_helper != hash2_helper, (
-        f"Different CPPFLAGS must produce different hash for SOURCE-expanded helper: "
-        f"{hash1_helper} vs {hash2_helper}"
+        f"Different CPPFLAGS must produce different hash for SOURCE-expanded helper: {hash1_helper} vs {hash2_helper}"
     )
 
 
@@ -418,7 +415,6 @@ def test_create_link_rule_returns_cas_link_plus_publish_pair(tmp_path):
     (with symlink fallback). Downstream rules continue to reference
     bin/<name> via Namer.executable_pathname; the symlink rule's output
     IS that path so test/build deps resolve correctly."""
-
 
     class _ConcreteBackend(BuildBackend):
         @staticmethod
@@ -728,6 +724,5 @@ def test_static_lib_key_changes_with_ar_identity(monkeypatch, tmp_path):
     rules2 = backend._create_static_library_rule()
 
     assert rules1[0].output != rules2[0].output, (
-        "AR identity must participate in the static-library cache key — "
-        "binutils version determines archive format"
+        "AR identity must participate in the static-library cache key — binutils version determines archive format"
     )

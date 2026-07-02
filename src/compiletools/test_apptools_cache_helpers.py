@@ -193,7 +193,6 @@ class TestArgsTokensAfterParseargs:
         which we don't need for these tests.
         """
 
-
         extra_args = extra_args or []
         temp_config_name = uth.create_temp_config(tempdir)
         argv = ["--config=" + temp_config_name] + extra_args

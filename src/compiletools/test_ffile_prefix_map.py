@@ -50,6 +50,7 @@ def _skip_if_clang_lt_22_pch_dedup_bug() -> None:
             "Re-enable on clang ≥ 22."
         )
 
+
 # Trigger @register_backend across all backend modules so available_backends()
 # returns the full list at parametrization time.
 ensure_backends_registered()

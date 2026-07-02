@@ -87,11 +87,7 @@ def _cache_stats(cas_dir, suffix: str) -> dict[str, tuple[int, float]]:
     the second build reused the file (hard-link) rather than temp+rename
     republishing into the same slot.
     """
-    return {
-        p.name: (p.stat().st_ino, p.stat().st_mtime)
-        for p in cas_dir.rglob(f"*{suffix}")
-        if p.is_file()
-    }
+    return {p.name: (p.stat().st_ino, p.stat().st_mtime) for p in cas_dir.rglob(f"*{suffix}") if p.is_file()}
 
 
 @uth.requires_functional_compiler

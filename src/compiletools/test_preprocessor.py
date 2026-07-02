@@ -23,8 +23,10 @@ def mock_check_output():
 @pytest.fixture
 def make_pp():
     """Factory yielding a PreProcessor with optional _make_args overrides."""
+
     def _factory(**kwargs):
         return PreProcessor(_make_args(**kwargs))
+
     return _factory
 
 
@@ -86,9 +88,7 @@ class TestPreProcessorProcess:
         ],
         ids=["oserror", "called_process_error"],
     )
-    def test_subprocess_errors_printed_and_reraised(
-        self, make_pp, exc, raises_type, expected_stderr, capsys
-    ):
+    def test_subprocess_errors_printed_and_reraised(self, make_pp, exc, raises_type, expected_stderr, capsys):
         """Subprocess errors are printed to stderr and re-raised."""
         with mock.patch("subprocess.check_output", side_effect=exc):
             with pytest.raises(raises_type):

@@ -281,7 +281,9 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
 
         num_workers = 2
 
-        results = _run_in_spawn_pool(compile_worker, [(i, src_dir, cfg) for i, (src_dir, cfg) in enumerate(dirs_and_configs)], num_workers)
+        results = _run_in_spawn_pool(
+            compile_worker, [(i, src_dir, cfg) for i, (src_dir, cfg) in enumerate(dirs_and_configs)], num_workers
+        )
 
         # Verify all workers succeeded
         for r in results:
@@ -339,7 +341,9 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
 
         num_workers = len(sources)
 
-        results = _run_in_spawn_pool(compile_worker, [(i, src_dir, cfg) for i, (src_dir, cfg) in enumerate(dirs_and_configs)], num_workers)
+        results = _run_in_spawn_pool(
+            compile_worker, [(i, src_dir, cfg) for i, (src_dir, cfg) in enumerate(dirs_and_configs)], num_workers
+        )
 
         # All should succeed
         for r in results:
@@ -347,9 +351,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
 
         # Should have object files in object CAS
         obj_files = list(objdir.glob("**/*.o"))
-        assert len(obj_files) >= len(sources), (
-            f"Expected at least {len(sources)} object files, found {len(obj_files)}"
-        )
+        assert len(obj_files) >= len(sources), f"Expected at least {len(sources)} object files, found {len(obj_files)}"
 
     @uth.requires_functional_compiler
     def test_different_umask_compatibility(self, tmp_path, cas_objdir):
@@ -481,13 +483,13 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         tmpdir = str(tmp_path)
         objdir = cas_objdir
 
-        dirs_and_configs = [
-            self._create_test_source_dir(tmpdir, f"build_{i}", str(objdir)) for i in range(num_workers)
-        ]
+        dirs_and_configs = [self._create_test_source_dir(tmpdir, f"build_{i}", str(objdir)) for i in range(num_workers)]
 
         start_time = time.time()
 
-        results = _run_in_spawn_pool(compile_worker, [(i, src_dir, cfg) for i, (src_dir, cfg) in enumerate(dirs_and_configs)], num_workers)
+        results = _run_in_spawn_pool(
+            compile_worker, [(i, src_dir, cfg) for i, (src_dir, cfg) in enumerate(dirs_and_configs)], num_workers
+        )
 
         elapsed = time.time() - start_time
 
@@ -917,10 +919,10 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         # Build both subprojects concurrently
         results = _run_in_spawn_pool(
             build_subproject_worker,
-                [
-                    (0, str(subproject_a_dir), config_a),
-                    (1, str(subproject_b_dir), config_b),
-                ],
+            [
+                (0, str(subproject_a_dir), config_a),
+                (1, str(subproject_b_dir), config_b),
+            ],
             2,
         )
 
@@ -957,10 +959,10 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
 
         results = _run_in_spawn_pool(
             compile_worker_with_flags,
-                [
-                    (0, source_dir_v1, config_v1, []),
-                    (1, source_dir_v2, config_v2, ["--CXXFLAGS=-O2"]),
-                ],
+            [
+                (0, source_dir_v1, config_v1, []),
+                (1, source_dir_v2, config_v2, ["--CXXFLAGS=-O2"]),
+            ],
             2,
         )
 
@@ -1097,7 +1099,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
 
         results = _run_in_spawn_pool(
             compile_worker,
-                [(i, src_dir, cfg) for i, (src_dir, cfg) in enumerate(dirs_and_configs)],
+            [(i, src_dir, cfg) for i, (src_dir, cfg) in enumerate(dirs_and_configs)],
             2,
         )
 
@@ -1119,8 +1121,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             if cmd_hash_dir.is_dir():
                 mode = cmd_hash_dir.stat().st_mode
                 assert mode & 0o050, (
-                    f"{cmd_hash_dir} not group-rx: {oct(mode)} — cross-user "
-                    "consumers cannot read cached .gch files."
+                    f"{cmd_hash_dir} not group-rx: {oct(mode)} — cross-user consumers cannot read cached .gch files."
                 )
 
 

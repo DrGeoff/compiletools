@@ -885,8 +885,12 @@ class TestRecordRuleMetadata:
         timer = BuildTimer(enabled=True)
         with timer.phase("p"):
             timer.record_rule(
-                "compile", "obj/foo.o", "src/foo.cpp", 0.5,
-                start_s=1.0, end_s=1.5,
+                "compile",
+                "obj/foo.o",
+                "src/foo.cpp",
+                0.5,
+                start_s=1.0,
+                end_s=1.5,
                 metadata={"cas.hit": True, "cas.kind": "obj"},
             )
         loaded = BuildTimer.from_dict(timer.to_dict())
@@ -904,6 +908,7 @@ class TestRuleOutcomesAppend:
 
     def test_format_is_tab_separated(self, tmp_path):
         from compiletools.build_timer import append_rule_outcome
+
         log = tmp_path / "outcomes.log"
         append_rule_outcome("obj/foo.o", "obj", True, 1234, path=str(log))
         text = log.read_text()
@@ -913,6 +918,7 @@ class TestRuleOutcomesAppend:
         """Design says: don't omit bytes_reused on miss — set 0 so
         downstream sums don't have to distinguish 'miss' from 'unset'."""
         from compiletools.build_timer import append_rule_outcome
+
         log = tmp_path / "outcomes.log"
         append_rule_outcome("obj/foo.o", "obj", False, 0, path=str(log))
         text = log.read_text()
@@ -920,12 +926,14 @@ class TestRuleOutcomesAppend:
 
     def test_noop_without_path(self, tmp_path, monkeypatch):
         from compiletools.build_timer import append_rule_outcome
+
         monkeypatch.delenv("CT_RULE_OUTCOMES_LOG", raising=False)
         # Must not raise; nothing to assert other than absence of exception.
         append_rule_outcome("obj/foo.o", "obj", True, 1)
 
     def test_uses_env_var_when_path_none(self, tmp_path, monkeypatch):
         from compiletools.build_timer import append_rule_outcome
+
         log = tmp_path / "outcomes.log"
         monkeypatch.setenv("CT_RULE_OUTCOMES_LOG", str(log))
         append_rule_outcome("obj/foo.o", "obj", True, 1)
@@ -933,6 +941,7 @@ class TestRuleOutcomesAppend:
 
     def test_oversize_line_dropped(self, tmp_path):
         from compiletools.build_timer import append_rule_outcome
+
         log = tmp_path / "outcomes.log"
         # Target longer than PIPE_BUF (4096) — the helper should drop it
         # rather than risk an interleaved write.
@@ -945,12 +954,16 @@ class TestRuleOutcomesAppend:
         line must parse cleanly (4 tab fields, integer hit and bytes).
         An interleaved write would corrupt the field count."""
         from compiletools.build_timer import append_rule_outcome
+
         log = tmp_path / "outcomes.log"
 
         def worker(tid: int) -> None:
             for i in range(50):
                 append_rule_outcome(
-                    f"obj/t{tid}_r{i}.o", "obj", i % 2 == 0, i * 100,
+                    f"obj/t{tid}_r{i}.o",
+                    "obj",
+                    i % 2 == 0,
+                    i * 100,
                     path=str(log),
                 )
 
@@ -979,12 +992,9 @@ class TestRuleOutcomesIngest:
 
     def test_read_parses_tab_format(self, tmp_path):
         from compiletools.build_timer import read_rule_outcomes
+
         log = tmp_path / "outcomes.log"
-        log.write_text(
-            "obj/foo.o\tobj\t1\t2048\n"
-            "obj/bar.o\tobj\t0\t0\n"
-            "bin/app\texe\t1\t102400\n"
-        )
+        log.write_text("obj/foo.o\tobj\t1\t2048\nobj/bar.o\tobj\t0\t0\nbin/app\texe\t1\t102400\n")
         out = read_rule_outcomes(str(log))
         assert out["obj/foo.o"] == {"cas.hit": True, "cas.bytes_reused": 2048, "cas.kind": "obj"}
         assert out["obj/bar.o"] == {"cas.hit": False, "cas.bytes_reused": 0, "cas.kind": "obj"}
@@ -992,12 +1002,14 @@ class TestRuleOutcomesIngest:
 
     def test_missing_file_returns_empty(self, tmp_path):
         from compiletools.build_timer import read_rule_outcomes
+
         assert read_rule_outcomes(str(tmp_path / "no.log")) == {}
         assert read_rule_outcomes(None) == {}
         assert read_rule_outcomes("") == {}
 
     def test_malformed_lines_skipped(self, tmp_path):
         from compiletools.build_timer import read_rule_outcomes
+
         log = tmp_path / "outcomes.log"
         log.write_text(
             "obj/good.o\tobj\t1\t100\n"
@@ -1011,11 +1023,9 @@ class TestRuleOutcomesIngest:
 
     def test_last_entry_wins(self, tmp_path):
         from compiletools.build_timer import read_rule_outcomes
+
         log = tmp_path / "outcomes.log"
-        log.write_text(
-            "obj/foo.o\tobj\t0\t0\n"
-            "obj/foo.o\tobj\t1\t512\n"
-        )
+        log.write_text("obj/foo.o\tobj\t0\t0\nobj/foo.o\tobj\t1\t512\n")
         out = read_rule_outcomes(str(log))
         assert out["obj/foo.o"]["cas.hit"] is True
         assert out["obj/foo.o"]["cas.bytes_reused"] == 512
@@ -1025,6 +1035,7 @@ class TestRuleOutcomesIngest:
         should leave cas.kind out of the metadata dict rather than setting
         it to an empty string."""
         from compiletools.build_timer import read_rule_outcomes
+
         log = tmp_path / "outcomes.log"
         log.write_text("some/target\t\t0\t0\n")
         out = read_rule_outcomes(str(log))
@@ -1066,19 +1077,23 @@ class TestRuleOutcomesIngest:
 class TestCasKindMapping:
     def test_compile_maps_to_obj(self):
         from compiletools.build_timer import _cas_kind_for_rule_type
+
         assert _cas_kind_for_rule_type("compile") == "obj"
 
     def test_link_maps_to_exe(self):
         from compiletools.build_timer import _cas_kind_for_rule_type
+
         assert _cas_kind_for_rule_type("link") == "exe"
 
     def test_libraries_map_to_lib(self):
         from compiletools.build_timer import _cas_kind_for_rule_type
+
         assert _cas_kind_for_rule_type("static_library") == "lib"
         assert _cas_kind_for_rule_type("shared_library") == "lib"
 
     def test_unknown_returns_empty(self):
         from compiletools.build_timer import _cas_kind_for_rule_type
+
         assert _cas_kind_for_rule_type("phony") == ""
         assert _cas_kind_for_rule_type("mkdir") == ""
         assert _cas_kind_for_rule_type("test") == ""

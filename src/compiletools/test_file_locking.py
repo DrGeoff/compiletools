@@ -243,6 +243,7 @@ class TestLockdirLock:
 
     def test_lockdir_removed_max_retries_exceeded(self, lock):
         """Test that acquisition fails after 3 retry attempts."""
+
         def always_failing_write():
             if os.path.exists(lock.lockdir):
                 shutil.rmtree(lock.lockdir)

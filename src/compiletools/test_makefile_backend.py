@@ -191,11 +191,13 @@ class TestMakefileRealclean:
         # reference these exact strings). Merge via dict spread so a caller
         # passing cas_objdir / bindir overrides doesn't trip a duplicate-kw
         # TypeError.
-        return _default_makefile_args(**{
-            "cas_objdir": "/tmp/cas-objdir",
-            "bindir": "/tmp/proj/bin",
-            **overrides,
-        })
+        return _default_makefile_args(
+            **{
+                "cas_objdir": "/tmp/cas-objdir",
+                "bindir": "/tmp/proj/bin",
+                **overrides,
+            }
+        )
 
     def _build_graph(self):
         graph = BuildGraph()
@@ -1014,7 +1016,6 @@ class TestMakefileConcurrency:
                 # Wipe build outputs between iterations
                 for d in objdirs:
                     if os.path.isdir(d):
-
                         shutil.rmtree(d, ignore_errors=True)
 
                 results: list[subprocess.CompletedProcess] = []

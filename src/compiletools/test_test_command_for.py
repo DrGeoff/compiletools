@@ -57,9 +57,7 @@ def _xml_cmd(tmpdir, source, headers, **arg_overrides):
 
 
 def test_gtest_xml_argv_when_xml_dir_set(tmp_path):
-    cmd, exe, expected_xml, _ = _xml_cmd(
-        str(tmp_path), "/src/test_foo.cpp", ["/usr/include/gtest/gtest.h"]
-    )
+    cmd, exe, expected_xml, _ = _xml_cmd(str(tmp_path), "/src/test_foo.cpp", ["/usr/include/gtest/gtest.h"])
     assert cmd == [exe, f"--gtest_output=xml:{expected_xml}"]
 
 
@@ -76,16 +74,12 @@ def test_gtest_no_xml_argv_when_xml_dir_unset(tmp_path):
 
 
 def test_doctest_xml_argv_when_xml_dir_set(tmp_path):
-    cmd, exe, expected_xml, _ = _xml_cmd(
-        str(tmp_path), "/src/test_bar.cpp", ["/usr/include/doctest/doctest.h"]
-    )
+    cmd, exe, expected_xml, _ = _xml_cmd(str(tmp_path), "/src/test_bar.cpp", ["/usr/include/doctest/doctest.h"])
     assert cmd == [exe, "--reporters=junit", f"--out={expected_xml}"]
 
 
 def test_catch2_xml_argv_when_xml_dir_set(tmp_path):
-    cmd, exe, expected_xml, _ = _xml_cmd(
-        str(tmp_path), "/src/test_baz.cpp", ["/usr/include/catch2/catch_all.hpp"]
-    )
+    cmd, exe, expected_xml, _ = _xml_cmd(str(tmp_path), "/src/test_baz.cpp", ["/usr/include/catch2/catch_all.hpp"])
     assert cmd == [exe, "--reporter", "junit", "--out", expected_xml]
 
 
@@ -163,17 +157,13 @@ def test_touch_result_marker_creates_file(tmp_path):
 def test_returns_detected_framework(tmp_path):
     """_test_command_for returns the detected TestFramework alongside the argv
     so _build_graph can pick the test rule's output (XML vs .result)."""
-    cmd, exe, _, framework = _xml_cmd(
-        str(tmp_path), "/src/test_foo.cpp", ["/usr/include/gtest/gtest.h"]
-    )
+    cmd, exe, _, framework = _xml_cmd(str(tmp_path), "/src/test_foo.cpp", ["/usr/include/gtest/gtest.h"])
     assert framework is not None
     assert cmd[0] == exe
 
 
 def test_returns_none_framework_when_unknown(tmp_path):
     """An unknown header set yields ``(argv, None)``."""
-    cmd, exe, _, framework = _xml_cmd(
-        str(tmp_path), "/src/test_plain.cpp", ["/usr/include/something_else.h"]
-    )
+    cmd, exe, _, framework = _xml_cmd(str(tmp_path), "/src/test_plain.cpp", ["/usr/include/something_else.h"])
     assert framework is None
     assert cmd == [exe]

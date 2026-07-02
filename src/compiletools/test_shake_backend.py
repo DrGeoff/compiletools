@@ -1174,7 +1174,6 @@ class TestCompilerIdentityInTrace:
     (e.g. in-place upgrade) even though the argv is byte-identical."""
 
     def test_verify_fails_when_compiler_identity_changes(self, tmp_path, monkeypatch):
-
         monkeypatch.chdir(tmp_path)
         src = tmp_path / "compiler_identity_src.cpp"
         obj = tmp_path / "compiler_identity_src.o"
@@ -1207,7 +1206,6 @@ class TestVerifyCanonicalization:
     invalidate traces."""
 
     def test_verify_ignores_prefix_differences(self, tmp_path, monkeypatch):
-
         monkeypatch.chdir(tmp_path)
         src = tmp_path / "foo.cpp"
         obj = tmp_path / "foo.o"
@@ -1493,7 +1491,6 @@ class TestShakeTestRulesExecutedDuringBuild:
     """
 
     def test_do_build_executes_test_rules(self, tmp_path):
-
         # A real, instantly-passing test exe so _execute_rule's subprocess.run
         # succeeds and the .result marker gets touched.
         result_path = str(tmp_path / "test_foo.result")
@@ -1521,7 +1518,6 @@ class TestShakeTestRulesExecutedDuringBuild:
             assert not backend._test_failures
 
     def test_do_build_aggregates_failures(self, tmp_path):
-
         result_path = str(tmp_path / "test_fail.result")
         graph = BuildGraph()
         graph.add_rule(
@@ -1558,7 +1554,6 @@ class TestTraceInputCanonicalization:
     """
 
     def test_make_trace_entry_canonicalizes_input_keys(self, tmp_path, monkeypatch):
-
         monkeypatch.chdir(tmp_path)
         src = tmp_path / "foo.cpp"
         obj = tmp_path / "foo.o"

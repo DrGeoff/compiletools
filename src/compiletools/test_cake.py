@@ -510,7 +510,6 @@ class TestCake(BaseCompileToolsTestCase):
         """Test that main() re-raises OSError when verbose >= 2."""
 
         with self._tmpdir_with_config():
-
             with pytest.raises(OSError):
                 with patch(
                     "compiletools.cake.Cake.process",
@@ -522,7 +521,6 @@ class TestCake(BaseCompileToolsTestCase):
         """Test that main() re-raises generic exceptions when verbose >= 2."""
 
         with self._tmpdir_with_config():
-
             with pytest.raises(RuntimeError, match="something broke"):
                 with patch(
                     "compiletools.cake.Cake.process",
@@ -551,7 +549,6 @@ class TestCake(BaseCompileToolsTestCase):
         """Test that main() re-raises subprocess.CalledProcessError when verbose >= 2."""
 
         with self._tmpdir_with_config():
-
             cpe = subprocess.CalledProcessError(
                 returncode=2,
                 cmd=["g++", "-c", "foo.cpp"],

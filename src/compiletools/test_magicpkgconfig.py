@@ -21,6 +21,7 @@ from compiletools.build_context import BuildContext
 
 def _make_mock_args(config_path):
     """Build a minimal args namespace for magicflags + headerdeps construction."""
+
     class MockArgs:
         def __init__(self):
             self.config_file = config_path

@@ -192,7 +192,7 @@ def test_head_with_40hex_accepted(tmp_path):
     child.mkdir(parents=True)
     git_dir = parent / ".git"
     git_dir.mkdir()
-    sha = "0123456789abcdef0123456789abcdef01234567"
+    sha = "0123456789abcdef0123456789abcdef01234567"  # pragma: allowlist secret
     (git_dir / "HEAD").write_text(sha + "\n")
     real_child = os.path.realpath(child)
     real_parent = os.path.realpath(parent)

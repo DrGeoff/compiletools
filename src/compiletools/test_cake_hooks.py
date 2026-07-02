@@ -36,11 +36,7 @@ def _write_marker_script(tmpdir, name, marker_filename, *, exit_code=0):
     with *exit_code*. Returns the absolute script path."""
     script_path = os.path.join(tmpdir, name)
     with open(script_path, "w") as f:
-        f.write(
-            f"#!/bin/sh\n"
-            f"echo run >> {marker_filename}\n"
-            f"exit {exit_code}\n"
-        )
+        f.write(f"#!/bin/sh\necho run >> {marker_filename}\nexit {exit_code}\n")
     os.chmod(script_path, 0o755)
     return script_path
 
@@ -57,9 +53,7 @@ class TestPrebuildPostbuildHooks:
         expected = get_backend_class("ninja")
 
         def _assert_marker_present(*_a, **_k):
-            assert os.path.exists(marker), (
-                "prebuild marker must exist by the time backend.execute() runs"
-            )
+            assert os.path.exists(marker), "prebuild marker must exist by the time backend.execute() runs"
 
         with (
             patch.object(expected, "build_graph", return_value=MagicMock()),
@@ -79,9 +73,7 @@ class TestPrebuildPostbuildHooks:
         expected = get_backend_class("ninja")
 
         def _assert_marker_absent(*_a, **_k):
-            assert not os.path.exists(marker), (
-                "postbuild marker must NOT exist when backend.execute() runs"
-            )
+            assert not os.path.exists(marker), "postbuild marker must NOT exist when backend.execute() runs"
 
         with (
             patch.object(expected, "build_graph", return_value=MagicMock()),
@@ -90,9 +82,7 @@ class TestPrebuildPostbuildHooks:
         ):
             cake.process()
 
-        assert os.path.exists(marker), (
-            "postbuild marker must exist after process() returns"
-        )
+        assert os.path.exists(marker), "postbuild marker must exist after process() returns"
 
     def test_multiple_prebuild_scripts_run_in_declaration_order(self, ninja_cake):
         cake, tmpdir = ninja_cake
@@ -185,9 +175,7 @@ class TestPrebuildPostbuildHooks:
         # Only the first (failing) script wrote to the marker.
         with open(marker) as f:
             lines = [line.strip() for line in f]
-        assert lines == ["run"], (
-            "second prebuild script must not run after the first fails"
-        )
+        assert lines == ["run"], "second prebuild script must not run after the first fails"
 
     @pytest.mark.parametrize("flag,backend_method", [("clean", "clean"), ("realclean", "realclean")])
     def test_clean_modes_skip_both_hooks(self, tmp_path, monkeypatch, flag, backend_method):
@@ -226,8 +214,7 @@ class TestPrebuildPostbuildHooks:
 
         def _assert_marker_present(*_a, **_k):
             assert os.path.exists(marker), (
-                "prebuild marker must exist before build_graph() so generated "
-                "headers are visible to headerdeps"
+                "prebuild marker must exist before build_graph() so generated headers are visible to headerdeps"
             )
             return MagicMock()
 
@@ -259,9 +246,5 @@ class TestPrebuildPostbuildHooks:
             cake.process()
             # The hook runner uses shell=True; ct-cake startup uses lists/argv.
             # Filter to only shell=True invocations to isolate hook runs.
-            shell_calls = [
-                c for c in mock_run.call_args_list if c.kwargs.get("shell") is True
-            ]
-            assert shell_calls == [], (
-                f"empty script lists must not invoke a shell, got: {shell_calls}"
-            )
+            shell_calls = [c for c in mock_run.call_args_list if c.kwargs.get("shell") is True]
+            assert shell_calls == [], f"empty script lists must not invoke a shell, got: {shell_calls}"

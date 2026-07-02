@@ -115,8 +115,10 @@ def hunter_factory():
     TempConfigContext. Per-test scope: a fresh temp dir + config file
     for every test that requests this fixture."""
     with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
+
         def factory(argv_extra=None):
             return _make_hunter(argv_extra=argv_extra, temp_config=temp_config)
+
         yield factory
 
 

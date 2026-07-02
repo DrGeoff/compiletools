@@ -1172,12 +1172,18 @@ def build_real_backend(backend_cls, tmp_path, sources, *, tests=None, extra_argv
     # ``extra_argv=['--cas-pchdir', '/custom']`` would otherwise be silently
     # clobbered by the helper-appended default below.
     argv = [
-        "--include", str(tmp_path),
-        "--cas-objdir", objdir,
-        "--cas-pchdir", pchdir,
-        "--cas-pcmdir", pcmdir,
-        "--cas-exedir", exedir,
-        "--bindir", bindir,
+        "--include",
+        str(tmp_path),
+        "--cas-objdir",
+        objdir,
+        "--cas-pchdir",
+        pchdir,
+        "--cas-pcmdir",
+        pcmdir,
+        "--cas-exedir",
+        exedir,
+        "--bindir",
+        bindir,
     ]
     argv += list(extra_argv or [])
     if tests:

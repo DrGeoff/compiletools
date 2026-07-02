@@ -1214,7 +1214,6 @@ class TestOOMRetry:
         graph.add_rule(rule_bad)
         graph.add_rule(make_phony_rule("build", [ok_out, bad_out]))
 
-
         # First wait: rule_ok COMPLETED, rule_bad FAILED.
         wait_results = iter(
             [
@@ -1832,7 +1831,6 @@ class TestSlurmExport:
         assert "LD_LIBRARY_PATH" in _DEFAULT_SLURM_EXPORT
 
     def test_argparse_default_matches_runtime_fallback_constant(self):
-
         parser = configargparse.ArgumentParser()
         SlurmBackend.add_arguments(parser)
         args = parser.parse_args([])

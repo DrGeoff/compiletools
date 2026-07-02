@@ -34,9 +34,7 @@ def test_appinfo_example_prints_generated_symbols(tmp_path):
     if not uth._backend_tool_available("make"):
         pytest.skip("make not on PATH")
 
-    workspace = uth.copy_example_workspace(
-        pathlib.Path(uth.e2e_dir()) / "appinfo", tmp_path / "ws"
-    )
+    workspace = uth.copy_example_workspace(pathlib.Path(uth.e2e_dir()) / "appinfo", tmp_path / "ws")
     cas_root = workspace  # in-tree cas layout
 
     argv = [
@@ -66,9 +64,7 @@ def test_appinfo_example_prints_generated_symbols(tmp_path):
     )
 
     assert result.returncode == 0, (
-        f"ct-cake failed (exit {result.returncode})\n"
-        f"--- stdout ---\n{result.stdout}\n"
-        f"--- stderr ---\n{result.stderr}"
+        f"ct-cake failed (exit {result.returncode})\n--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
     )
 
     # The published exe lives at bin/main when --bindir is explicit.
@@ -77,14 +73,10 @@ def test_appinfo_example_prints_generated_symbols(tmp_path):
 
     proc = subprocess.run([str(exe)], capture_output=True, text=True, check=False)
     assert proc.returncode == 0, (
-        f"exe exited {proc.returncode}\n"
-        f"--- stdout ---\n{proc.stdout}\n"
-        f"--- stderr ---\n{proc.stderr}"
+        f"exe exited {proc.returncode}\n--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
     )
     lines = proc.stdout.splitlines()
-    assert f"name={EXPECTED_NAME}" in lines, (
-        f"expected 'name={EXPECTED_NAME}' in exe stdout, got:\n{proc.stdout}"
-    )
+    assert f"name={EXPECTED_NAME}" in lines, f"expected 'name={EXPECTED_NAME}' in exe stdout, got:\n{proc.stdout}"
     assert f"version={EXPECTED_VERSION}" in lines, (
         f"expected 'version={EXPECTED_VERSION}' in exe stdout, got:\n{proc.stdout}"
     )
