@@ -257,6 +257,10 @@ def parse_git_path_overrides(git_paths: list[str], environ=None) -> dict[str, st
       ``NAME`` -> ``os.path.abspath(PATH)``.  A CLI entry OVERRIDES an env
       entry for the same name.
 
+    Both sources are ``os.path.expanduser``'d before ``abspath``: the shell
+    does not tilde-expand after the ``=`` in ``--git-path name=~/path``, so
+    the natural spelling would otherwise resolve to a literal ``<cwd>/~/...``.
+
     Name normalization
     ~~~~~~~~~~~~~~~~~~
     Override names are matched **case-insensitively** against the URL-derived
@@ -302,7 +306,7 @@ def parse_git_path_overrides(git_paths: list[str], environ=None) -> dict[str, st
         name = key[len(_ENV_OVERRIDE_PREFIX) :].lower()
         if not name or not value:
             continue
-        overrides[name] = os.path.abspath(value)
+        overrides[name] = os.path.abspath(os.path.expanduser(value))
 
     for entry in git_paths:
         if "=" not in entry:
@@ -314,7 +318,7 @@ def parse_git_path_overrides(git_paths: list[str], environ=None) -> dict[str, st
             raise FetchError(f"--git-path entry '{entry}' has an empty NAME; expected NAME=PATH")
         if not path:
             raise FetchError(f"--git-path entry '{entry}' has an empty PATH; expected NAME=PATH")
-        overrides[name] = os.path.abspath(path)
+        overrides[name] = os.path.abspath(os.path.expanduser(path))
 
     return overrides
 
