@@ -624,6 +624,26 @@ class Cake:
         if not is_cleaning:
             with timer.phase("prebuild_scripts"):
                 self._run_hook_scripts(self.args.prebuild_scripts, "prebuild")
+            if self.args.prebuild_scripts:
+                # A prebuild script may have just created generated headers
+                # (e.g. build/version.h). Earlier phases -- target discovery
+                # and the //#GIT fetch scan -- already walked the include
+                # graph while those headers did not exist, caching "missing"
+                # at three layers: wrappedos' global stat cache, the
+                # BuildContext include-list caches, and the hunter /
+                # headerdeps instance caches. Clear them so build_graph()'s
+                # dep walk re-resolves against the post-script filesystem;
+                # a stale miss keeps the generated header out of
+                # rule.inputs (harmless for make -- the compiler still
+                # finds it -- but fatal for bazel's undeclared-inclusion
+                # sandbox check). Mirrors the per-round clear in
+                # fetch._fixpoint_scan.
+                compiletools.wrappedos.clear_cache()
+                compiletools.headerdeps.clear_caches(self.context)
+                self.hunter.clear_instance_cache()
+                clear_headerdeps = getattr(self.hunter.headerdeps, "clear_instance_cache", None)
+                if clear_headerdeps is not None:
+                    clear_headerdeps()
 
         with timer.phase("build_graph"):
             graph = backend.build_graph()
