@@ -115,7 +115,7 @@ std::string render(const Stepper& stepper, const std::optional<Step>& last, int 
 
     line("  SUDOKU TUI -- engine fetched via //#GIT= from github.com/DrGeoff/sudoku");
     if (term::rows() >= FULL_RENDER_MIN_ROWS) {
-        const std::string rule(2 + 9 * 4 + 2, '-');
+        const std::string rule(9 * 5 + 2, '-');
         for (std::size_t row = 0; row != 9; ++row) {
             if (row % 3 == 0) line("  " + rule);
             for (int band = 0; band != 3; ++band) line("  " + render_band(snap, last, row, band));
