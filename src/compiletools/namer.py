@@ -424,14 +424,10 @@ class Namer:
         compiletools.wrappedos.clear_cache()
         compiletools.utils.clear_cache()
         compiletools.git_utils.clear_cache()
-        self.object_dir.cache_clear()
-        self.object_name.cache_clear()
-        self.object_pathname.cache_clear()
-        self.executable_dir.cache_clear()
-        self.executable_name.cache_clear()
-        self.executable_pathname.cache_clear()
-        self.staticlibrary_name.cache_clear()
-        self.staticlibrary_pathname.cache_clear()
-        self.dynamiclibrary_name.cache_clear()
-        self.dynamiclibrary_pathname.cache_clear()
+        # Introspect rather than enumerate: a hand-maintained list silently
+        # missed the CAS-exedir family when it was added, leaving stale CAS
+        # paths (and strong references to self) behind after config changes.
+        for attr in vars(type(self)).values():
+            if hasattr(attr, "cache_clear"):
+                attr.cache_clear()
         self._cached_macros = None

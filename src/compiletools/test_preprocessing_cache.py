@@ -578,12 +578,6 @@ class TestMacroStateImmutability:
         assert new_state.variable[sz.Str("FOO")] == sz.Str("2")
         assert state.variable[sz.Str("FOO")] == sz.Str("1")
 
-    def test_copy_returns_self(self):
-        """copy() should return self for immutable object."""
-        state = MacroState(core={}, variable={sz.Str("FOO"): sz.Str("1")}, anchor_root="")
-        copied = state.copy()
-        assert copied is state
-
     def test_immutability_enforced(self):
         """Verify that mutation methods are gone."""
         state = MacroState(core={}, variable={}, anchor_root="")
@@ -608,9 +602,7 @@ class TestMacroStateImmutability:
         (incremental key == recomputed key) is documented but not currently
         pinned by a test, so a refactor could silently break it.
         """
-        state = MacroState(
-            core={}, variable={sz.Str("A"): sz.Str("1")}, anchor_root=""
-        )
+        state = MacroState(core={}, variable={sz.Str("A"): sz.Str("1")}, anchor_root="")
         # Materialize the cache key so the incremental path engages.
         baseline_key = state.get_cache_key()
         assert baseline_key == frozenset({(sz.Str("A"), sz.Str("1"))})

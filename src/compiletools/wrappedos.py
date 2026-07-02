@@ -131,24 +131,11 @@ def join_sz(path: sz.Str, *paths: sz.Str) -> sz.Str:
 
 
 def clear_cache() -> None:
-    """Clear all LRU caches to free memory."""
-    # Python str API caches
-    realpath.cache_clear()
-    dirname.cache_clear()
-    basename.cache_clear()
-    getmtime.cache_clear()
-    isfile.cache_clear()
-    isdir.cache_clear()
-    isabs.cache_clear()
-    getsize.cache_clear()
-    normpath.cache_clear()
+    """Clear all LRU caches to free memory.
 
-    # StringZilla API caches
-    realpath_sz.cache_clear()
-    dirname_sz.cache_clear()
-    basename_sz.cache_clear()
-    getmtime_sz.cache_clear()
-    isfile_sz.cache_clear()
-    isdir_sz.cache_clear()
-    isabs_sz.cache_clear()
-    getsize_sz.cache_clear()
+    Introspects the module rather than enumerating functions by hand so a
+    newly added cached wrapper can never be silently missed here.
+    """
+    for obj in globals().values():
+        if hasattr(obj, "cache_clear"):
+            obj.cache_clear()

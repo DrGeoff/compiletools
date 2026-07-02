@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import textwrap
 import threading
 from collections.abc import Generator
 
@@ -1814,11 +1815,8 @@ _REDACTED_PLACEHOLDER = "***REDACTED***"
 def verbose_print_args(args):
     # Print the args in two columns Attr: Value
     print("\n\nFinal aggregated variables for build:")
-    maxattrlen = 0
-    for attr in args.__dict__:
-        if len(attr) > maxattrlen:
-            maxattrlen = len(attr)
-    fmt = "".join(["{0:", str(maxattrlen + 1), "}: {1}"])
+    maxattrlen = max(map(len, args.__dict__), default=0)
+    fmt = f"{{0:{maxattrlen + 1}}}: {{1}}"
     rightcolbegin = maxattrlen + 3
     maxcols = terminalcolumns()
     rightcolsize = maxcols - rightcolbegin
@@ -1834,12 +1832,12 @@ def verbose_print_args(args):
             print(fmt.format(attr, _REDACTED_PLACEHOLDER))
             continue
         strvalue = str(value)
-        valuelen = len(strvalue)
-        if rightcolbegin + valuelen < maxcols:
+        if rightcolbegin + len(strvalue) < maxcols:
             print(fmt.format(attr, strvalue))
         else:
-            # values are too long to fit.  Split them on spaces
-            valuesplit = strvalue.split(" ", valuelen % rightcolsize)
-            print(fmt.format(attr, valuesplit[0]))
-            for kk in range(1, len(valuesplit)):
-                print(fmt.format("", valuesplit[kk]))
+            # Value too long for one line: wrap on spaces to the right column
+            # width (long spaceless tokens like paths stay unbroken).
+            wrapped = textwrap.wrap(strvalue, width=rightcolsize, break_long_words=False, break_on_hyphens=False)
+            print(fmt.format(attr, wrapped[0]))
+            for line in wrapped[1:]:
+                print(fmt.format("", line))

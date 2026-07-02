@@ -843,8 +843,6 @@ class SimplePreprocessor:
 
         return active_lines
 
-    # Text-based processing removed - all processing now goes through process_structured()
-
     def _handle_directive_structured(
         self, directive: "PreprocessorDirective", condition_stack: list[tuple[bool, bool, bool]], line_num: int
     ) -> bool:

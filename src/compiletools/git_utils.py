@@ -187,8 +187,14 @@ def _find_git_root(directory):
 
 @functools.cache
 def strip_git_root(filename):
-    size = len(find_git_root(filename)) + 1
-    return filename[size:]
+    """Strip the git root prefix from filename.
+
+    Returns filename unchanged when it does not live under its git root
+    (relative path, or a root/cwd mismatch). The previous length-based slice
+    returned mid-string garbage in that case — and @functools.cache pinned
+    the wrong answer for the life of the process.
+    """
+    return filename.removeprefix(find_git_root(filename) + os.sep)
 
 
 def clear_cache():

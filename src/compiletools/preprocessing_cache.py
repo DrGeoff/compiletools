@@ -270,10 +270,6 @@ class MacroState:
             anchor_root=self.anchor_root,
         )
 
-    def copy(self) -> "MacroState":
-        """Return self since MacroState is immutable."""
-        return self
-
     def get_cached_key_if_available(self) -> Optional[MacroCacheKey]:
         """Get cache key if already computed, None otherwise.
 

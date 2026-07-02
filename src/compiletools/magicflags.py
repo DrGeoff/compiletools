@@ -1,5 +1,4 @@
 import argparse
-import re
 import sys
 from collections import defaultdict
 from types import SimpleNamespace
@@ -41,10 +40,6 @@ from compiletools.utils import instance_cache
 #       deduplication loop). Using ``sz.Str`` ensures it sorts/hashes
 #       like the other dict keys without colliding with any real flag
 #       key (no compiler flag starts with an underscore).
-#
-# NOTE: The consumer side lives in build_backend.py which is OUT of scope
-# for the current refactor — see NOTES.md for the corresponding consumer-side
-# documentation request.
 _HARD_ORDERINGS_KEY = sz.Str("_HARD_ORDERINGS")
 
 # Type aliases for clarity
@@ -132,9 +127,6 @@ class MagicFlagsBase:
         from compiletools.file_analyzer import set_analyzer_args
 
         set_analyzer_args(args, context)
-
-        # The magic pattern is //#key=value with whitespace ignored
-        self.magicpattern = re.compile(r"^[\s]*//#([\S]*?)[\s]*=[\s]*(.*)", re.MULTILINE)
 
         # Store final converged MacroState objects by filename.
         # After _parse() runs, the MacroState carries effective compile flags
@@ -684,10 +676,10 @@ class DirectMagicFlags(MagicFlagsBase):
         # Create namer instance for dependency hash computation
         self._namer = compiletools.namer.Namer(args, context=context)
         # Compute initial macro state once (compiler built-ins + command-line macros)
-        # This is computed once and reused via copy() to avoid redundant initialization
+        # Computed once and shared directly (MacroState is immutable)
         self._initial_macro_state = self._initialize_macro_state()
         # Track defined macros with values during processing (MacroState with core + variable)
-        self.defined_macros = self._initial_macro_state.copy()
+        self.defined_macros = self._initial_macro_state
         # Track files specified by READMACROS magic flags
         self._explicit_macro_files = set()
         # Cache structured data results by (file_hash, input_macro_key, deps_hash) to avoid redundant convergence
@@ -850,7 +842,7 @@ class DirectMagicFlags(MagicFlagsBase):
 
     def _reset_state(self):
         """Reset state for new file processing."""
-        self.defined_macros = self._initial_macro_state.copy()
+        self.defined_macros = self._initial_macro_state
         self._explicit_macro_files = set()
         self._stored_active_magic_flags = {}
 
@@ -870,7 +862,7 @@ class DirectMagicFlags(MagicFlagsBase):
             )
 
         # Restore the converged macro state
-        self.defined_macros = self._final_macro_states[abs_filename].copy()
+        self.defined_macros = self._final_macro_states[abs_filename]
 
         # Verify state consistency in debug mode
         if __debug__:
@@ -931,7 +923,7 @@ class DirectMagicFlags(MagicFlagsBase):
         """Store final macro state and build cached result."""
         # Store final converged MacroState (for both cache key and full hash)
         abs_filename = compiletools.wrappedos.realpath(filename)
-        self._final_macro_states[abs_filename] = self.defined_macros.copy()
+        self._final_macro_states[abs_filename] = self.defined_macros
 
         if self._args.verbose >= 5:
             final_macro_key = self.defined_macros.get_cache_key()
@@ -1237,7 +1229,7 @@ class CppMagicFlags(MagicFlagsBase):
         # This avoids an expensive additional preprocessor call (-dM -E).
         abs_filename = compiletools.wrappedos.realpath(filename)
         if abs_filename not in self._final_macro_states:
-            self._final_macro_states[abs_filename] = self._initial_macro_state.copy()
+            self._final_macro_states[abs_filename] = self._initial_macro_state
 
         # Get preprocessed text (existing logic)
         preprocessed_text = self._readfile(filename)
