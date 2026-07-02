@@ -1556,19 +1556,55 @@ def test_parse_git_value_leading_dash_ref_rejected() -> None:
 
 
 def test_end_of_options_present_in_git_argv() -> None:
-    """A2 suspenders: every untrusted positional is guarded by --end-of-options.
+    """A2 suspenders: untrusted positionals are guarded by --end-of-options.
 
-    Assert the source wires the sentinel into the clone/fetch/checkout/merge
-    argv rather than a bare '--' (which git checkout reinterprets as a pathspec).
+    clone/fetch/merge honor the sentinel on every git >= 2.24, so they wire it
+    into the argv unconditionally. git checkout only honors it from git 2.44
+    (2024-02-23); earlier git mis-reads it as a literal pathspec, so the
+    checkout call must route through the :func:`fetch._checkout_argv` version
+    gate rather than hard-coding the (older-git-breaking) sentinel.
     """
     import inspect
 
     src = inspect.getsource(fetch)
     assert "--end-of-options" in src
-    # '--' as a positional guard is the wrong token for checkout; ensure the
-    # clone/fetch/checkout/merge calls use the sentinel, not a bare separator.
-    for call in ('"clone", "--end-of-options"', '"checkout", "--end-of-options"'):
+    # clone/fetch wire the sentinel directly (safe on git >= 2.24).
+    for call in ('"clone", "--end-of-options"', '"fetch", "origin", "--end-of-options"'):
         assert call in src, f"expected {call!r} in fetch.py"
+    # checkout goes through the version gate instead of a hard-coded sentinel;
+    # the gating behavior itself is pinned by the _checkout_argv unit tests.
+    checkout_source = inspect.getsource(fetch._checkout_argv)
+    assert "--end-of-options" in checkout_source
+    assert "_checkout_argv(" in src
+
+
+def test_checkout_argv_omits_sentinel_on_old_git(monkeypatch) -> None:
+    """git checkout honors --end-of-options only from git 2.44 (2024-02-23).
+
+    Below that git mis-reads the sentinel as a literal pathspec and every
+    managed-external checkout hard-fails ("pathspec '--end-of-options' did not
+    match any file(s)"). The parse_git_value leading-dash guard is the
+    option-injection protection there, so the redundant sentinel is dropped.
+    """
+    monkeypatch.setattr(fetch, "_git_version", lambda: (2, 31, 1))
+    assert fetch._checkout_argv("master") == ["checkout", "master"]
+
+
+def test_checkout_argv_keeps_sentinel_on_new_git(monkeypatch) -> None:
+    """git >= 2.44 keeps the --end-of-options suspenders on checkout."""
+    monkeypatch.setattr(fetch, "_git_version", lambda: (2, 44, 0))
+    assert fetch._checkout_argv("master") == ["checkout", "--end-of-options", "master"]
+
+
+def test_checkout_argv_omits_sentinel_when_version_undetectable(monkeypatch) -> None:
+    """Unknown git version favors compatibility: omit the redundant sentinel.
+
+    Including it on an old git is a hard break; omitting it on a new git only
+    loses redundant defense (the leading-dash belt still holds), so the safe
+    default when the version can't be read is to omit.
+    """
+    monkeypatch.setattr(fetch, "_git_version", lambda: None)
+    assert fetch._checkout_argv("master") == ["checkout", "master"]
 
 
 # --- N1: derive_name rejects escaping / unsafe names ------------------------

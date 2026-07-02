@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextvars
+import functools
 import os
 import shutil
 import signal
@@ -438,6 +439,51 @@ def _git_env(allow_protocol: str | None = None) -> dict[str, str]:
     return env
 
 
+@functools.lru_cache(maxsize=1)
+def _git_version() -> tuple[int, ...] | None:
+    """Return the installed git's version as an int tuple, or None if undetectable.
+
+    Parses ``git --version`` ("git version 2.39.3 (Apple Git-146)" → ``(2, 39,
+    3)``). Returns None if git is absent, errors, or prints an unparseable
+    banner. Cached: the git binary does not change within a process.
+    """
+    try:
+        result = subprocess.run(["git", "--version"], capture_output=True, text=True, check=False)
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    for token in result.stdout.split():
+        if token[:1].isdigit():
+            parts: list[int] = []
+            for piece in token.split("."):
+                if not piece.isdigit():
+                    break
+                parts.append(int(piece))
+            if parts:
+                return tuple(parts)
+    return None
+
+
+def _checkout_argv(ref: str) -> list[str]:
+    """Build a ``git checkout`` argv that guards *ref* against option injection.
+
+    ``git checkout`` only honors ``--end-of-options`` from git 2.44.0
+    (2024-02-23, git.git fixed the checkout/reset ref-vs-pathspec
+    disambiguator); earlier git mis-reads the sentinel as a literal pathspec
+    and fails with "pathspec '--end-of-options' did not match any file(s)".
+    clone/fetch/merge honor the sentinel since 2.24, so only checkout needs the
+    version gate. On older git — or when the version can't be read — the
+    :func:`parse_git_value` leading-dash rejection is the (sufficient)
+    option-injection protection, so dropping the redundant sentinel is safe;
+    including it there would only hard-break the checkout.
+    """
+    version = _git_version()
+    if version is not None and version >= (2, 44):
+        return ["checkout", "--end-of-options", ref]
+    return ["checkout", ref]
+
+
 def _run_git(args: list[str], *, cwd: str | None, ext: GitExternal) -> subprocess.CompletedProcess:
     """Run ``git <args>`` (capturing output), raising :class:`FetchError` on failure.
 
@@ -745,7 +791,7 @@ def _clone_missing(ext: GitExternal, target: str, *, no_fetch: bool, verbose: in
             # clone (e.g. a non-default branch or a bare SHA on another branch).
             if _rev_parse_verify(tmp, ext.ref) is None:
                 _run_git(["fetch", "origin", "--end-of-options", ext.ref], cwd=tmp, ext=ext)
-            _run_git(["checkout", "--end-of-options", ext.ref], cwd=tmp, ext=ext)
+            _run_git(_checkout_argv(ext.ref), cwd=tmp, ext=ext)
         os.rename(tmp, target)
     except BaseException:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -795,7 +841,7 @@ def _checkout_immutable(ext: GitExternal, target: str, *, no_fetch: bool, verbos
             print(f"ct-fetch: fetching ref '{ref}' for external '{ext.name}'")
         _run_git(["fetch", "origin", "--end-of-options", ref], cwd=target, ext=ext)
 
-    _run_git(["checkout", "--end-of-options", ref], cwd=target, ext=ext)
+    _run_git(_checkout_argv(ref), cwd=target, ext=ext)
 
 
 def _handle_branch(ext: GitExternal, target: str, *, no_fetch: bool, update: bool, verbose: int) -> None:
@@ -839,7 +885,7 @@ def _handle_branch(ext: GitExternal, target: str, *, no_fetch: bool, update: boo
     if verbose:
         print(f"ct-fetch: updating branch '{ref}' for external '{ext.name}'")
     _run_git(["fetch", "origin", "--end-of-options", ref], cwd=target, ext=ext)
-    _run_git(["checkout", "--end-of-options", ref], cwd=target, ext=ext)
+    _run_git(_checkout_argv(ref), cwd=target, ext=ext)
     _run_git(["merge", "--ff-only", "--end-of-options", f"origin/{ref}"], cwd=target, ext=ext)
 
 
