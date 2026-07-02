@@ -304,6 +304,46 @@ def _entry_mtime_size(entry):
     return st.st_mtime, st.st_size
 
 
+def _enumerate_pool_dirs(root, name_re=None):
+    """Enumerate the member directories of one CAS pool root (single level).
+
+    This is THE shared pool-membership rule for every scanner over a CAS
+    layer — trim passes, budget re-scans, orphan reapers, and the
+    ``cache_report`` diagnostic scanners all route through it, so what counts
+    as "a pool member" cannot drift between consumers. ``name_re`` selects the
+    layout: ``_OBJ_BUCKET_RE`` for the 2-hex obj/exe shards, a
+    ``*_COMMAND_HASH_RE`` for PCH/PCM cmd_hash dirs, or ``None`` to accept any
+    subdirectory (the exe trim path, which must see legacy shards too).
+
+    Returns a list of ``os.DirEntry``. Symlinked directories are never pool
+    members (``follow_symlinks=False`` — nothing in compiletools creates them,
+    and a trimmer must not rmtree through one). The top-level ``os.scandir``
+    ``OSError`` propagates so each caller keeps its own error handling
+    (silent best-effort skip vs printed error).
+    """
+    with os.scandir(root) as it:
+        return [e for e in it if e.is_dir(follow_symlinks=False) and (name_re is None or name_re.match(e.name))]
+
+
+def _split_exe_leaf_name(name):
+    """Parse a cas-exedir leaf filename ``<basename>_<linkkey><suffix>``.
+
+    THE shared exe-leaf format rule (trim + cache_report). Splits on the LAST
+    underscore so basenames containing underscores stay intact. Returns
+    ``(basename, link_key, suffix)`` with ``suffix`` drawn from
+    ``_CAS_EXE_SUFFIXES``, or ``None`` for non-artefact files (lock sidecars,
+    ``.manifest`` / ``.result``, unparseable names).
+    """
+    matched_suffix = next((s for s in _CAS_EXE_SUFFIXES if name.endswith(s)), None)
+    if matched_suffix is None:
+        return None
+    stem = name[: -len(matched_suffix)]
+    sep = stem.rfind("_")
+    if sep <= 0:
+        return None
+    return stem[:sep], stem[sep + 1 :], matched_suffix
+
+
 def _map_scan(units, scan_one, workers):
     """Apply ``scan_one`` to each unit, fanning out across ``workers`` threads
     when ``workers > 1``; otherwise run serially.
@@ -417,16 +457,10 @@ def _scan_one_exe_bucket(bucket_entry):
     for leaf in inner:
         if not leaf.is_file():
             continue
-        matched_suffix = next((s for s in _CAS_EXE_SUFFIXES if leaf.name.endswith(s)), None)
-        if matched_suffix is None:
+        parsed = _split_exe_leaf_name(leaf.name)
+        if parsed is None:
             continue
-        # ``<basename>_<key><suffix>``: split on the LAST underscore so
-        # basenames containing underscores stay intact.
-        stem = leaf.name[: -len(matched_suffix)]
-        sep = stem.rfind("_")
-        if sep <= 0:
-            continue
-        basename = stem[:sep]
+        basename, _link_key, matched_suffix = parsed
         try:
             st = leaf.stat()
         except OSError:
@@ -622,12 +656,7 @@ class CacheTrimmer:
         bucket dir vanishes mid-scan) is swallowed inside the worker and that
         bucket's contribution is just skipped — best-effort scan.
         """
-        with os.scandir(objdir) as entries:
-            bucket_paths = [
-                entry.path
-                for entry in entries
-                if _OBJ_BUCKET_RE.match(entry.name) and entry.is_dir(follow_symlinks=False)
-            ]
+        bucket_paths = [e.path for e in _enumerate_pool_dirs(objdir, _OBJ_BUCKET_RE)]
 
         workers = self._workers_for(objdir)
         results = _map_scan(bucket_paths, lambda b: _scan_one_object_bucket(b, current_hashes), workers)
@@ -682,7 +711,7 @@ class CacheTrimmer:
         for path, _mt, size in to_remove:
             if self.verbose >= 1:
                 action = "Would remove" if self.dry_run else "Removing"
-                print(f"  {action}: {path} ({_format_size(size)})", file=self._human)
+                print(f"  {action}: {path} ({_format_bytes(size)})", file=self._human)
             item = _RetryItem(path=path, is_dir=False, size=size, stats=stats, removed_key="removed")
             if self.dry_run:
                 item.credit_success(dry_run=True)
@@ -846,12 +875,11 @@ class CacheTrimmer:
         dir_info: dict[str, tuple] = {}
 
         try:
-            entries = list(os.scandir(pool_root))
+            cmd_dirs = _enumerate_pool_dirs(pool_root, spec.hash_re)
         except OSError as exc:
             print(f"Error scanning {pool_root}: {exc}", file=sys.stderr)
             return stats
 
-        cmd_dirs = [e for e in entries if e.is_dir() and spec.hash_re.match(e.name)]
         stats["total_dirs_scanned"] = len(cmd_dirs)
 
         # Each cmd_hash dir (stat its mtime + sum its leaf sizes) is an
@@ -927,7 +955,7 @@ class CacheTrimmer:
 
             if self.verbose >= 1:
                 action = "Would remove" if self.dry_run else "Removing"
-                print(f"  {action}: {path} ({_format_size(total_size)})", file=self._human)
+                print(f"  {action}: {path} ({_format_bytes(total_size)})", file=self._human)
 
             item = _RetryItem(path=path, is_dir=True, size=total_size, stats=stats, removed_key="dirs_removed")
             if self.dry_run:
@@ -1016,8 +1044,7 @@ class CacheTrimmer:
         # entries that pre-date the sidecar contract (existing caches
         # don't suddenly behave differently after upgrading).
         entry_info: dict[str, tuple] = {}
-        with os.scandir(exedir) as exe_entries:
-            bucket_dirs = [e for e in exe_entries if e.is_dir()]
+        bucket_dirs = _enumerate_pool_dirs(exedir)
 
         # Each top-level bucket is an independent unit of metadata work
         # (stat + sidecar-manifest read per artefact); fan out on a
@@ -1180,8 +1207,7 @@ class CacheTrimmer:
         cutoff = now - _ORPHAN_TEMP_MIN_AGE_SECONDS
 
         try:
-            with os.scandir(cache_root) as top_it:
-                subdirs = [e.path for e in top_it if e.is_dir(follow_symlinks=False)]
+            subdirs = [e.path for e in _enumerate_pool_dirs(cache_root)]
         except OSError:
             return  # cache_root became unreadable mid-scan; best-effort
 
@@ -1215,7 +1241,7 @@ class CacheTrimmer:
                 path = entry.path
                 if self.verbose >= 1:
                     action = "Would remove orphan temp" if self.dry_run else "Removing orphan temp"
-                    print(f"  {action}: {path} ({_format_size(size)})", file=self._human)
+                    print(f"  {action}: {path} ({_format_bytes(size)})", file=self._human)
                 item = _RetryItem(
                     path=path,
                     is_dir=False,
@@ -1374,7 +1400,7 @@ class CacheTrimmer:
 
             if self.verbose >= 1:
                 action = "Would remove orphan sidecar" if self.dry_run else "Removing orphan sidecar"
-                print(f"  {action}: {path} ({_format_size(size)})", file=self._human)
+                print(f"  {action}: {path} ({_format_bytes(size)})", file=self._human)
 
             if self.dry_run:
                 stats["orphan_sidecars_removed"] += 1
@@ -1451,8 +1477,7 @@ class CacheTrimmer:
         cutoff = now - _ORPHAN_TEMP_MIN_AGE_SECONDS
 
         try:
-            with os.scandir(cache_root) as top_it:
-                cmd_dirs = [e.path for e in top_it if e.is_dir(follow_symlinks=False) and hash_re.match(e.name)]
+            cmd_dirs = [e.path for e in _enumerate_pool_dirs(cache_root, hash_re)]
         except OSError:
             return  # cache_root became unreadable mid-scan; best-effort
 
@@ -1491,7 +1516,7 @@ class CacheTrimmer:
 
             if self.verbose >= 1:
                 action = "Would remove orphan cmd_hash dir" if self.dry_run else "Removing orphan cmd_hash dir"
-                print(f"  {action}: {dir_path} ({_format_size(total_size)})", file=self._human)
+                print(f"  {action}: {dir_path} ({_format_bytes(total_size)})", file=self._human)
 
             item = _RetryItem(
                 path=dir_path,
@@ -1530,8 +1555,7 @@ class CacheTrimmer:
             return
 
         try:
-            with os.scandir(cache_root) as top_it:
-                buckets = [e.path for e in top_it if e.is_dir(follow_symlinks=False) and _OBJ_BUCKET_RE.match(e.name)]
+            buckets = [e.path for e in _enumerate_pool_dirs(cache_root, _OBJ_BUCKET_RE)]
         except OSError:
             return  # cache_root became unreadable mid-scan; best-effort
 
@@ -1643,7 +1667,7 @@ class CacheTrimmer:
 
             if self.verbose >= 1:
                 action = "Would remove (budget)" if self.dry_run else "Removing (budget)"
-                print(f"  {action}: {path} ({_format_size(size)})", file=self._human)
+                print(f"  {action}: {path} ({_format_bytes(size)})", file=self._human)
 
             if self.dry_run:
                 # Count would-be removals and subtract from the running total so
@@ -1685,10 +1709,7 @@ class CacheTrimmer:
         """
         units: list[tuple[str, float, int, bool]] = []
         try:
-            with os.scandir(objdir) as top_it:
-                bucket_paths = [
-                    e.path for e in top_it if _OBJ_BUCKET_RE.match(e.name) and e.is_dir(follow_symlinks=False)
-                ]
+            bucket_paths = [e.path for e in _enumerate_pool_dirs(objdir, _OBJ_BUCKET_RE)]
         except OSError:
             return units
         for bucket_path in bucket_paths:
@@ -1722,8 +1743,7 @@ class CacheTrimmer:
         """
         units: list[tuple[str, float, int, bool]] = []
         try:
-            with os.scandir(exedir) as top_it:
-                bucket_paths = [e.path for e in top_it if e.is_dir(follow_symlinks=False)]
+            bucket_paths = [e.path for e in _enumerate_pool_dirs(exedir)]
         except OSError:
             return units
         for bucket_path in bucket_paths:
@@ -1758,8 +1778,7 @@ class CacheTrimmer:
         hash_re = _PCH_COMMAND_HASH_RE if kind == "pch" else _PCM_COMMAND_HASH_RE
         units: list[tuple[str, float, int, bool]] = []
         try:
-            with os.scandir(cache_dir) as top_it:
-                cmd_dirs = [e for e in top_it if e.is_dir() and hash_re.match(e.name)]
+            cmd_dirs = _enumerate_pool_dirs(cache_dir, hash_re)
         except OSError:
             return units
         for entry in cmd_dirs:
@@ -1799,11 +1818,11 @@ class CacheTrimmer:
         if cache_stats["budget_removed"]:
             budget_str = f"    Budget evicted:  {cache_stats['budget_removed']}"
             if cache_stats["budget_bytes_freed"]:
-                budget_str += f" ({_format_size(cache_stats['budget_bytes_freed'])} freed)"
+                budget_str += f" ({_format_bytes(cache_stats['budget_bytes_freed'])} freed)"
             print(budget_str, file=self._human)
         if cache_stats["budget_unmet_bytes"]:
             print(
-                f"    Budget unmet:    {_format_size(cache_stats['budget_unmet_bytes'])} over "
+                f"    Budget unmet:    {_format_bytes(cache_stats['budget_unmet_bytes'])} over "
                 "(protected/current entries alone exceed --max-size)",
                 file=self._human,
             )
@@ -1815,7 +1834,7 @@ class CacheTrimmer:
         if cache_stats["orphan_sidecars_removed"]:
             sidecar_str = f"    Orphan sidecars: {cache_stats['orphan_sidecars_removed']}"
             if cache_stats["orphan_sidecar_bytes_freed"]:
-                sidecar_str += f" ({_format_size(cache_stats['orphan_sidecar_bytes_freed'])} freed)"
+                sidecar_str += f" ({_format_bytes(cache_stats['orphan_sidecar_bytes_freed'])} freed)"
             print(sidecar_str, file=self._human)
 
     def _print_cmd_hash_dir_lines(self, cache_stats):
@@ -1824,7 +1843,7 @@ class CacheTrimmer:
         if cache_stats.get("cmd_hash_dirs_removed"):
             line = f"    Orphan dirs:     {cache_stats['cmd_hash_dirs_removed']}"
             if cache_stats.get("cmd_hash_dir_bytes_freed"):
-                line += f" ({_format_size(cache_stats['cmd_hash_dir_bytes_freed'])} freed)"
+                line += f" ({_format_bytes(cache_stats['cmd_hash_dir_bytes_freed'])} freed)"
             print(line, file=self._human)
 
     def _print_empty_bucket_lines(self, cache_stats):
@@ -1849,14 +1868,14 @@ class CacheTrimmer:
             print(f"    Non-current kept:{objdir_stats['noncurrent_kept']}", file=self._human)
             removed_str = f"    Removed:         {objdir_stats['removed']}"
             if objdir_stats["bytes_freed"]:
-                removed_str += f" ({_format_size(objdir_stats['bytes_freed'])} freed)"
+                removed_str += f" ({_format_bytes(objdir_stats['bytes_freed'])} freed)"
             print(removed_str, file=self._human)
             if objdir_stats["failed"]:
                 print(f"    Failed:          {objdir_stats['failed']}", file=self._human)
             if objdir_stats["orphan_temps_removed"]:
                 orphan_str = f"    Orphan temps:    {objdir_stats['orphan_temps_removed']}"
                 if objdir_stats["orphan_temp_bytes_freed"]:
-                    orphan_str += f" ({_format_size(objdir_stats['orphan_temp_bytes_freed'])} freed)"
+                    orphan_str += f" ({_format_bytes(objdir_stats['orphan_temp_bytes_freed'])} freed)"
                 print(orphan_str, file=self._human)
             self._print_orphan_sidecar_lines(objdir_stats)
             self._print_empty_bucket_lines(objdir_stats)
@@ -1870,14 +1889,14 @@ class CacheTrimmer:
             print(f"    Kept:            {pchdir_stats['dirs_kept']}", file=self._human)
             removed_str = f"    Removed:         {pchdir_stats['dirs_removed']}"
             if pchdir_stats["bytes_freed"]:
-                removed_str += f" ({_format_size(pchdir_stats['bytes_freed'])} freed)"
+                removed_str += f" ({_format_bytes(pchdir_stats['bytes_freed'])} freed)"
             print(removed_str, file=self._human)
             if pchdir_stats["failed"]:
                 print(f"    Failed:          {pchdir_stats['failed']}", file=self._human)
             if pchdir_stats["orphan_temps_removed"]:
                 orphan_str = f"    Orphan temps:    {pchdir_stats['orphan_temps_removed']}"
                 if pchdir_stats["orphan_temp_bytes_freed"]:
-                    orphan_str += f" ({_format_size(pchdir_stats['orphan_temp_bytes_freed'])} freed)"
+                    orphan_str += f" ({_format_bytes(pchdir_stats['orphan_temp_bytes_freed'])} freed)"
                 print(orphan_str, file=self._human)
             self._print_orphan_sidecar_lines(pchdir_stats)
             self._print_cmd_hash_dir_lines(pchdir_stats)
@@ -1891,14 +1910,14 @@ class CacheTrimmer:
             print(f"    Kept:            {pcmdir_stats['dirs_kept']}", file=self._human)
             removed_str = f"    Removed:         {pcmdir_stats['dirs_removed']}"
             if pcmdir_stats["bytes_freed"]:
-                removed_str += f" ({_format_size(pcmdir_stats['bytes_freed'])} freed)"
+                removed_str += f" ({_format_bytes(pcmdir_stats['bytes_freed'])} freed)"
             print(removed_str, file=self._human)
             if pcmdir_stats["failed"]:
                 print(f"    Failed:          {pcmdir_stats['failed']}", file=self._human)
             if pcmdir_stats["orphan_temps_removed"]:
                 orphan_str = f"    Orphan temps:    {pcmdir_stats['orphan_temps_removed']}"
                 if pcmdir_stats["orphan_temp_bytes_freed"]:
-                    orphan_str += f" ({_format_size(pcmdir_stats['orphan_temp_bytes_freed'])} freed)"
+                    orphan_str += f" ({_format_bytes(pcmdir_stats['orphan_temp_bytes_freed'])} freed)"
                 print(orphan_str, file=self._human)
             self._print_orphan_sidecar_lines(pcmdir_stats)
             self._print_cmd_hash_dir_lines(pcmdir_stats)
@@ -1912,14 +1931,14 @@ class CacheTrimmer:
             print(f"    Kept:            {exedir_stats['kept']}", file=self._human)
             removed_str = f"    Removed:         {exedir_stats['removed']}"
             if exedir_stats["bytes_freed"]:
-                removed_str += f" ({_format_size(exedir_stats['bytes_freed'])} freed)"
+                removed_str += f" ({_format_bytes(exedir_stats['bytes_freed'])} freed)"
             print(removed_str, file=self._human)
             if exedir_stats["failed"]:
                 print(f"    Failed:          {exedir_stats['failed']}", file=self._human)
             if exedir_stats["orphan_temps_removed"]:
                 orphan_str = f"    Orphan temps:    {exedir_stats['orphan_temps_removed']}"
                 if exedir_stats["orphan_temp_bytes_freed"]:
-                    orphan_str += f" ({_format_size(exedir_stats['orphan_temp_bytes_freed'])} freed)"
+                    orphan_str += f" ({_format_bytes(exedir_stats['orphan_temp_bytes_freed'])} freed)"
                 print(orphan_str, file=self._human)
             self._print_orphan_sidecar_lines(exedir_stats)
             self._print_empty_bucket_lines(exedir_stats)
@@ -1928,7 +1947,7 @@ class CacheTrimmer:
         # The summary line aggregates whatever was actually scanned.
         scanned = sum(s is not None for s in (objdir_stats, pchdir_stats, pcmdir_stats, exedir_stats))
         if scanned >= 2:
-            print(f"  Total space freed: {_format_size(total_freed)}", file=self._human)
+            print(f"  Total space freed: {_format_bytes(total_freed)}", file=self._human)
         print("=" * 60, file=self._human)
 
     def summary_json(self, objdir_stats=None, pchdir_stats=None, pcmdir_stats=None, exedir_stats=None):
@@ -3050,7 +3069,7 @@ def purge_unresolvable_cells(args, stream=None):
 
             if verbose >= 1:
                 action = "Would purge" if dry_run else "Purging"
-                print(f"  {action}: {cell['path']} ({_format_size(cell['total_bytes'])})", file=human)
+                print(f"  {action}: {cell['path']} ({_format_bytes(cell['total_bytes'])})", file=human)
 
             outcome = _purge_one_cell(cell["path"], dry_run=dry_run)
             if outcome == "purged":
@@ -3097,7 +3116,7 @@ def print_purge_report(result, *, stream=None):
         print(f"    Cells purged:       {info['cells_purged']}", file=stream)
         print(f"    Cells skipped warm: {info['cells_skipped_warm']}", file=stream)
         print(f"    Cells deferred:     {info['cells_deferred']}", file=stream)
-        print(f"    Bytes freed:        {_format_size(info['bytes_freed'])} (lower bound)", file=stream)
+        print(f"    Bytes freed:        {_format_bytes(info['bytes_freed'])} (lower bound)", file=stream)
     total_deferred = sum((result.get(s) or {}).get("cells_deferred", 0) for s, _t in sections)
     if total_deferred:
         print(
@@ -3105,7 +3124,7 @@ def print_purge_report(result, *, stream=None):
             "nonzero 'Cells deferred' with low 'Bytes freed' is expected under contention.",
             file=stream,
         )
-    print(f"  Total space freed: {_format_size(result.get('total_bytes_freed', 0))} (lower bound)", file=stream)
+    print(f"  Total space freed: {_format_bytes(result.get('total_bytes_freed', 0))} (lower bound)", file=stream)
     print("=" * 60, file=stream)
 
 
@@ -3153,7 +3172,7 @@ def print_unresolvable_report(result, *, stream=None):
             print(
                 # Width 13 fits the longest label, NON_CANONICAL.
                 f"  {cell['label']:<13} {cell['name']}"
-                f"  ({_format_size(cell['total_bytes'])}, age {_format_age_days(cell['newest_mtime'], now)})",
+                f"  ({_format_bytes(cell['total_bytes'])}, age {_format_age_days(cell['newest_mtime'], now)})",
                 file=stream,
             )
 
@@ -3301,13 +3320,18 @@ def trim_one_variant(
     return {"trimmer": trimmer, **stats}
 
 
-def _format_size(size_bytes):
-    """Format a byte count as a human-readable string."""
+def _format_bytes(size_bytes):
+    """Render a byte count in B / KB / MB / GB.
+
+    THE byte formatter for both ``ct-trim-cache`` and ``ct-cache-report``
+    (which re-imports it) so the two tools' human output can't drift. Bytes
+    are reported as integers; everything else uses 2-decimal precision.
+    """
     if size_bytes < 1024:
         return f"{size_bytes} B"
     elif size_bytes < 1024 * 1024:
-        return f"{size_bytes / 1024:.1f} KB"
+        return f"{size_bytes / 1024:.2f} KB"
     elif size_bytes < 1024 * 1024 * 1024:
-        return f"{size_bytes / (1024 * 1024):.1f} MB"
+        return f"{size_bytes / (1024 * 1024):.2f} MB"
     else:
-        return f"{size_bytes / (1024 * 1024 * 1024):.1f} GB"
+        return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"

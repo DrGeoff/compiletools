@@ -46,13 +46,15 @@ from dataclasses import dataclass, field
 import compiletools.apptools
 import compiletools.configutils
 from compiletools.trim_cache import (
-    _CAS_EXE_SUFFIXES,
     _OBJ_BUCKET_RE,
     _PCH_COMMAND_HASH_RE,
     _PCM_COMMAND_HASH_RE,
+    _enumerate_pool_dirs,
+    _format_bytes,
     _load_exe_manifest,
     _load_pch_manifest,
     _load_pcm_manifest,
+    _split_exe_leaf_name,
     parse_object_filename,
 )
 
@@ -237,8 +239,7 @@ def scan_objdir(objdir: str) -> list[ObjectFileEntry]:
         return entries
 
     try:
-        with os.scandir(objdir) as top_iter:
-            buckets = [e.path for e in top_iter if _OBJ_BUCKET_RE.match(e.name) and e.is_dir(follow_symlinks=False)]
+        buckets = [e.path for e in _enumerate_pool_dirs(objdir, _OBJ_BUCKET_RE)]
     except OSError:
         return entries
 
@@ -403,12 +404,7 @@ def scan_pchdir(pchdir: str) -> list[PchEntry]:
         return entries
 
     try:
-        with os.scandir(pchdir) as top_iter:
-            cmd_hash_dirs = [
-                (e.name, e.path)
-                for e in top_iter
-                if _PCH_COMMAND_HASH_RE.match(e.name) and e.is_dir(follow_symlinks=False)
-            ]
+        cmd_hash_dirs = [(e.name, e.path) for e in _enumerate_pool_dirs(pchdir, _PCH_COMMAND_HASH_RE)]
     except OSError:
         return entries
 
@@ -514,12 +510,7 @@ def scan_pcmdir(pcmdir: str) -> list[PcmEntry]:
         return entries
 
     try:
-        with os.scandir(pcmdir) as top_iter:
-            cmd_hash_dirs = [
-                (e.name, e.path)
-                for e in top_iter
-                if _PCM_COMMAND_HASH_RE.match(e.name) and e.is_dir(follow_symlinks=False)
-            ]
+        cmd_hash_dirs = [(e.name, e.path) for e in _enumerate_pool_dirs(pcmdir, _PCM_COMMAND_HASH_RE)]
     except OSError:
         return entries
 
@@ -638,8 +629,7 @@ def scan_exedir(exedir: str) -> list[ExeEntry]:
         return entries
 
     try:
-        with os.scandir(exedir) as top_iter:
-            buckets = [e.path for e in top_iter if _OBJ_BUCKET_RE.match(e.name) and e.is_dir(follow_symlinks=False)]
+        buckets = [e.path for e in _enumerate_pool_dirs(exedir, _OBJ_BUCKET_RE)]
     except OSError:
         return entries
 
@@ -649,21 +639,10 @@ def scan_exedir(exedir: str) -> list[ExeEntry]:
                 for leaf in bucket_iter:
                     if not leaf.is_file(follow_symlinks=False):
                         continue
-                    matched_suffix = next(
-                        (s for s in _CAS_EXE_SUFFIXES if leaf.name.endswith(s)),
-                        None,
-                    )
-                    if matched_suffix is None:
+                    parsed = _split_exe_leaf_name(leaf.name)
+                    if parsed is None:
                         continue
-                    # ``<basename>_<linkkey><suffix>``: split on the LAST
-                    # underscore so basenames containing underscores stay
-                    # intact. Mirrors trim_cache.trim_exedir.
-                    stem = leaf.name[: -len(matched_suffix)]
-                    sep = stem.rfind("_")
-                    if sep <= 0:
-                        continue
-                    basename = stem[:sep]
-                    link_key = stem[sep + 1 :]
+                    basename, link_key, matched_suffix = parsed
                     try:
                         size = leaf.stat().st_size
                     except OSError:
@@ -757,22 +736,9 @@ def top_exe_sources_by_waste(rep: ExeReport, n: int = 10) -> list[tuple[str, str
 
 
 # ---------------------------------------------------------------------------
-# Formatting
+# Formatting — ``_format_bytes`` is imported from trim_cache (shared with
+# ct-trim-cache so the two tools' size strings can't drift).
 # ---------------------------------------------------------------------------
-
-
-def _format_bytes(n: int) -> str:
-    """Render a byte count in B / KB / MB / GB.
-
-    Bytes are reported as integers; everything else uses 2-decimal precision.
-    """
-    if n < 1024:
-        return f"{n} B"
-    if n < 1024 * 1024:
-        return f"{n / 1024:.2f} KB"
-    if n < 1024 * 1024 * 1024:
-        return f"{n / (1024 * 1024):.2f} MB"
-    return f"{n / (1024 * 1024 * 1024):.2f} GB"
 
 
 def _render_cas_objdir_text(rep: CacheReport, top_n: int) -> str:
