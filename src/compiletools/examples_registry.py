@@ -64,6 +64,7 @@ EXAMPLES_E2E: frozenset[str] = frozenset(
         "project_version",
         "separate_cpp_cxx",
         "simple",
+        "sudoku_tui",
         "terminal_games",
         "testprefix",
         "unit_test_marker",

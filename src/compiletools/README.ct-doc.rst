@@ -99,7 +99,8 @@ KEY FEATURES
 **Magic Comments**
     Embed build requirements directly in source files using special comments
     like ``//#LDFLAGS=-lpthread`` or ``//#PKG-CONFIG=zlib``, or pull in an
-    external git repository with ``//#GIT=<url>``. See ct-magicflags(1).
+    external git repository with ``//#GIT=<url>``. See ct-magicflags(1) and
+    the worked example in ``src/compiletools/examples-end-to-end/sudoku_tui/``.
 
 **Automatic Dependency Detection**
     Traces #include statements to determine what to compile and link.
