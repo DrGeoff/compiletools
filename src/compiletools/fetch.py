@@ -39,6 +39,8 @@ import threading
 from dataclasses import dataclass
 from typing import Literal
 
+import compiletools.wrappedos
+
 __all__ = [
     "ExternalStatus",
     "FetchError",
@@ -339,7 +341,7 @@ def resolve_externals_dir(explicit: str | None, gitroot: str) -> str:
     """
     if explicit:
         return os.path.abspath(explicit)
-    return os.path.dirname(os.path.abspath(gitroot))
+    return compiletools.wrappedos.dirname(os.path.abspath(gitroot))
 
 
 # ===========================================================================
@@ -722,7 +724,7 @@ def _clone_missing(ext: GitExternal, target: str, *, no_fetch: bool, verbose: in
         )
     if verbose:
         print(f"ct-fetch: cloning external '{ext.name}' from {ext.url} into {target}")
-    os.makedirs(os.path.dirname(target), exist_ok=True)
+    os.makedirs(compiletools.wrappedos.dirname(target), exist_ok=True)
     # A15: clone + ref-checkout into a temp sibling, then atomically rename to
     # target ONLY on full success. A clone that succeeds but whose ref
     # fetch/checkout then fails would otherwise leave a partial checkout at
@@ -970,11 +972,11 @@ def resolve_external(
                     failure, offline-and-absent, dirty-tree clobber,
                     missing override path, …).
     """
-    assert os.path.isabs(externals_dir), f"externals_dir must be absolute, got '{externals_dir}'"
+    assert compiletools.wrappedos.isabs(externals_dir), f"externals_dir must be absolute, got '{externals_dir}'"
     if override_path is not None:
         return _resolve_override(ext, override_path)
 
-    target = os.path.join(externals_dir, ext.name)
+    target = compiletools.wrappedos.join(externals_dir, ext.name)
     # Defense-in-depth against a name that escapes externals_dir (derive_name
     # already rejects '.'/'..'/separators, so this should be unreachable for a
     # parsed external, but a hand-built GitExternal could bypass that).
@@ -1206,6 +1208,7 @@ def _augmented_headerdeps(args, context, *, externals_dir: str, resolved_roots: 
     the live context along.
     """
     import compiletools.headerdeps
+    import compiletools.wrappedos
 
     # Roots first, externals_dir LAST: a directory living INSIDE a resolved
     # external (or its include/ subdir) that collides in name with a sibling
@@ -1216,7 +1219,7 @@ def _augmented_headerdeps(args, context, *, externals_dir: str, resolved_roots: 
     include_dirs: list[str] = []
     for root in resolved_roots:
         include_dirs.append(root)
-        include_dirs.append(os.path.join(root, "include"))
+        include_dirs.append(compiletools.wrappedos.join(root, "include"))
     include_dirs.append(externals_dir)
 
     return compiletools.headerdeps.create(args, context=context, extra_include_dirs=include_dirs)
@@ -1320,8 +1323,6 @@ def _fixpoint_scan(
             # would otherwise stick — blinding the NEXT round's _find_include to
             # the freshly-available sources and breaking transitive discovery.
             # Drop those caches so the next round re-stats from disk.
-            import compiletools.wrappedos
-
             compiletools.wrappedos.clear_cache()
         else:
             raise on_not_converged()
@@ -1372,7 +1373,7 @@ def fetch_externals(
                     ``//#GIT=`` value, a runaway fixpoint, or any failure
                     propagated from :func:`resolve_external`.
     """
-    assert os.path.isabs(externals_dir), f"externals_dir must be absolute, got '{externals_dir}'"
+    assert compiletools.wrappedos.isabs(externals_dir), f"externals_dir must be absolute, got '{externals_dir}'"
     overrides = overrides or {}
 
     resolved: dict[str, ResolvedExternal] = {}
@@ -1454,8 +1455,9 @@ def fetch_externals(
             # lives INSIDE the worker so each parallel external acquires its
             # own sidecar independently.
             import compiletools.locking
+            import compiletools.wrappedos
 
-            target = os.path.join(externals_dir, ext.name)
+            target = compiletools.wrappedos.join(externals_dir, ext.name)
             with compiletools.locking.FileLock(target + ".lock", args):
                 return resolve_external(
                     ext,
@@ -1650,7 +1652,7 @@ def _status_for(ext: GitExternal, *, externals_dir: str, override_path: str | No
         path = os.path.abspath(override_path)
         source: Literal["managed", "override"] = "override"
     else:
-        path = os.path.join(externals_dir, ext.name)
+        path = compiletools.wrappedos.join(externals_dir, ext.name)
         source = "managed"
 
     if not os.path.exists(path) or not _is_git_work_tree(path):
@@ -1715,7 +1717,7 @@ def gather_external_status(
     Returns:
         A list of :class:`ExternalStatus` in discovery order (deduped by name).
     """
-    assert os.path.isabs(externals_dir), f"externals_dir must be absolute, got '{externals_dir}'"
+    assert compiletools.wrappedos.isabs(externals_dir), f"externals_dir must be absolute, got '{externals_dir}'"
     overrides = overrides or {}
 
     declared: dict[str, GitExternal] = {}
@@ -1821,8 +1823,6 @@ def collect_target_files(args) -> list[str]:
     could observe a stale "missing" answer — ``main`` and the test harness clear
     the cache between runs, so this is a test/re-entry concern only (A13).
     """
-    import compiletools.wrappedos
-
     target_files: list[str] = []
     seen: set[str] = set()
     for group in (args.filename, args.static, args.dynamic, args.tests):
