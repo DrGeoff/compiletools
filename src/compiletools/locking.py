@@ -521,6 +521,12 @@ class CIFSLock:
 
         # Open base lockfile (non-exclusive, for reference)
         self.fd = os.open(self.lockfile, os.O_CREAT | os.O_WRONLY, 0o666)
+        # See FcntlLock.acquire — explicit 0o666 chmod to defeat umask so a
+        # second user on the same share can reopen the base lockfile.
+        try:
+            os.fchmod(self.fd, 0o666)
+        except OSError:
+            pass
 
         # Acquire exclusive lock using O_EXCL
         start_time = compiletools.lock_utils.get_process_start_time(self.pid)
@@ -529,36 +535,44 @@ class CIFSLock:
         else:
             payload = f"{self.hostname}:{self.pid}:{start_time}\n"
 
-        while True:
-            try:
-                excl_fd = os.open(self.lockfile_excl, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
-                # Write hostname:pid:start_time so peers can detect stale
-                # holders left by killed processes (Issue #4).
-                os.write(excl_fd, payload.encode())
-                os.close(excl_fd)
-                return
-            except FileExistsError:
-                if self._is_excl_stale():
-                    # Best-effort: remove and retry. If two peers race, the
-                    # losing unlink raises FileNotFoundError which we ignore;
-                    # the next O_EXCL attempt will tell us who won.
-                    try:
-                        os.unlink(self.lockfile_excl)
-                        if self.args.verbose >= 1:
-                            print(
-                                f"Removed stale CIFS lock: {self.lockfile_excl}",
-                                file=sys.stderr,
-                            )
-                    except FileNotFoundError:
-                        pass
-                    except OSError as e:
-                        if self.args.verbose >= 2:
-                            print(
-                                f"Warning: Failed to remove stale CIFS lock {self.lockfile_excl}: {e}",
-                                file=sys.stderr,
-                            )
-                    continue
-                time.sleep(self.sleep_interval)
+        try:
+            while True:
+                try:
+                    excl_fd = os.open(self.lockfile_excl, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+                    # Write hostname:pid:start_time so peers can detect stale
+                    # holders left by killed processes (Issue #4).
+                    os.write(excl_fd, payload.encode())
+                    os.close(excl_fd)
+                    return
+                except FileExistsError:
+                    if self._is_excl_stale():
+                        # Best-effort: remove and retry. If two peers race, the
+                        # losing unlink raises FileNotFoundError which we ignore;
+                        # the next O_EXCL attempt will tell us who won.
+                        try:
+                            os.unlink(self.lockfile_excl)
+                            if self.args.verbose >= 1:
+                                print(
+                                    f"Removed stale CIFS lock: {self.lockfile_excl}",
+                                    file=sys.stderr,
+                                )
+                        except FileNotFoundError:
+                            pass
+                        except OSError as e:
+                            if self.args.verbose >= 2:
+                                print(
+                                    f"Warning: Failed to remove stale CIFS lock {self.lockfile_excl}: {e}",
+                                    file=sys.stderr,
+                                )
+                        continue
+                    time.sleep(self.sleep_interval)
+        except BaseException:
+            # KeyboardInterrupt (or any error) during the spin must not leak
+            # the base-lockfile fd — mirror FcntlLock/FlockLock's guard. We
+            # never created lockfile_excl on this path, so nothing to unlink.
+            os.close(self.fd)
+            self.fd = None
+            raise
 
     def release(self):
         """Release CIFS lock.
@@ -570,15 +584,22 @@ class CIFSLock:
         lockfile is harmless to leave behind (idempotent marker), and a
         future cleanup pass can sweep it if desired.
         """
+        # Guard the unlink and the close independently: a failed unlink
+        # (e.g. EACCES on a multi-user share) must not skip the close, or
+        # every lock cycle leaks an fd and self.fd stays stale.
         try:
             if os.path.exists(self.lockfile_excl):
                 os.unlink(self.lockfile_excl)
-            if self.fd is not None:
-                os.close(self.fd)
-                self.fd = None
         except OSError as e:
             if self.args.verbose >= 2:
                 print(f"Warning: Failed to release CIFS lock: {e}", file=sys.stderr)
+        if self.fd is not None:
+            try:
+                os.close(self.fd)
+            except OSError as e:
+                if self.args.verbose >= 2:
+                    print(f"Warning: Failed to close CIFS lock fd: {e}", file=sys.stderr)
+            self.fd = None
 
 
 class FlockLock:
