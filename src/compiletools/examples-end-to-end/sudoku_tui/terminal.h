@@ -1,8 +1,8 @@
 // terminal.h — a tiny POSIX-terminal facade.
 //
 // Declarations only: no <termios.h>, no game types. Everything heavy lives in
-// terminal.cpp behind pch.h, so importers (game.cpp) stay light and the
-// simulation never learns what a terminal is.
+// terminal.cpp, so includers (sudoku_tui.cpp) stay light and the stepper
+// never learns what a terminal is.
 #pragma once
 
 #include <string_view>
