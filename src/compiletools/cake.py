@@ -1,3 +1,4 @@
+import contextlib
 import os
 import shlex
 import signal
@@ -794,19 +795,19 @@ class Cake:
         """
         assert self.context.timer is not None
         timer = self.context.timer
-        # Snapshot CCACHE_STATSLOG BEFORE we mutate it so we can restore
-        # (or pop) it on the way out. Without this, a second ct-cake run
-        # in the same Python process (in-process batch mode does this)
-        # would inherit a stale CCACHE_STATSLOG -- possibly pointing at
-        # an already-deleted ``auto``-mode path. The restore must run
-        # unconditionally, regardless of build success/failure/exception.
-        _ccache_statslog_prev = os.environ.get("CCACHE_STATSLOG")
-        # CCACHE_STATSLOG must be set before any compile subprocess fires.
-        # Setting it here (top of process, outside the try) means the
-        # finally block has a deterministic value to switch on regardless
-        # of whether the build itself raised before any compile ran.
-        statslog_path = self._setup_ccache_statslog_env()
-        try:
+        # CCACHE_STATSLOG must be set before any compile subprocess fires,
+        # and restored on the way out (see _env_var_restored). Setting it
+        # here — inside the restore context, before the try — means the
+        # telemetry finally has a deterministic value to switch on
+        # regardless of whether the build itself raised before any
+        # compile ran. CT_RULE_OUTCOMES_LOG is set later (in
+        # _call_backend, gated on otel_export + timer.enabled) but must
+        # equally not leak into a subsequent invocation in the same
+        # interpreter (in-process batch mode, tests, REPL); snapshotting
+        # it here covers every path out, including a step of the
+        # post-build telemetry pipeline raising.
+        with _env_var_restored("CCACHE_STATSLOG"), _env_var_restored("CT_RULE_OUTCOMES_LOG"):
+            statslog_path = self._setup_ccache_statslog_env()
             try:
                 # If the user specified only a single file to be turned into a library, guess that
                 # they mean for ct-cake to chase down all the implied files.
@@ -828,132 +829,110 @@ class Cake:
                 # and hard-exits on the explicit --otel-export --no-timing combo.
                 # By the time we get here, "otel_export set and timing not set"
                 # is unreachable via the front door, so no warning is needed.
-                #
-                # Wrap the post-build pipeline in its own try/finally so the
-                # CT_RULE_OUTCOMES_LOG pop runs even if a step in the
-                # pipeline (ccache parse / outcomes merge / aggregate
-                # derivation / to_json / export / metric publish) raises.
-                # The env var must not leak into a subsequent invocation in
-                # the same process (in-process batch mode, tests, REPL).
+                self._run_postbuild_telemetry(timer, statslog_path)
+
+    def _run_postbuild_telemetry(self, timer, statslog_path: Optional[str]) -> None:
+        """Post-build telemetry pipeline: ccache parse, outcomes merge,
+        aggregate derivation, timing.json, OTel export, metric publish.
+
+        Runs from ``process``'s finally, so it must execute after both a
+        successful and a failed build. Every step is best-effort — a bug
+        here must not take down the build result. Env-var cleanup
+        (CCACHE_STATSLOG, CT_RULE_OUTCOMES_LOG) is owned by the
+        ``_env_var_restored`` contexts in ``process``, which cover an
+        exception from any step here.
+        """
+        # Pre-parse the ccache statslog so the headline numbers can be
+        # lifted onto the root build span via set_root_metadata
+        # (the root-metadata loop in otel/traces.py:export_buildtimer
+        # picks them up, alongside the per-rule metadata lift in
+        # _emit_event). Doing the parse here -- before
+        # export_buildtimer -- keeps the metric export path further
+        # down and avoids re-parsing the file twice.
+        ccache_counts = None
+        if statslog_path:
+            try:
+                from compiletools import ccache_stats
+
+                ccache_counts = ccache_stats.parse_statslog(statslog_path)
+                if ccache_counts and timer.enabled:
+                    timer.set_root_metadata(ccache_stats.summary_attributes(ccache_counts))
+            except Exception as exc:
+                print(
+                    f"Warning: ccache stats pre-parse failed: {exc}",
+                    file=sys.stderr,
+                )
+        root_trace_id: Optional[str] = None
+        if timer.enabled:
+            diag_dir = compiletools.diagnostics.resolve_diagnostics_dir(self.args)
+            # Ingest the per-build rule-outcomes log (CAS hit/miss per
+            # rule, written by backends during the build) and merge
+            # the cas.* metadata into the recorded TimingEvents
+            # before serialising to JSON.  Doing the merge BEFORE
+            # to_json means the on-disk timing.json carries cas.*
+            # too, so offline tooling (timing-report, ad-hoc jq
+            # queries) sees the same metadata the OTel spans do.
+            outcomes_path = getattr(self, "_rule_outcomes_log_path", None)
+            if outcomes_path:
+                from compiletools.build_timer import read_rule_outcomes
+
+                outcomes = read_rule_outcomes(outcomes_path)
+                timer.merge_rule_outcomes(outcomes)
+            # Derive cross-layer cache aggregates from the now-
+            # merged per-rule CAS metadata and the pre-parsed
+            # ccache event counts.  Writing the aggregates into
+            # the root metadata BEFORE to_json means timing.json
+            # carries them too -- offline tooling sees what the OTel
+            # spans see -- and the root-metadata lift in
+            # otel/traces.py:export_buildtimer turns them into root
+            # span attributes with no exporter changes.  Gracefully
+            # degrades when either signal is absent (see aggregates
+            # module docstring).
+            try:
+                from compiletools.otel.aggregates import (
+                    annotate_rule_cache_layers,
+                    derive_build_aggregates,
+                )
+
+                timer.set_root_metadata(derive_build_aggregates(timer, ccache_counts))
+                # Per-rule ccache attribution is not available for
+                # ninja/make backends (ccache statslog is build-wide),
+                # so pass None and let derive_rule_cache_layer collapse
+                # CAS-misses to "other".
+                annotate_rule_cache_layers(timer, ccache_attribution=None)
+            except Exception as exc:
+                # Aggregation is best-effort -- a bug here must not
+                # take down the JSON/export path that is the actual
+                # build product.
+                print(
+                    f"Warning: cache-aggregate derivation failed: {exc}",
+                    file=sys.stderr,
+                )
+            timer.to_json(os.path.join(diag_dir, "timing.json"))
+            timer.print_summary()
+            if getattr(self.args, "otel_export", False):
+                from compiletools.otel import export_buildtimer
+
+                # README.ct-otel.rst: "a failed export does not fail the build".
                 try:
-                    # Pre-parse the ccache statslog so the headline numbers can be
-                    # lifted onto the root build span via timer._root.metadata
-                    # (the root-metadata loop in otel/traces.py:export_buildtimer
-                    # picks them up, alongside the per-rule metadata lift in
-                    # _emit_event). Doing the parse here -- before
-                    # export_buildtimer -- keeps the metric export path further
-                    # down and avoids re-parsing the file twice.
-                    ccache_counts = None
-                    if statslog_path:
-                        try:
-                            from compiletools import ccache_stats
-
-                            ccache_counts = ccache_stats.parse_statslog(statslog_path)
-                            if ccache_counts and timer.enabled:
-                                timer._root.metadata.update(ccache_stats.summary_attributes(ccache_counts))
-                        except Exception as exc:
-                            print(
-                                f"Warning: ccache stats pre-parse failed: {exc}",
-                                file=sys.stderr,
-                            )
-                    root_trace_id: Optional[str] = None
-                    if timer.enabled:
-                        diag_dir = compiletools.diagnostics.resolve_diagnostics_dir(self.args)
-                        # Ingest the per-build rule-outcomes log (CAS hit/miss per
-                        # rule, written by backends during the build) and merge
-                        # the cas.* metadata into the recorded TimingEvents
-                        # before serialising to JSON.  Doing the merge BEFORE
-                        # to_json means the on-disk timing.json carries cas.*
-                        # too, so offline tooling (timing-report, ad-hoc jq
-                        # queries) sees the same metadata the OTel spans do.
-                        outcomes_path = getattr(self, "_rule_outcomes_log_path", None)
-                        if outcomes_path:
-                            from compiletools.build_timer import read_rule_outcomes
-
-                            outcomes = read_rule_outcomes(outcomes_path)
-                            timer.merge_rule_outcomes(outcomes)
-                        # Derive cross-layer cache aggregates from the now-
-                        # merged per-rule CAS metadata and the pre-parsed
-                        # ccache event counts.  Writing the aggregates into
-                        # timer._root.metadata BEFORE to_json means timing.json
-                        # carries them too -- offline tooling sees what the OTel
-                        # spans see -- and the root-metadata lift in
-                        # otel/traces.py:export_buildtimer turns them into root
-                        # span attributes with no exporter changes.  Gracefully
-                        # degrades when either signal is absent (see aggregates
-                        # module docstring).
-                        try:
-                            from compiletools.otel.aggregates import (
-                                annotate_rule_cache_layers,
-                                derive_build_aggregates,
-                            )
-
-                            timer._root.metadata.update(derive_build_aggregates(timer, ccache_counts))
-                            # Per-rule ccache attribution is not available for
-                            # ninja/make backends (ccache statslog is build-wide),
-                            # so pass None and let derive_rule_cache_layer collapse
-                            # CAS-misses to "other".
-                            annotate_rule_cache_layers(timer, ccache_attribution=None)
-                        except Exception as exc:
-                            # Aggregation is best-effort -- a bug here must not
-                            # take down the JSON/export path that is the actual
-                            # build product.
-                            print(
-                                f"Warning: cache-aggregate derivation failed: {exc}",
-                                file=sys.stderr,
-                            )
-                        timer.to_json(os.path.join(diag_dir, "timing.json"))
-                        timer.print_summary()
-                        if getattr(self.args, "otel_export", False):
-                            from compiletools.otel import export_buildtimer
-
-                            # README.ct-otel.rst: "a failed export does not fail the build".
-                            try:
-                                root_trace_id = export_buildtimer(timer, self.args)
-                            except Exception as exc:
-                                print(f"Warning: OTLP export failed: {exc}", file=sys.stderr)
-                        # Best-effort cleanup of the outcomes log.  Leaving it in
-                        # the diagnostics dir would accumulate across builds; the
-                        # diagnostics dir is meant for the latest build's
-                        # artefacts only.
-                        if outcomes_path:
-                            try:
-                                os.unlink(outcomes_path)
-                            except OSError:
-                                pass
-                    # Now publish ccache metrics on the same exporter so they
-                    # share resource attrs (ct.variant / ct.backend) and the
-                    # invocation_id resource attr carries the root span's
-                    # trace_id for native trace<->metric joins.
-                    if statslog_path:
-                        self._publish_ccache_stats(statslog_path, ccache_counts, root_trace_id)
-                finally:
-                    # Pop CT_RULE_OUTCOMES_LOG unconditionally (belt-and-
-                    # braces). Setup is gated on ``timer.enabled`` so a
-                    # safely-paired teardown would also be gated -- but a
-                    # caller that flips ``timer.enabled`` mid-process (or sets
-                    # the env var from outside) must not leak it into the next
-                    # caller in the same interpreter (tests, REPL, library use).
-                    # The pop is in its own finally so any exception raised by
-                    # a step in the post-build pipeline above (merge / to_json /
-                    # export / _publish_ccache_stats) still leaves the env var
-                    # cleaned up.
-                    os.environ.pop("CT_RULE_OUTCOMES_LOG", None)
-        finally:
-            # Restore CCACHE_STATSLOG to its pre-invocation state. This
-            # runs unconditionally -- whether the build succeeded, failed,
-            # raised, or whether _publish_ccache_stats ran. Without this,
-            # a second ct-cake call in the same Python process (in-process
-            # batch mode) inherits a stale env var pointing at an
-            # already-deleted ``auto``-mode path.
-            #
-            # Note: this restore-not-pop is strictly more correct than a
-            # blind pop -- if the user supplied CCACHE_STATSLOG via env
-            # rather than via flag, we preserve their value.
-            if _ccache_statslog_prev is None:
-                os.environ.pop("CCACHE_STATSLOG", None)
-            else:
-                os.environ["CCACHE_STATSLOG"] = _ccache_statslog_prev
+                    root_trace_id = export_buildtimer(timer, self.args)
+                except Exception as exc:
+                    print(f"Warning: OTLP export failed: {exc}", file=sys.stderr)
+            # Best-effort cleanup of the outcomes log.  Leaving it in
+            # the diagnostics dir would accumulate across builds; the
+            # diagnostics dir is meant for the latest build's
+            # artefacts only.
+            if outcomes_path:
+                try:
+                    os.unlink(outcomes_path)
+                except OSError:
+                    pass
+        # Now publish ccache metrics on the same exporter so they
+        # share resource attrs (ct.variant / ct.backend) and the
+        # invocation_id resource attr carries the root span's
+        # trace_id for native trace<->metric joins.
+        if statslog_path:
+            self._publish_ccache_stats(statslog_path, ccache_counts, root_trace_id)
 
     def clear_cache(self):
         """Only useful in test scenarios where you need to reset to a pristine state"""
@@ -966,6 +945,28 @@ class Cake:
         self.namer.clear_cache()
         self.hunter.clear_cache()
         compiletools.magicflags.MagicFlagsBase.clear_cache()
+
+
+@contextlib.contextmanager
+def _env_var_restored(name: str):
+    """Restore ``os.environ[name]`` to its pre-block state on exit.
+
+    Snapshot BEFORE the body mutates the variable; the restore runs
+    unconditionally (success, failure, or exception). Restore-not-pop is
+    strictly more correct than a blind pop — a value the user supplied
+    via the environment (rather than a flag) is preserved. Without this,
+    a second ct-cake call in the same Python process (in-process batch
+    mode, tests, REPL) inherits a stale value — possibly pointing at an
+    already-deleted ``auto``-mode path.
+    """
+    prev = os.environ.get(name)
+    try:
+        yield
+    finally:
+        if prev is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = prev
 
 
 def signal_handler(signal, frame):
@@ -1033,6 +1034,41 @@ def _print_rich_error(err: ValueError) -> None:
     console.print(Panel(text, border_style="red", title="Error", title_align="left"))
 
 
+def _render_called_process_error(cpe: subprocess.CalledProcessError) -> None:
+    cmd = cpe.cmd
+    cmd_str = shlex.join(cmd) if isinstance(cmd, (list, tuple)) else str(cmd)
+    print(f"Command failed (exit {cpe.returncode}): {cmd_str}", file=sys.stderr)
+    detail = cpe.stderr or cpe.output
+    if detail:
+        print(detail.decode() if isinstance(detail, bytes) else detail, file=sys.stderr)
+
+
+def _render_os_error(ioe: OSError) -> None:
+    if ioe.filename:
+        print(f"Error processing {ioe.filename}: {ioe.strerror}", file=sys.stderr)
+    else:
+        print(f"Error: {ioe.strerror or ioe}", file=sys.stderr)
+
+
+def _render_generic_error(err: BaseException) -> None:
+    print(f"Error: {err}", file=sys.stderr)
+
+
+# Fatal-error rendering for main(): first matching entry wins, so order is
+# semantic. LDFLAGSCycleError must be listed before the generic tail (it is
+# a ValueError) so ONLY the cycle error is rendered through the Rich
+# cycle-error formatter — unrelated ValueErrors would confuse the user with
+# a panel that doesn't apply. FetchError needs no entry of its own: its
+# messages already name the offending external and its URL, so the generic
+# stderr print is the right rendering.
+_FATAL_ERROR_RENDERERS: list = [
+    (subprocess.CalledProcessError, _render_called_process_error),
+    (OSError, _render_os_error),
+    (compiletools.utils.LDFLAGSCycleError, _print_rich_error),
+    (Exception, _render_generic_error),
+]
+
+
 def main(argv=None):
     sha = get_package_git_sha()
     version_str = f"🍰 ct-cake {__version__}"
@@ -1061,55 +1097,13 @@ def main(argv=None):
             cake.process()
             # For testing purposes, clear out the memcaches for the times when main is called more than once.
             cake.clear_cache()
-        except subprocess.CalledProcessError as cpe:
-            if args.verbose < 2:
-                cmd = cpe.cmd
-                if isinstance(cmd, (list, tuple)):
-                    cmd_str = shlex.join(cmd)
-                else:
-                    cmd_str = str(cmd)
-                print(f"Command failed (exit {cpe.returncode}): {cmd_str}", file=sys.stderr)
-                if cpe.stderr:
-                    stderr = cpe.stderr.decode() if isinstance(cpe.stderr, bytes) else cpe.stderr
-                    print(stderr, file=sys.stderr)
-                elif cpe.output:
-                    output = cpe.output.decode() if isinstance(cpe.output, bytes) else cpe.output
-                    print(output, file=sys.stderr)
-                return 1
-            else:
-                raise
-        except OSError as ioe:
-            if args.verbose < 2:
-                if ioe.filename:
-                    print(f"Error processing {ioe.filename}: {ioe.strerror}", file=sys.stderr)
-                else:
-                    print(f"Error: {ioe.strerror or ioe}", file=sys.stderr)
-                return 1
-            else:
-                raise
-        except compiletools.utils.LDFLAGSCycleError as ve:
-            # Catch ONLY the cycle error so unrelated ValueErrors
-            # don't get rendered through the Rich cycle-error formatter
-            # (which would confuse the user with a panel that doesn't apply).
-            if args.verbose < 2:
-                _print_rich_error(ve)
-                return 1
-            else:
-                raise
-        except compiletools.fetch.FetchError as err:
-            # A //#GIT= external failed to resolve. FetchError messages already
-            # name the offending external and its URL, so print to stderr
-            # (consistent with the sibling fatal handlers above) rather than
-            # letting it fall through to the generic stdout catch-all.
-            if args.verbose < 2:
-                print(f"Error: {err}", file=sys.stderr)
-                return 1
-            else:
-                raise
         except Exception as err:
-            if args.verbose < 2:
-                print(err)
-                return 1
-            else:
+            # At verbose >= 2 the full traceback is the diagnostic.
+            if args.verbose >= 2:
                 raise
+            for exc_type, renderer in _FATAL_ERROR_RENDERERS:
+                if isinstance(err, exc_type):
+                    renderer(err)
+                    return 1
+            raise
     return 0

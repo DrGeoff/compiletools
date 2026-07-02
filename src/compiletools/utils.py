@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import functools
+import heapq
 import inspect
 import os
 import shlex
+from collections import defaultdict
 from collections.abc import Iterable
 from itertools import chain
 from pathlib import Path
@@ -456,16 +458,15 @@ def deduplicate_compiler_flags(flags: list[str]) -> list[str]:
                     deduplicated.extend([flag, arg])
                     seen_flag_args[matched_flag].add(arg)
                 i += 2
-            elif flag.startswith(matched_flag):
-                # Combined form: '-Ipath'
+            else:
+                # Combined form ('-Ipath') — or a bare '-I' as the very
+                # last token, which degenerates to an empty arg.
                 arg = flag[len(matched_flag) :]
                 if matched_flag not in seen_flag_args:
                     seen_flag_args[matched_flag] = set()
                 if arg not in seen_flag_args[matched_flag]:
                     deduplicated.append(flag)
                     seen_flag_args[matched_flag].add(arg)
-                i += 1
-            else:
                 i += 1
         else:
             # Regular flag - use set-based deduplication for O(1) lookup
@@ -590,6 +591,193 @@ def _format_cycle_error(
     return "\n".join(lines)
 
 
+def _ldflags_partition(per_file_ldflags: list[list]) -> tuple[list[str], list[list[str]]]:
+    """Split per-file LDFLAGS into non -l flags and per-file -l library names.
+
+    Handles both the separate form (``-l name``) and the combined form
+    (``-lname``). Returns ``(non_l_flags, per_file_l_names)`` where
+    per-file entries with no -l flags are omitted (they contribute no
+    ordering constraints).
+    """
+    non_l_flags: list[str] = []
+    per_file_l_names: list[list[str]] = []
+
+    for file_flags in per_file_ldflags:
+        file_l_names: list[str] = []
+        str_flags = [str(f) for f in file_flags]
+        i = 0
+        while i < len(str_flags):
+            flag = str_flags[i]
+            if flag == "-l" and i + 1 < len(str_flags):
+                file_l_names.append(str_flags[i + 1])
+                i += 2
+            elif flag.startswith("-l") and len(flag) > 2:
+                file_l_names.append(flag[2:])
+                i += 1
+            else:
+                non_l_flags.append(flag)
+                i += 1
+        if file_l_names:
+            per_file_l_names.append(file_l_names)
+
+    return non_l_flags, per_file_l_names
+
+
+def _ldflags_build_graph(
+    per_file_l_names: list[list[str]],
+    source_files: list[str] | None,
+    hard_orderings: list[tuple[str, str]] | None,
+    hard_ordering_sources: list[str] | None,
+) -> tuple[
+    dict[str, set[str]],
+    list[str],
+    dict[tuple[str, str], list[str]],
+    set[tuple[str, str]],
+]:
+    """Build the ordering-constraint graph over library names.
+
+    Soft edges come from adjacent pairs in each file's -l sequence; hard
+    edges from multi-package PKG-CONFIG annotations. Returns
+    ``(graph, all_libs, edge_sources, hard_edges)`` — *all_libs* preserves
+    first-seen order, *edge_sources* maps each edge to the source files
+    that contributed it (for cycle diagnostics).
+    """
+    graph: dict[str, set[str]] = defaultdict(set)
+    all_libs: list[str] = []
+    seen_libs: set[str] = set()
+    edge_sources: dict[tuple[str, str], list[str]] = defaultdict(list)
+
+    for file_idx, file_l_names in enumerate(per_file_l_names):
+        for name in file_l_names:
+            if name not in seen_libs:
+                all_libs.append(name)
+                seen_libs.add(name)
+        for j in range(len(file_l_names) - 1):
+            pred, succ = file_l_names[j], file_l_names[j + 1]
+            if source_files is not None:
+                edge_sources[(pred, succ)].append(source_files[file_idx])
+            graph[pred].add(succ)
+
+    hard_edges: set[tuple[str, str]] = set()
+    if hard_orderings:
+        for idx, (pred, succ) in enumerate(hard_orderings):
+            hard_edges.add((pred, succ))
+            for name in (pred, succ):
+                if name not in seen_libs:
+                    all_libs.append(name)
+                    seen_libs.add(name)
+            if hard_ordering_sources is not None:
+                edge_sources[(pred, succ)].append(hard_ordering_sources[idx])
+            graph[pred].add(succ)
+
+    return graph, all_libs, edge_sources, hard_edges
+
+
+def _ldflags_cancel_mutual_soft_edges(graph: dict[str, set[str]], hard_edges: set[tuple[str, str]]) -> None:
+    """Cancel mutually-contradictory edges in *graph* in place.
+
+    When both A→B and B→A exist:
+      - Both soft: cancel both (ambiguous pkg-config transitive dep ordering)
+      - One hard: keep the hard direction, remove the soft one
+      - Both hard: keep both (genuine conflict, detected as a cycle later)
+    """
+    to_remove: set[tuple[str, str]] = set()
+    processed: set[tuple[str, str]] = set()
+    for node in list(graph):
+        for succ in list(graph.get(node, set())):
+            if node in graph.get(succ, set()):
+                pair = (min(node, succ), max(node, succ))
+                if pair in processed:
+                    continue
+                processed.add(pair)
+                a, b = pair
+                ab_hard = (a, b) in hard_edges
+                ba_hard = (b, a) in hard_edges
+                if ab_hard and ba_hard:
+                    pass  # genuine conflict, keep both
+                elif ab_hard:
+                    to_remove.add((b, a))
+                elif ba_hard:
+                    to_remove.add((a, b))
+                else:
+                    to_remove.add((a, b))
+                    to_remove.add((b, a))
+
+    for pred, succ in to_remove:
+        graph[pred].discard(succ)
+
+
+def _ldflags_in_degrees(graph: dict[str, set[str]], nodes: Iterable[str]) -> dict[str, int]:
+    """Count in-degrees within the subgraph induced by *nodes*."""
+    in_degree = {lib: 0 for lib in nodes}
+    for node in in_degree:
+        for succ in graph.get(node, ()):
+            if succ in in_degree:
+                in_degree[succ] += 1
+    return in_degree
+
+
+def _ldflags_drain_ready(
+    graph: dict[str, set[str]],
+    in_degree: dict[str, int],
+    remaining: set[str],
+    sorted_libs: list[str],
+) -> None:
+    """Drain all zero-in-degree nodes from *remaining* into *sorted_libs*.
+
+    Kahn's algorithm using heapq for the ready queue so each pop/push is
+    O(log n), avoiding a full re-sort per iteration. Heap entries are
+    1-tuples ``(name,)`` for explicit deterministic tie-breaking.
+    """
+    queue: list[tuple[str]] = [(lib,) for lib in remaining if in_degree.get(lib, 0) == 0]
+    heapq.heapify(queue)
+    while queue:
+        (node,) = heapq.heappop(queue)
+        sorted_libs.append(node)
+        remaining.discard(node)
+        for succ in graph.get(node, []):
+            if succ in remaining:
+                in_degree[succ] -= 1
+                if in_degree[succ] == 0:
+                    heapq.heappush(queue, (succ,))
+
+
+def _ldflags_break_cycles(
+    graph: dict[str, set[str]],
+    hard_edges: set[tuple[str, str]],
+    edge_sources: dict[tuple[str, str], list[str]],
+    source_files: list[str] | None,
+    remaining: set[str],
+    sorted_libs: list[str],
+) -> None:
+    """Resolve cycles left after the initial drain, extending *sorted_libs*.
+
+    Soft constraints are hints from per-file flag ordering — when they
+    form a cycle (even without mutual contradictions), we drop them and
+    let the topological sort proceed. Only purely hard cycles are genuine
+    conflicts and raise LDFLAGSCycleError.
+    """
+    while remaining:
+        cycle_path = _find_cycle(graph, remaining)
+
+        soft_in_cycle = [
+            (cycle_path[i], cycle_path[i + 1])
+            for i in range(len(cycle_path) - 1)
+            if (cycle_path[i], cycle_path[i + 1]) not in hard_edges
+        ]
+
+        if not soft_in_cycle:
+            # Purely hard cycle — genuine conflict, error out.
+            raise LDFLAGSCycleError(_format_cycle_error(cycle_path, edge_sources, source_files))
+
+        # Break the cycle by removing its soft edges, then recompute
+        # in-degrees over the still-unsorted nodes and drain again.
+        for pred, succ in soft_in_cycle:
+            graph[pred].discard(succ)
+        in_degree = _ldflags_in_degrees(graph, remaining)
+        _ldflags_drain_ready(graph, in_degree, remaining, sorted_libs)
+
+
 def merge_ldflags_with_topo_sort(
     per_file_ldflags: list[list],
     source_files: list[str] | None = None,
@@ -643,164 +831,24 @@ def merge_ldflags_with_topo_sort(
             )
         return []
 
-    from collections import defaultdict
+    non_l_flags, per_file_l_names = _ldflags_partition(per_file_ldflags)
 
-    non_l_flags: list[str] = []
-    per_file_l_names: list[list[str]] = []
-
-    for file_flags in per_file_ldflags:
-        file_l_names: list[str] = []
-        str_flags = [str(f) for f in file_flags]
-        i = 0
-        while i < len(str_flags):
-            flag = str_flags[i]
-            if flag == "-l" and i + 1 < len(str_flags):
-                file_l_names.append(str_flags[i + 1])
-                i += 2
-            elif flag.startswith("-l") and len(flag) > 2:
-                file_l_names.append(flag[2:])
-                i += 1
-            else:
-                non_l_flags.append(flag)
-                i += 1
-        if file_l_names:
-            per_file_l_names.append(file_l_names)
-
-    # Build constraint graph from pairwise orderings
-    graph: dict[str, set[str]] = defaultdict(set)
-    in_degree: dict[str, int] = defaultdict(int)
-    all_libs: list[str] = []
-    seen_libs: set[str] = set()
-    # Track which source files contributed each edge (for cycle diagnostics)
-    edge_sources: dict[tuple[str, str], list[str]] = defaultdict(list)
-
-    for file_idx, file_l_names in enumerate(per_file_l_names):
-        for name in file_l_names:
-            if name not in seen_libs:
-                all_libs.append(name)
-                seen_libs.add(name)
-        for j in range(len(file_l_names) - 1):
-            pred, succ = file_l_names[j], file_l_names[j + 1]
-            if source_files is not None:
-                edge_sources[(pred, succ)].append(source_files[file_idx])
-            if succ not in graph[pred]:
-                graph[pred].add(succ)
-                in_degree[succ] = in_degree.get(succ, 0) + 1
-            # Ensure pred has an in_degree entry
-            if pred not in in_degree:
-                in_degree[pred] = 0
-
-    # Add hard ordering constraints (from multi-package PKG-CONFIG annotations)
-    hard_edges: set[tuple[str, str]] = set()
-    if hard_orderings:
-        for idx, (pred, succ) in enumerate(hard_orderings):
-            hard_edges.add((pred, succ))
-            if pred not in seen_libs:
-                all_libs.append(pred)
-                seen_libs.add(pred)
-            if succ not in seen_libs:
-                all_libs.append(succ)
-                seen_libs.add(succ)
-            if hard_ordering_sources is not None:
-                edge_sources[(pred, succ)].append(hard_ordering_sources[idx])
-            if succ not in graph[pred]:
-                graph[pred].add(succ)
-                in_degree[succ] = in_degree.get(succ, 0) + 1
-            if pred not in in_degree:
-                in_degree[pred] = 0
+    graph, all_libs, edge_sources, hard_edges = _ldflags_build_graph(
+        per_file_l_names, source_files, hard_orderings, hard_ordering_sources
+    )
 
     if not all_libs:
         return list(dict.fromkeys(non_l_flags))
 
-    # Cancel soft mutual edges.  When both A→B and B→A exist:
-    #   - Both soft: cancel both (ambiguous pkg-config transitive dep ordering)
-    #   - One hard: keep the hard direction, remove the soft one
-    #   - Both hard: keep both (genuine conflict, detected as cycle below)
-    to_remove: set[tuple[str, str]] = set()
-    processed: set[tuple[str, str]] = set()
-    for node in list(graph):
-        for succ in list(graph.get(node, set())):
-            if node in graph.get(succ, set()):
-                pair = (min(node, succ), max(node, succ))
-                if pair in processed:
-                    continue
-                processed.add(pair)
-                a, b = pair
-                ab_hard = (a, b) in hard_edges
-                ba_hard = (b, a) in hard_edges
-                if ab_hard and ba_hard:
-                    pass  # genuine conflict, keep both
-                elif ab_hard:
-                    to_remove.add((b, a))
-                elif ba_hard:
-                    to_remove.add((a, b))
-                else:
-                    to_remove.add((a, b))
-                    to_remove.add((b, a))
+    _ldflags_cancel_mutual_soft_edges(graph, hard_edges)
 
-    for pred, succ in to_remove:
-        graph[pred].discard(succ)
-
-    # Recompute in_degree after edge removal
-    in_degree = {lib: 0 for lib in all_libs}
-    for node in graph:
-        for succ in graph[node]:
-            in_degree[succ] += 1
-
-    # Kahn's algorithm with alphabetical tie-breaking for determinism
+    # Kahn's algorithm with alphabetical tie-breaking for determinism;
+    # anything still remaining after the drain is part of a cycle.
     sorted_libs: list[str] = []
     remaining = set(all_libs)
-
-    def _drain_kahn() -> None:
-        """Drain all zero-in-degree nodes from *remaining* into *sorted_libs*.
-
-        Uses heapq for the ready queue so each pop is O(log n) and each push
-        is O(log n), avoiding the O(n log n) full re-sort per iteration that
-        the previous list-based implementation paid. Heap entries are 1-tuples
-        ``(name,)`` for explicit deterministic tie-breaking.
-        """
-        import heapq
-
-        queue: list[tuple[str]] = [(lib,) for lib in remaining if in_degree.get(lib, 0) == 0]
-        heapq.heapify(queue)
-        while queue:
-            (node,) = heapq.heappop(queue)
-            sorted_libs.append(node)
-            remaining.discard(node)
-            for succ in graph.get(node, []):
-                if succ in remaining:
-                    in_degree[succ] -= 1
-                    if in_degree[succ] == 0:
-                        heapq.heappush(queue, (succ,))
-
-    _drain_kahn()
-
-    # Break cycles that contain soft edges.  Soft constraints are hints
-    # from per-file flag ordering — when they form a cycle (even without
-    # mutual contradictions), we drop them and let the topological sort
-    # proceed.  Only purely hard cycles are genuine conflicts.
-    while remaining:
-        cycle_path = _find_cycle(graph, remaining)
-
-        soft_in_cycle = [
-            (cycle_path[i], cycle_path[i + 1])
-            for i in range(len(cycle_path) - 1)
-            if (cycle_path[i], cycle_path[i + 1]) not in hard_edges
-        ]
-
-        if not soft_in_cycle:
-            # Purely hard cycle — genuine conflict, error out.
-            raise LDFLAGSCycleError(_format_cycle_error(cycle_path, edge_sources, source_files))
-
-        # Break cycle by removing soft edges, recompute in_degree, and drain.
-        for pred, succ in soft_in_cycle:
-            graph[pred].discard(succ)
-        in_degree = {lib: 0 for lib in remaining}
-        for node in remaining:
-            for succ in graph.get(node, ()):
-                if succ in remaining:
-                    in_degree[succ] += 1
-        _drain_kahn()
+    in_degree = _ldflags_in_degrees(graph, all_libs)
+    _ldflags_drain_ready(graph, in_degree, remaining, sorted_libs)
+    _ldflags_break_cycles(graph, hard_edges, edge_sources, source_files, remaining, sorted_libs)
 
     deduped_non_l = list(dict.fromkeys(non_l_flags))
     return deduped_non_l + [f"-l{name}" for name in sorted_libs]

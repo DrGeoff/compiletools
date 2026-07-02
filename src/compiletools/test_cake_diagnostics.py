@@ -297,11 +297,12 @@ def test_otel_export_with_timing_no_warning(monkeypatch, tmp_path, capsys):
     assert "no spans to export" not in captured.err
 
 
-def test_ct_rule_outcomes_log_popped_on_exception(monkeypatch, tmp_path):
+def test_ct_rule_outcomes_log_restored_on_exception(monkeypatch, tmp_path):
     """If a step inside the post-build pipeline (here: ``BuildTimer.to_json``)
-    raises, CT_RULE_OUTCOMES_LOG must still be popped on the way out.
-    Otherwise the env var leaks into the next invocation in the same
-    Python process (in-process batch mode, tests, REPL).
+    raises, CT_RULE_OUTCOMES_LOG set *during* the build (by _call_backend)
+    must still be cleared on the way out. Otherwise the env var leaks into
+    the next invocation in the same Python process (in-process batch mode,
+    tests, REPL).
     """
     _bindir, _objdir, argv = _bindir_objdir_argv(tmp_path, "--filename", "irrelevant.cpp")
     args = _build_args(argv)
@@ -310,12 +311,15 @@ def test_ct_rule_outcomes_log_popped_on_exception(monkeypatch, tmp_path):
         self.hunter = object()
 
     monkeypatch.setattr(compiletools.cake.Cake, "_createctobjs", _stub_createctobjs)
-    monkeypatch.setattr(compiletools.cake.Cake, "_call_backend", lambda self: None)
 
-    # Simulate the env var being set by Cake's setup path (or by an outer
-    # caller).  We assert below that it does NOT survive the raised
-    # exception.
-    monkeypatch.setenv("CT_RULE_OUTCOMES_LOG", str(tmp_path / "outcomes.log"))
+    # Mimic the real _call_backend, which exports the outcomes-log path
+    # for backend children to append to. The _env_var_restored context in
+    # process() must clear it even though to_json raises further down.
+    def _stub_call_backend(self):
+        os.environ["CT_RULE_OUTCOMES_LOG"] = str(tmp_path / "outcomes.log")
+
+    monkeypatch.setattr(compiletools.cake.Cake, "_call_backend", _stub_call_backend)
+    monkeypatch.delenv("CT_RULE_OUTCOMES_LOG", raising=False)
 
     class _PipelineBoom(RuntimeError):
         pass
@@ -329,24 +333,22 @@ def test_ct_rule_outcomes_log_popped_on_exception(monkeypatch, tmp_path):
     with pytest.raises(_PipelineBoom):
         cake.process()
 
-    # The pop in the new innermost finally must have run even though
-    # to_json raised on the way out of the post-build pipeline.
+    # The _env_var_restored context in process() must have restored the
+    # pre-process state (absent) even though to_json raised on the way
+    # out of the post-build pipeline.
     assert "CT_RULE_OUTCOMES_LOG" not in os.environ
 
 
-def test_env_vars_handled_even_when_timer_disabled(monkeypatch, tmp_path):
-    """Belt-and-braces env-var hygiene when timer is disabled.
+def test_env_vars_restored_even_when_timer_disabled(monkeypatch, tmp_path):
+    """Snapshot-restore env-var hygiene when timer is disabled.
 
-    - CT_RULE_OUTCOMES_LOG is unconditionally popped on the way out of
-      process(), even if the timer is disabled when the finally block
-      runs. Setup is gated on ``timer.enabled``, but a caller that
-      disables the timer mid-process (or sets the env var by other means
-      before invoking Cake) must not leave it behind.
-
-    - CCACHE_STATSLOG is snapshot-restored, not popped. A user-supplied
-      pre-existing value (here simulated via ``monkeypatch.setenv``)
-      must be preserved across the process() call so that an outer
-      caller's setting is not silently clobbered.
+    Both CCACHE_STATSLOG and CT_RULE_OUTCOMES_LOG are snapshot-restored
+    (via _env_var_restored in process()), not popped. A pre-existing
+    value supplied by an outer caller (here simulated via
+    ``monkeypatch.setenv``) must be preserved across the process() call —
+    Cake owns only the values it sets itself, and process() must be
+    invariant with respect to caller-owned environment state regardless
+    of timer.enabled.
     """
     _bindir, _objdir, argv = _bindir_objdir_argv(tmp_path, "--filename", "irrelevant.cpp")
     args = _build_args(argv)
@@ -357,11 +359,10 @@ def test_env_vars_handled_even_when_timer_disabled(monkeypatch, tmp_path):
     monkeypatch.setattr(compiletools.cake.Cake, "_createctobjs", _stub_createctobjs)
     monkeypatch.setattr(compiletools.cake.Cake, "_call_backend", lambda self: None)
 
-    # Simulate env vars that were set by some outer caller (or by setup
-    # paths that have since been disabled). CT_RULE_OUTCOMES_LOG must
-    # be cleared regardless of timer.enabled state; CCACHE_STATSLOG must
-    # be preserved as a user-supplied value.
-    monkeypatch.setenv("CT_RULE_OUTCOMES_LOG", str(tmp_path / "outcomes.log"))
+    # Simulate env vars set by some outer caller. Both must survive
+    # process() unchanged.
+    outcomes_log_value = str(tmp_path / "outcomes.log")
+    monkeypatch.setenv("CT_RULE_OUTCOMES_LOG", outcomes_log_value)
     ccache_statslog_value = str(tmp_path / "ccache.log")
     monkeypatch.setenv("CCACHE_STATSLOG", ccache_statslog_value)
 
@@ -372,7 +373,7 @@ def test_env_vars_handled_even_when_timer_disabled(monkeypatch, tmp_path):
 
     cake.process()
 
-    assert "CT_RULE_OUTCOMES_LOG" not in os.environ
+    assert os.environ.get("CT_RULE_OUTCOMES_LOG") == outcomes_log_value
     assert os.environ.get("CCACHE_STATSLOG") == ccache_statslog_value
 
 

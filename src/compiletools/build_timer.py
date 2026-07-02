@@ -510,6 +510,18 @@ class BuildTimer:
 
     # --------------------------------------------------- rule outcomes merge
 
+    def set_root_metadata(self, attributes: dict[str, Any]) -> None:
+        """Merge *attributes* into the root build event's metadata.
+
+        The root metadata is lifted onto the root build span by
+        ``otel/traces.py:export_buildtimer`` and serialised into
+        ``timing.json`` by ``to_json``, so writing here BEFORE either of
+        those means offline tooling sees the same attributes the OTel
+        spans do. Public wrapper so callers don't reach into
+        ``timer._root.metadata`` directly.
+        """
+        self._root.metadata.update(attributes)
+
     def merge_rule_outcomes(self, outcomes: dict[str, dict[str, Any]]) -> int:
         """Merge an ``{target: metadata}`` map into existing rule events.
 
