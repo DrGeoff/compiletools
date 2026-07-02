@@ -643,7 +643,10 @@ def extract_command_line_macros(args, flag_sources=None, include_compiler_macros
                 compiler = functional_compiler
             else:
                 if verbose >= 1:
-                    print("Warning: No functional C++ compiler detected. Skipping compiler macros.")
+                    print(
+                        "Warning: No functional C++ compiler detected. Skipping compiler macros.",
+                        file=sys.stderr,
+                    )
 
         if compiler is not None:
             compiler_macros = compiletools.compiler_macros.get_compiler_macros(compiler, verbose)
