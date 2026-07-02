@@ -739,8 +739,11 @@ class Hunter:
                     print(f"Hunter::huntsource - {source} expanded to {len(required_sources)} sources")
 
             except Exception as e:
-                if self.args.verbose >= 2:
-                    print(f"Warning: Error expanding source {source}: {e}")
+                # Deliberately broad: the expansion walks headerdeps + magic
+                # flags, whose failure modes span OSError/ValueError/parse
+                # errors. But never swallow silently — a dropped source means
+                # a target quietly missing from the build.
+                print(f"Warning: Error expanding source {source}: {e}", file=sys.stderr)
                 # Include the original source even if expansion fails, but only if it exists
                 if os.path.exists(source):
                     all_sources.add(compiletools.wrappedos.realpath(source))
@@ -783,8 +786,9 @@ class Hunter:
                         required_sources = self.required_source_files(realpath_source)
                         test_sources.update(required_sources)
                     except Exception as e:
-                        if self.args.verbose >= 2:
-                            print(f"Warning: Error expanding test source {source}: {e}")
+                        # Same contract as huntsource: broad on purpose (deep
+                        # headerdeps/magicflags walk), loud on purpose.
+                        print(f"Warning: Error expanding test source {source}: {e}", file=sys.stderr)
                         test_sources.add(compiletools.wrappedos.realpath(source))
 
             self._test_sources = sorted(compiletools.wrappedos.realpath(src) for src in test_sources)

@@ -1177,9 +1177,12 @@ def extract_git_externals(filepath: str, args, context) -> list[GitExternal]:
     try:
         content_hash = get_file_hash(filepath, context)
         result = analyze_file(content_hash, context)
-    except Exception as exc:
-        verbose = getattr(args, "verbose", 0)
-        if verbose >= 2:
+    except OSError as exc:
+        # Tolerated: a header inside a not-yet-fetched external legitimately
+        # doesn't exist during the fixpoint scan. But warn above a whisper —
+        # a persistently unanalyzable file means its //#GIT= declarations
+        # never register and the external silently isn't fetched.
+        if getattr(args, "verbose", 0) >= 1:
             print(f"ct-fetch: warning: could not analyze '{filepath}' for //#GIT= flags: {exc}", file=sys.stderr)
         return []
 
@@ -1214,8 +1217,9 @@ def extract_git_allow_protocols(filepath: str, args, context) -> list[str]:
     try:
         content_hash = get_file_hash(filepath, context)
         result = analyze_file(content_hash, context)
-    except Exception as exc:
-        if getattr(args, "verbose", 0) >= 2:
+    except OSError as exc:
+        # Same tolerance + warning contract as extract_git_externals.
+        if getattr(args, "verbose", 0) >= 1:
             print(
                 f"ct-fetch: warning: could not analyze '{filepath}' for //#GIT_ALLOW_PROTOCOL=: {exc}",
                 file=sys.stderr,

@@ -449,9 +449,16 @@ class MagicFlagsBase:
                             print(
                                 f"READMACROS: Will process '{resolved_path}' for macro extraction (from {source_file})"
                             )
-            except Exception as e:
-                if self._args.verbose >= 5:
-                    print(f"DirectMagicFlags warning: could not scan {source_file} for READMACROS: {e}")
+            except OSError as e:
+                # A missing/unreadable file here is not necessarily fatal (the
+                # READMACROS flag is re-resolved uncached at parse time, which
+                # raises properly), but don't whisper: a swallowed scan failure
+                # means macros silently missing from preprocessing.
+                if self._args.verbose >= 1:
+                    print(
+                        f"DirectMagicFlags warning: could not scan {source_file} for READMACROS: {e}",
+                        file=sys.stderr,
+                    )
 
         return explicit_files
 
@@ -721,9 +728,16 @@ class DirectMagicFlags(MagicFlagsBase):
         """
         try:
             file_result = self._get_file_analyzer_result(fname)
-        except Exception as e:
-            if self._args.verbose >= 5:
-                print(f"DirectMagicFlags warning: could not process {fname} for macro extraction: {e}")
+        except OSError as e:
+            # Soft-fail (a header may legitimately not exist yet, e.g. it is
+            # generated later in the build) — but say so: a silently skipped
+            # file drops its #defines from the macro state and the miscompile
+            # shows up far downstream with no pointer back here.
+            if self._args.verbose >= 1:
+                print(
+                    f"DirectMagicFlags warning: could not process {fname} for macro extraction: {e}",
+                    file=sys.stderr,
+                )
             return None
 
         # Process conditional compilation to get active lines using current macro state
@@ -816,9 +830,14 @@ class DirectMagicFlags(MagicFlagsBase):
         """Extract #define macros from a file (unconditionally, no preprocessor evaluation)."""
         try:
             file_result = self._get_file_analyzer_result(filename)
-        except Exception as e:
-            if self._args.verbose >= 5:
-                print(f"DirectMagicFlags warning: could not extract macros from {filename}: {e}")
+        except OSError as e:
+            # Same soft-fail contract as _compute_file_processing_result: skip
+            # the file but leave a breadcrumb, since its macros go missing.
+            if self._args.verbose >= 1:
+                print(
+                    f"DirectMagicFlags warning: could not extract macros from {filename}: {e}",
+                    file=sys.stderr,
+                )
             return
 
         updates = {}

@@ -738,9 +738,7 @@ def _extract_includes(
                 current_line += 1
             line = join_lines_strip_backslash_sz(inc_lines)
 
-        is_commented = is_position_commented_simd_optimized(
-            str_text, pos, line_byte_offsets, block_comment_spans
-        )
+        is_commented = is_position_commented_simd_optimized(str_text, pos, line_byte_offsets, block_comment_spans)
 
         # Extract filename and type using StringZilla, replacing regex.
         # Tolerate whitespace between '#' and 'include' (e.g. `#  include`).
@@ -1396,7 +1394,9 @@ def read_file_mmap(filepath, max_size=0):
             return text, bytes_analyzed, was_truncated
 
     except (OSError, ValueError):
-        # Fallback to traditional reading on any mmap failure
+        # Fallback to traditional reading on any mmap failure.
+        # No warning here: read_file_traditional diagnoses its own failure,
+        # and an mmap-specific failure that read() recovers from is benign.
         return read_file_traditional(filepath, max_size)
 
 
@@ -1429,8 +1429,18 @@ def read_file_traditional(filepath, max_size=0):
         text = data.decode("utf-8", errors="ignore")
         return text, bytes_analyzed, was_truncated
 
-    except (OSError, ValueError):
-        # Return empty content on any error
+    except (OSError, ValueError) as e:
+        # Soft-fail to empty content so a not-yet-generated header doesn't
+        # kill the dependency walk. A missing file (ENOENT) is that expected
+        # case and stays quiet; anything else (EACCES, EIO, NFS hiccup) is
+        # warned unconditionally — the empty result gets cached under this
+        # file's content hash, so a swallowed error here surfaces much later
+        # as a baffling missing-dependency failure with no breadcrumb.
+        if not isinstance(e, FileNotFoundError):
+            print(
+                f"Warning: treating unreadable file as empty: {filepath} ({e})",
+                file=sys.stderr,
+            )
         return "", 0, False
 
 

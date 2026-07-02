@@ -123,9 +123,7 @@ class TestHandleSourceVerbose:
         (tmp_path / "helper.cpp").write_text("int x;")
         context_file = str(tmp_path / "context.hpp")
         magic_flag_data = {"source_file_context": context_file}
-        result = obj._handle_source(
-            sz.Str("helper.cpp"), magic_flag_data, str(tmp_path / "main.cpp"), sz.Str("SOURCE")
-        )
+        result = obj._handle_source(sz.Str("helper.cpp"), magic_flag_data, str(tmp_path / "main.cpp"), sz.Str("SOURCE"))
         captured = capsys.readouterr()
         assert "context_file=" in captured.out
         assert str(result).endswith("helper.cpp")
@@ -326,12 +324,12 @@ class TestCollectExplicitMacroFiles:
 
     def test_handles_exception_gracefully(self, capsys):
         obj = self._make_direct()
-        # _get_file_analyzer_result will fail for nonexistent files
-        with patch.object(obj, "_get_file_analyzer_result", side_effect=Exception("file not found")):
+        # _get_file_analyzer_result raises OSError (FileNotFoundError) for nonexistent files
+        with patch.object(obj, "_get_file_analyzer_result", side_effect=FileNotFoundError("file not found")):
             result = obj._collect_explicit_macro_files(["/nonexistent/file.cpp"])
         assert result == set()
         captured = capsys.readouterr()
-        assert "could not scan" in captured.out
+        assert "could not scan" in captured.err
 
     def test_collects_readmacros(self):
         obj = self._make_direct()
