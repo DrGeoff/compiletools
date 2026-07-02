@@ -74,7 +74,7 @@ bool sweep(Grid& grid, Function func, const std::vector<Constraint::Type>& types
 
 // Priority cascade from upstream sudoku.cpp, re-expressed as "apply the first
 // rule that makes progress". The per-rule region types mirror the arguments
-// upstream's main() passes (XYZWing squares-only, Gridlock rows+columns,
+// upstream's entry point passes (XYZWing squares-only, Gridlock rows+columns,
 // chains rows-only -- these rules scan the whole grid from each seed region).
 bool apply_first_rule(Grid& grid, Step& out) {
     if (sweep(grid, Sudoku::OnlySpot(), kAllTypes, out)) return true;
