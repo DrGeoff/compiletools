@@ -1401,8 +1401,15 @@ def fetch_externals(
         # not live inside any already-resolved external's tree. The main repo is
         # never in `resolved`, so its own sources always qualify — even under the
         # default externals_dir = parent-of-gitroot layout.
+        # NOT wrappedos: source_file may be a bare-relative CLI target (e.g.
+        # --filename main.cpp) whose resolution depends on cwd, and in-process
+        # callers (tests) invoke fetch from different cwds — a cached answer
+        # would leak the first caller's cwd into later calls (skip case 3).
         real = os.path.realpath(source_file)
         for r in resolved.values():
+            # NOT cached: this is the security boundary deciding whether a
+            # declaration is trusted; resolve the external root against live
+            # clone/symlink state, mirroring the N1 boundary stat above.
             root = os.path.realpath(r.path)
             if real == root or real.startswith(root + os.sep):
                 return False
