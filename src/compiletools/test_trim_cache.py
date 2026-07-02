@@ -3869,7 +3869,7 @@ class TestReclaimOrphanTemps:
         assert stats["orphan_temp_bytes_freed"] == 0
         assert stats["failed"] == 0
         assert len(trimmer._retry) == 1
-        assert trimmer._retry[0]["removed_key"] == "orphan_temps_removed"
+        assert trimmer._retry[0].removed_key == "orphan_temps_removed"
 
         trimmer.retry_failed()
 

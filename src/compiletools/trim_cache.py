@@ -39,6 +39,7 @@ import socket
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 
 # fcntl is unavailable on Windows; the orphan-sidecar lock probe degrades to
 # "cannot prove unheld -> never reap" when it is absent (see _lock_unheld).
@@ -79,6 +80,26 @@ _PCH_COMMAND_HASH_RE = re.compile(r"^[0-9a-f]{16}$")
 # (see _pcm_command_hash docstring), so the additional entropy of an
 # object-cache-style 3-axis path layout isn't needed here.
 _PCM_COMMAND_HASH_RE = re.compile(r"^[0-9a-f]{16}$")
+
+
+@dataclass(frozen=True)
+class _CmdHashPoolSpec:
+    """The complete PCH-vs-PCM delta for ``_trim_cmd_hash_pool``.
+
+    Both pools share the ``<pool>/<cmd_hash>/<leaves> + manifest.json`` layout
+    and the whole trim policy (per-bucket keep_count, max_age keep,
+    transitive-staleness pre-eviction, lock-safe removal + retry). Everything
+    that differs is data, captured here.
+    """
+
+    hash_re: re.Pattern  # cmd_hash dir name shape
+    leaf_suffixes: tuple[str, ...]  # artefact extensions totalled per dir
+    bucket_key_field: str  # manifest field that names the keep_count bucket
+    found_key: str  # stats key for the pool's "found" metric
+    # "unique_leaf_stems": count distinct leaf names minus suffix (PCH headers).
+    # "non_legacy_buckets": count buckets with a real manifest key (PCM).
+    found_metric: str
+
 
 # Suffixes recognised inside cas-exedir buckets. Keep in lockstep with
 # ``namer.cas_*_pathname`` and ``build_backend._build_publish_rule``.
@@ -211,6 +232,60 @@ def _load_cmd_hash_manifest(cmd_hash_dir: str) -> dict | None:
 # Re-exported by cache_report.py.
 _load_pch_manifest = _load_cmd_hash_manifest
 _load_pcm_manifest = _load_cmd_hash_manifest
+
+
+@dataclass
+class _RetryItem:
+    """One removal attempt's bookkeeping, shared by the first pass and the
+    single retry pass (``retry_failed``).
+
+    ``stats`` is held by reference: crediting mutates the same per-cache dict
+    that ``main()`` later prints, whether the credit lands on the first
+    attempt or on retry. ``removed_key`` names the per-cache success counter
+    (``removed`` for objdir/exedir, ``dirs_removed`` for pchdir/pcmdir,
+    category counters for the orphan/budget passes). ``bytes_key`` optionally
+    names a per-category byte counter credited alongside ``bytes_freed``.
+    ``unmet_key`` (budget pass only) names the counter to reconcile on RETRY
+    success — a failed budget eviction is conservatively left in the unmet
+    tally at queue time, so a later successful retry must subtract it.
+    """
+
+    path: str
+    is_dir: bool
+    size: int
+    stats: dict
+    removed_key: str
+    unlink_kwargs: dict = field(default_factory=dict)
+    bytes_key: str | None = None
+    unmet_key: str | None = None
+    cleanup_sidecars: bool = False
+
+    def attempt(self) -> bool:
+        """Try the removal (lock-safe). True on success."""
+        if self.is_dir:
+            return _safe_locked_rmtree(self.path)
+        return _safe_locked_unlink(self.path, **self.unlink_kwargs)
+
+    def credit_success(self, *, dry_run: bool = False) -> None:
+        """Apply the success bookkeeping: counters, bytes, exe sidecars.
+
+        ``dry_run`` credits the counters (a would-be removal) without the
+        sidecar unlinks — dry-run must never touch disk.
+        """
+        self.stats[self.removed_key] += 1
+        self.stats["bytes_freed"] += self.size
+        if self.bytes_key:
+            self.stats[self.bytes_key] += self.size
+        if self.cleanup_sidecars and not dry_run:
+            # Sidecar files are best-effort cleanup — don't count towards
+            # bytes_freed (small, ignore failure). The ``.result`` sidecar is
+            # the per-CAS-entry test-success marker touched by the in-build
+            # test rules in CAS-only mode.
+            for sidecar_suffix in (".manifest", ".result"):
+                try:
+                    os.remove(self.path + sidecar_suffix)
+                except OSError:
+                    pass
 
 
 def _entry_mtime_size(entry):
@@ -424,18 +499,10 @@ class CacheTrimmer:
         # When --json is set, human/progress text goes to stderr so stdout
         # stays pure JSON. Default: stdout (non-JSON human mode).
         self._human = sys.stderr if getattr(args, "json", False) else sys.stdout
-        # Retry list: entries that failed their first removal attempt are queued
-        # here and retried once in retry_failed() after all caches have been
-        # trimmed. Each entry is a dict with keys: "path" (str), "is_dir"
-        # (bool), "size" (int), "stats" (the per-cache stats dict, by reference
-        # so retry mutations land in the same dict main() will print),
-        # "removed_key" (str — "removed" for objdir/exedir, "dirs_removed" for
-        # pchdir/pcmdir), "unlink_kwargs" (dict, e.g.
-        # {"skip_if_nlink_above": 1} for exedir), and "cleanup_sidecars" (bool,
-        # True for exedir entries — instructs retry_failed() to also remove the
-        # .manifest/.result sidecars on success; omitted or False for
-        # objdir/pchdir/pcmdir entries that have no sidecars to clean up).
-        self._retry: list[dict] = []
+        # Retry list: _RetryItem entries that failed their first removal
+        # attempt are queued here and retried once in retry_failed() after all
+        # caches have been trimmed. See _RetryItem for field semantics.
+        self._retry: list[_RetryItem] = []
 
     def _workers_for(self, path):
         """Worker-thread count for scanning ``path``.
@@ -453,6 +520,22 @@ class CacheTrimmer:
         if compiletools.filesystem_utils.should_parallelize_scan(fstype):
             return self.parallel
         return 1
+
+    def _remove_or_queue_retry(self, item: _RetryItem, *, fail_noun: str = "") -> bool:
+        """Attempt one lock-safe removal; on failure queue for the single
+        post-pass retry (``retry_failed``).
+
+        On success the item's stats are credited immediately. ``fail_noun``
+        is spliced into the failure message (e.g. ``"orphan temp "``) so the
+        per-pass wording is preserved. Returns True on first-pass success.
+        """
+        if item.attempt():
+            item.credit_success()
+            return True
+        if self.verbose >= 1:
+            print(f"  Failed to remove {fail_noun}{item.path} (will retry)", file=self._human)
+        self._retry.append(item)
+        return False
 
     # ------------------------------------------------------------------
     # Object directory trimming
@@ -600,26 +683,11 @@ class CacheTrimmer:
             if self.verbose >= 1:
                 action = "Would remove" if self.dry_run else "Removing"
                 print(f"  {action}: {path} ({_format_size(size)})", file=self._human)
-            if not self.dry_run:
-                if _safe_locked_unlink(path):
-                    stats["removed"] += 1
-                    stats["bytes_freed"] += size
-                else:
-                    if self.verbose >= 1:
-                        print(f"  Failed to remove {path} (will retry)", file=self._human)
-                    self._retry.append(
-                        {
-                            "path": path,
-                            "is_dir": False,
-                            "size": size,
-                            "stats": stats,
-                            "removed_key": "removed",
-                            "unlink_kwargs": {},
-                        }
-                    )
+            item = _RetryItem(path=path, is_dir=False, size=size, stats=stats, removed_key="removed")
+            if self.dry_run:
+                item.credit_success(dry_run=True)
             else:
-                stats["removed"] += 1
-                stats["bytes_freed"] += size
+                self._remove_or_queue_retry(item)
 
     # ------------------------------------------------------------------
     # PCH directory trimming
@@ -667,146 +735,16 @@ class CacheTrimmer:
             dict with statistics: total_dirs_scanned, headers_found,
             dirs_kept, dirs_removed, failed, bytes_freed.
         """
-        stats = {
-            "total_dirs_scanned": 0,
-            "headers_found": 0,
-            "dirs_kept": 0,
-            "dirs_removed": 0,
-            "failed": 0,
-            "bytes_freed": 0,
-            "orphan_temps_removed": 0,
-            "orphan_temp_bytes_freed": 0,
-            "orphan_sidecars_removed": 0,
-            "orphan_sidecar_bytes_freed": 0,
-            "cmd_hash_dirs_removed": 0,
-            "cmd_hash_dir_bytes_freed": 0,
-            "budget_removed": 0,
-            "budget_bytes_freed": 0,
-            "budget_unmet_bytes": 0,
-        }
-
-        if not os.path.isdir(pchdir):
-            return stats
-
-        # Phase 1: scan command_hash directories
-        # dir_info: {command_hash: (path, mtime, total_size, [header_basenames])}
-        dir_info = {}
-        unique_headers: set[str] = set()
-
-        try:
-            entries = list(os.scandir(pchdir))
-        except OSError as exc:
-            print(f"Error scanning {pchdir}: {exc}", file=sys.stderr)
-            return stats
-
-        cmd_dirs = [e for e in entries if e.is_dir() and _PCH_COMMAND_HASH_RE.match(e.name)]
-        stats["total_dirs_scanned"] = len(cmd_dirs)
-
-        # Each cmd_hash dir (stat its mtime + sum its .gch sizes) is an
-        # independent unit of metadata work — fan out across threads on a
-        # high-latency filesystem, serial on local disk. ``.gch`` headers
-        # whose ``header_base`` strips the 4-char ".gch" extension.
-        workers = self._workers_for(pchdir)
-        results = _map_scan(cmd_dirs, lambda e: _scan_one_cmd_hash_dir(e, (".gch",)), workers)
-
-        for result in results:
-            if result is None:
-                continue
-            name, path, dir_mtime, total_size, gch_names = result
-            headers = [n[:-4] for n in gch_names]  # strip .gch
-            dir_info[name] = (path, dir_mtime, total_size, headers)
-            unique_headers.update(headers)
-
-        stats["headers_found"] = len(unique_headers)
-        now = time.time()
-
-        # Phase 2: bucket cmd_hash dirs by header_realpath (from sidecar
-        # manifest) and apply ``keep_count`` per bucket. Legacy entries
-        # without a manifest fall into the ``__legacy__`` bucket and use
-        # the previous global-ranking semantics so the rollout is
-        # backwards-compatible.
-        buckets: dict[str, list[str]] = {}
-        for cmd_hash, (path, _mtime, _size, _headers) in dir_info.items():
-            manifest = _load_pch_manifest(path)
-            realpath = manifest.get("header_realpath") if manifest else None
-            key = realpath or "__legacy__"
-            buckets.setdefault(key, []).append(cmd_hash)
-
-        needed_dirs: set[str] = set()
-        for _bucket_key, hashes in buckets.items():
-            sorted_hashes = sorted(hashes, key=lambda ch: dir_info[ch][1], reverse=True)
-            needed_dirs.update(sorted_hashes[: self.keep_count])
-
-        if self.max_age_seconds is not None:
-            cutoff = now - self.max_age_seconds
-            for cmd_hash, (_path, mtime, _size, _headers) in dir_info.items():
-                if mtime >= cutoff:
-                    needed_dirs.add(cmd_hash)
-
-        # Phase 2b: pre-evict entries whose transitive headers have
-        # changed since the .gch was built. Best-effort — manifest
-        # absence or unreadable headers leave the entry alone.
-        # Hashes use the same git-blob-SHA1 algorithm as
-        # ``global_hash_registry._compute_external_file_hash`` so
-        # comparisons are meaningful without taking on a BuildContext
-        # dependency in the trim CLI.
-        for cmd_hash in list(needed_dirs):
-            path = dir_info[cmd_hash][0]
-            manifest = _load_pch_manifest(path)
-            if not manifest:
-                continue
-            for h_realpath, expected_hash in manifest.get("transitive_hashes", {}).items():
-                try:
-                    with open(h_realpath, "rb") as fh:
-                        content = fh.read()
-                except OSError:
-                    continue  # best-effort: missing or unreadable
-                current = hashlib.sha1(f"blob {len(content)}\0".encode() + content).hexdigest()
-                if current != expected_hash:
-                    if self.verbose >= 1:
-                        print(f"  Pre-evicting {path} (transitive {h_realpath} changed)", file=self._human)
-                    needed_dirs.discard(cmd_hash)
-                    break
-
-        # Phase 3: remove directories not needed
-        for cmd_hash, (path, _mtime, total_size, _headers) in dir_info.items():
-            if cmd_hash in needed_dirs:
-                stats["dirs_kept"] += 1
-                continue
-
-            if self.verbose >= 1:
-                action = "Would remove" if self.dry_run else "Removing"
-                print(f"  {action}: {path} ({_format_size(total_size)})", file=self._human)
-
-            if not self.dry_run:
-                # Lock each .gch file before removing the cmd_hash
-                # dir. If a build is currently generating one of the .gch
-                # files, we block until it releases — never deleting a
-                # file a peer is mid-write to. Best-effort: filesystems
-                # that don't support our lock strategies fall through to
-                # plain rmtree (the lock acquisition is wrapped to ignore
-                # errors so we don't fail trims on unlocked filesystems).
-                if _safe_locked_rmtree(path):
-                    stats["dirs_removed"] += 1
-                    stats["bytes_freed"] += total_size
-                else:
-                    if self.verbose >= 1:
-                        print(f"  Failed to remove {path} (will retry)", file=self._human)
-                    self._retry.append(
-                        {
-                            "path": path,
-                            "is_dir": True,
-                            "size": total_size,
-                            "stats": stats,
-                            "removed_key": "dirs_removed",
-                            "unlink_kwargs": {},
-                        }
-                    )
-            else:
-                stats["dirs_removed"] += 1
-                stats["bytes_freed"] += total_size
-
-        return stats
+        return self._trim_cmd_hash_pool(
+            pchdir,
+            _CmdHashPoolSpec(
+                hash_re=_PCH_COMMAND_HASH_RE,
+                leaf_suffixes=(".gch",),
+                bucket_key_field="header_realpath",
+                found_key="headers_found",
+                found_metric="unique_leaf_stems",
+            ),
+        )
 
     # ------------------------------------------------------------------
     # PCM directory trimming
@@ -847,9 +785,44 @@ class CacheTrimmer:
             dict with statistics: total_dirs_scanned, buckets_found,
             dirs_kept, dirs_removed, failed, bytes_freed.
         """
+        return self._trim_cmd_hash_pool(
+            pcmdir,
+            _CmdHashPoolSpec(
+                hash_re=_PCM_COMMAND_HASH_RE,
+                leaf_suffixes=(".pcm", ".gcm"),
+                bucket_key_field="bucket_key",
+                found_key="buckets_found",
+                found_metric="non_legacy_buckets",
+            ),
+        )
+
+    def _trim_cmd_hash_pool(self, pool_root, spec: _CmdHashPoolSpec):
+        """Shared trim implementation for the PCH and PCM cmd_hash pools.
+
+        Layout for both: ``<pool_root>/<cmd_hash>/`` dirs holding the
+        artefact leaves plus a sidecar ``manifest.json``. The four phases:
+
+        1. Scan cmd_hash dirs (parallel on high-latency filesystems).
+        2. Bucket by the manifest's ``spec.bucket_key_field`` and keep the
+           newest ``keep_count`` per bucket; legacy manifest-less entries
+           fall into ``__legacy__`` (global ranking) so the rollout is
+           backwards-compatible. ``max_age`` keeps anything younger than the
+           cutoff regardless of bucket position.
+        2b. Pre-evict entries whose recorded transitive headers changed
+           since the artefact was built. Best-effort — manifest absence or
+           unreadable headers leave the entry alone. Hashes use the same
+           git-blob-SHA1 algorithm as
+           ``global_hash_registry._compute_external_file_hash`` so
+           comparisons are meaningful without taking on a BuildContext
+           dependency in the trim CLI.
+        3. Lock-safe removal of everything else. Each leaf is locked before
+           the dir is removed — if a build is currently generating one, we
+           block until it releases, never deleting a file a peer is
+           mid-write to. Failures queue for the single post-pass retry.
+        """
         stats = {
             "total_dirs_scanned": 0,
-            "buckets_found": 0,
+            spec.found_key: 0,
             "dirs_kept": 0,
             "dirs_removed": 0,
             "failed": 0,
@@ -865,7 +838,7 @@ class CacheTrimmer:
             "budget_unmet_bytes": 0,
         }
 
-        if not os.path.isdir(pcmdir):
+        if not os.path.isdir(pool_root):
             return stats
 
         # Phase 1: scan command_hash directories.
@@ -873,18 +846,19 @@ class CacheTrimmer:
         dir_info: dict[str, tuple] = {}
 
         try:
-            entries = list(os.scandir(pcmdir))
+            entries = list(os.scandir(pool_root))
         except OSError as exc:
-            print(f"Error scanning {pcmdir}: {exc}", file=sys.stderr)
+            print(f"Error scanning {pool_root}: {exc}", file=sys.stderr)
             return stats
 
-        cmd_dirs = [e for e in entries if e.is_dir() and _PCM_COMMAND_HASH_RE.match(e.name)]
+        cmd_dirs = [e for e in entries if e.is_dir() and spec.hash_re.match(e.name)]
         stats["total_dirs_scanned"] = len(cmd_dirs)
 
-        # Same fan-out as pchdir: each cmd_hash dir is an independent unit of
-        # metadata work, parallelised on high-latency filesystems.
-        workers = self._workers_for(pcmdir)
-        results = _map_scan(cmd_dirs, lambda e: _scan_one_cmd_hash_dir(e, (".pcm", ".gcm")), workers)
+        # Each cmd_hash dir (stat its mtime + sum its leaf sizes) is an
+        # independent unit of metadata work — fan out across threads on a
+        # high-latency filesystem, serial on local disk.
+        workers = self._workers_for(pool_root)
+        results = _map_scan(cmd_dirs, lambda e: _scan_one_cmd_hash_dir(e, spec.leaf_suffixes), workers)
 
         for result in results:
             if result is None:
@@ -892,16 +866,27 @@ class CacheTrimmer:
             name, path, dir_mtime, total_size, leaves = result
             dir_info[name] = (path, dir_mtime, total_size, leaves)
 
-        # Phase 2: bucket by manifest's bucket_key. Header-unit entries
-        # use the token (``<vector>``); named-module entries use the
-        # source realpath. Legacy / manifest-less entries fall into
-        # ``__legacy__`` for global ranking so older builds keep working.
+        # Phase 2: bucket cmd_hash dirs by the manifest's bucket field and
+        # apply ``keep_count`` per bucket.
         buckets: dict[str, list[str]] = {}
         for cmd_hash, (path, _mtime, _size, _leaves) in dir_info.items():
-            manifest = _load_pcm_manifest(path)
-            bucket_key = (manifest.get("bucket_key") if manifest else None) or "__legacy__"
-            buckets.setdefault(bucket_key, []).append(cmd_hash)
-        stats["buckets_found"] = sum(1 for k in buckets if k != "__legacy__")
+            manifest = _load_cmd_hash_manifest(path)
+            key = (manifest.get(spec.bucket_key_field) if manifest else None) or "__legacy__"
+            buckets.setdefault(key, []).append(cmd_hash)
+
+        if spec.found_metric == "unique_leaf_stems":
+            # PCH reports distinct header basenames (leaf name minus suffix).
+            stems: set[str] = set()
+            for _path, _mtime, _size, leaves in dir_info.values():
+                for leaf in leaves:
+                    for suffix in spec.leaf_suffixes:
+                        if leaf.endswith(suffix):
+                            stems.add(leaf[: -len(suffix)])
+                            break
+            stats[spec.found_key] = len(stems)
+        else:
+            # PCM reports buckets that carry a real (non-legacy) manifest key.
+            stats[spec.found_key] = sum(1 for k in buckets if k != "__legacy__")
 
         needed_dirs: set[str] = set()
         for _bucket_key, hashes in buckets.items():
@@ -915,12 +900,10 @@ class CacheTrimmer:
                 if mtime >= cutoff:
                     needed_dirs.add(cmd_hash)
 
-        # Phase 2b: pre-evict entries whose transitive headers have
-        # changed. Same git-blob SHA1 algorithm as
-        # ``global_hash_registry._compute_external_file_hash``.
+        # Phase 2b: transitive-staleness pre-eviction (see docstring).
         for cmd_hash in list(needed_dirs):
             path = dir_info[cmd_hash][0]
-            manifest = _load_pcm_manifest(path)
+            manifest = _load_cmd_hash_manifest(path)
             if not manifest:
                 continue
             for h_realpath, expected_hash in manifest.get("transitive_hashes", {}).items():
@@ -928,7 +911,7 @@ class CacheTrimmer:
                     with open(h_realpath, "rb") as fh:
                         content = fh.read()
                 except OSError:
-                    continue
+                    continue  # best-effort: missing or unreadable
                 current = hashlib.sha1(f"blob {len(content)}\0".encode() + content).hexdigest()
                 if current != expected_hash:
                     if self.verbose >= 1:
@@ -936,7 +919,7 @@ class CacheTrimmer:
                     needed_dirs.discard(cmd_hash)
                     break
 
-        # Phase 3: remove dirs not in the keep set.
+        # Phase 3: remove directories not needed.
         for cmd_hash, (path, _mtime, total_size, _leaves) in dir_info.items():
             if cmd_hash in needed_dirs:
                 stats["dirs_kept"] += 1
@@ -946,26 +929,11 @@ class CacheTrimmer:
                 action = "Would remove" if self.dry_run else "Removing"
                 print(f"  {action}: {path} ({_format_size(total_size)})", file=self._human)
 
-            if not self.dry_run:
-                if _safe_locked_rmtree(path):
-                    stats["dirs_removed"] += 1
-                    stats["bytes_freed"] += total_size
-                else:
-                    if self.verbose >= 1:
-                        print(f"  Failed to remove {path} (will retry)", file=self._human)
-                    self._retry.append(
-                        {
-                            "path": path,
-                            "is_dir": True,
-                            "size": total_size,
-                            "stats": stats,
-                            "removed_key": "dirs_removed",
-                            "unlink_kwargs": {},
-                        }
-                    )
+            item = _RetryItem(path=path, is_dir=True, size=total_size, stats=stats, removed_key="dirs_removed")
+            if self.dry_run:
+                item.credit_success(dry_run=True)
             else:
-                stats["dirs_removed"] += 1
-                stats["bytes_freed"] += total_size
+                self._remove_or_queue_retry(item)
 
         return stats
 
@@ -1100,34 +1068,24 @@ class CacheTrimmer:
                 stats["removed"] += 1
                 stats["bytes_freed"] += size
                 continue
-            # I4: re-stat under the lock and skip if a peer publish
-            # elevated nlink between the initial scan and this unlink.
-            if _safe_locked_unlink(path, skip_if_nlink_above=1):
-                stats["removed"] += 1
-                stats["bytes_freed"] += size
-                # Sidecar files are best-effort cleanup — don't count
-                # towards bytes_freed (small, ignore failure). The
-                # ``.result`` sidecar is the per-CAS-entry test-success
-                # marker touched by the in-build test rules in CAS-only mode.
-                for sidecar_suffix in (".manifest", ".result"):
-                    try:
-                        os.remove(path + sidecar_suffix)
-                    except OSError:
-                        pass
-            else:
-                if self.verbose >= 1:
-                    print(f"  Failed to remove {path} (will retry)", file=self._human)
-                self._retry.append(
-                    {
-                        "path": path,
-                        "is_dir": False,
-                        "size": size,
-                        "stats": stats,
-                        "removed_key": "removed",
-                        "unlink_kwargs": {"skip_if_nlink_above": 1},
-                        "cleanup_sidecars": True,
-                    }
+            # I4: re-stat under the lock and skip if a peer publish elevated
+            # nlink between the initial scan and this unlink.
+            # cleanup_sidecars: the ``.manifest``/``.result`` sidecars are
+            # best-effort cleanup on success — not counted towards
+            # bytes_freed (small, ignore failure). The ``.result`` sidecar
+            # is the per-CAS-entry test-success marker touched by the
+            # in-build test rules in CAS-only mode.
+            self._remove_or_queue_retry(
+                _RetryItem(
+                    path=path,
+                    is_dir=False,
+                    size=size,
+                    stats=stats,
+                    removed_key="removed",
+                    unlink_kwargs={"skip_if_nlink_above": 1},
+                    cleanup_sidecars=True,
                 )
+            )
 
         return stats
 
@@ -1156,47 +1114,21 @@ class CacheTrimmer:
         At ``verbose >= 1`` a one-line note per retry outcome is written to
         ``self._human``.
         """
-        for entry in self._retry:
-            path = entry["path"]
-            is_dir = entry["is_dir"]
-            size = entry["size"]
-            stats = entry["stats"]
-            removed_key = entry["removed_key"]
-            unlink_kwargs = entry["unlink_kwargs"]
-
-            if is_dir:
-                success = _safe_locked_rmtree(path)
-            else:
-                success = _safe_locked_unlink(path, **unlink_kwargs)
-
-            if success:
-                stats[removed_key] += 1
-                stats["bytes_freed"] += size
-                # Credit the per-category byte counter when provided (e.g.
-                # orphan_temp_bytes_freed for orphan-temp retries).  Other
-                # retry sites (objdir, pchdir, pcmdir, exedir) omit bytes_key.
-                if entry.get("bytes_key"):
-                    stats[entry["bytes_key"]] += size
+        for item in self._retry:
+            if item.attempt():
+                item.credit_success()
                 # Reconcile budget_unmet_bytes: a failed budget removal was
                 # conservatively left in the unmet tally.  On retry success the
                 # bytes are gone, so reduce the unmet counter by the entry's
                 # size (floor at 0 to guard against double-crediting).
-                if entry.get("unmet_key"):
-                    stats[entry["unmet_key"]] = max(0, stats[entry["unmet_key"]] - size)
+                if item.unmet_key:
+                    item.stats[item.unmet_key] = max(0, item.stats[item.unmet_key] - item.size)
                 if self.verbose >= 1:
-                    print(f"  Retry succeeded: {path}", file=self._human)
-                # Best-effort sidecar cleanup for exedir entries (flagged
-                # explicitly via "cleanup_sidecars": True in the retry entry).
-                if entry.get("cleanup_sidecars"):
-                    for sidecar_suffix in (".manifest", ".result"):
-                        try:
-                            os.remove(path + sidecar_suffix)
-                        except OSError:
-                            pass
+                    print(f"  Retry succeeded: {item.path}", file=self._human)
             else:
-                stats["failed"] += 1
+                item.stats["failed"] += 1
                 if self.verbose >= 1:
-                    print(f"  Retry failed (leaving in place): {path}", file=self._human)
+                    print(f"  Retry failed (leaving in place): {item.path}", file=self._human)
 
         self._retry.clear()
 
@@ -1284,29 +1216,18 @@ class CacheTrimmer:
                 if self.verbose >= 1:
                     action = "Would remove orphan temp" if self.dry_run else "Removing orphan temp"
                     print(f"  {action}: {path} ({_format_size(size)})", file=self._human)
+                item = _RetryItem(
+                    path=path,
+                    is_dir=False,
+                    size=size,
+                    stats=stats,
+                    removed_key="orphan_temps_removed",
+                    bytes_key="orphan_temp_bytes_freed",
+                )
                 if self.dry_run:
-                    stats["orphan_temps_removed"] += 1
-                    stats["orphan_temp_bytes_freed"] += size
-                    stats["bytes_freed"] += size
+                    item.credit_success(dry_run=True)
                 else:
-                    if _safe_locked_unlink(path):
-                        stats["orphan_temps_removed"] += 1
-                        stats["orphan_temp_bytes_freed"] += size
-                        stats["bytes_freed"] += size
-                    else:
-                        if self.verbose >= 1:
-                            print(f"  Failed to remove orphan temp {path} (will retry)", file=self._human)
-                        self._retry.append(
-                            {
-                                "path": path,
-                                "is_dir": False,
-                                "size": size,
-                                "stats": stats,
-                                "removed_key": "orphan_temps_removed",
-                                "bytes_key": "orphan_temp_bytes_freed",
-                                "unlink_kwargs": {},
-                            }
-                        )
+                    self._remove_or_queue_retry(item, fail_noun="orphan temp ")
 
     def reclaim_orphan_sidecars(self, cache_root: str, stats: dict) -> None:
         """Remove orphaned sidecar files whose primary artefact is gone.
@@ -1572,30 +1493,18 @@ class CacheTrimmer:
                 action = "Would remove orphan cmd_hash dir" if self.dry_run else "Removing orphan cmd_hash dir"
                 print(f"  {action}: {dir_path} ({_format_size(total_size)})", file=self._human)
 
+            item = _RetryItem(
+                path=dir_path,
+                is_dir=True,
+                size=total_size,
+                stats=stats,
+                removed_key="cmd_hash_dirs_removed",
+                bytes_key="cmd_hash_dir_bytes_freed",
+            )
             if self.dry_run:
-                stats["cmd_hash_dirs_removed"] += 1
-                stats["cmd_hash_dir_bytes_freed"] += total_size
-                stats["bytes_freed"] += total_size
-                continue
-
-            if _safe_locked_rmtree(dir_path):
-                stats["cmd_hash_dirs_removed"] += 1
-                stats["cmd_hash_dir_bytes_freed"] += total_size
-                stats["bytes_freed"] += total_size
+                item.credit_success(dry_run=True)
             else:
-                if self.verbose >= 1:
-                    print(f"  Failed to remove orphan cmd_hash dir {dir_path} (will retry)", file=self._human)
-                self._retry.append(
-                    {
-                        "path": dir_path,
-                        "is_dir": True,
-                        "size": total_size,
-                        "stats": stats,
-                        "removed_key": "cmd_hash_dirs_removed",
-                        "bytes_key": "cmd_hash_dir_bytes_freed",
-                        "unlink_kwargs": {},
-                    }
-                )
+                self._remove_or_queue_retry(item, fail_noun="orphan cmd_hash dir ")
 
     def _reap_empty_buckets(self, cache_root: str, stats: dict) -> None:
         """Best-effort removal of emptied 2-hex bucket dirs in an obj/exe CAS root.
@@ -1745,41 +1654,25 @@ class CacheTrimmer:
                 total -= size
                 continue
 
-            removed = _safe_locked_rmtree(path) if is_dir else _safe_locked_unlink(path, **unlink_kwargs)
-            if removed:
+            # unmet_key: on retry success, budget_unmet_bytes must be
+            # decremented by this entry's size — a successfully-retried budget
+            # eviction was conservatively left in the unmet tally at queue time.
+            item = _RetryItem(
+                path=path,
+                is_dir=is_dir,
+                size=size,
+                stats=stats,
+                removed_key="budget_removed",
+                bytes_key="budget_bytes_freed",
+                unmet_key="budget_unmet_bytes",
+                unlink_kwargs=unlink_kwargs,
+                cleanup_sidecars=cleanup_sidecars,
+            )
+            if self._remove_or_queue_retry(item):
                 total -= size
-                stats["budget_removed"] += 1
-                stats["budget_bytes_freed"] += size
-                stats["bytes_freed"] += size
-                if cleanup_sidecars:
-                    for sidecar_suffix in (".manifest", ".result"):
-                        try:
-                            os.remove(path + sidecar_suffix)
-                        except OSError:
-                            pass
-            else:
-                # Failed removal — queue for the single post-pass retry exactly
-                # like every other site. Do NOT decrement total: for the unmet
-                # calc we conservatively assume it stays (it may be reclaimed on
-                # retry, but we must not under-report the overflow).
-                if self.verbose >= 1:
-                    print(f"  Failed to remove {path} (will retry)", file=self._human)
-                retry_entry = {
-                    "path": path,
-                    "is_dir": is_dir,
-                    "size": size,
-                    "stats": stats,
-                    "removed_key": "budget_removed",
-                    "bytes_key": "budget_bytes_freed",
-                    # On retry success, budget_unmet_bytes must be decremented by
-                    # this entry's size — a successfully-retried budget eviction
-                    # was conservatively left in the unmet tally at queue time.
-                    "unmet_key": "budget_unmet_bytes",
-                    "unlink_kwargs": unlink_kwargs,
-                }
-                if cleanup_sidecars:
-                    retry_entry["cleanup_sidecars"] = True
-                self._retry.append(retry_entry)
+            # else: do NOT decrement total — for the unmet calc we
+            # conservatively assume the entry stays (it may be reclaimed on
+            # retry, but we must not under-report the overflow).
 
         stats["budget_unmet_bytes"] = max(0, total - self.max_size_bytes)
 
@@ -2197,6 +2090,32 @@ def _lockdir_size(path: str) -> int:
     return total
 
 
+def _default_lock_args():
+    """Build the argument namespace ``locking.FileLock`` expects.
+
+    Trim runs outside a parseargs flow, so no real ``args`` object exists —
+    this stands in with the locking knobs at their defaults. One deliberate
+    exception: ``lock_cross_host_timeout`` is 300s here versus the 600s
+    default used by ``locking.py`` and ``ct_lock_helper.py``. A trim pass
+    contends with live builds by design, and waiting the full build timeout
+    for a single cache entry would stall the whole sweep — better to give
+    up at half the horizon and leave the entry for the retry pass or the
+    next trim run.
+    """
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        file_locking=True,
+        verbose=0,
+        lock_cross_host_timeout=300,
+        lock_warn_interval=30,
+        lock_creation_grace_period=2,
+        sleep_interval_lockdir=None,
+        sleep_interval_cifs=0.1,
+        sleep_interval_flock_fallback=0.1,
+    )
+
+
 def _safe_locked_unlink(path, *, skip_if_nlink_above=None):
     """Unlink path after acquiring the build lock for it.
 
@@ -2219,20 +2138,9 @@ def _safe_locked_unlink(path, *, skip_if_nlink_above=None):
     published reference and force a relink on the next build. Returns
     False (entry still considered live) when the threshold trips.
     """
-    from types import SimpleNamespace
-
     from compiletools.locking import FileLock
 
-    lock_args = SimpleNamespace(
-        file_locking=True,
-        verbose=0,
-        lock_cross_host_timeout=300,
-        lock_warn_interval=30,
-        lock_creation_grace_period=2,
-        sleep_interval_lockdir=None,
-        sleep_interval_cifs=0.1,
-        sleep_interval_flock_fallback=0.1,
-    )
+    lock_args = _default_lock_args()
     try:
         with FileLock(path, lock_args):
             if skip_if_nlink_above is not None:
@@ -2280,18 +2188,7 @@ def _safe_locked_rmtree(dir_path):
     new file is not deleted unlocked. Caller sees False and the dir is
     naturally retried on the next trim pass.
     """
-    from types import SimpleNamespace
-
-    lock_args = SimpleNamespace(
-        file_locking=True,
-        verbose=0,
-        lock_cross_host_timeout=300,
-        lock_warn_interval=30,
-        lock_creation_grace_period=2,
-        sleep_interval_lockdir=None,
-        sleep_interval_cifs=0.1,
-        sleep_interval_flock_fallback=0.1,
-    )
+    lock_args = _default_lock_args()
 
     # Lock-metadata sidecars (FlockLock/FcntlLock/CIFSLock create
     # ``<target>.lock`` and ``.lock.excl`` files alongside build artifacts).
