@@ -257,6 +257,10 @@ def parse_git_path_overrides(git_paths: list[str], environ=None) -> dict[str, st
       ``NAME`` -> ``os.path.abspath(PATH)``.  A CLI entry OVERRIDES an env
       entry for the same name.
 
+    Both sources are ``os.path.expanduser``'d before ``abspath``: the shell
+    does not tilde-expand after the ``=`` in ``--git-path name=~/path``, so
+    the natural spelling would otherwise resolve to a literal ``<cwd>/~/...``.
+
     Name normalization
     ~~~~~~~~~~~~~~~~~~
     Override names are matched **case-insensitively** against the URL-derived
@@ -302,7 +306,7 @@ def parse_git_path_overrides(git_paths: list[str], environ=None) -> dict[str, st
         name = key[len(_ENV_OVERRIDE_PREFIX) :].lower()
         if not name or not value:
             continue
-        overrides[name] = os.path.abspath(value)
+        overrides[name] = os.path.abspath(os.path.expanduser(value))
 
     for entry in git_paths:
         if "=" not in entry:
@@ -314,7 +318,7 @@ def parse_git_path_overrides(git_paths: list[str], environ=None) -> dict[str, st
             raise FetchError(f"--git-path entry '{entry}' has an empty NAME; expected NAME=PATH")
         if not path:
             raise FetchError(f"--git-path entry '{entry}' has an empty PATH; expected NAME=PATH")
-        overrides[name] = os.path.abspath(path)
+        overrides[name] = os.path.abspath(os.path.expanduser(path))
 
     return overrides
 
@@ -1401,8 +1405,15 @@ def fetch_externals(
         # not live inside any already-resolved external's tree. The main repo is
         # never in `resolved`, so its own sources always qualify — even under the
         # default externals_dir = parent-of-gitroot layout.
+        # NOT wrappedos: source_file may be a bare-relative CLI target (e.g.
+        # --filename main.cpp) whose resolution depends on cwd, and in-process
+        # callers (tests) invoke fetch from different cwds — a cached answer
+        # would leak the first caller's cwd into later calls (skip case 3).
         real = os.path.realpath(source_file)
         for r in resolved.values():
+            # NOT cached: this is the security boundary deciding whether a
+            # declaration is trusted; resolve the external root against live
+            # clone/symlink state, mirroring the N1 boundary stat above.
             root = os.path.realpath(r.path)
             if real == root or real.startswith(root + os.sep):
                 return False

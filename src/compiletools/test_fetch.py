@@ -1398,6 +1398,22 @@ def test_parse_git_path_overrides_cli_relative_is_absolutized() -> None:
     assert os.path.isabs(result["foo"])
 
 
+def test_parse_git_path_overrides_cli_tilde_is_expanded() -> None:
+    """A leading ``~`` in a CLI PATH is expanduser'd: the shell does not
+    tilde-expand after the ``=`` in ``--git-path sudoku=~/code/sudoku``, so
+    the natural spelling would otherwise become a literal ``<cwd>/~/...``.
+    """
+    result = parse_git_path_overrides(["foo=~/code/foo"], {})
+    assert result["foo"] == os.path.join(os.path.expanduser("~"), "code", "foo")
+    assert "~" not in result["foo"]
+
+
+def test_parse_git_path_overrides_env_tilde_is_expanded() -> None:
+    """CT_GIT_PATH_* values get the same expanduser treatment as CLI paths."""
+    result = parse_git_path_overrides([], {"CT_GIT_PATH_FOO": "~/code/foo"})
+    assert result["foo"] == os.path.join(os.path.expanduser("~"), "code", "foo")
+
+
 def test_parse_git_path_overrides_env_only() -> None:
     result = parse_git_path_overrides([], {"CT_GIT_PATH_FOO": "/p"})
     assert result == {"foo": "/p"}
