@@ -142,6 +142,10 @@ std::string render(const Stepper& stepper, const std::optional<Step>& last, int 
     line("  " + explanation);
     const std::string banner = status_banner(stepper.status());
     line(banner.empty() ? "  any key = next deduction, q = quit" : "  " + banner + "   (any key exits)");
+    // Erase everything below the frame: a long explanation can soft-wrap to
+    // an extra row on a narrow terminal, and the next (shorter) frame would
+    // otherwise leave that stale row behind.
+    out += "\x1b[J";
     return out;
 }
 
