@@ -52,6 +52,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -196,11 +197,13 @@ def _parse_sacct_rows(out: str, min_fields: int):
     carry the whole-task state/timing. ``fields[0]`` is the JobID, already
     ``strip()``ed with the rest of the line.
 
-    Known limitation (deliberately preserved, do not fix here): a JobID of
-    the form ``<array>_<idx>`` is expected downstream, and `_collect_timing`
-    parses the task index from it — some sacct versions emit entries this
-    filter passes but that index parse rejects (see the sacct array
-    step-entry flake).
+    This filter deliberately passes rows whose JobID contains ``_`` with a
+    non-integer suffix (sacct's compressed range form ``123_[0-5]``, het-job
+    components) — it doesn't know the array_job_id, so consumers own that
+    check: `_collect_timing` skips them via its try/except around the index
+    parse, and `_wait_for_arrays` excludes them with an exact
+    ``<array>_<int>`` fullmatch so a range row (1 row, N tasks) can't skew
+    its completion count.
     """
     for line in out.splitlines():
         fields = line.strip().split("|")
@@ -1468,7 +1471,15 @@ class SlurmBackend(ShakeBackend):
                 else:
                     all_exec_failed = False
 
-                terminal_tasks = {jid: st for jid, st in states.items() if st in self._TERMINAL_STATES and "_" in jid}
+                # Only exact per-task jids (<array>_<int>) count toward
+                # completion. sacct also emits the parent row (no suffix) and
+                # compressed range rows like "123_[0-5]" for pending/cancelled
+                # groups — a range row represents N tasks but would count as 1,
+                # corrupting the len() comparison below.
+                task_jid = re.compile(re.escape(array_job_id) + r"_\d+")
+                terminal_tasks = {
+                    jid: st for jid, st in states.items() if st in self._TERMINAL_STATES and task_jid.fullmatch(jid)
+                }
                 if len(terminal_tasks) < len(rules):
                     still_pending.add(array_job_id)
                     continue

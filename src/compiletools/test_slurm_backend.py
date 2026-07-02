@@ -493,6 +493,60 @@ class TestJobFailures:
             with pytest.raises(RuntimeError, match="Timed out"):
                 b._wait_for_arrays(index_map)
 
+    def test_wait_for_arrays_ignores_compressed_range_rows(self, tmp_path):
+        """A compressed range row (``77_[1-2]``) must not count toward task
+        completion. It represents N tasks but is a single sacct row, so
+        counting it once would let the completion check pass while tasks are
+        still outstanding — and its index parse would then hit the
+        ValueError-warning path and silently drop the failure records.
+        """
+        rules = [make_compile_rule(output=str(tmp_path / f"f{i}.o")) for i in range(3)]
+
+        # Two exact terminal rows plus a terminal range row standing in for
+        # the third task. Pre-fix the range row passed the '"_" in jid'
+        # filter, giving count 3 == len(rules): the array was declared done,
+        # the range row's int("[2]") hit the warning path, and its CANCELLED
+        # failure was silently dropped. Post-fix only exact <array>_<int>
+        # rows count (2 < 3), so the array stays pending.
+        sacct_out = _sacct_output(
+            ("77", "CANCELLED"),
+            ("77_0", "COMPLETED"),
+            ("77_1", "COMPLETED"),
+            ("77_[2]", "CANCELLED"),
+        )
+
+        # 1-poll cap: the array must be seen as still-pending → timeout.
+        b = _bare_slurm_backend(slurm_poll_interval=1800.0)
+        with (
+            patch("subprocess.check_output", return_value=sacct_out),
+            patch("time.sleep"),
+        ):
+            with pytest.raises(RuntimeError, match="Timed out"):
+                b._wait_for_arrays({"77": rules})
+
+    def test_wait_for_arrays_completes_on_exact_task_rows_despite_parent_row(self, tmp_path):
+        """Exact per-task rows drive completion; the parent row (``77``,
+        no index suffix) is excluded even when terminal, and failures are
+        attributed to the right rule by index."""
+        rules = [make_compile_rule(output=str(tmp_path / f"f{i}.o")) for i in range(2)]
+        sacct_out = _sacct_output(
+            ("77", "FAILED"),
+            ("77_0", "COMPLETED"),
+            ("77_1", "FAILED"),
+        )
+
+        b = _bare_slurm_backend(slurm_poll_interval=0.0)
+        with (
+            patch("subprocess.check_output", return_value=sacct_out),
+            patch("time.sleep"),
+        ):
+            failures = b._wait_for_arrays({"77": rules})
+
+        assert len(failures) == 1
+        assert failures[0].job_id == "77_1"
+        assert failures[0].rule is rules[1]
+        assert failures[0].state == "FAILED"
+
     def test_wait_for_output_files_raises_when_outputs_missing(self, tmp_path):
         """If sacct says COMPLETED but the output never appears (e.g. NFS
         metadata lag past the timeout, or sacct false-positive), raise
