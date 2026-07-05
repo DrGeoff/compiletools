@@ -368,7 +368,10 @@ def test_two_checkouts_produce_byte_identical_o_with_shared_cas_pcmdir(backend_n
 
     cxx = compiletools.apptools.get_functional_cxx_compiler()
     gcc_ok = (
-        cxx and "g++" in os.path.basename(cxx) and _detected_gcc_supports_modules() and _gcc_supports_header_units()
+        cxx
+        and compiletools.apptools.compiler_kind(cxx) == "gcc"
+        and _detected_gcc_supports_modules()
+        and _gcc_supports_header_units()
     )
     if not gcc_ok and not _clang_supports_header_units():
         pytest.skip("No compiler on PATH supports C++20 header units")
@@ -430,7 +433,10 @@ def test_two_checkouts_produce_byte_identical_cas_pcmdir(backend_name, tmp_path)
 
     cxx = compiletools.apptools.get_functional_cxx_compiler()
     gcc_ok = (
-        cxx and "g++" in os.path.basename(cxx) and _detected_gcc_supports_modules() and _gcc_supports_header_units()
+        cxx
+        and compiletools.apptools.compiler_kind(cxx) == "gcc"
+        and _detected_gcc_supports_modules()
+        and _gcc_supports_header_units()
     )
     if not gcc_ok and not _clang_supports_header_units():
         pytest.skip("No compiler on PATH supports C++20 header units")

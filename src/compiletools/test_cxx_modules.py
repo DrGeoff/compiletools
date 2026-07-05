@@ -493,7 +493,7 @@ def _detected_gcc_supports_modules() -> bool:
     """Probe modules support against the auto-detected functional g++."""
 
     cxx = compiletools.apptools.get_functional_cxx_compiler()
-    if not cxx or "g++" not in os.path.basename(cxx):
+    if not cxx or compiler_kind(cxx) != "gcc":
         return False
     return _probe_modules_support(cxx, "gcc")
 
@@ -683,7 +683,7 @@ def _gcc_supports_import_std() -> bool:
     """
 
     cxx = compiletools.apptools.get_functional_cxx_compiler()
-    if not cxx or "g++" not in os.path.basename(cxx):
+    if not cxx or compiler_kind(cxx) != "gcc":
         return False
     src = compiletools.apptools.find_system_std_module_source(cxx, "gcc")
     if not src:
@@ -773,7 +773,7 @@ def _gcc_supports_header_units() -> bool:
     """Probe the auto-detected g++ for header-unit precompile support."""
 
     cxx = compiletools.apptools.get_functional_cxx_compiler()
-    if not cxx or "g++" not in os.path.basename(cxx):
+    if not cxx or compiler_kind(cxx) != "gcc":
         return False
     with tempfile.TemporaryDirectory() as td:
         try:
@@ -1137,7 +1137,7 @@ def test_gcc_mapper_records_partition_names_with_colon(tmp_path, monkeypatch):
     """
 
     cxx = compiletools.apptools.get_functional_cxx_compiler()
-    if not cxx or "g++" not in os.path.basename(cxx):
+    if not cxx or compiler_kind(cxx) != "gcc":
         pytest.skip("no g++ on PATH")
 
     sample_src = uth.example_path("cxx_modules_partitions")
@@ -1192,7 +1192,7 @@ def test_cas_pcmdir_gcc_gcm_lands_in_cache(tmp_path, monkeypatch):
     """
 
     cxx = compiletools.apptools.get_functional_cxx_compiler()
-    if not cxx or "g++" not in os.path.basename(cxx):
+    if not cxx or compiler_kind(cxx) != "gcc":
         pytest.skip("no g++ on PATH")
 
     sample_src = uth.example_path("cxx_modules")
@@ -1248,7 +1248,7 @@ def test_cas_pcmdir_gcc_header_unit_gcm_survives_rebuild(tmp_path, monkeypatch):
     """
 
     cxx = compiletools.apptools.get_functional_cxx_compiler()
-    if not cxx or "g++" not in os.path.basename(cxx):
+    if not cxx or compiler_kind(cxx) != "gcc":
         pytest.skip("no g++ on PATH")
 
     sample_src = uth.example_path("cxx_modules_header_units")
@@ -1430,7 +1430,7 @@ class TestFindSystemStdModuleSource:
         """If a g++ is available and ships bits/std.cc, the helper finds it."""
 
         cxx = compiletools.apptools.get_functional_cxx_compiler()
-        if not cxx or "g++" not in os.path.basename(cxx):
+        if not cxx or compiler_kind(cxx) != "gcc":
             pytest.skip("no g++ on PATH")
         path = compiletools.apptools.find_system_std_module_source(cxx, "gcc")
         if path is None:
