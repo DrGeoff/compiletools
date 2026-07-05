@@ -5,6 +5,7 @@ ct-lock-helper. All policies (timeouts, sleep intervals) are configured via
 args object from apptools.py.
 """
 
+import asyncio
 import contextlib
 import os
 import platform
@@ -99,6 +100,30 @@ class FcntlLock:
             os.close(self.fd)
             self.fd = None
             raise
+
+    def acquire_nonblocking(self) -> bool:
+        """Try to acquire without blocking (LOCK_EX | LOCK_NB).
+
+        Returns True on success (sets self.fd), False on contention leaving
+        NO fd open. Mirrors acquire() otherwise. Note POSIX fcntl record locks
+        are per-process, so in-process contention is not observed — this is a
+        cross-process fast path (the production case) for the async scheduler.
+        """
+        if fcntl is None:
+            raise RuntimeError("fcntl module not available (Windows?); cannot use fcntl lock strategy")
+        compiletools.lock_utils.ensure_parent_dir(self.lockfile)
+        fd = os.open(self.lockfile, os.O_CREAT | os.O_RDWR, 0o666)
+        try:
+            os.fchmod(fd, 0o666)
+        except OSError:
+            pass
+        try:
+            fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)  # no dangling fd on contention
+            return False
+        self.fd = fd
+        return True
 
     def release(self):
         """Release fcntl lock and close fd. Does NOT unlink lock file."""
@@ -649,6 +674,28 @@ class FlockLock:
             self.fd = None
             raise
 
+    def acquire_nonblocking(self) -> bool:
+        """Try to acquire without blocking (LOCK_EX | LOCK_NB).
+
+        Returns True on success (sets self.fd), False on contention leaving
+        NO fd open. flock locks are per open-file-description, so this detects
+        contention both cross-process and in-process (distinct fds)."""
+        if fcntl is None:
+            raise RuntimeError("fcntl module not available (Windows?); cannot use flock lock strategy")
+        compiletools.lock_utils.ensure_parent_dir(self.lockfile)
+        fd = os.open(self.lockfile, os.O_CREAT | os.O_RDWR, 0o666)
+        try:
+            os.fchmod(fd, 0o666)
+        except OSError:
+            pass
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)  # no dangling fd on contention
+            return False
+        self.fd = fd
+        return True
+
     def release(self):
         """Release flock and close fd. Does NOT unlink lock file."""
         if self.fd is not None:
@@ -1146,3 +1193,205 @@ def _rewrite_link_cmd_for_temp(link_cmd: list[str], target: str, tempfile_path: 
             return cmd, mutates
 
     return cmd, False
+
+
+# ---------------------------------------------------------------------------
+# Async twins (M2): true-async subprocess dispatch for ShakeBackend.
+#
+# These mirror the sync atomic_compile / atomic_link / execute_*_rule bodies
+# VERBATIM for the load-bearing lock / temp / rename / reap ordering — only
+# the subprocess spawn (asyncio.create_subprocess_exec instead of Popen) and
+# the lock acquire (non-blocking fast path, then a thread-pool fallback) are
+# different. The sync functions above remain the single source of truth for
+# the invariants; any change to those must be mirrored here. SlurmBackend and
+# the Make/Ninja native flock wrappers keep using the sync path.
+# ---------------------------------------------------------------------------
+
+
+async def _run_child_async(
+    cmd: list[str],
+    *,
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+    on_spawn: Callable[[int], None] | None = None,
+    on_reap: Callable[[int], None] | None = None,
+) -> int:
+    """Async twin of the child-spawn half of ``_run_with_signal_forwarding``.
+
+    Spawns *cmd* in a new session (``start_new_session=True``), awaits it, and
+    returns the child's returncode. Stdout/stderr inherit the parent's fds so
+    diagnostics stream live. ``on_spawn`` / ``on_reap`` (when set) receive the
+    child's pgid once just after spawn and once after reap — the caller's single
+    event-loop signal handler uses them to track live children so it can forward
+    SIGINT/SIGTERM to every process group. On ``CancelledError`` the child's
+    process group is SIGKILLed and reaped before re-raising, so a cancelled
+    build never orphans a compiler that keeps writing the (soon-unlocked) target.
+    """
+    proc = await asyncio.create_subprocess_exec(*cmd, cwd=cwd, env=env, start_new_session=True)
+    try:
+        child_pgid: int | None = os.getpgid(proc.pid)
+    except (OSError, ProcessLookupError):
+        child_pgid = None
+    if on_spawn is not None and child_pgid is not None:
+        on_spawn(child_pgid)
+    try:
+        return await proc.wait()
+    except asyncio.CancelledError:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            pass
+        with contextlib.suppress(Exception):
+            await proc.wait()
+        raise
+    finally:
+        if on_reap is not None and child_pgid is not None:
+            on_reap(child_pgid)
+
+
+async def _async_acquire(lock) -> None:
+    """Acquire *lock* without blocking the event loop.
+
+    Fast path: if the lock exposes ``acquire_nonblocking()`` and it succeeds,
+    return immediately (no thread hop). On contention — or for locks without
+    the non-blocking API (LockdirLock / CIFSLock / _NullLock) — fall back to the
+    blocking ``acquire()`` on the default executor, so the loop keeps running
+    other ready tasks while this one waits for the lock.
+    """
+    nb = getattr(lock, "acquire_nonblocking", None)
+    if nb is not None and nb():
+        return
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, lock.acquire)
+
+
+async def atomic_compile_async(
+    lock,
+    target: str,
+    compile_cmd: list[str],
+    *,
+    skip_if_exists: bool = False,
+    cwd: str | None = None,
+    on_spawn: Callable[[int], None] | None = None,
+    on_reap: Callable[[int], None] | None = None,
+) -> int | None:
+    """Async twin of ``atomic_compile``. Same lock/temp/rename/reap ordering;
+    only the spawn and the acquire differ. See ``atomic_compile`` for the full
+    rationale on why sidecar locking + producer temp+rename are load-bearing.
+
+    Returns the child's returncode (0 on success), or ``None`` when
+    ``skip_if_exists`` short-circuited (a peer already produced the target).
+    """
+    if lock is None:
+        lock = _NullLock()
+    pid = os.getpid()
+    tempfile_path = f"{target}.{pid}.{os.urandom(2).hex()}.tmp"
+    await _async_acquire(lock)
+    try:
+        if skip_if_exists and os.path.exists(target):
+            return None
+        cmd = list(compile_cmd) + ["-o", tempfile_path]
+        rc = await _run_child_async(cmd, cwd=cwd, on_spawn=on_spawn, on_reap=on_reap)
+        if rc != 0:
+            raise subprocess.CalledProcessError(rc, cmd)
+        os.replace(tempfile_path, target)  # child already reaped
+        return rc
+    finally:
+        with contextlib.suppress(OSError):
+            if os.path.exists(tempfile_path):
+                os.unlink(tempfile_path)  # temp removed BEFORE release
+        lock.release()
+
+
+async def atomic_link_async(
+    lock,
+    target: str,
+    link_cmd: list[str],
+    *,
+    skip_if_exists: bool = False,
+    on_spawn: Callable[[int], None] | None = None,
+    on_reap: Callable[[int], None] | None = None,
+) -> int | None:
+    """Async twin of ``atomic_link`` (reuses ``_rewrite_link_cmd_for_temp`` and
+    the ar-seed logic). See ``atomic_link`` for rationale.
+
+    Returns 0 on success, or ``None`` when skipped per ``skip_if_exists``.
+    """
+    if lock is None:
+        lock = _NullLock()
+    pid = os.getpid()
+    tempfile_path = f"{target}.{pid}.{os.urandom(2).hex()}.tmp"
+    rewritten_cmd, ar_appends = _rewrite_link_cmd_for_temp(link_cmd, target, tempfile_path)
+    if rewritten_cmd == list(link_cmd):
+        verbose = getattr(getattr(lock, "args", None), "verbose", 0)
+        _emit_no_temp_warning(verbose, link_cmd, target)
+    await _async_acquire(lock)
+    try:
+        if skip_if_exists and os.path.exists(target):
+            return None
+        if ar_appends and os.path.exists(target) and os.path.getsize(target) > 0:
+            try:
+                shutil.copyfile(target, tempfile_path)
+            except OSError:
+                pass
+        rc = await _run_child_async(rewritten_cmd, on_spawn=on_spawn, on_reap=on_reap)
+        if rc != 0:
+            raise subprocess.CalledProcessError(rc, rewritten_cmd)
+        if os.path.exists(tempfile_path):
+            os.replace(tempfile_path, target)
+        return rc
+    finally:
+        with contextlib.suppress(OSError):
+            if os.path.exists(tempfile_path):
+                os.unlink(tempfile_path)
+        lock.release()
+
+
+async def execute_compile_rule_async(
+    target: str,
+    cmd: list[str],
+    args,
+    *,
+    skip_if_exists: bool = False,
+    cwd: str | None = None,
+    on_spawn: Callable[[int], None] | None = None,
+    on_reap: Callable[[int], None] | None = None,
+) -> bool:
+    """Async twin of ``execute_compile_rule``. Strips ``-o target`` and runs
+    under a target-keyed FileLock. Returns True on a CAS short-circuit."""
+    try:
+        o_idx = cmd.index("-o")
+    except ValueError as e:
+        raise AssertionError(f"compile rule for {target!r} missing -o flag: {cmd}") from e
+    cmd_without_output = cmd[:o_idx] + cmd[o_idx + 2 :]
+    result = await atomic_compile_async(
+        FileLock(target, args).lock,
+        target,
+        cmd_without_output,
+        skip_if_exists=skip_if_exists,
+        cwd=cwd,
+        on_spawn=on_spawn,
+        on_reap=on_reap,
+    )
+    return result is None
+
+
+async def execute_link_rule_async(
+    target: str,
+    cmd: list[str],
+    args,
+    *,
+    skip_if_exists: bool = False,
+    on_spawn: Callable[[int], None] | None = None,
+    on_reap: Callable[[int], None] | None = None,
+) -> bool:
+    """Async twin of ``execute_link_rule``. Returns True on a CAS short-circuit."""
+    result = await atomic_link_async(
+        FileLock(target, args).lock,
+        target,
+        cmd,
+        skip_if_exists=skip_if_exists,
+        on_spawn=on_spawn,
+        on_reap=on_reap,
+    )
+    return result is None
