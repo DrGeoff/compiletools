@@ -24,6 +24,7 @@ from compiletools.build_context import BuildContext
 from compiletools.build_graph import BuildGraph, BuildRule
 from compiletools.global_hash_registry import get_file_hash
 from compiletools.locking import FlockLock, atomic_compile
+from compiletools.priority_gate import PriorityGate
 from compiletools.testhelper import ShakeBackendTestContext
 from compiletools.trace_backend import (
     ShakeBackend,
@@ -133,6 +134,80 @@ def test_execute_rule_no_queue_wait_when_unset(tmp_path, monkeypatch):
     rules = [e for e in timer._collect_rules() if e.category == "compile"]
     assert rules
     assert "queue_wait_s" not in rules[0].metadata
+
+
+# ---------------------------------------------------------------------------
+# M1: critical-path scheduling wiring
+# ---------------------------------------------------------------------------
+
+
+def test_execute_writes_cost_sidecar(tmp_path, monkeypatch):
+    """A full execute() run folds observed elapsed times into .ct-rule-costs.json."""
+    from compiletools import rule_cost
+
+    backend = _make_bare_shake_backend(tmp_path)
+    backend.args.parallel = 2
+    backend.args.use_mtime = False
+    backend.args.verbose = 0
+    graph = BuildGraph()
+    obj = str(tmp_path / "a.o")
+    graph.add_rule(BuildRule(output=obj, inputs=["a.cpp"], command=["true", "-o", obj], rule_type="compile"))
+    backend._graph = graph
+    # execute_compile_rule mocked so no real compiler runs; returns False (ran,
+    # no cache hit). The COMPILE rule is content-addressable so _do_build returns
+    # True without needing the file to exist.
+    monkeypatch.setattr("compiletools.trace_backend.execute_compile_rule", lambda *a, **k: False)
+
+    backend.execute(obj)
+
+    cost_path = os.path.join(backend.args.cas_objdir, rule_cost.COST_FILE)
+    assert os.path.exists(cost_path)
+    hist = rule_cost.load_cost_history(cost_path)
+    rule = graph.get_rule(obj)
+    assert rule is not None
+    assert rule_cost.cost_key(rule) in hist
+
+
+def test_execute_prefers_high_critical_time_rule(tmp_path, monkeypatch):
+    """With one slot, the header_unit long pole executes before cheap compiles."""
+    backend = _make_bare_shake_backend(tmp_path)
+    backend.args.parallel = 1  # single slot forces priority ordering
+    backend.args.use_mtime = False
+    backend.args.verbose = 0
+
+    def src(name):
+        p = tmp_path / name
+        p.write_text("")  # real file so global_hash_registry can hash inputs
+        return str(p)
+
+    graph = BuildGraph()
+    pole = str(tmp_path / "pole.pcm")
+    pole_src = src("pole.hpp")
+    compiles = [str(tmp_path / f"c{i}.o") for i in range(4)]
+    csrcs = [src(f"c{i}.cpp") for i in range(4)]
+    # A phony 'all' that depends on a cheap compile FIRST (grabs the immediate
+    # free slot) then the pole then the rest, so ordering is decided by the gate.
+    order_inputs = [compiles[0], pole] + compiles[1:]
+    graph.add_rule(BuildRule(output="all", inputs=order_inputs, command=None, rule_type="phony"))
+    graph.add_rule(BuildRule(output=pole, inputs=[pole_src], command=["true"], rule_type="header_unit"))
+    for i, c in enumerate(compiles):
+        graph.add_rule(BuildRule(output=c, inputs=[csrcs[i]], command=["true"], rule_type="compile"))
+    backend._graph = graph
+
+    executed: list[tuple[str, str]] = []
+
+    def spy(self, rule, target, flat_cmd, queued_at=None):
+        executed.append((rule.rule_type, target))
+        with open(target, "w"):  # materialize output so post-execute checks pass
+            pass
+
+    monkeypatch.setattr(ShakeBackend, "_execute_rule", spy)
+
+    backend.execute("all")
+
+    # First dispatched grabs the free slot; the pole must be dispatched next.
+    assert executed[0][1] == compiles[0], executed
+    assert executed[1] == ("header_unit", pole), executed
 
 
 # ---------------------------------------------------------------------------
@@ -888,12 +963,12 @@ class TestContentAddressableShortCircuit:
             traces = TraceStore(str(td / ".ct-traces.json"))
 
             memo: dict[str, asyncio.Task[bool]] = {}
-            sem = asyncio.Semaphore(1)
+            gate = PriorityGate(1)
             with mock.patch(
                 "compiletools.locking._run_with_signal_forwarding",
                 side_effect=_swf_writer(b"\x7fELF new object"),
             ) as mock_swf:
-                changed = asyncio.run(backend._build_async("foo.o", graph, traces, memo, sem))
+                changed = asyncio.run(backend._build_async("foo.o", graph, traces, memo, gate, {}))
                 assert changed is True
                 assert mock_swf.call_count == 1
 
@@ -1079,8 +1154,8 @@ class TestSymlinkPublishShortCircuit:
             monkeypatch.setattr(backend, "_execute_rule", fake_execute)
             traces = TraceStore(str(td / ".ct-traces.json"))
             memo: dict[str, asyncio.Task[bool]] = {}
-            sem = asyncio.Semaphore(1)
-            asyncio.run(backend._build_async(user_path, graph, traces, memo, sem))
+            gate = PriorityGate(1)
+            asyncio.run(backend._build_async(user_path, graph, traces, memo, gate, {}))
             assert executed == [user_path]
             assert os.path.samefile(cas_path, user_path)
 
@@ -1114,8 +1189,8 @@ class TestSymlinkPublishShortCircuit:
             monkeypatch.setattr(backend, "_execute_rule", fake_execute)
             traces = TraceStore(str(td / ".ct-traces.json"))
             memo: dict[str, asyncio.Task[bool]] = {}
-            sem = asyncio.Semaphore(1)
-            asyncio.run(backend._build_async(user_path, graph, traces, memo, sem))
+            gate = PriorityGate(1)
+            asyncio.run(backend._build_async(user_path, graph, traces, memo, gate, {}))
             assert executed == [user_path]
             assert os.path.samefile(cas_path, user_path)
 
@@ -1565,7 +1640,7 @@ class TestShakeTestRulesExecutedDuringBuild:
         with ShakeBackendTestContext(graph) as (backend, _tmpdir):
             traces = TraceStore(str(tmp_path / ".ct-traces.json"))
             memo: dict[str, asyncio.Task[bool]] = {}
-            changed = asyncio.run(backend._build_async(result_path, graph, traces, memo, asyncio.Semaphore(1)))
+            changed = asyncio.run(backend._build_async(result_path, graph, traces, memo, PriorityGate(1), {}))
             # Test rules do not participate in early cutoff.
             assert changed is False
             # The success marker was touched by _touch_result_marker on rc==0.
@@ -1590,7 +1665,7 @@ class TestShakeTestRulesExecutedDuringBuild:
         with ShakeBackendTestContext(graph) as (backend, _tmpdir):
             traces = TraceStore(str(tmp_path / ".ct-traces.json"))
             memo: dict[str, asyncio.Task[bool]] = {}
-            asyncio.run(backend._build_async(result_path, graph, traces, memo, asyncio.Semaphore(1)))
+            asyncio.run(backend._build_async(result_path, graph, traces, memo, PriorityGate(1), {}))
             # Failure aggregated, not raised mid-flight; .result NOT touched.
             assert backend._test_failures
             assert result_path in backend._test_failures[0]

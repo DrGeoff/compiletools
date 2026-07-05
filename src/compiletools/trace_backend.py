@@ -66,6 +66,7 @@ import compiletools.diagnostics
 import compiletools.filesystem_utils
 import compiletools.git_utils
 import compiletools.wrappedos
+from compiletools import rule_cost
 from compiletools.build_backend import (
     _DEFAULT_SLURM_EXPORT,
     _ORDER_ONLY_DEP_FORBIDDEN_EXTS,
@@ -79,6 +80,7 @@ from compiletools.build_graph import BuildGraph, BuildRule, RuleType
 from compiletools.build_timer import _cas_kind_for_rule_type
 from compiletools.global_hash_registry import get_file_hash
 from compiletools.locking import execute_compile_rule, execute_link_rule
+from compiletools.priority_gate import PriorityGate
 
 logger = logging.getLogger(__name__)
 
@@ -340,13 +342,32 @@ class ShakeBackend(BuildBackend):
 
         parallel = getattr(self.args, "parallel", 1)
         max_workers = parallel if parallel and parallel > 0 else 1
-        sem = asyncio.Semaphore(max_workers)
         memo: dict[str, asyncio.Task[bool]] = {}
 
+        # M1: critical-path scheduling. Load the learned cost history (best
+        # effort) and precompute each rule's critical time (longest remaining
+        # path to the target) so the PriorityGate starts long poles first. Any
+        # failure degrades to an empty crit map -> priority 0 -> today's FIFO.
+        cost_path = os.path.join(self.args.cas_objdir, rule_cost.COST_FILE)
         try:
-            asyncio.run(self._build_async(walk_target, self._graph, traces, memo, sem))
+            history = rule_cost.load_cost_history(cost_path)
+            crit = rule_cost.compute_critical_times(self._graph, lambda r: rule_cost.estimate_cost(r, history))
+        except Exception:
+            history, crit = {}, {}
+        gate = PriorityGate(max_workers)
+        # Observed per-rule elapsed times accumulate here during the build and
+        # are folded back into the cost history on the way out (best effort).
+        self._observed_costs: dict[str, float] = {}
+
+        try:
+            asyncio.run(self._build_async(walk_target, self._graph, traces, memo, gate, crit))
         finally:
             traces.save()
+            try:
+                history.update(self._observed_costs)
+                rule_cost.save_cost_history(cost_path, history)
+            except Exception:
+                pass
 
         # A failed test only appended to _test_failures (so sibling rules
         # already in flight could finish); surface the aggregate now so a
@@ -360,19 +381,21 @@ class ShakeBackend(BuildBackend):
         graph: BuildGraph,
         traces: TraceStore,
         memo: dict[str, asyncio.Task[bool]],
-        sem: asyncio.Semaphore,
+        gate: PriorityGate,
+        crit: dict[str, float],
     ) -> bool:
         """Async suspending scheduler with verifying traces and early cutoff.
 
-        Uses asyncio.gather for fan-out (no deadlock risk) and a semaphore
-        to limit subprocess concurrency.  Memoization via the memo dict
-        ensures each target is built at most once (diamond deps await the
-        same task).
+        Uses asyncio.gather for fan-out (no deadlock risk) and a PriorityGate
+        to limit subprocess concurrency, admitting the highest critical-time
+        rule first (``crit`` maps rule output -> critical time).  Memoization
+        via the memo dict ensures each target is built at most once (diamond
+        deps await the same task).
 
         Returns True if the target's output changed (dependents should rebuild).
         """
         if target not in memo:
-            memo[target] = asyncio.ensure_future(self._do_build(target, graph, traces, memo, sem))
+            memo[target] = asyncio.ensure_future(self._do_build(target, graph, traces, memo, gate, crit))
         return await memo[target]
 
     async def _do_build(
@@ -381,7 +404,8 @@ class ShakeBackend(BuildBackend):
         graph: BuildGraph,
         traces: TraceStore,
         memo: dict[str, asyncio.Task[bool]],
-        sem: asyncio.Semaphore,
+        gate: PriorityGate,
+        crit: dict[str, float],
     ) -> bool:
         """Build a single target, recursing into dependencies via gather."""
         rule = graph.get_rule(target)
@@ -389,7 +413,9 @@ class ShakeBackend(BuildBackend):
             return False  # Leaf node (source/header file)
 
         if rule.rule_type == RuleType.PHONY:
-            results = await asyncio.gather(*(self._build_async(inp, graph, traces, memo, sem) for inp in rule.inputs))
+            results = await asyncio.gather(
+                *(self._build_async(inp, graph, traces, memo, gate, crit) for inp in rule.inputs)
+            )
             return any(results)
 
         if rule.rule_type == RuleType.TEST:
@@ -400,11 +426,11 @@ class ShakeBackend(BuildBackend):
             # just mkdir it; do not walk it, an MKDIR rule has no on-disk file
             # output and would trip _make_trace_entry). ``inputs`` is populated
             # in mtime mode (the exe path again) and empty in CAS-only mode.
-            await asyncio.gather(*(self._build_async(inp, graph, traces, memo, sem) for inp in rule.inputs))
+            await asyncio.gather(*(self._build_async(inp, graph, traces, memo, gate, crit) for inp in rule.inputs))
             for dep in rule.order_only_deps:
                 dep_rule = graph.get_rule(dep)
                 if dep_rule is not None and dep_rule.rule_type != RuleType.MKDIR:
-                    await self._build_async(dep, graph, traces, memo, sem)
+                    await self._build_async(dep, graph, traces, memo, gate, crit)
                 else:
                     os.makedirs(dep, exist_ok=True)
             # Rerun-skip predicate (CAS-only mode): a test rule's ``output`` is
@@ -420,8 +446,11 @@ class ShakeBackend(BuildBackend):
             assert rule.command is not None, "test rules always carry a command"
             loop = asyncio.get_running_loop()
             queued_at = time.monotonic()
-            async with sem:
+            await gate.acquire(crit.get(target, 0.0))
+            try:
                 await loop.run_in_executor(None, self._execute_rule, rule, target, list(rule.command), queued_at)
+            finally:
+                gate.release()
             # Test rules never enter the trace store: _execute_rule records the
             # outcome (success marker touched, or failure appended to
             # _test_failures) and we deliberately do NOT call _make_trace_entry
@@ -493,7 +522,9 @@ class ShakeBackend(BuildBackend):
                 pass  # target missing or cas input not yet built; fall through
 
         # SUSPEND: build all inputs concurrently via gather.
-        results = await asyncio.gather(*(self._build_async(inp, graph, traces, memo, sem) for inp in rule.inputs))
+        results = await asyncio.gather(
+            *(self._build_async(inp, graph, traces, memo, gate, crit) for inp in rule.inputs)
+        )
         any_input_rebuilt = any(results)
 
         # VERIFY TRACE (non-CA rules only)
@@ -517,8 +548,11 @@ class ShakeBackend(BuildBackend):
 
         loop = asyncio.get_running_loop()
         queued_at = time.monotonic()
-        async with sem:
+        await gate.acquire(crit.get(target, 0.0))
+        try:
             await loop.run_in_executor(None, self._execute_rule, rule, target, flat_cmd, queued_at)
+        finally:
+            gate.release()
 
         # CA outputs don't need trace recording or early cutoff
         if _is_build_artifact(rule):
@@ -592,6 +626,15 @@ class ShakeBackend(BuildBackend):
 
         # Record per-rule timing
         elapsed = time.monotonic() - start
+        # M1: feed the observed elapsed back into the cost model so the next
+        # build schedules by learned costs. Best effort; TEST rules are excluded
+        # (their duration is exe-runtime, not build work on the critical path).
+        observed = getattr(self, "_observed_costs", None)
+        if observed is not None and rule.rule_type != RuleType.TEST:
+            try:
+                observed[rule_cost.cost_key(rule)] = elapsed
+            except Exception:
+                pass
         timer = self._timer
         # Build CAS metadata for the in-process record_rule call.  trace_backend
         # executes rules in-process, so the in-memory record_rule(metadata=...)
