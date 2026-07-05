@@ -79,6 +79,63 @@ def _swf_writer(content: bytes = b"\x7fELF fake", returncode: int = 0):
 
 
 # ---------------------------------------------------------------------------
+# M0: queue-wait attribution
+# ---------------------------------------------------------------------------
+
+
+def test_execute_rule_records_queue_wait(tmp_path, monkeypatch):
+    """queued_at threaded into _execute_rule surfaces as metadata.queue_wait_s."""
+    import time
+
+    from compiletools.build_timer import BuildTimer
+
+    backend = _make_bare_shake_backend(tmp_path)
+    timer = BuildTimer(enabled=True, backend="shake")
+    backend.context.timer = timer
+    rule = BuildRule(
+        output=str(tmp_path / "x.o"),
+        inputs=["x.cpp"],
+        command=["true"],
+        rule_type="compile",
+    )
+    monkeypatch.setattr(
+        "compiletools.trace_backend.execute_compile_rule",
+        lambda *a, **k: False,
+    )
+    queued = time.monotonic() - 0.05
+    with timer.phase("build_execution"):
+        backend._execute_rule(rule, rule.output, ["true"], queued_at=queued)
+    rules = [e for e in timer._collect_rules() if e.category == "compile"]
+    assert rules, "expected a recorded compile rule"
+    assert "queue_wait_s" in rules[0].metadata
+    assert rules[0].metadata["queue_wait_s"] >= 0.0
+
+
+def test_execute_rule_no_queue_wait_when_unset(tmp_path, monkeypatch):
+    """Omitting queued_at leaves queue_wait_s absent (back-compat)."""
+    from compiletools.build_timer import BuildTimer
+
+    backend = _make_bare_shake_backend(tmp_path)
+    timer = BuildTimer(enabled=True, backend="shake")
+    backend.context.timer = timer
+    rule = BuildRule(
+        output=str(tmp_path / "x.o"),
+        inputs=["x.cpp"],
+        command=["true"],
+        rule_type="compile",
+    )
+    monkeypatch.setattr(
+        "compiletools.trace_backend.execute_compile_rule",
+        lambda *a, **k: False,
+    )
+    with timer.phase("build_execution"):
+        backend._execute_rule(rule, rule.output, ["true"])
+    rules = [e for e in timer._collect_rules() if e.category == "compile"]
+    assert rules
+    assert "queue_wait_s" not in rules[0].metadata
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 
@@ -1014,7 +1071,7 @@ class TestSymlinkPublishShortCircuit:
             monkeypatch.chdir(tmp_path)
             executed: list[str] = []
 
-            def fake_execute(rule, target, flat_cmd):
+            def fake_execute(rule, target, flat_cmd, queued_at=None):
                 # Mirror ct-cas-publish: hardlink cas_path to user_path.
                 executed.append(target)
                 os.link(cas_path, user_path)
@@ -1048,7 +1105,7 @@ class TestSymlinkPublishShortCircuit:
             monkeypatch.chdir(tmp_path)
             executed: list[str] = []
 
-            def fake_execute(rule, target, flat_cmd):
+            def fake_execute(rule, target, flat_cmd, queued_at=None):
                 # Mirror ct-cas-publish atomic re-link: unlink + hardlink.
                 executed.append(target)
                 os.unlink(user_path)

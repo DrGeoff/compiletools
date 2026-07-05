@@ -419,8 +419,9 @@ class ShakeBackend(BuildBackend):
                 return False
             assert rule.command is not None, "test rules always carry a command"
             loop = asyncio.get_running_loop()
+            queued_at = time.monotonic()
             async with sem:
-                await loop.run_in_executor(None, self._execute_rule, rule, target, list(rule.command))
+                await loop.run_in_executor(None, self._execute_rule, rule, target, list(rule.command), queued_at)
             # Test rules never enter the trace store: _execute_rule records the
             # outcome (success marker touched, or failure appended to
             # _test_failures) and we deliberately do NOT call _make_trace_entry
@@ -515,8 +516,9 @@ class ShakeBackend(BuildBackend):
         flat_cmd = list(cmd)
 
         loop = asyncio.get_running_loop()
+        queued_at = time.monotonic()
         async with sem:
-            await loop.run_in_executor(None, self._execute_rule, rule, target, flat_cmd)
+            await loop.run_in_executor(None, self._execute_rule, rule, target, flat_cmd, queued_at)
 
         # CA outputs don't need trace recording or early cutoff
         if _is_build_artifact(rule):
@@ -549,13 +551,18 @@ class ShakeBackend(BuildBackend):
         else:
             self._test_failures.append(f"{rule.output} (exit {result.returncode}): {' '.join(flat_cmd)}")
 
-    def _execute_rule(self, rule: BuildRule, target: str, flat_cmd: list[str]) -> None:
+    def _execute_rule(self, rule: BuildRule, target: str, flat_cmd: list[str], queued_at: float | None = None) -> None:
         """Run the subprocess for a single build rule (called from a thread).
 
         ``skip_if_exists=True`` on the three CA branches closes the TOCTOU
         window between the pre-lock fast-path in ``_do_build`` and the
         helper's own lock acquire. The ``else`` branch keeps the default
         False — verify-trace already decided the output is stale.
+
+        ``queued_at`` is the ``time.monotonic()`` stamp taken in ``_do_build``
+        immediately before the concurrency-gate acquire. When supplied it is
+        recorded as ``metadata["queue_wait_s"]`` so gate-wait is separable from
+        run-time in the timing report (M0 attribution).
         """
         start = time.monotonic()
         # cas_hit semantics: True iff execute_*_rule returned True because
@@ -607,6 +614,10 @@ class ShakeBackend(BuildBackend):
             }
             if cas_kind:
                 metadata["cas.kind"] = cas_kind
+        if queued_at is not None:
+            if metadata is None:
+                metadata = {}
+            metadata["queue_wait_s"] = round(start - queued_at, 6)
         if timer:
             source = rule.inputs[0] if rule.inputs else ""
             timer.record_rule(
