@@ -79,7 +79,13 @@ from compiletools.build_backend import (
 from compiletools.build_graph import BuildGraph, BuildRule, RuleType
 from compiletools.build_timer import _cas_kind_for_rule_type
 from compiletools.global_hash_registry import get_file_hash
-from compiletools.locking import execute_compile_rule, execute_link_rule
+from compiletools.locking import (
+    _run_child_async,
+    execute_compile_rule,
+    execute_compile_rule_async,
+    execute_link_rule,
+    execute_link_rule_async,
+)
 from compiletools.priority_gate import PriorityGate
 
 logger = logging.getLogger(__name__)
@@ -325,17 +331,26 @@ class ShakeBackend(BuildBackend):
         """
         if self._graph is None:
             raise RuntimeError("generate() must be called before execute()")
+        graph = self._graph  # non-None local: attribute narrowing is lost inside the closure below
 
         if target == "runtests":
-            walk_target = "runtests" if self._graph.get_rule("runtests") is not None else target
+            walk_target = "runtests" if graph.get_rule("runtests") is not None else target
         elif target == "build":
-            walk_target = "all" if self._graph.get_rule("all") is not None else target
+            walk_target = "all" if graph.get_rule("all") is not None else target
         else:
             walk_target = target
 
         # Each execute() call is a fresh top-level traversal; clear any
         # aggregated failures from a prior call on the same backend instance.
         self._test_failures = []
+
+        # M2 leaf-skip: precompute, per rule output, the inputs that have a
+        # producing rule. Leaf inputs (source/header files) return False
+        # immediately from _do_build, so the async scheduler skips allocating a
+        # child task for each of them. Verify-trace still hashes every
+        # ``rule.inputs`` entry (it reads ``rule.inputs`` directly), so this
+        # only trims the recursion fan-out, never the correctness inputs.
+        self._rule_inputs = {r.output: [i for i in r.inputs if graph.get_rule(i) is not None] for r in graph.rules}
 
         trace_path = os.path.join(self.args.cas_objdir, self.build_filename())
         traces = TraceStore(trace_path)
@@ -351,7 +366,7 @@ class ShakeBackend(BuildBackend):
         cost_path = os.path.join(self.args.cas_objdir, rule_cost.COST_FILE)
         try:
             history = rule_cost.load_cost_history(cost_path)
-            crit = rule_cost.compute_critical_times(self._graph, lambda r: rule_cost.estimate_cost(r, history))
+            crit = rule_cost.compute_critical_times(graph, lambda r: rule_cost.estimate_cost(r, history))
         except Exception:
             history, crit = {}, {}
         gate = PriorityGate(max_workers)
@@ -359,8 +374,41 @@ class ShakeBackend(BuildBackend):
         # are folded back into the cost history on the way out (best effort).
         self._observed_costs: dict[str, float] = {}
 
+        # M2 single signal handler: one asyncio signal handler on the build's
+        # event loop forwards SIGINT/SIGTERM to every live child process group.
+        # Children are spawned in their own session (start_new_session=True), so
+        # a Ctrl-C reaches the whole compiler process tree, not just the direct
+        # child. Replaces the per-subprocess ``graceful_shutdown`` handlers the
+        # sync ``_run_with_signal_forwarding`` installed once per rule.
+        self._live_child_pgids: set[int] = set()
+
+        async def _run_build() -> None:
+            loop = asyncio.get_running_loop()
+
+            def _forward_signal(signum: int) -> None:
+                for pgid in list(self._live_child_pgids):
+                    with contextlib.suppress(OSError, ProcessLookupError):
+                        os.killpg(pgid, signum)
+
+            installed: list[int] = []
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                # add_signal_handler only works on the main thread of the main
+                # interpreter; degrade gracefully off-thread / on unsupported
+                # platforms (children still reaped, just not signal-forwarded).
+                try:
+                    loop.add_signal_handler(sig, _forward_signal, sig)
+                    installed.append(sig)
+                except (NotImplementedError, ValueError, RuntimeError):
+                    pass
+            try:
+                await self._build_async(walk_target, graph, traces, memo, gate, crit)
+            finally:
+                for sig in installed:
+                    with contextlib.suppress(Exception):
+                        loop.remove_signal_handler(sig)
+
         try:
-            asyncio.run(self._build_async(walk_target, self._graph, traces, memo, gate, crit))
+            asyncio.run(_run_build())
         finally:
             traces.save()
             try:
@@ -414,7 +462,7 @@ class ShakeBackend(BuildBackend):
 
         if rule.rule_type == RuleType.PHONY:
             results = await asyncio.gather(
-                *(self._build_async(inp, graph, traces, memo, gate, crit) for inp in rule.inputs)
+                *(self._build_async(inp, graph, traces, memo, gate, crit) for inp in self._inputs_to_walk(target, rule))
             )
             return any(results)
 
@@ -426,7 +474,9 @@ class ShakeBackend(BuildBackend):
             # just mkdir it; do not walk it, an MKDIR rule has no on-disk file
             # output and would trip _make_trace_entry). ``inputs`` is populated
             # in mtime mode (the exe path again) and empty in CAS-only mode.
-            await asyncio.gather(*(self._build_async(inp, graph, traces, memo, gate, crit) for inp in rule.inputs))
+            await asyncio.gather(
+                *(self._build_async(inp, graph, traces, memo, gate, crit) for inp in self._inputs_to_walk(target, rule))
+            )
             for dep in rule.order_only_deps:
                 dep_rule = graph.get_rule(dep)
                 if dep_rule is not None and dep_rule.rule_type != RuleType.MKDIR:
@@ -444,11 +494,10 @@ class ShakeBackend(BuildBackend):
             if not getattr(self.args, "use_mtime", False) and os.path.exists(rule.output):
                 return False
             assert rule.command is not None, "test rules always carry a command"
-            loop = asyncio.get_running_loop()
             queued_at = time.monotonic()
             await gate.acquire(crit.get(target, 0.0))
             try:
-                await loop.run_in_executor(None, self._execute_rule, rule, target, list(rule.command), queued_at)
+                await self._execute_rule_async(rule, target, list(rule.command), queued_at)
             finally:
                 gate.release()
             # Test rules never enter the trace store: _execute_rule records the
@@ -523,7 +572,7 @@ class ShakeBackend(BuildBackend):
 
         # SUSPEND: build all inputs concurrently via gather.
         results = await asyncio.gather(
-            *(self._build_async(inp, graph, traces, memo, gate, crit) for inp in rule.inputs)
+            *(self._build_async(inp, graph, traces, memo, gate, crit) for inp in self._inputs_to_walk(target, rule))
         )
         any_input_rebuilt = any(results)
 
@@ -546,11 +595,10 @@ class ShakeBackend(BuildBackend):
 
         flat_cmd = list(cmd)
 
-        loop = asyncio.get_running_loop()
         queued_at = time.monotonic()
         await gate.acquire(crit.get(target, 0.0))
         try:
-            await loop.run_in_executor(None, self._execute_rule, rule, target, flat_cmd, queued_at)
+            await self._execute_rule_async(rule, target, flat_cmd, queued_at)
         finally:
             gate.release()
 
@@ -580,13 +628,53 @@ class ShakeBackend(BuildBackend):
         and SlurmBackend._run_local (tests run locally on both backends).
         """
         result = subprocess.run(flat_cmd)
-        if result.returncode == 0:
+        self._record_test_outcome(rule, result.returncode, flat_cmd)
+
+    def _record_test_outcome(self, rule: BuildRule, returncode: int, flat_cmd: list[str]) -> None:
+        """Record a TEST rule's result. On success touch the success marker
+        (always ``success_marker``, even for framework tests); on failure append
+        to ``_test_failures`` so sibling rules already in flight can finish and
+        ``execute()`` raises the aggregate once the traversal returns. Shared by
+        the sync ``_run_test_rule`` and the async ``_execute_rule_async``."""
+        if returncode == 0:
             self._touch_result_marker(rule.success_marker or "")
         else:
-            self._test_failures.append(f"{rule.output} (exit {result.returncode}): {' '.join(flat_cmd)}")
+            self._test_failures.append(f"{rule.output} (exit {returncode}): {' '.join(flat_cmd)}")
+
+    def _inputs_to_walk(self, target: str, rule: BuildRule) -> list[str]:
+        """The rule's inputs worth recursing into (M2 leaf-skip).
+
+        Leaf inputs (source/header files with no producing rule) return False
+        immediately from ``_do_build``, so the scheduler can skip allocating a
+        child task for each. ``execute()`` precomputes ``_rule_inputs`` once;
+        direct-call tests that reach ``_build_async`` without going through
+        ``execute()`` fall back to the full ``rule.inputs`` (correct, just
+        unoptimized). Verify-trace still hashes every ``rule.inputs`` entry."""
+        rule_inputs = getattr(self, "_rule_inputs", None)
+        if rule_inputs is not None and target in rule_inputs:
+            return rule_inputs[target]
+        return rule.inputs
+
+    def _track_child_spawn(self, pgid: int) -> None:
+        """Register a live child process group so the single event-loop signal
+        handler can forward SIGINT/SIGTERM to it. No-op when ``execute()`` did
+        not install the registry (direct-call tests)."""
+        registry = getattr(self, "_live_child_pgids", None)
+        if registry is not None:
+            registry.add(pgid)
+
+    def _track_child_reap(self, pgid: int) -> None:
+        """Deregister a reaped child process group (see ``_track_child_spawn``)."""
+        registry = getattr(self, "_live_child_pgids", None)
+        if registry is not None:
+            registry.discard(pgid)
 
     def _execute_rule(self, rule: BuildRule, target: str, flat_cmd: list[str], queued_at: float | None = None) -> None:
-        """Run the subprocess for a single build rule (called from a thread).
+        """Run the subprocess for a single build rule (synchronous reference).
+
+        The production dispatch path is the async twin ``_execute_rule_async``;
+        this sync version is retained for direct unit tests and as the readable
+        reference for the branch dispatch + timing/metadata contract.
 
         ``skip_if_exists=True`` on the three CA branches closes the TOCTOU
         window between the pre-lock fast-path in ``_do_build`` and the
@@ -624,7 +712,82 @@ class ShakeBackend(BuildBackend):
         else:
             execute_link_rule(target, flat_cmd, self.args)
 
-        # Record per-rule timing
+        self._record_rule_timing(rule, target, cas_hit, start, queued_at)
+
+    async def _execute_rule_async(
+        self, rule: BuildRule, target: str, flat_cmd: list[str], queued_at: float | None = None
+    ) -> None:
+        """Async twin of ``_execute_rule`` — the production dispatch path.
+
+        Mirrors ``_execute_rule``'s branch dispatch, CAS-hit semantics, and
+        timing/metadata recording verbatim; only the subprocess spawn differs
+        (the ``*_async`` locking helpers use ``asyncio.create_subprocess_exec``
+        instead of a thread-pool + blocking ``Popen``, so the event loop keeps
+        scheduling other ready rules while this one runs). Child process groups
+        are registered via ``_track_child_spawn`` / ``_track_child_reap`` so the
+        single ``execute()`` signal handler can forward SIGINT/SIGTERM. The sync
+        ``_execute_rule`` is retained for direct unit tests and as the reference
+        implementation of the timing/metadata contract."""
+        start = time.monotonic()
+        cas_hit: bool | None = None
+        if rule.rule_type == RuleType.TEST:
+            rc = await _run_child_async(flat_cmd, on_spawn=self._track_child_spawn, on_reap=self._track_child_reap)
+            self._record_test_outcome(rule, rc, flat_cmd)
+        elif rule.rule_type == RuleType.COMPILE:
+            cas_hit = await execute_compile_rule_async(
+                target,
+                flat_cmd,
+                self.args,
+                skip_if_exists=True,
+                cwd=rule.cwd,
+                on_spawn=self._track_child_spawn,
+                on_reap=self._track_child_reap,
+            )
+        elif rule.rule_type == RuleType.LINK:
+            cas_hit = await execute_link_rule_async(
+                target,
+                flat_cmd,
+                self.args,
+                skip_if_exists=True,
+                on_spawn=self._track_child_spawn,
+                on_reap=self._track_child_reap,
+            )
+        elif _is_build_artifact(rule):
+            ca = self._ca_target(rule)
+            ca_cmd = [ca if a == target else a for a in flat_cmd]
+            cas_hit = await execute_link_rule_async(
+                ca,
+                ca_cmd,
+                self.args,
+                skip_if_exists=True,
+                on_spawn=self._track_child_spawn,
+                on_reap=self._track_child_reap,
+            )
+            compiletools.filesystem_utils.atomic_copy(ca, target)
+        else:
+            await execute_link_rule_async(
+                target,
+                flat_cmd,
+                self.args,
+                on_spawn=self._track_child_spawn,
+                on_reap=self._track_child_reap,
+            )
+
+        self._record_rule_timing(rule, target, cas_hit, start, queued_at)
+
+    def _record_rule_timing(
+        self, rule: BuildRule, target: str, cas_hit: bool | None, start: float, queued_at: float | None
+    ) -> None:
+        """Record per-rule elapsed time, observed cost (M1), and CAS/queue-wait
+        metadata (M0). Shared by ``_execute_rule`` and ``_execute_rule_async``.
+
+        trace_backend executes rules in-process, so the in-memory
+        ``record_rule(metadata=...)`` is the source of truth and the cake.py
+        post-build ``merge_rule_outcomes`` roundtrip is unnecessary here —
+        skipping ``append_rule_outcome`` saves ~3 syscalls per rule on builds
+        with thousands of rules. Other backends (ninja/make/shake) still need
+        the outcomes log because they execute rules out-of-process (via
+        ct-lock-helper) and cannot reach this in-memory timer."""
         elapsed = time.monotonic() - start
         # M1: feed the observed elapsed back into the cost model so the next
         # build schedules by learned costs. Best effort; TEST rules are excluded
@@ -636,14 +799,9 @@ class ShakeBackend(BuildBackend):
             except Exception:
                 pass
         timer = self._timer
-        # Build CAS metadata for the in-process record_rule call.  trace_backend
-        # executes rules in-process, so the in-memory record_rule(metadata=...)
-        # is the source of truth and the cake.py post-build merge_rule_outcomes
-        # roundtrip is unnecessary here — skipping append_rule_outcome saves
-        # ~3 syscalls per rule on builds with thousands of rules.  Other
-        # backends (ninja/make/shake) still need the outcomes log because they
-        # execute rules out-of-process (via ct-lock-helper) and cannot reach
-        # this in-memory timer.
+        # cas_hit is None for branches where the concept doesn't apply (TEST runs
+        # the binary; the ``else`` branch executes unconditionally). None leaves
+        # cas.* absent on the span — distinct from "ran the compiler, no hit".
         metadata: dict[str, object] | None = None
         if cas_hit is not None:
             cas_kind = _cas_kind_for_rule_type(rule.rule_type)

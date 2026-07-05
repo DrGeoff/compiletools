@@ -91,20 +91,20 @@ _BUILD_SCRIPT = textwrap.dedent("""\
     os.makedirs(bindir, exist_ok=True)
     backend.generate(graph)
 
-    # Count all _run_with_signal_forwarding calls made during execute().
-    # This is the new boundary that wraps both compile (atomic_compile) and
-    # link (atomic_link) invocations.  On a no-op rebuild, the count should
-    # be zero.
+    # Count all _run_child_async calls made during execute().  This is the
+    # async dispatch boundary that wraps every compile (atomic_compile_async),
+    # link (atomic_link_async), and test child spawn on the shake backend's
+    # production path.  On a no-op rebuild, the count should be zero.
     import compiletools.locking
     call_count = 0
-    orig_swf = compiletools.locking._run_with_signal_forwarding
+    orig_child = compiletools.locking._run_child_async
 
-    def counting_swf(cmd, *args, **kwargs):
+    async def counting_child(cmd, *args, **kwargs):
         global call_count
         call_count += 1
-        return orig_swf(cmd, *args, **kwargs)
+        return await orig_child(cmd, *args, **kwargs)
 
-    with mock.patch("compiletools.locking._run_with_signal_forwarding", side_effect=counting_swf):
+    with mock.patch("compiletools.locking._run_child_async", side_effect=counting_child):
         backend.execute("build")
 
     with open(report_path, "w") as f:

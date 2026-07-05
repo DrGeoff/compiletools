@@ -7,7 +7,6 @@ import io
 import json
 import os
 import subprocess
-import threading
 from pathlib import Path
 from unittest import mock
 
@@ -75,6 +74,35 @@ def _swf_writer(content: bytes = b"\x7fELF fake", returncode: int = 0):
                 f.write(content)
             written.append(output)
         return subprocess.CompletedProcess(cmd, returncode, None, None)
+
+    return fake
+
+
+def _child_writer(content: bytes = b"\x7fELF fake", returncode: int = 0):
+    """Async-path twin of ``_swf_writer``: a fake for
+    ``compiletools.locking._run_child_async``. Same output-path detection and
+    file write, but returns the integer returncode (what ``_run_child_async``
+    returns) instead of a ``CompletedProcess``.
+
+    ``_run_child_async`` is a coroutine function, so ``mock.patch`` auto-wraps
+    it in an ``AsyncMock``; a plain (sync) side_effect whose return value is the
+    int is awaited correctly. ``call_count`` / ``call_args`` semantics are
+    unchanged (``args[0]`` is still the command list)."""
+    written: list[str] = []
+
+    def fake(cmd, *args, **kwargs):
+        output = None
+        if "-o" in cmd:
+            i = cmd.index("-o")
+            if i + 1 < len(cmd):
+                output = cmd[i + 1]
+        elif cmd and os.path.basename(cmd[0]) == "ar" and len(cmd) >= 3:
+            output = cmd[2]
+        if output is not None and returncode == 0:
+            with open(output, "wb") as f:
+                f.write(content)
+            written.append(output)
+        return returncode
 
     return fake
 
@@ -153,10 +181,15 @@ def test_execute_writes_cost_sidecar(tmp_path, monkeypatch):
     obj = str(tmp_path / "a.o")
     graph.add_rule(BuildRule(output=obj, inputs=["a.cpp"], command=["true", "-o", obj], rule_type="compile"))
     backend._graph = graph
-    # execute_compile_rule mocked so no real compiler runs; returns False (ran,
-    # no cache hit). The COMPILE rule is content-addressable so _do_build returns
-    # True without needing the file to exist.
-    monkeypatch.setattr("compiletools.trace_backend.execute_compile_rule", lambda *a, **k: False)
+
+    # execute_compile_rule_async mocked so no real compiler runs; returns False
+    # (ran, no cache hit). The COMPILE rule is content-addressable so _do_build
+    # returns True without needing the file to exist. Production dispatch is the
+    # async twin, so the async helper is the one to stub.
+    async def _fake_compile(*a, **k):
+        return False
+
+    monkeypatch.setattr("compiletools.trace_backend.execute_compile_rule_async", _fake_compile)
 
     backend.execute(obj)
 
@@ -196,12 +229,12 @@ def test_execute_prefers_high_critical_time_rule(tmp_path, monkeypatch):
 
     executed: list[tuple[str, str]] = []
 
-    def spy(self, rule, target, flat_cmd, queued_at=None):
+    async def spy(self, rule, target, flat_cmd, queued_at=None):
         executed.append((rule.rule_type, target))
         with open(target, "w"):  # materialize output so post-execute checks pass
             pass
 
-    monkeypatch.setattr(ShakeBackend, "_execute_rule", spy)
+    monkeypatch.setattr(ShakeBackend, "_execute_rule_async", spy)
 
     backend.execute("all")
 
@@ -415,8 +448,8 @@ class TestTraceVerification:
 
             # Copy rule routes through atomic_link → _run_with_signal_forwarding
             with mock.patch(
-                "compiletools.locking._run_with_signal_forwarding",
-                side_effect=_swf_writer(b"\x7fELF rebuilt"),
+                "compiletools.locking._run_child_async",
+                side_effect=_child_writer(b"\x7fELF rebuilt"),
             ) as mock_swf:
                 backend.execute("build")
                 assert mock_swf.call_count == 1
@@ -461,8 +494,8 @@ class TestTraceVerification:
 
             # Copy rule routes through atomic_link → _run_with_signal_forwarding
             with mock.patch(
-                "compiletools.locking._run_with_signal_forwarding",
-                side_effect=_swf_writer(),
+                "compiletools.locking._run_child_async",
+                side_effect=_child_writer(),
             ) as mock_swf:
                 backend.execute("build")
                 assert mock_swf.call_count == 1
@@ -511,8 +544,8 @@ class TestTraceVerification:
             # _run_with_signal_forwarding is the boundary that's specific to the
             # build subprocess (git_utils uses check_output, not this helper).
             with mock.patch(
-                "compiletools.locking._run_with_signal_forwarding",
-                side_effect=_swf_writer(),
+                "compiletools.locking._run_child_async",
+                side_effect=_child_writer(),
             ) as mock_swf:
                 backend.execute("build")
                 build_calls = [c for c in mock_swf.call_args_list if c.args[0] == cmd]
@@ -606,8 +639,8 @@ class TestEarlyCutoff:
             # Both compile and link route through _run_with_signal_forwarding
             # (via atomic_compile and atomic_link respectively).
             with mock.patch(
-                "compiletools.locking._run_with_signal_forwarding",
-                side_effect=_swf_writer(b"\x7fELF NEW"),
+                "compiletools.locking._run_child_async",
+                side_effect=_child_writer(b"\x7fELF NEW"),
             ) as mock_swf:
                 backend.execute("build")
                 # 1 compile + 1 link = 2 build subprocess calls
@@ -681,8 +714,8 @@ class TestErrorHandling:
             os.makedirs(td / "obj", exist_ok=True)
 
             with mock.patch(
-                "compiletools.locking._run_with_signal_forwarding",
-                side_effect=_swf_writer(returncode=1),
+                "compiletools.locking._run_child_async",
+                side_effect=_child_writer(returncode=1),
             ):
                 with pytest.raises(subprocess.CalledProcessError):
                     backend.execute("build")
@@ -726,7 +759,7 @@ class TestTracePersistenceOnFailure:
 
             def fake(cmd, *args, **kwargs):
                 if any("bad.txt" in tok for tok in cmd):
-                    return subprocess.CompletedProcess(cmd, 1, None, None)
+                    return 1
                 if "-o" in cmd:
                     out = cmd[cmd.index("-o") + 1]
                 elif len(cmd) >= 3:
@@ -736,9 +769,9 @@ class TestTracePersistenceOnFailure:
                 if out is not None:
                     with open(out, "wb") as f:
                         f.write(b"data")
-                return subprocess.CompletedProcess(cmd, 0, None, None)
+                return 0
 
-            with mock.patch("compiletools.locking._run_with_signal_forwarding", side_effect=fake):
+            with mock.patch("compiletools.locking._run_child_async", side_effect=fake):
                 with pytest.raises(subprocess.CalledProcessError):
                     backend.execute("build")
 
@@ -780,28 +813,33 @@ class TestParallelExecution:
             (td / "b.cpp").write_text("int b() {}")
             os.makedirs(td / "obj", exist_ok=True)
 
-            # Track which threads execute each compile
-            thread_ids = []
-            barrier = threading.Barrier(2, timeout=5)
+            # Concurrency proof for the async model: both compiles must be
+            # in-flight on the event loop simultaneously. Each fake awaits a
+            # yield point (asyncio.sleep) while a shared counter tracks the peak
+            # number of overlapping executions; a serial scheduler would peak at
+            # 1. (The old thread-id assertion no longer applies — the async
+            # dispatch runs on a single loop thread, not a thread pool.)
+            in_flight = 0
+            max_in_flight = 0
 
-            def fake_swf(cmd, *args, **kwargs):
-                thread_ids.append(threading.current_thread().ident)
-                # Both compiles must reach the barrier before either proceeds,
-                # proving they run concurrently
-                barrier.wait()
+            async def fake_child(cmd, *args, **kwargs):
+                nonlocal in_flight, max_in_flight
+                in_flight += 1
+                max_in_flight = max(max_in_flight, in_flight)
+                await asyncio.sleep(0.05)  # yield so the peer can also enter
                 # atomic_compile rewrote -o to a temp path; honour it
                 if "-o" in cmd:
                     out = cmd[cmd.index("-o") + 1]
                     with open(out, "wb") as f:
                         f.write(b"\x7fELF fake")
-                return subprocess.CompletedProcess(cmd, 0, None, None)
+                in_flight -= 1
+                return 0
 
-            with mock.patch("compiletools.locking._run_with_signal_forwarding", side_effect=fake_swf):
+            with mock.patch("compiletools.locking._run_child_async", new=fake_child):
                 backend.execute("build")
 
-            # Verify they ran on different threads
-            assert len(thread_ids) == 2
-            assert thread_ids[0] != thread_ids[1]
+            # Both compiles overlapped → true concurrent dispatch.
+            assert max_in_flight == 2
 
     def test_parallel_1_still_works(self, monkeypatch):
         """parallel=1 should work correctly (single-threaded)."""
@@ -834,8 +872,8 @@ class TestParallelExecution:
             os.makedirs(td / "obj", exist_ok=True)
 
             with mock.patch(
-                "compiletools.locking._run_with_signal_forwarding",
-                side_effect=_swf_writer(),
+                "compiletools.locking._run_child_async",
+                side_effect=_child_writer(),
             ) as mock_swf:
                 backend.execute("build")
                 assert mock_swf.call_count == 2
@@ -885,8 +923,8 @@ class TestOutputDeletion:
             store.save()
 
             with mock.patch(
-                "compiletools.locking._run_with_signal_forwarding",
-                side_effect=_swf_writer(b"\x7fELF rebuilt"),
+                "compiletools.locking._run_child_async",
+                side_effect=_child_writer(b"\x7fELF rebuilt"),
             ) as mock_swf:
                 backend.execute("build")
                 # Must rebuild because output file was deleted
@@ -965,8 +1003,8 @@ class TestContentAddressableShortCircuit:
             memo: dict[str, asyncio.Task[bool]] = {}
             gate = PriorityGate(1)
             with mock.patch(
-                "compiletools.locking._run_with_signal_forwarding",
-                side_effect=_swf_writer(b"\x7fELF new object"),
+                "compiletools.locking._run_child_async",
+                side_effect=_child_writer(b"\x7fELF new object"),
             ) as mock_swf:
                 changed = asyncio.run(backend._build_async("foo.o", graph, traces, memo, gate, {}))
                 assert changed is True
@@ -1042,10 +1080,10 @@ class TestContentAddressableShortCircuit:
                 assert out.startswith(cas_exe + ".") and out.endswith(".tmp")
                 with open(out, "wb") as f:
                     f.write(b"\x7fELF new executable")
-                return subprocess.CompletedProcess(cmd, 0, None, None)
+                return 0
 
             with mock.patch(
-                "compiletools.locking._run_with_signal_forwarding",
+                "compiletools.locking._run_child_async",
                 side_effect=fake_swf,
             ) as mock_swf:
                 backend.execute("build")
@@ -1146,12 +1184,12 @@ class TestSymlinkPublishShortCircuit:
             monkeypatch.chdir(tmp_path)
             executed: list[str] = []
 
-            def fake_execute(rule, target, flat_cmd, queued_at=None):
+            async def fake_execute(rule, target, flat_cmd, queued_at=None):
                 # Mirror ct-cas-publish: hardlink cas_path to user_path.
                 executed.append(target)
                 os.link(cas_path, user_path)
 
-            monkeypatch.setattr(backend, "_execute_rule", fake_execute)
+            monkeypatch.setattr(backend, "_execute_rule_async", fake_execute)
             traces = TraceStore(str(td / ".ct-traces.json"))
             memo: dict[str, asyncio.Task[bool]] = {}
             gate = PriorityGate(1)
@@ -1180,13 +1218,13 @@ class TestSymlinkPublishShortCircuit:
             monkeypatch.chdir(tmp_path)
             executed: list[str] = []
 
-            def fake_execute(rule, target, flat_cmd, queued_at=None):
+            async def fake_execute(rule, target, flat_cmd, queued_at=None):
                 # Mirror ct-cas-publish atomic re-link: unlink + hardlink.
                 executed.append(target)
                 os.unlink(user_path)
                 os.link(cas_path, user_path)
 
-            monkeypatch.setattr(backend, "_execute_rule", fake_execute)
+            monkeypatch.setattr(backend, "_execute_rule_async", fake_execute)
             traces = TraceStore(str(td / ".ct-traces.json"))
             memo: dict[str, asyncio.Task[bool]] = {}
             gate = PriorityGate(1)
@@ -1254,8 +1292,8 @@ class TestCALinkShortCircuit:
             (td / "foo.o").write_bytes(b"\x7fELF fake object")
 
             with mock.patch(
-                "compiletools.locking._run_with_signal_forwarding",
-                side_effect=_swf_writer(b"\x7fELF new exe"),
+                "compiletools.locking._run_child_async",
+                side_effect=_child_writer(b"\x7fELF new exe"),
             ):
                 backend.execute("build")
 
@@ -1287,8 +1325,9 @@ class TestAtomicCompile:
                     f.write(b"\x7fELF object")
             return subprocess.CompletedProcess(cmd, 0, None, None)
 
-        # atomic_compile delegates to _run_with_signal_forwarding (the new
-        # boundary that wraps Popen + signal forwarding); patch that.
+        # SYNC atomic_compile delegates to _run_with_signal_forwarding (the
+        # boundary that wraps Popen + signal forwarding); patch that. (The async
+        # twin atomic_compile_async is covered in test_locking_async_contract.)
         with mock.patch("compiletools.locking._run_with_signal_forwarding", side_effect=spy_run):
             atomic_compile(lock, target, ["g++", "-c", "bar.cpp"])
 
@@ -1394,9 +1433,9 @@ class TestCompileOutputStripping:
                     out = cmd[cmd.index("-o") + 1]
                     with open(out, "wb") as f:
                         f.write(b"\x7fELF")
-                return subprocess.CompletedProcess(cmd, 0, None, None)
+                return 0
 
-            with mock.patch("compiletools.locking._run_with_signal_forwarding", side_effect=fake):
+            with mock.patch("compiletools.locking._run_child_async", side_effect=fake):
                 backend.execute("build")
 
             assert len(seen) == 1
@@ -1445,11 +1484,11 @@ class TestAtomicLinkRouting:
             (td / "foo.o").write_bytes(b"\x7fELF fake object")
             os.makedirs(td / "cas-exe" / "aa", exist_ok=True)
 
-            with mock.patch("compiletools.trace_backend.execute_link_rule") as mock_link:
+            with mock.patch("compiletools.trace_backend.execute_link_rule_async") as mock_link:
                 mock_link.side_effect = lambda target, cmd, args, **_kw: open(target, "wb").close() or 0
                 backend.execute("build")
                 assert mock_link.call_count == 1
-                # execute_link_rule(target=rule.output, cmd, args) — direct
+                # execute_link_rule_async(target=rule.output, cmd, args) — direct
                 # link to the cas-exe path, no in-place CA copy.
                 assert mock_link.call_args.args[0] == cas_exe
 
@@ -1471,7 +1510,7 @@ class TestAtomicLinkRouting:
             monkeypatch.chdir(tmpdir)
             (td / "src.txt").write_text("data")
 
-            with mock.patch("compiletools.trace_backend.execute_link_rule") as mock_link:
+            with mock.patch("compiletools.trace_backend.execute_link_rule_async") as mock_link:
                 mock_link.side_effect = lambda target, cmd, args, **_kw: open(target, "wb").close() or 0
                 backend.execute("build")
                 assert mock_link.call_count == 1
@@ -1479,9 +1518,10 @@ class TestAtomicLinkRouting:
                 assert mock_link.call_args.args[0] == "foo.txt"
 
     def test_link_starts_new_session_for_signal_forwarding(self, monkeypatch):
-        """End-to-end signal-forwarding regression: link must use Popen with
-        start_new_session=True so SIGINT/SIGTERM can be forwarded to the
-        linker's process group rather than orphaning it."""
+        """End-to-end signal-forwarding regression: the async dispatch path must
+        spawn the linker via ``create_subprocess_exec(..., start_new_session=True)``
+        so SIGINT/SIGTERM can be forwarded to the linker's process group rather
+        than orphaning it."""
         link_rule = BuildRule(
             output="foo",
             inputs=["foo.o"],
@@ -1497,33 +1537,30 @@ class TestAtomicLinkRouting:
             monkeypatch.chdir(tmpdir)
             (td / "foo.o").write_bytes(b"\x7fELF fake object")
 
-            popen_calls = []
-            real_popen = subprocess.Popen
+            exec_calls = []
 
-            class FakePopen:
-                def __init__(self, *args, **kwargs):
-                    popen_calls.append((args, kwargs))
-                    # Write the rewritten temp output then "exit 0"
-                    cmd = args[0]
-                    if "-o" in cmd:
-                        with open(cmd[cmd.index("-o") + 1], "wb") as f:
-                            f.write(b"\x7fELF link")
+            class FakeProc:
+                # os.getpgid(pid) must resolve, so borrow this process's pid.
+                def __init__(self):
                     self.pid = os.getpid()
-                    self.returncode = 0
 
-                def wait(self, timeout=None):
+                async def wait(self):
                     return 0
 
-                def poll(self):
-                    return 0
+            async def fake_exec(*args, **kwargs):
+                exec_calls.append((args, kwargs))
+                cmd = list(args)
+                if "-o" in cmd:
+                    with open(cmd[cmd.index("-o") + 1], "wb") as f:
+                        f.write(b"\x7fELF link")
+                return FakeProc()
 
-            with mock.patch("compiletools.locking.subprocess.Popen", FakePopen):
+            with mock.patch("compiletools.locking.asyncio.create_subprocess_exec", fake_exec):
                 backend.execute("build")
 
-            assert len(popen_calls) == 1
-            kwargs = popen_calls[0][1]
+            assert len(exec_calls) == 1
+            kwargs = exec_calls[0][1]
             assert kwargs.get("start_new_session") is True
-            del real_popen  # silence unused warning
 
 
 @uth.requires_functional_compiler
