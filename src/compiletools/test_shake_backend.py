@@ -49,40 +49,17 @@ def _make_bare_shake_backend(tmp_path, *, cas_subdir=None, context=None):
     return backend
 
 
-def _swf_writer(content: bytes = b"\x7fELF fake", returncode: int = 0):
-    """Build a fake `compiletools.locking._run_with_signal_forwarding` that
-    writes `content` to the rewritten output path in the cmd.
-
-    Both `atomic_compile` (for non-direct_compile locks like _NullLock used
-    when file_locking=False) and `atomic_link` rewrite the `-o` flag (or the
-    archive arg for `ar`) to point at a `{target}.{pid}.{rand}.tmp` file
-    before invoking `_run_with_signal_forwarding`. The fake writes there so
-    the subsequent rename produces a real target file.
-    """
-    written: list[str] = []
-
-    def fake(cmd, *args, **kwargs):
-        output = None
-        if "-o" in cmd:
-            i = cmd.index("-o")
-            if i + 1 < len(cmd):
-                output = cmd[i + 1]
-        elif cmd and os.path.basename(cmd[0]) == "ar" and len(cmd) >= 3:
-            output = cmd[2]
-        if output is not None and returncode == 0:
-            with open(output, "wb") as f:
-                f.write(content)
-            written.append(output)
-        return subprocess.CompletedProcess(cmd, returncode, None, None)
-
-    return fake
-
-
 def _child_writer(content: bytes = b"\x7fELF fake", returncode: int = 0):
-    """Async-path twin of ``_swf_writer``: a fake for
-    ``compiletools.locking._run_child_async``. Same output-path detection and
-    file write, but returns the integer returncode (what ``_run_child_async``
-    returns) instead of a ``CompletedProcess``.
+    """Build a fake for ``compiletools.locking._run_child_async`` — the async
+    dispatch boundary the shake backend routes every compile/link through — that
+    writes ``content`` to the rewritten output path in the cmd and returns the
+    integer returncode.
+
+    Both ``atomic_compile_async`` (for non-direct_compile locks like _NullLock
+    used when file_locking=False) and ``atomic_link_async`` rewrite the ``-o``
+    flag (or the archive arg for ``ar``) to point at a ``{target}.{pid}.{rand}.tmp``
+    file before invoking ``_run_child_async``. The fake writes there so the
+    subsequent rename produces a real target file.
 
     ``_run_child_async`` is a coroutine function, so ``mock.patch`` auto-wraps
     it in an ``AsyncMock``; a plain (sync) side_effect whose return value is the
@@ -446,7 +423,7 @@ class TestTraceVerification:
             )
             store.save()
 
-            # Copy rule routes through atomic_link → _run_with_signal_forwarding
+            # Copy rule routes through atomic_link → _run_child_async (async path)
             with mock.patch(
                 "compiletools.locking._run_child_async",
                 side_effect=_child_writer(b"\x7fELF rebuilt"),
@@ -492,7 +469,7 @@ class TestTraceVerification:
             )
             store.save()
 
-            # Copy rule routes through atomic_link → _run_with_signal_forwarding
+            # Copy rule routes through atomic_link → _run_child_async (async path)
             with mock.patch(
                 "compiletools.locking._run_child_async",
                 side_effect=_child_writer(),
@@ -540,9 +517,9 @@ class TestTraceVerification:
             )
             store.save()
 
-            # Copy rule routes through atomic_link → _run_with_signal_forwarding;
-            # _run_with_signal_forwarding is the boundary that's specific to the
-            # build subprocess (git_utils uses check_output, not this helper).
+            # Copy rule routes through atomic_link → _run_child_async (async path);
+            # _run_child_async is the boundary that's specific to the build
+            # subprocess (git_utils uses check_output, not this helper).
             with mock.patch(
                 "compiletools.locking._run_child_async",
                 side_effect=_child_writer(),
@@ -636,8 +613,8 @@ class TestEarlyCutoff:
             # foo.o intentionally NOT created — forces compile to run
             os.makedirs(td / "obj", exist_ok=True)
 
-            # Both compile and link route through _run_with_signal_forwarding
-            # (via atomic_compile and atomic_link respectively).
+            # Both compile and link route through _run_child_async (async path)
+            # (via atomic_compile_async and atomic_link_async respectively).
             with mock.patch(
                 "compiletools.locking._run_child_async",
                 side_effect=_child_writer(b"\x7fELF NEW"),
