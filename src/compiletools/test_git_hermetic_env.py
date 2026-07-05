@@ -13,6 +13,22 @@ from __future__ import annotations
 import os
 import subprocess
 
+import pytest
+
+
+def _git_supports_config_global() -> bool:
+    """GIT_CONFIG_GLOBAL is honoured from git 2.32; older gits (e.g. RHEL8's
+    /usr/bin/git 2.31.1) silently ignore it and read ``$HOME/.gitconfig``, so
+    the fixture's shadowing cannot work there."""
+    out = subprocess.run(["git", "--version"], capture_output=True, text=True).stdout
+    # "git version 2.31.1" -> (2, 31)
+    try:
+        parts = out.strip().split()[-1].split(".")
+        major, minor = int(parts[0]), int(parts[1])
+    except (IndexError, ValueError):
+        return False
+    return (major, minor) >= (2, 32)
+
 
 def _git_config_get(cwd: str, key: str) -> str:
     """Return ``git config --get <key>`` (stripped) or '' if unset.
@@ -49,6 +65,8 @@ def test_hostile_ambient_home_gitconfig_is_not_seen(tmp_path, monkeypatch) -> No
     takes precedence over the HOME-derived ``~/.gitconfig``), a subprocess must
     NOT observe the hostile value.
     """
+    if not _git_supports_config_global():
+        pytest.skip("git < 2.32 ignores GIT_CONFIG_GLOBAL; hermetic shadowing unavailable")
     hostile_home = tmp_path / "hostile-home"
     hostile_home.mkdir()
     (hostile_home / ".gitconfig").write_text(
