@@ -771,6 +771,68 @@ class FileLock:
         return False  # Don't suppress exceptions
 
 
+@contextlib.contextmanager
+def _forwarded_session_child(cmd: list[str], **popen_kwargs):
+    """Spawn *cmd* in a new session with SIGINT/SIGTERM forwarding that covers
+    the spawn itself, guaranteeing no live child outlives the with-block.
+
+    The forwarding handler is installed BEFORE ``subprocess.Popen`` runs.
+    Installing it after the spawn (the previous shape of
+    ``_run_with_signal_forwarding``) leaves a window in which the child
+    already exists but the process-level handler is still whatever the
+    caller installed — for ``ct-lock-helper`` that is ``GracefulExit.cleanup``,
+    which ``sys.exit()``s without reaping, orphaning the child. On a loaded
+    runner the parent can be preempted inside that window for long enough
+    that a real SIGTERM lands there (observed as the sporadic
+    ``test_sigterm_reaps_child`` CI failure).
+
+    Because the handler must exist before the child does, it reads the
+    ``Popen`` object through ``holder``; a signal that arrives while the
+    spawn is still in flight is latched into ``holder["pending"]`` and
+    forwarded immediately after ``Popen`` returns. The handler itself never
+    raises and never exits, so no signal can unwind the stack from inside
+    the spawn window.
+
+    On exit (normal or exceptional) the child's process group is
+    SIGKILLed-and-reaped if still running — the same backstop the previous
+    ``finally`` provided, now also covering exceptions raised between spawn
+    and the caller's wait.
+    """
+    holder: dict = {"proc": None, "pending": None}
+
+    def _forward(signum, frame):
+        proc = holder["proc"]
+        if proc is None:
+            # Spawn in flight: a child may already exist but we hold no
+            # handle yet. Latch the signal; it is forwarded right after
+            # Popen returns. Never raise from here — unwinding the stack
+            # mid-spawn is exactly the orphaning bug this guards against.
+            holder["pending"] = signum
+            return
+        try:
+            os.killpg(os.getpgid(proc.pid), signum)
+        except (OSError, ProcessLookupError):
+            pass
+
+    with compiletools.apptools.graceful_shutdown(_forward, signal.SIGINT, signal.SIGTERM):
+        proc = subprocess.Popen(cmd, start_new_session=True, **popen_kwargs)
+        holder["proc"] = proc
+        try:
+            if holder["pending"] is not None:
+                _forward(holder["pending"], None)
+            yield proc
+        finally:
+            if proc.poll() is None:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (OSError, ProcessLookupError):
+                    pass
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    pass
+
+
 def _run_with_signal_forwarding(
     cmd: list[str],
     cwd: str | None = None,
@@ -824,31 +886,24 @@ def _run_with_signal_forwarding(
     to every worker-spawned child. Neither fires if the child's pgid cannot be
     resolved (already-exited child).
     """
-    popen_kwargs: dict = {"start_new_session": True, "cwd": cwd}
+    popen_kwargs: dict = {"cwd": cwd}
     if env is not None:
         popen_kwargs["env"] = env
     if capture_output:
         popen_kwargs["stdout"] = subprocess.PIPE
         popen_kwargs["stderr"] = subprocess.STDOUT
         popen_kwargs["text"] = True
-    proc = subprocess.Popen(cmd, **popen_kwargs)
-
-    try:
-        child_pgid: int | None = os.getpgid(proc.pid)
-    except (OSError, ProcessLookupError):
-        child_pgid = None
-    if on_child_start is not None and child_pgid is not None:
-        on_child_start(child_pgid)
-
-    def _forward(signum, frame):
-        try:
-            os.killpg(os.getpgid(proc.pid), signum)
-        except (OSError, ProcessLookupError):
-            pass
 
     stdout_data: str | None = None
+    child_pgid: int | None = None
     try:
-        with compiletools.apptools.graceful_shutdown(_forward, signal.SIGINT, signal.SIGTERM):
+        with _forwarded_session_child(cmd, **popen_kwargs) as proc:
+            try:
+                child_pgid = os.getpgid(proc.pid)
+            except (OSError, ProcessLookupError):
+                child_pgid = None
+            if on_child_start is not None and child_pgid is not None:
+                on_child_start(child_pgid)
             if capture_output:
                 # communicate() (not wait()) so a child that fills the stdout
                 # pipe buffer cannot deadlock against our blocking wait.
@@ -857,15 +912,6 @@ def _run_with_signal_forwarding(
                 proc.wait()
         return subprocess.CompletedProcess(cmd, proc.returncode, stdout_data, None)
     finally:
-        if proc.poll() is None:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except (OSError, ProcessLookupError):
-                pass
-            try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                pass
         if on_child_end is not None and child_pgid is not None:
             on_child_end(child_pgid)
 
@@ -1228,6 +1274,12 @@ async def _run_child_async(
     process group is SIGKILLed and reaped before re-raising, so a cancelled
     build never orphans a compiler that keeps writing the (soon-unlocked) target.
     """
+    # No await sits between this spawn returning and the CancelledError-guarded
+    # wait below (getpgid/on_spawn are sync), so cancellation cannot land in
+    # that region — the sync path's post-Popen window (closed by
+    # _forwarded_session_child) has no equivalent here. The one residual is a
+    # cancel delivered INSIDE create_subprocess_exec's own transport setup,
+    # where asyncio owns the half-constructed child; accepted as theoretical.
     proc = await asyncio.create_subprocess_exec(*cmd, cwd=cwd, env=env, start_new_session=True)
     try:
         child_pgid: int | None = os.getpgid(proc.pid)

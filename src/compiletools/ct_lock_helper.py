@@ -15,27 +15,21 @@ import compiletools.apptools
 
 
 class GracefulExit:
-    """Handle cleanup on signals."""
+    """Turn SIGINT/SIGTERM into a conventional SystemExit.
 
-    def __init__(self):
-        self.lock = None
-        self.tempfile = None
-        self.acquired = False
+    cleanup() deliberately releases NOTHING directly. Resources the helper
+    owns are cleaned by the SystemExit unwind: ``_temp_under_lock`` unlinks
+    the temp file BEFORE releasing the lock (that ordering is load-bearing)
+    and ``_forwarded_session_child`` kills+reaps the compile child. Releasing
+    the lock from the handler would be actively wrong in the window where
+    this handler is most likely to fire — while blocked in ``lock.acquire()``
+    the lock is held by a PEER, and ``LockdirLock``/``CIFSLock`` ``release()``
+    remove peer-visible state (lockdir / ``.lock_excl``) unconditionally, so
+    it would steal the peer's mutual exclusion. Pinned by
+    ``TestSigtermWhileWaitingForContendedLock``.
+    """
 
     def cleanup(self, signum=None, frame=None):
-        """Clean up lock and temp file on exit."""
-        if self.acquired and self.lock:
-            try:
-                self.lock.release()
-            except Exception:
-                pass
-
-        if self.tempfile and os.path.exists(self.tempfile):
-            try:
-                os.unlink(self.tempfile)
-            except Exception:
-                pass
-
         if signum is not None:
             sys.exit(128 + signum)
 
@@ -135,12 +129,11 @@ def _record_rule_outcome(target: str, cas_kind: str, result_was_skip: bool) -> N
         pass
 
 
-def cmd_compile(args, exit_handler):
+def cmd_compile(args):
     """Handle 'compile' subcommand.
 
     Args:
         args: Parsed arguments
-        exit_handler: GracefulExit instance
     """
     from compiletools.locking import atomic_compile
 
@@ -149,9 +142,6 @@ def cmd_compile(args, exit_handler):
 
     # Create lock based on strategy
     lock = create_lock(args.strategy, args.target, lock_args)
-
-    # Register lock for signal-handler cleanup
-    exit_handler.lock = lock
 
     # Delegate to shared atomic_compile (compile to temp, rename to target).
     # atomic_compile returns None when skip_if_exists short-circuited; we
@@ -167,19 +157,16 @@ def cmd_compile(args, exit_handler):
     _record_rule_outcome(args.target, "obj", result is None)
 
 
-def cmd_link(args, exit_handler):
+def cmd_link(args):
     """Handle 'link' subcommand.
 
     Args:
         args: Parsed arguments
-        exit_handler: GracefulExit instance
     """
     from compiletools.locking import atomic_link
 
     lock_args = create_args_from_env()
     lock = create_lock(args.strategy, args.target, lock_args)
-
-    exit_handler.lock = lock
 
     # See cmd_compile for the result-is-None semantics.  cas_kind="exe" is
     # the closest fit — ninja/make backends route static/shared libraries
@@ -250,9 +237,9 @@ def main(argv=None):
     with compiletools.apptools.graceful_shutdown(exit_handler.cleanup):
         try:
             if args.command == "compile":
-                cmd_compile(args, exit_handler)
+                cmd_compile(args)
             elif args.command == "link":
-                cmd_link(args, exit_handler)
+                cmd_link(args)
             return 0
         except subprocess.CalledProcessError as e:
             # Compilation failed, return compiler's exit code

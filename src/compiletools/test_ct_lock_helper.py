@@ -316,6 +316,183 @@ class TestGracefulExitSignalStack:
                     pass
                 proc.wait()
 
+    @pytest.mark.skipif(not hasattr(os, "killpg"), reason="POSIX-only signal test")
+    def test_sigterm_in_spawn_window_reaps_child(self, tmp_path):
+        """SIGTERM landing between Popen returning and the forwarder install
+        must not orphan the child.
+
+        The shim widens that window by making locking's Popen sleep after the
+        child is spawned — simulating the helper being preempted right after
+        fork on a loaded CI runner. With the window unprotected, the outer
+        GracefulExit handler sys.exit()s from inside it, skipping both the
+        SIGTERM forward and the killpg-SIGKILL finally, and the child shell
+        survives (the sporadic CI failure this test pins down).
+        """
+        import signal as _signal
+        import sys as _sys
+        import textwrap
+        import time as _time
+
+        target = str(tmp_path / "test.o")
+        child_pid_file = tmp_path / "CHILD_PID"
+        shim = tmp_path / "shim.py"
+        shim.write_text(
+            textwrap.dedent("""\
+                import subprocess, sys, time
+                import compiletools.locking as locking
+
+                _real_popen = subprocess.Popen
+
+                def slow_popen(*a, **k):
+                    p = _real_popen(*a, **k)
+                    time.sleep(3.0)  # hold the helper in the spawn window
+                    return p
+
+                locking.subprocess.Popen = slow_popen
+                from compiletools.ct_lock_helper import main
+                sys.exit(main(sys.argv[1:]))
+            """)
+        )
+        proc = subprocess.Popen(
+            [
+                _sys.executable,
+                str(shim),
+                "compile",
+                f"--target={target}",
+                "--strategy=flock",
+                "--",
+                "sh",
+                "-c",
+                f'echo $$ > "{child_pid_file}"; sleep 30',
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        child_pid = None
+        try:
+            # Wait for a complete pidfile (empty-but-existing means the echo
+            # redirect has truncated but not yet written).
+            content = ""
+            deadline = _time.time() + 10
+            while _time.time() < deadline:
+                if child_pid_file.exists():
+                    content = child_pid_file.read_text().strip()
+                    if content:
+                        break
+                _time.sleep(0.05)
+            assert content, "Child shell never recorded its pid"
+            child_pid = int(content)
+            child_start_ticks = _proc_start_ticks(child_pid)
+
+            # The helper is now sleeping inside the widened spawn window
+            # (the shim's 3s sleep dwarfs the ~50ms it took us to get here).
+            proc.send_signal(_signal.SIGTERM)
+            try:
+                proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)
+                except (OSError, ProcessLookupError):
+                    pass
+                proc.wait()
+                pytest.fail("Helper did not exit after SIGTERM in spawn window")
+
+            child_alive = True
+            deadline = _time.time() + 3
+            while _time.time() < deadline:
+                if _child_gone(child_pid, child_start_ticks):
+                    child_alive = False
+                    break
+                _time.sleep(0.05)
+            assert not child_alive, (
+                f"Child pid {child_pid} survived a SIGTERM delivered in the "
+                f"post-Popen / pre-forwarder window — the spawn is not covered "
+                f"by signal forwarding"
+            )
+        finally:
+            if proc.poll() is None:
+                try:
+                    os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)
+                except (OSError, ProcessLookupError):
+                    pass
+                proc.wait()
+            if child_pid is not None:
+                # Pre-fix runs orphan the child's session; reap it so it
+                # doesn't linger for its full 30s sleep.
+                try:
+                    os.killpg(child_pid, _signal.SIGKILL)
+                except (OSError, ProcessLookupError):
+                    pass
+
+
+class TestSigtermWhileWaitingForContendedLock:
+    """SIGTERM while the helper is blocked acquiring a lock held by a live
+    peer must exit promptly WITHOUT disturbing the peer's lock and without
+    ever spawning the compile child.
+
+    This pins the GracefulExit contract: the signal path must NOT release
+    the lock, because in this window the helper does not hold it — a peer
+    does — and LockdirLock/CIFSLock release() remove peer-visible state
+    (lockdir / .lock_excl) unconditionally, so a release here would steal
+    the peer's mutual exclusion. Cleanup of resources the helper DOES own
+    rides the SystemExit unwind through _temp_under_lock and
+    _forwarded_session_child instead.
+    """
+
+    @pytest.mark.skipif(not hasattr(os, "killpg"), reason="POSIX-only signal test")
+    def test_sigterm_waiting_on_peer_lockdir_leaves_peer_lock_intact(self, tmp_path):
+        import signal as _signal
+        import time as _time
+
+        from compiletools.locking import LockdirLock
+
+        target = str(tmp_path / "test.o")
+        peer = LockdirLock(target, create_args_from_env())
+        peer.acquire()
+        marker = tmp_path / "SPAWNED"
+        proc = subprocess.Popen(
+            [
+                "ct-lock-helper",
+                "compile",
+                f"--target={target}",
+                "--strategy=lockdir",
+                "--",
+                "sh",
+                "-c",
+                f'touch "{marker}"; sleep 30',
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            # Give the helper time to reach the acquire polling loop (the
+            # exact phase doesn't matter for the invariants: whether SIGTERM
+            # lands during startup or mid-poll, the peer's lock must survive
+            # and no child may spawn).
+            _time.sleep(1.0)
+            assert proc.poll() is None, "helper exited before SIGTERM"
+            proc.send_signal(_signal.SIGTERM)
+            proc.wait(timeout=10)
+            # 143 = GracefulExit sys.exit(128+15); -15 = pre-handler default
+            # disposition. Both are acceptable prompt exits.
+            assert proc.returncode in (143, -_signal.SIGTERM)
+            assert not marker.exists(), "compile child spawned despite contended lock"
+            lockdir = target + ".lockdir"
+            assert os.path.isdir(lockdir), "peer's lockdir was removed by the helper's signal path"
+            assert os.path.isfile(os.path.join(lockdir, "pid")), (
+                "peer's pid file was removed by the helper's signal path"
+            )
+        finally:
+            if proc.poll() is None:
+                try:
+                    os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)
+                except (OSError, ProcessLookupError):
+                    pass
+                proc.wait()
+            peer.release()
+
 
 class TestPidReuseGuard:
     """The PID-reuse guard that keeps test_sigterm_reaps_child from flaking.
