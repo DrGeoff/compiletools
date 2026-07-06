@@ -1282,7 +1282,11 @@ async def _async_acquire(lock) -> None:
                 state["acquired"] = True
                 release_here = False
         if release_here:
-            lock.release()
+            # Suppress like the canceller side: after cancellation this
+            # executor future is never awaited, so a raising release() would
+            # only surface as a "Future exception was never retrieved" log.
+            with contextlib.suppress(Exception):
+                lock.release()
 
     try:
         await loop.run_in_executor(None, _acquire)

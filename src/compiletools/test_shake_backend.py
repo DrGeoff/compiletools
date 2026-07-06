@@ -1955,16 +1955,24 @@ class TestSigtermAbortsShakeBuild:
         try:
             # Wait for the slow rule's shell to record its own pid. Generous
             # deadline: the driver imports compiletools + inits a backend first.
+            # ``echo $$ > file`` creates (truncates) before writing, so on a
+            # slow/networked FS the file can exist while still empty — treat
+            # empty content as "not ready yet", not just missing.
             deadline = _time.time() + 30
-            while not pidfile.exists() and proc.poll() is None and _time.time() < deadline:
+            pid_text = ""
+            while proc.poll() is None and _time.time() < deadline:
+                if pidfile.exists():
+                    pid_text = pidfile.read_text().strip()
+                    if pid_text:
+                        break
                 _time.sleep(0.05)
-            if not pidfile.exists():
+            if not pid_text:
                 out, err = proc.communicate(timeout=5)
                 pytest.fail(
                     f"driver never started the slow child (rc={proc.poll()})\n"
                     f"stdout: {out.decode(errors='replace')}\nstderr: {err.decode(errors='replace')}"
                 )
-            child_pid = int(pidfile.read_text().strip())
+            child_pid = int(pid_text)
             assert child_pid > 0
             child_start_ticks = _proc_start_ticks(child_pid)
 

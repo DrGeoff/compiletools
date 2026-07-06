@@ -38,6 +38,29 @@ def test_cost_key_strips_cas_hashes_from_link_first_input():
     assert "main" in rule_cost.cost_key(a)
 
 
+def test_strip_cas_obj_hashes_agrees_with_trim_cache_parser():
+    """Drift guard: any filename the production CAS-object parser
+    (trim_cache.parse_object_filename) recognises must be stripped by
+    _strip_cas_obj_hashes, and the bucket dir (file_hash[:2], per
+    namer.object_dir -- itself drift-guarded against parse_object_filename in
+    test_namer) must be dropped. A CAS layout change that escapes both
+    parsers would silently shift cost keys."""
+    from compiletools.trim_cache import parse_object_filename
+
+    fname = "my_module_aabbccddeeff_11223344556677_0011223344556677.o"
+    parsed = parse_object_filename(fname)
+    assert parsed is not None
+    basename, file_hash, _dep, _macro = parsed
+
+    path = f"/cache/obj/{file_hash[:2]}/{fname}"
+    assert rule_cost._strip_cas_obj_hashes(path) == f"/cache/obj/{basename}.o"
+
+    # And a non-CAS name both reject: parser returns None, stripper is identity.
+    plain = "libfoo.o"
+    assert parse_object_filename(plain) is None
+    assert rule_cost._strip_cas_obj_hashes(f"/cache/obj/ab/{plain}") == f"/cache/obj/ab/{plain}"
+
+
 def test_cost_key_leaves_source_paths_untouched():
     src = "src/dir_0123456789ab/a.cpp"  # hash-ish dir segment, not a CAS .o
     a = _r("a.o", [src], "compile")

@@ -428,6 +428,13 @@ class ShakeBackend(BuildBackend):
         except asyncio.CancelledError:
             if not aborted_by:
                 raise  # cancelled by something other than our signal handler
+        # Known edge: if a genuine rule failure races the signal, a
+        # CalledProcessError can win over the CancelledError and propagate out
+        # of asyncio.run above, skipping the re-delivery below — the process
+        # then exits via the build error instead of signal status. Effectively
+        # unreachable in practice (_run_child_async converts a cancelled
+        # proc.wait() to CancelledError before the rc check) and benign when
+        # hit, so not worth a second exception path.
         finally:
             traces.save()
             try:
@@ -437,9 +444,10 @@ class ShakeBackend(BuildBackend):
                 pass
 
         # Re-deliver the aborting signal now that traces/costs are saved and
-        # every child is reaped, so the process reports the conventional
-        # termination status (Ctrl-C -> KeyboardInterrupt / exit 130; SIGTERM
-        # -> killed-by-SIGTERM via the restored default handler).
+        # every child is reaped, so the process reports a conventional
+        # termination status (Ctrl-C -> KeyboardInterrupt, letting cake.py's
+        # outer handling decide the exit status; SIGTERM -> killed-by-SIGTERM
+        # via the restored default handler).
         if aborted_by:
             signum = aborted_by[0]
             if signum == signal.SIGINT:

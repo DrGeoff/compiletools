@@ -49,6 +49,11 @@ _CAS_OBJ_HASHES_RE = re.compile(r"_[0-9a-f]{12}_[0-9a-f]{14}_[0-9a-f]{16}(\.o)$"
 
 
 def _strip_cas_obj_hashes(path: str) -> str:
+    # The dirname(dirname(...)) hard-codes the one-level ``<objdir>/<hash[:2]>/``
+    # bucketing from namer.object_dir (drift shifts keys => one-time cold cost,
+    # never a correctness issue). Two TUs with the same basename in different
+    # source dirs share a link cost key when first in the object list --
+    # acceptable blur for a scheduling heuristic.
     base = compiletools.wrappedos.basename(path)
     stripped = _CAS_OBJ_HASHES_RE.sub(r"\1", base)
     if stripped == base:
@@ -98,8 +103,9 @@ def save_cost_history(path: str, hist: dict[str, float], *, prefer: set[str] | f
 
     Entries are capped at ``_MAX_COST_ENTRIES`` so keys for renamed or deleted
     sources cannot grow the file without bound. When trimming, keys in
-    ``prefer`` (the current build's observed rules) are kept first; the
-    remainder fills in insertion order."""
+    ``prefer`` (the current build's observed rules) are kept first — all of
+    them, even if ``prefer`` alone exceeds the cap (they are this build's real
+    rules, not stale growth); the remainder fills in insertion order."""
     try:
         from compiletools.filesystem_utils import atomic_output_file
 
