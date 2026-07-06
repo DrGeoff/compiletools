@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import json
 import os
@@ -1889,3 +1890,128 @@ class TestShakeRunsTestsInBuildPhase:
             f"JUnit XML at {xml_path} was deleted after the failed shake build -- "
             "a failed framework test must still leave its report behind"
         )
+
+
+# The driver runs in a REAL subprocess (main thread of the main interpreter,
+# so ``loop.add_signal_handler`` actually installs -- an in-process pytest
+# thread could not exercise that path) and executes a genuine
+# ``ShakeBackend.execute("build")`` over a graph whose slow rule records its
+# own PID before sleeping. No subprocess mocking (async dispatch tests must
+# drive the real spawn path).
+_SIGTERM_DRIVER = """
+import sys
+
+from compiletools.build_graph import BuildGraph, BuildRule
+from compiletools.testhelper import ShakeBackendTestContext
+
+pidfile, slow_out, after_out = sys.argv[1], sys.argv[2], sys.argv[3]
+
+graph = BuildGraph()
+graph.add_rule(
+    BuildRule(
+        output=slow_out,
+        inputs=[],
+        command=["sh", "-c", 'echo $$ > "%s"; sleep 30; touch "%s"' % (pidfile, slow_out)],
+        rule_type="copy",
+    )
+)
+graph.add_rule(
+    BuildRule(output=after_out, inputs=[slow_out], command=["touch", after_out], rule_type="copy")
+)
+graph.add_rule(BuildRule(output="build", inputs=[after_out], command=None, rule_type="phony"))
+
+with ShakeBackendTestContext(graph) as (backend, tmpdir):
+    backend.execute("build")
+"""
+
+
+class TestSigtermAbortsShakeBuild:
+    """Signal-forwarding contract for the M2 single event-loop handler:
+    SIGTERM to a running shake build must (a) reach the live child's process
+    group, (b) abort the build (no further rules dispatched), and (c) make the
+    parent exit with conventional killed-by-SIGTERM status. Counterpart of
+    test_ct_lock_helper.py's TestGracefulExitSignalStack for the sync path."""
+
+    @pytest.mark.skipif(not hasattr(os, "killpg"), reason="POSIX-only signal test")
+    def test_sigterm_kills_child_and_aborts_build(self, tmp_path):
+        import signal as _signal
+        import sys as _sys
+        import time as _time
+
+        # Identity-safe child-death polling helpers (PID-reuse guard).
+        from compiletools.test_ct_lock_helper import _child_gone, _proc_start_ticks
+
+        pidfile = tmp_path / "CHILD_PID"
+        slow_out = tmp_path / "slow.out"
+        after_out = tmp_path / "after.out"
+
+        proc = subprocess.Popen(
+            [_sys.executable, "-c", _SIGTERM_DRIVER, str(pidfile), str(slow_out), str(after_out)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        child_pid = None
+        try:
+            # Wait for the slow rule's shell to record its own pid. Generous
+            # deadline: the driver imports compiletools + inits a backend first.
+            deadline = _time.time() + 30
+            while not pidfile.exists() and proc.poll() is None and _time.time() < deadline:
+                _time.sleep(0.05)
+            if not pidfile.exists():
+                out, err = proc.communicate(timeout=5)
+                pytest.fail(
+                    f"driver never started the slow child (rc={proc.poll()})\n"
+                    f"stdout: {out.decode(errors='replace')}\nstderr: {err.decode(errors='replace')}"
+                )
+            child_pid = int(pidfile.read_text().strip())
+            assert child_pid > 0
+            child_start_ticks = _proc_start_ticks(child_pid)
+
+            proc.send_signal(_signal.SIGTERM)
+            try:
+                proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                pytest.fail("shake build did not exit after SIGTERM -- signal swallowed")
+
+            # (c) Conventional killed-by-SIGTERM exit: execute() re-delivers
+            # the signal via SIG_DFL + raise_signal after saving traces/costs.
+            assert proc.returncode == -_signal.SIGTERM, (
+                f"expected killed-by-SIGTERM (rc {-_signal.SIGTERM}), got rc={proc.returncode}; "
+                f"stderr: {proc.stderr.read().decode(errors='replace') if proc.stderr else ''}"
+            )
+
+            # (a) The child process group received the forwarded signal (or the
+            # CancelledError path SIGKILLed it) -- poll with identity check so a
+            # recycled pid is not misread as the child surviving.
+            child_alive = True
+            deadline = _time.time() + 5
+            while _time.time() < deadline:
+                if _child_gone(child_pid, child_start_ticks):
+                    child_alive = False
+                    break
+                _time.sleep(0.05)
+            assert not child_alive, (
+                f"child pid {child_pid} survived SIGTERM to the shake build -- "
+                f"the event-loop handler did not forward to the child pgid"
+            )
+
+            # (b) The build aborted rather than continuing: the downstream rule
+            # gated on the slow rule must never have run.
+            assert not after_out.exists(), (
+                "downstream rule ran after SIGTERM -- build_task.cancel() did not abort the traversal"
+            )
+        finally:
+            for stream in (proc.stdout, proc.stderr):
+                if stream is not None:
+                    stream.close()
+            if proc.poll() is None:
+                with contextlib.suppress(OSError, ProcessLookupError):
+                    os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)
+                proc.wait()
+            # The slow child lives in its OWN session (start_new_session in
+            # _run_child_async), so the driver's pgid kill cannot reach it;
+            # clean it up directly if the assertion above failed.
+            if child_pid is not None:
+                with contextlib.suppress(OSError, ProcessLookupError):
+                    os.killpg(child_pid, _signal.SIGKILL)

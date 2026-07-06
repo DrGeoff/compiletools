@@ -14,6 +14,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 # fcntl only available on Unix (not Windows). Each user of ``fcntl`` re-asserts
@@ -1257,12 +1258,42 @@ async def _async_acquire(lock) -> None:
     the non-blocking API (LockdirLock / CIFSLock / _NullLock) — fall back to the
     blocking ``acquire()`` on the default executor, so the loop keeps running
     other ready tasks while this one waits for the lock.
+
+    Cancellation safety: the executor thread cannot be interrupted, so a
+    cancelled awaiter (sibling rule failed / build aborted) would otherwise
+    leave the eventually-acquired lock held for the process lifetime. The
+    ``guard``-protected handshake ensures exactly one side releases: the
+    thread releases if it sees the abandon flag, the canceller releases if
+    the thread had already recorded the acquire.
     """
     nb = getattr(lock, "acquire_nonblocking", None)
     if nb is not None and nb():
         return
     loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, lock.acquire)
+    guard = threading.Lock()
+    state = {"abandoned": False, "acquired": False}
+
+    def _acquire() -> None:
+        lock.acquire()
+        with guard:
+            if state["abandoned"]:
+                release_here = True
+            else:
+                state["acquired"] = True
+                release_here = False
+        if release_here:
+            lock.release()
+
+    try:
+        await loop.run_in_executor(None, _acquire)
+    except asyncio.CancelledError:
+        with guard:
+            state["abandoned"] = True
+            release_here = state["acquired"]
+        if release_here:
+            with contextlib.suppress(Exception):
+                lock.release()
+        raise
 
 
 async def atomic_compile_async(

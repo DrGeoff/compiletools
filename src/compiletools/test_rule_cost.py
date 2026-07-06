@@ -25,6 +25,25 @@ def test_cost_key_distinguishes_type_and_input():
     assert rule_cost.cost_key(a) != rule_cost.cost_key(b)
 
 
+def test_cost_key_strips_cas_hashes_from_link_first_input():
+    """A LINK rule's first input is a cas-objdir path embedding three content
+    hashes; the key must survive a content change of that TU (different
+    hashes, same basename)."""
+    obj_v1 = "cas/ab/main_0123456789ab_0123456789abcd_0123456789abcdef.o"
+    obj_v2 = "cas/cd/main_ba9876543210_dcba9876543210_fedcba9876543210.o"
+    a = _r("exe/app_k1", [obj_v1, "x.o"], "link")
+    b = _r("exe/app_k2", [obj_v2, "x.o"], "link")
+    assert rule_cost.cost_key(a) == rule_cost.cost_key(b)
+    # And the stripped key retains the discriminating basename.
+    assert "main" in rule_cost.cost_key(a)
+
+
+def test_cost_key_leaves_source_paths_untouched():
+    src = "src/dir_0123456789ab/a.cpp"  # hash-ish dir segment, not a CAS .o
+    a = _r("a.o", [src], "compile")
+    assert rule_cost.cost_key(a).endswith(src)
+
+
 # ------------------------------------------------------------ persistence
 
 
@@ -62,6 +81,43 @@ def test_cold_start_ordering():
         return rule_cost.estimate_cost(r, {}, sizeof=lambda _p: 1000)
 
     assert cost(hu) > cost(ln) > cost(co)
+
+
+def test_precompile_outputs_get_long_pole_cost():
+    """PCH / BMI precompiles are emitted as rule_type='compile' with
+    .gch/.pcm/.gcm outputs; the cold heuristic must classify them as the
+    header_unit long pole, not as a source-size-scaled compile."""
+    plain = _r("a.o", ["a.cpp"], "compile")
+    for ext in (".gch", ".pcm", ".gcm"):
+        pre = _r(f"cache/deadbeef/wrap.h{ext}", ["wrap.h"], "compile")
+        cost = rule_cost.estimate_cost(pre, {}, sizeof=lambda _p: 1000)
+        assert cost == rule_cost._COLD_BASE["header_unit"], ext
+        assert cost > rule_cost.estimate_cost(plain, {}, sizeof=lambda _p: 1000)
+
+
+def test_precompile_exts_match_build_backend():
+    """Drift guard: the suffix set here must mirror the artefact-ext set the
+    rule emitters in build_backend use."""
+    from compiletools.build_backend import _BMI_PCH_ARTEFACT_EXTS
+
+    assert set(rule_cost._PRECOMPILE_OUTPUT_EXTS) == set(_BMI_PCH_ARTEFACT_EXTS)
+
+
+def test_learned_history_still_overrides_precompile_heuristic():
+    pre = _r("cache/deadbeef/wrap.h.gch", ["wrap.h"], "compile")
+    key = rule_cost.cost_key(pre)
+    assert rule_cost.estimate_cost(pre, {key: 12.5}, sizeof=lambda _p: 1) == 12.5
+
+
+def test_save_caps_entries_preferring_current_build(tmp_path, monkeypatch):
+    monkeypatch.setattr(rule_cost, "_MAX_COST_ENTRIES", 5)
+    p = str(tmp_path / rule_cost.COST_FILE)
+    hist = {f"compile\x1fsrc/f{i}.cpp": float(i) for i in range(10)}
+    current = {"compile\x1fsrc/f7.cpp", "compile\x1fsrc/f9.cpp"}
+    rule_cost.save_cost_history(p, hist, prefer=current)
+    loaded = rule_cost.load_cost_history(p)
+    assert len(loaded) == 5
+    assert current <= set(loaded)  # this build's keys survive the trim
 
 
 def test_history_overrides_cold_start():

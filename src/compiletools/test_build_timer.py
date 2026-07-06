@@ -447,6 +447,40 @@ class TestChromeTrace:
         assert compile_events[0]["args"]["target"] == "obj/foo.o"
         assert compile_events[0]["args"]["source"] == "src/foo.cpp"
 
+    def test_queue_wait_rendered_as_separate_span(self):
+        """M0 attribution: a rule with queue_wait_s metadata gets a preceding
+        ``queue_wait`` span on the same lane, ending exactly where the rule
+        span begins, and the metadata also lands in the rule's args."""
+        timer = BuildTimer(enabled=True, backend="shake")
+        with timer.phase("build_execution"):
+            timer.record_rule(
+                "compile",
+                "obj/foo.o",
+                "src/foo.cpp",
+                2.0,
+                start_s=10.0,
+                end_s=12.0,
+                metadata={"queue_wait_s": 1.5},
+            )
+        events = timer.to_chrome_trace()
+        rule_ev = next(e for e in events if e["name"] == "foo.cpp")
+        wait_ev = next(e for e in events if e.get("cat") == "queue_wait")
+        assert wait_ev["name"] == "foo.cpp (queued)"
+        assert wait_ev["tid"] == rule_ev["tid"]  # same lane
+        assert wait_ev["dur"] == pytest.approx(1.5 * 1_000_000)
+        # Wait span ends exactly where the rule span begins.
+        assert wait_ev["ts"] + wait_ev["dur"] == pytest.approx(rule_ev["ts"])
+        assert rule_ev["args"]["queue_wait_s"] == 1.5
+
+    def test_zero_queue_wait_emits_no_extra_span(self):
+        timer = BuildTimer(enabled=True, backend="shake")
+        with timer.phase("build_execution"):
+            timer.record_rule(
+                "compile", "obj/foo.o", "src/foo.cpp", 2.0, start_s=10.0, end_s=12.0, metadata={"queue_wait_s": 0.0}
+            )
+        events = timer.to_chrome_trace()
+        assert not [e for e in events if e.get("cat") == "queue_wait"]
+
     def test_normalizes_mixed_clock_domains(self):
         """All ingest paths now feed monotonic-aligned timestamps:
         in-Python recorders use ``time.monotonic()`` directly; the

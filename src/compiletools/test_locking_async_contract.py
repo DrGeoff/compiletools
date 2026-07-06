@@ -120,3 +120,89 @@ def test_run_child_async_spawn_reap_and_returncode():
     assert rc == 7
     assert len(spawned) == 1 and isinstance(spawned[0], int)
     assert reaped == spawned  # reaped exactly the spawned pgid
+
+
+# ---------------------------------------------------------------------------
+# _async_acquire cancellation handshake: exactly one side releases, so a
+# cancelled awaiter (sibling rule failed / build aborted) can never strand the
+# eventually-acquired lock for the process lifetime.
+# ---------------------------------------------------------------------------
+
+
+class _SlowLock:
+    """Deterministic stand-in for a blocking lock WITHOUT acquire_nonblocking
+    (forces _async_acquire onto the executor path). ``acquire()`` parks on
+    ``gate`` so the test controls exactly when the executor thread wins the
+    lock relative to the awaiter's cancellation."""
+
+    def __init__(self):
+        import threading
+
+        self.gate = threading.Event()  # acquire() blocks until set
+        self.acquire_started = threading.Event()
+        self.acquire_done = threading.Event()
+        self._mutex = threading.Lock()
+        self.releases = 0
+        self.held = False
+
+    def acquire(self):
+        self.acquire_started.set()
+        assert self.gate.wait(10), "test gate never opened"
+        with self._mutex:
+            self.held = True
+        self.acquire_done.set()
+
+    def release(self):
+        with self._mutex:
+            self.releases += 1
+            self.held = False
+
+
+def test_async_acquire_cancel_while_contended_releases_late_acquire():
+    """Cancel the awaiter while the executor thread is still parked in
+    acquire(); when the thread eventually wins the lock it must see the
+    abandon flag and release it (the reviewed lock-strand bug)."""
+    import time
+
+    lock = _SlowLock()
+
+    async def main():
+        loop = asyncio.get_running_loop()
+        task = asyncio.ensure_future(locking._async_acquire(lock))
+        # Wait until the executor thread is parked inside acquire().
+        await loop.run_in_executor(None, lock.acquire_started.wait, 10)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # Now the peer "releases": the thread's acquire() completes and the
+        # handshake must release the abandoned lock, not strand it.
+        lock.gate.set()
+        deadline = time.time() + 10
+        while lock.releases == 0 and time.time() < deadline:
+            await asyncio.sleep(0.01)
+
+    asyncio.run(main())
+    assert lock.releases == 1
+    assert not lock.held
+
+
+def test_async_acquire_cancel_after_thread_acquired_releases():
+    """Cancel after the executor thread recorded the acquire but before the
+    awaiter resumed: the canceller side of the handshake must release."""
+    lock = _SlowLock()
+    lock.gate.set()  # acquire() completes as soon as the thread runs it
+
+    async def main():
+        task = asyncio.ensure_future(locking._async_acquire(lock))
+        await asyncio.sleep(0)  # let the task reach the executor await
+        # Block the LOOP thread until the executor thread has finished
+        # acquire(); the task cannot resume while we hold the loop, so the
+        # cancel below lands after acquired=True but before the awaiter runs.
+        assert lock.acquire_done.wait(10)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(main())
+    assert lock.releases == 1
+    assert not lock.held

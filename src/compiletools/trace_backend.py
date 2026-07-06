@@ -13,7 +13,8 @@ degenerates to a single os.path.exists() call — skipping all hashing, trace
 lookup, and input comparison for no-op rebuilds.
 
 ShakeBackend drives compilation directly from Python using asyncio coroutines
-with a semaphore to limit subprocess concurrency.
+with a PriorityGate limiting subprocess concurrency — ready rules are admitted
+highest critical time first (see rule_cost.py), not FIFO.
 
 SlurmBackend replaces the async compile phase with batch Slurm job
 submission, distributing compile rules across an HPC cluster:
@@ -375,20 +376,35 @@ class ShakeBackend(BuildBackend):
         self._observed_costs: dict[str, float] = {}
 
         # M2 single signal handler: one asyncio signal handler on the build's
-        # event loop forwards SIGINT/SIGTERM to every live child process group.
-        # Children are spawned in their own session (start_new_session=True), so
-        # a Ctrl-C reaches the whole compiler process tree, not just the direct
-        # child. Replaces the per-subprocess ``graceful_shutdown`` handlers the
-        # sync ``_run_with_signal_forwarding`` installed once per rule.
+        # event loop forwards SIGINT/SIGTERM to every live child process group
+        # AND cancels the root build task. Children are spawned in their own
+        # session (start_new_session=True), so a Ctrl-C reaches the whole
+        # compiler process tree, not just the direct child. Replaces the
+        # per-subprocess ``graceful_shutdown`` handlers the sync
+        # ``_run_with_signal_forwarding`` installed once per rule.
+        #
+        # The cancel is load-bearing, not belt-and-braces: forwarding alone
+        # aborts the build only incidentally (killed compiler -> non-zero rc ->
+        # CalledProcessError). A signal arriving while NO child is in flight
+        # (verify/hash phase of a warm build) would otherwise be swallowed
+        # entirely, and a killed TEST child merely appends to _test_failures --
+        # siblings would keep launching after Ctrl-C. Cancelling the root task
+        # tears down the whole gather tree; _run_child_async's CancelledError
+        # path SIGKILLs + reaps each remaining child pgid before the lock
+        # release, so no orphan survives.
         self._live_child_pgids: set[int] = set()
+        aborted_by: list[int] = []
 
         async def _run_build() -> None:
             loop = asyncio.get_running_loop()
+            build_task = asyncio.ensure_future(self._build_async(walk_target, graph, traces, memo, gate, crit))
 
             def _forward_signal(signum: int) -> None:
+                aborted_by.append(signum)
                 for pgid in list(self._live_child_pgids):
                     with contextlib.suppress(OSError, ProcessLookupError):
                         os.killpg(pgid, signum)
+                build_task.cancel()
 
             installed: list[int] = []
             for sig in (signal.SIGINT, signal.SIGTERM):
@@ -401,7 +417,7 @@ class ShakeBackend(BuildBackend):
                 except (NotImplementedError, ValueError, RuntimeError):
                     pass
             try:
-                await self._build_async(walk_target, graph, traces, memo, gate, crit)
+                await build_task
             finally:
                 for sig in installed:
                     with contextlib.suppress(Exception):
@@ -409,13 +425,27 @@ class ShakeBackend(BuildBackend):
 
         try:
             asyncio.run(_run_build())
+        except asyncio.CancelledError:
+            if not aborted_by:
+                raise  # cancelled by something other than our signal handler
         finally:
             traces.save()
             try:
                 history.update(self._observed_costs)
-                rule_cost.save_cost_history(cost_path, history)
+                rule_cost.save_cost_history(cost_path, history, prefer=set(self._observed_costs))
             except Exception:
                 pass
+
+        # Re-deliver the aborting signal now that traces/costs are saved and
+        # every child is reaped, so the process reports the conventional
+        # termination status (Ctrl-C -> KeyboardInterrupt / exit 130; SIGTERM
+        # -> killed-by-SIGTERM via the restored default handler).
+        if aborted_by:
+            signum = aborted_by[0]
+            if signum == signal.SIGINT:
+                raise KeyboardInterrupt
+            signal.signal(signum, signal.SIG_DFL)
+            signal.raise_signal(signum)
 
         # A failed test only appended to _test_failures (so sibling rules
         # already in flight could finish); surface the aggregate now so a
@@ -582,7 +612,7 @@ class ShakeBackend(BuildBackend):
             if trace is not None and self._verify(rule, trace):
                 return False  # up to date
 
-        # EXECUTE (semaphore limits subprocess concurrency)
+        # EXECUTE (PriorityGate limits subprocess concurrency)
         old_hash = None
         if not _is_build_artifact(rule):
             old_hash = get_file_hash(target, self.context) if os.path.exists(target) else None

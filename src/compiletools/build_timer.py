@@ -656,6 +656,27 @@ class BuildTimer:
             trace_event.setdefault("args", {})["target"] = event.target
         if event.source:
             trace_event.setdefault("args", {})["source"] = event.source
+        if event.metadata:
+            trace_event.setdefault("args", {}).update(event.metadata)
+
+        # M0 attribution: render gate-wait as its own span immediately before
+        # the rule span on the same lane, so the occupancy timeline separates
+        # "parked on the concurrency gate" from "actually running". start_s is
+        # the post-acquire timestamp, so the wait span ends exactly where the
+        # rule span begins.
+        queue_wait_s = event.metadata.get("queue_wait_s")
+        if isinstance(queue_wait_s, (int, float)) and queue_wait_s > 0 and event.category != "phase":
+            events.append(
+                {
+                    "name": f"{event.name} (queued)",
+                    "cat": "queue_wait",
+                    "ph": "X",
+                    "ts": ts_us - queue_wait_s * 1_000_000,
+                    "dur": queue_wait_s * 1_000_000,
+                    "pid": pid,
+                    "tid": tid,
+                }
+            )
         events.append(trace_event)
 
         # Phase children stay on the parent's lane; each rule child gets
