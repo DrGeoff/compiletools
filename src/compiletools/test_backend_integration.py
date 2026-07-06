@@ -353,7 +353,12 @@ class TestBackendBuildHeaderUnits(BaseCompileToolsTestCase):
         )
 
         cxx = compiletools.apptools.get_functional_cxx_compiler()
-        if cxx and "g++" in os.path.basename(cxx) and _detected_gcc_supports_modules() and _gcc_supports_header_units():
+        if (
+            cxx
+            and compiletools.apptools.compiler_kind(cxx) == "gcc"
+            and _detected_gcc_supports_modules()
+            and _gcc_supports_header_units()
+        ):
             module_cxx = cxx
         elif _clang_supports_header_units():
             module_cxx = _which("clang++")

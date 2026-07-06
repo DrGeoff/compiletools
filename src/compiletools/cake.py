@@ -58,6 +58,13 @@ class Cake:
         """
         if getattr(args, "backend", "make") != "make":
             return
+        # The callback registry in apptools is process-global, so once
+        # cake.main() has run, every later parseargs in the same process
+        # (e.g. another tool's, or a test's minimal parser) replays this
+        # callback. Namespaces that never registered bindir/makefilename
+        # aren't cake parses — leave them untouched.
+        if not hasattr(args, "bindir") or not hasattr(args, "makefilename"):
+            return
         # Namer.executable_dir() just returns args.bindir, so read it directly
         # to avoid creating a throwaway Namer and BuildContext.
         bindir = args.bindir

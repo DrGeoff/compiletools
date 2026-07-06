@@ -500,7 +500,18 @@ class BuildBackend(abc.ABC):
         if graph is None:
             return
         pch_rules = [r for r in graph.rules_by_type(RuleType.COMPILE) if r.output.endswith(".gch")]
-        aux_rules = pch_rules + graph.rules_by_type(RuleType.HEADER_UNIT)
+        # clang header-unit precompiles are COMPILE rules with a .pcm output
+        # (`--precompile -xc++-system-header`), not RuleType.HEADER_UNIT --
+        # that type is reserved for gcc's shell-pipeline form whose output
+        # can't ride on `-o`. Collect them via the artefact registry so
+        # cmake/bazel (whose native tool never sees these rules) and slurm
+        # (flat job array, no DAG ordering) land the .pcm before consumer
+        # TUs compile with `-fmodule-file=<h>=<pcm>`. getattr fallback for
+        # test backends that bypass __init__ (same as
+        # _header_unit_extra_system_includes below).
+        hu_artefacts = set(getattr(self, "_header_unit_artefact", {}).values())
+        clang_hu_rules = [r for r in graph.rules_by_type(RuleType.COMPILE) if r.output in hu_artefacts]
+        aux_rules = pch_rules + clang_hu_rules + graph.rules_by_type(RuleType.HEADER_UNIT)
 
         # Module compile rules to run locally before the native tool: named-
         # module INTERFACE objects (gcc .o, and clang .o from pcm-to-o stage)
@@ -1090,7 +1101,7 @@ class BuildBackend(abc.ABC):
         # clang produces a real .pcm at a path we choose, so its
         # artefact IS the .pcm and there's no stamp shenanigan.
         header_unit_flat_dir = os.path.join(self.args.cas_objdir, ".hu")
-        self._header_unit_artefact: dict[str, str] = {}
+        self._header_unit_artefact = {}  # rebind: per-build_graph state
         # Per-token absolute-header-path resolution (gcc only; populated
         # when gcc + cas-pcmdir are both active so the mapper file can
         # key entries by resolved path). Stores ALL spellings the

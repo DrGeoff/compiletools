@@ -15,16 +15,19 @@ import subprocess
 
 import pytest
 
-from compiletools import fetch
 
-# ``GIT_CONFIG_GLOBAL`` / ``GIT_CONFIG_SYSTEM`` (the vars the autouse fixture
-# uses to redirect global/system config to throwaway files) landed in git
-# 2.32.0. On older git they are silently ignored and git falls back to the
-# HOME-derived ``~/.gitconfig``, so the "shadow a hostile HOME" guarantee below
-# is only deliverable on git >= 2.32. Reuse fetch's tested version probe rather
-# than re-parsing ``git --version`` here.
-_GIT_VERSION = fetch._git_version()
-_GIT_SUPPORTS_CONFIG_GLOBAL = _GIT_VERSION is not None and _GIT_VERSION >= (2, 32)
+def _git_supports_config_global() -> bool:
+    """GIT_CONFIG_GLOBAL is honoured from git 2.32; older gits (e.g. RHEL8's
+    /usr/bin/git 2.31.1) silently ignore it and read ``$HOME/.gitconfig``, so
+    the fixture's shadowing cannot work there."""
+    out = subprocess.run(["git", "--version"], capture_output=True, text=True).stdout
+    # "git version 2.31.1" -> (2, 31)
+    try:
+        parts = out.strip().split()[-1].split(".")
+        major, minor = int(parts[0]), int(parts[1])
+    except (IndexError, ValueError):
+        return False
+    return (major, minor) >= (2, 32)
 
 
 def _git_config_get(cwd: str, key: str) -> str:
@@ -53,25 +56,17 @@ def test_isolation_env_vars_are_set() -> None:
     assert os.environ.get("GIT_CONFIG_SYSTEM") == os.devnull
 
 
-@pytest.mark.skipif(
-    not _GIT_SUPPORTS_CONFIG_GLOBAL,
-    reason=(
-        "GIT_CONFIG_GLOBAL requires git >= 2.32 "
-        f"(detected {'.'.join(map(str, _GIT_VERSION)) if _GIT_VERSION else 'unknown'}); "
-        "on older git the only global-config lever is HOME, which this test "
-        "deliberately points at the hostile config, so the guarantee cannot hold"
-    ),
-)
 def test_hostile_ambient_home_gitconfig_is_not_seen(tmp_path, monkeypatch) -> None:
     """A hostile developer ``~/.gitconfig`` must not leak into git subprocesses.
 
     Simulate an ambient user config by pointing HOME at a dir whose
     ``.gitconfig`` carries a hostile ``init.defaultBranch``. Because the autouse
     fixture has already redirected GIT_CONFIG_GLOBAL to an empty file (which
-    takes precedence over the HOME-derived ``~/.gitconfig`` on git >= 2.32), a
-    subprocess must NOT observe the hostile value. Gated on git >= 2.32: the
-    ``GIT_CONFIG_GLOBAL`` mechanism does not exist on older git.
+    takes precedence over the HOME-derived ``~/.gitconfig``), a subprocess must
+    NOT observe the hostile value.
     """
+    if not _git_supports_config_global():
+        pytest.skip("git < 2.32 ignores GIT_CONFIG_GLOBAL; hermetic shadowing unavailable")
     hostile_home = tmp_path / "hostile-home"
     hostile_home.mkdir()
     (hostile_home / ".gitconfig").write_text(
