@@ -188,16 +188,27 @@ def test_async_acquire_cancel_while_contended_releases_late_acquire():
 
 def test_async_acquire_cancel_after_thread_acquired_releases():
     """Cancel after the executor thread recorded the acquire but before the
-    awaiter resumed: the canceller side of the handshake must release."""
+    awaiter resumed: the canceller side of the handshake must release.
+
+    The gate must stay closed until the task has suspended on a still-pending
+    executor future. Since 3.13, _chain_future copies state synchronously when
+    the executor fn already finished (gh: `dest_loop is _get_running_loop()`
+    in _call_set_state), so a pre-opened gate lets the wrapped future be born
+    done — the task then completes on its first step and cancel() arrives
+    after the fact, never exercising the handshake."""
     lock = _SlowLock()
-    lock.gate.set()  # acquire() completes as soon as the thread runs it
 
     async def main():
+        loop = asyncio.get_running_loop()
         task = asyncio.ensure_future(locking._async_acquire(lock))
-        await asyncio.sleep(0)  # let the task reach the executor await
-        # Block the LOOP thread until the executor thread has finished
-        # acquire(); the task cannot resume while we hold the loop, so the
+        # Wait until the executor thread is parked inside acquire() — the
+        # task is now genuinely suspended on a pending future.
+        await loop.run_in_executor(None, lock.acquire_started.wait, 10)
+        # Open the gate, then block the LOOP thread until the thread has
+        # recorded the acquire. The completion's _set_state is queued via
+        # call_soon_threadsafe but cannot run while we hold the loop, so the
         # cancel below lands after acquired=True but before the awaiter runs.
+        lock.gate.set()
         assert lock.acquire_done.wait(10)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
