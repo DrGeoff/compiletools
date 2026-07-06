@@ -1751,6 +1751,109 @@ def test_is_git_work_tree_false_for_nested_plain_dir() -> None:
         assert fetch._is_git_work_tree(nested) is False
 
 
+# --- A23: a linked git worktree at the managed location is never mutated -----
+
+
+def _make_linked_worktree(root: str, origin: dict, ref: str, *, detach: bool = False) -> tuple[str, str]:
+    """Clone the origin into a 'user project' checkout, then ``git worktree
+    add`` a linked worktree at ``<root>/externals/mylib`` checked out at *ref*
+    — the layout where the sibling-dir externals default lands on a directory
+    the user populated with their own worktrees. Returns ``(externals, target)``.
+    """
+    userproj = os.path.join(root, "userproj")
+    _git(root, "clone", "-q", origin["url"], userproj)
+    externals = os.path.join(root, "externals")
+    os.makedirs(externals)
+    target = os.path.join(externals, "mylib")
+    if detach:
+        _git(userproj, "worktree", "add", "-q", "--detach", target, ref)
+    else:
+        _git(userproj, "worktree", "add", "-q", target, ref)
+    return externals, target
+
+
+def test_is_linked_git_worktree_true_for_worktree_root() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        _externals, target = _make_linked_worktree(root, origin, "feature")
+        assert fetch._is_linked_git_worktree(target) is True
+
+
+def test_is_linked_git_worktree_false_for_plain_clone() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        externals = os.path.join(root, "externals")
+        res = resolve_external(GitExternal(name="mylib", url=origin["url"], ref=None), externals_dir=externals)
+        assert fetch._is_linked_git_worktree(res.path) is False
+
+
+def test_resolve_linked_worktree_matching_ref_used_as_is() -> None:
+    """A worktree already detached at the requested tag satisfies the
+    declaration — used as-is, no git mutation."""
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        externals, target = _make_linked_worktree(root, origin, "v1", detach=True)
+        res = resolve_external(GitExternal(name="mylib", url=origin["url"], ref="v1"), externals_dir=externals)
+        assert res.source == "managed"
+        assert res.on_disk_ref == origin["c1"]
+        assert _git(target, "rev-parse", "HEAD") == origin["c1"]
+
+
+def test_resolve_linked_worktree_differing_ref_refuses_and_leaves_untouched() -> None:
+    """A23 core repro: pre-fix, _checkout_immutable ran `git checkout v1`
+    INSIDE the user's worktree, silently detaching the HEAD of a checkout the
+    user is working in. Must instead refuse with a named error and leave the
+    worktree exactly as found (still on its branch, HEAD unmoved).
+    """
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        externals, target = _make_linked_worktree(root, origin, "feature")
+        head_before = _git(target, "rev-parse", "HEAD")
+        with pytest.raises(FetchError) as excinfo:
+            resolve_external(GitExternal(name="mylib", url=origin["url"], ref="v1"), externals_dir=externals)
+        msg = str(excinfo.value)
+        assert "worktree" in msg
+        assert "mylib" in msg
+        assert _git(target, "rev-parse", "HEAD") == head_before
+        # Still on the branch — not detached by a checkout we refused to run.
+        assert _git(target, "symbolic-ref", "-q", "--short", "HEAD") == "feature"
+
+
+def test_resolve_linked_worktree_update_no_ref_refuses() -> None:
+    """Pre-fix, a ref-less --update ran `git pull --ff-only` inside the user's
+    worktree. Must refuse instead."""
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        externals, target = _make_linked_worktree(root, origin, "feature")
+        head_before = _git(target, "rev-parse", "HEAD")
+        with pytest.raises(FetchError) as excinfo:
+            resolve_external(
+                GitExternal(name="mylib", url=origin["url"], ref=None),
+                externals_dir=externals,
+                update=True,
+            )
+        assert "worktree" in str(excinfo.value)
+        assert _git(target, "rev-parse", "HEAD") == head_before
+
+
+def test_resolve_linked_worktree_branch_update_refuses_even_at_tip() -> None:
+    """--update on a branch ref would fetch+fast-forward even when the
+    worktree currently sits at the tip (the fetch also writes refs into the
+    user's MAIN repo, which shares the worktree's object store). Refuse."""
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)
+        externals, target = _make_linked_worktree(root, origin, "feature")
+        head_before = _git(target, "rev-parse", "HEAD")
+        with pytest.raises(FetchError) as excinfo:
+            resolve_external(
+                GitExternal(name="mylib", url=origin["url"], ref="feature"),
+                externals_dir=externals,
+                update=True,
+            )
+        assert "worktree" in str(excinfo.value)
+        assert _git(target, "rev-parse", "HEAD") == head_before
+
+
 # --- A5: --git-path override must be a directory, not a regular file ---------
 
 

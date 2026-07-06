@@ -148,6 +148,19 @@ declared `ext.url` and WARNS on mismatch — the sibling-dir default layout can
 otherwise silently share `../<name>` between two projects declaring the same
 name from different URLs.
 
+**Linked-worktree guard (A23).** The sibling-dir default is also exactly where
+users keep their own `git worktree` checkouts, so a `//#GIT=` name collision
+can land the managed location on a linked worktree of a repo the user is
+actively working in. `_is_linked_git_worktree` (git-dir ≠ git-common-dir)
+detects it, and `_handle_present` refuses ALL mutating git ops there: a
+differing ref, or any `--update` (even at the right commit — a branch
+fetch/fast-forward writes refs into the user's MAIN repo via the shared git
+dir), raises a named `FetchError` pointing at `--git-path`/`--externals-dir`.
+A worktree already satisfying the declaration (unpinned, or detached at the
+requested SHA/tag) is used as-is. Distinct from the A19 nested-plain-dir
+hijack guard in `_is_git_work_tree`: a linked worktree IS a work-tree
+toplevel, so it passes A19 and needs its own check.
+
 **One shared `_fixpoint_scan` driver, parameterized by three callbacks.** `fetch_externals` (used by cake and `ct-fetch`'s clone/update path) and `gather_external_status` (`ct-fetch --status`) both delegate the round loop to `_fixpoint_scan(target_files, args, context, *, externals_dir, root_selector, scan_round, on_not_converged)`. The driver owns the shared skeleton: the bounded `for _round in range(_MAX_FIXPOINT_ROUNDS)`, building `_augmented_headerdeps` over the roots `root_selector()` returns, computing `_reachable_sources`, breaking when `scan_round` reports no new work, `wrappedos.clear_cache()` between rounds, the `else:` non-convergence raise, and the `context.analyzer_args` save/restore try/finally. The three callbacks (closures over each caller's own accumulator dicts) carry the ONLY behaviour that differs:
 
 - **`root_selector()`** — which already-known roots to widen the search into. fetch returns every resolved/cloned root (`[r.path for r in resolved.values()]`); status returns only roots ALREADY present on disk, since it never fetches to expand the graph.

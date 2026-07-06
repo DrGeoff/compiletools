@@ -563,6 +563,41 @@ def _is_git_work_tree(path: str) -> bool:
     return os.path.realpath(toplevel) == os.path.realpath(path)
 
 
+def _is_linked_git_worktree(path: str) -> bool:
+    """Return True if *path* is a **linked** git worktree (``git worktree add``).
+
+    A linked worktree's ``--git-dir`` (``<main>/.git/worktrees/<name>``)
+    differs from its ``--git-common-dir`` (``<main>/.git``); a primary
+    checkout reports the same directory for both. The default sibling
+    externals layout (parent of the gitroot) is exactly where users keep
+    their own worktrees, so a name collision can land a managed external on
+    one — and a checkout/fetch/pull run there would mutate a checkout the
+    user is actively working in (and, via the shared object store, write
+    refs into their MAIN repo). ``_handle_present`` uses this to refuse any
+    mutating operation on such a target.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-dir", "--git-common-dir"],
+            cwd=path,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            env=_git_env(),
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    lines = result.stdout.splitlines()
+    if len(lines) != 2:
+        return False
+    # Either line may be relative to the cwd git ran in (*path*); join is a
+    # no-op for absolute values.
+    git_dir = os.path.realpath(os.path.join(path, lines[0]))  # NOT cached: live safety check (A19/A23)
+    common_dir = os.path.realpath(os.path.join(path, lines[1]))  # NOT cached: live safety check (A19/A23)
+    return git_dir != common_dir
+
+
 def _current_commit(path: str) -> str | None:
     """Return the HEAD commit SHA of the repo at *path*, best-effort."""
     try:
@@ -960,6 +995,38 @@ def _handle_present(ext: GitExternal, target: str, *, no_fetch: bool, update: bo
             f"under the same name, disambiguate with --externals-dir or "
             f"--git-path {ext.name}=<path>."
         )
+
+    # A23: a linked worktree at the managed location belongs to a repo the
+    # user is actively working in (the sibling-dir externals default is
+    # exactly where worktrees get kept, so a //#GIT= name collision lands
+    # here). Running checkout/fetch/pull inside it would move the HEAD under
+    # the user's feet and write refs into their MAIN repo via the shared
+    # object store. Use it as-is when it already satisfies the declaration;
+    # refuse (never mutate) when it does not.
+    if _is_linked_git_worktree(target):
+        if update:
+            # Even a worktree sitting at the right commit is refused under
+            # --update: a branch ref would fetch+fast-forward, and the fetch
+            # writes refs into the user's MAIN repo via the shared git dir.
+            reason = "--update would mutate it"
+        elif ext.ref is None:
+            reason = None  # unpinned: any checkout satisfies the declaration
+        else:
+            resolved_ref = _rev_parse_verify(target, ext.ref)
+            if resolved_ref is not None and resolved_ref == _current_commit(target):
+                reason = None  # already at the requested ref, nothing to do
+            else:
+                reason = f"it is not at the requested ref '{ext.ref}'"
+        if reason is not None:
+            raise FetchError(
+                f"external '{ext.name}' ({ext.url}): the managed location '{target}' "
+                f"is a linked git worktree of another checkout and {reason}; "
+                f"refusing to run git operations inside it. Point "
+                f"--git-path {ext.name}=<path> at a real checkout, use "
+                f"--externals-dir to clone elsewhere, or adjust the worktree "
+                f"yourself."
+            )
+        return _managed_result(ext, target)
 
     if ext.ref is None:
         _handle_no_ref(ext, target, no_fetch=no_fetch, update=update, verbose=verbose)

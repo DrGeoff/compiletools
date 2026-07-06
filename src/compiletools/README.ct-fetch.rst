@@ -186,6 +186,14 @@ Safety
   as-is (never cloned over) with a warning — except under ``--update``,
   where compiletools cannot manage a non-git directory and reports a
   hard error.
+* A **linked git worktree** (``git worktree add``) at a managed location
+  is never mutated: the sibling-directory default is exactly where users
+  keep their own worktrees, and a checkout or pull there would move the
+  HEAD of a checkout being actively worked in (and write refs into its
+  main repository). A worktree that already satisfies the declaration
+  (unpinned, or sitting at the requested tag/SHA) is used as-is; a
+  differing ref or any ``--update`` is a hard error suggesting
+  ``--git-path`` or ``--externals-dir``.
 * Two ``//#GIT=`` declarations of the **same name** are a hard error when
   they disagree — whether on the **URL** or on the **ref** — and the
   error names both declaring files. Two externals whose derived names
