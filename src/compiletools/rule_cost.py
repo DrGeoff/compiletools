@@ -116,7 +116,10 @@ def save_cost_history(path: str, hist: dict[str, float], *, prefer: set[str] | f
                     break
                 trimmed.setdefault(k, v)
             hist = trimmed
-        with atomic_output_file(path, mode="w", encoding="utf-8") as f:
+        # force_mode=0o666: the sidecar lives in a shared CAS pool cell, and a
+        # first-creator with a restrictive umask would silently lock peers out
+        # of the learned costs (load_cost_history swallows the OSError).
+        with atomic_output_file(path, mode="w", encoding="utf-8", force_mode=0o666) as f:
             json.dump(hist, f, sort_keys=True)
     except (OSError, ValueError):
         pass

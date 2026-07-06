@@ -140,7 +140,12 @@ class TraceStore:
             "version": TRACE_VERSION,
             "traces": {output: asdict(entry) for output, entry in self._traces.items()},
         }
-        with compiletools.filesystem_utils.atomic_output_file(self._path, mode="w", encoding="utf-8") as f:
+        # force_mode=0o666: the store lives in a shared CAS pool cell, and a
+        # first-creator with a restrictive umask would silently lock peers out
+        # of the trace history (same rationale as locking.py's explicit fchmod).
+        with compiletools.filesystem_utils.atomic_output_file(
+            self._path, mode="w", encoding="utf-8", force_mode=0o666
+        ) as f:
             json.dump(data, f, indent=2, sort_keys=True)
 
 

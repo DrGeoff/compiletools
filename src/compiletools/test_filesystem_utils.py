@@ -488,3 +488,27 @@ def test_atomic_write_no_preserve_permissions_respects_umask(tmp_path, restore_u
     atomic_write(target, "new", preserve_permissions=False)
     mode = stat.S_IMODE(os.stat(target).st_mode)
     assert mode == 0o644
+
+
+@pytest.mark.parametrize("umask_value", [0o000, 0o022, 0o077])
+def test_atomic_output_file_force_mode_defeats_umask_on_first_create(tmp_path, restore_umask, umask_value):
+    """force_mode must land exactly, regardless of the creator's umask."""
+    os.umask(umask_value)
+    target = str(tmp_path / "shared.json")
+    with atomic_output_file(target, force_mode=0o666) as f:
+        f.write("{}")
+    mode = stat.S_IMODE(os.stat(target).st_mode)
+    assert mode == 0o666
+
+
+def test_atomic_output_file_force_mode_overrides_preserved_restrictive_mode(tmp_path, restore_umask):
+    """force_mode must repair a restrictive mode left by an earlier umask-dependent create."""
+    os.umask(0o022)
+    target = str(tmp_path / "shared.json")
+    with open(target, "w") as f:
+        f.write("old")
+    os.chmod(target, 0o600)
+    with atomic_output_file(target, force_mode=0o666) as f:
+        f.write("new")
+    mode = stat.S_IMODE(os.stat(target).st_mode)
+    assert mode == 0o666

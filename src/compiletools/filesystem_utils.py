@@ -410,7 +410,7 @@ def safe_read_text_file(filepath, encoding="utf-8", force_no_mmap=False, respect
         return Str(f.read())
 
 
-def atomic_output_file(target_path, mode="w", encoding="utf-8", preserve_permissions=True):
+def atomic_output_file(target_path, mode="w", encoding="utf-8", preserve_permissions=True, force_mode=None):
     """Context manager for atomic file writes via temp file + os.replace().
 
     Returns a file object that writes to a temp file. On successful exit,
@@ -427,6 +427,11 @@ def atomic_output_file(target_path, mode="w", encoding="utf-8", preserve_permiss
         mode: File mode ('w', 'wb', etc.)
         encoding: Text encoding (only used for text mode)
         preserve_permissions: If True and target exists, preserve its mode/group
+        force_mode: Exact permission bits for the result, overriding both the
+            umask and any preserved mode. Pass 0o666 for files in a shared
+            CAS pool that every peer must be able to read — the
+            first-creator's umask must not lock peers out (same rationale as
+            locking.py's explicit fchmod). Group preservation still applies.
 
     Yields:
         File object for writing
@@ -447,6 +452,8 @@ def atomic_output_file(target_path, mode="w", encoding="utf-8", preserve_permiss
             os.makedirs(target_dir, exist_ok=True)
 
         target_mode, target_gid = _resolve_target_mode_and_gid(target_path, preserve_permissions)
+        if force_mode is not None:
+            target_mode = force_mode
 
         # Create temp file in same directory
         fd, temp_path = tempfile.mkstemp(dir=target_dir, prefix=f".tmp.{target_name}.", suffix=f".{os.getpid()}")

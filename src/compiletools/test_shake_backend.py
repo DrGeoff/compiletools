@@ -317,6 +317,27 @@ class TestTraceStore:
         store = TraceStore(path)
         assert store.get("x") is None
 
+    def test_save_creates_group_readable_store_despite_restrictive_umask(self, tmp_path):
+        """.ct-traces.json lives in a shared CAS pool cell; a first creator with
+        umask 077 must not lock peers out of the trace history (mirrors
+        locking.py's explicit-0666 convention)."""
+        import stat
+
+        path = str(tmp_path / ".ct-traces.json")
+        store = TraceStore(path)
+        store.put("a.o", TraceEntry(output_hash="x", input_hashes={}, command_hash="y"))
+        saved = os.umask(0o077)
+        try:
+            store.save()
+        finally:
+            os.umask(saved)
+        assert stat.S_IMODE(os.stat(path).st_mode) == 0o666
+
+        # And a rewrite repairs a restrictive mode left by a pre-fix creator.
+        os.chmod(path, 0o600)
+        store.save()
+        assert stat.S_IMODE(os.stat(path).st_mode) == 0o666
+
     def test_hash_command_deterministic(self):
         cmd = ["g++", "-c", "foo.cpp", "-o", "foo.o"]
         h1 = hash_command(cmd)

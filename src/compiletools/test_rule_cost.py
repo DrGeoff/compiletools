@@ -92,6 +92,28 @@ def test_non_numeric_values_dropped(tmp_path):
     assert rule_cost.load_cost_history(str(p)) == {"a": 1.5}
 
 
+def test_save_creates_group_readable_sidecar_despite_restrictive_umask(tmp_path):
+    """The sidecar lives in a shared CAS pool cell; a first creator with umask
+    077 must not lock peers out of the learned costs (mirrors locking.py's
+    explicit-0666 convention). Peers hitting an unreadable sidecar degrade
+    silently to cold-start costs -- so the mode must be umask-proof."""
+    import os
+    import stat
+
+    p = str(tmp_path / rule_cost.COST_FILE)
+    saved = os.umask(0o077)
+    try:
+        rule_cost.save_cost_history(p, {"compile\x1fsrc/a.cpp": 3.5})
+    finally:
+        os.umask(saved)
+    assert stat.S_IMODE(os.stat(p).st_mode) == 0o666
+
+    # And a rewrite repairs a restrictive mode left by a pre-fix creator.
+    os.chmod(p, 0o600)
+    rule_cost.save_cost_history(p, {"compile\x1fsrc/a.cpp": 4.0})
+    assert stat.S_IMODE(os.stat(p).st_mode) == 0o666
+
+
 # --------------------------------------------------------------- estimate
 
 
