@@ -13,6 +13,19 @@ from __future__ import annotations
 import os
 import subprocess
 
+import pytest
+
+from compiletools import fetch
+
+# ``GIT_CONFIG_GLOBAL`` / ``GIT_CONFIG_SYSTEM`` (the vars the autouse fixture
+# uses to redirect global/system config to throwaway files) landed in git
+# 2.32.0. On older git they are silently ignored and git falls back to the
+# HOME-derived ``~/.gitconfig``, so the "shadow a hostile HOME" guarantee below
+# is only deliverable on git >= 2.32. Reuse fetch's tested version probe rather
+# than re-parsing ``git --version`` here.
+_GIT_VERSION = fetch._git_version()
+_GIT_SUPPORTS_CONFIG_GLOBAL = _GIT_VERSION is not None and _GIT_VERSION >= (2, 32)
+
 
 def _git_config_get(cwd: str, key: str) -> str:
     """Return ``git config --get <key>`` (stripped) or '' if unset.
@@ -40,14 +53,24 @@ def test_isolation_env_vars_are_set() -> None:
     assert os.environ.get("GIT_CONFIG_SYSTEM") == os.devnull
 
 
+@pytest.mark.skipif(
+    not _GIT_SUPPORTS_CONFIG_GLOBAL,
+    reason=(
+        "GIT_CONFIG_GLOBAL requires git >= 2.32 "
+        f"(detected {'.'.join(map(str, _GIT_VERSION)) if _GIT_VERSION else 'unknown'}); "
+        "on older git the only global-config lever is HOME, which this test "
+        "deliberately points at the hostile config, so the guarantee cannot hold"
+    ),
+)
 def test_hostile_ambient_home_gitconfig_is_not_seen(tmp_path, monkeypatch) -> None:
     """A hostile developer ``~/.gitconfig`` must not leak into git subprocesses.
 
     Simulate an ambient user config by pointing HOME at a dir whose
     ``.gitconfig`` carries a hostile ``init.defaultBranch``. Because the autouse
     fixture has already redirected GIT_CONFIG_GLOBAL to an empty file (which
-    takes precedence over the HOME-derived ``~/.gitconfig``), a subprocess must
-    NOT observe the hostile value.
+    takes precedence over the HOME-derived ``~/.gitconfig`` on git >= 2.32), a
+    subprocess must NOT observe the hostile value. Gated on git >= 2.32: the
+    ``GIT_CONFIG_GLOBAL`` mechanism does not exist on older git.
     """
     hostile_home = tmp_path / "hostile-home"
     hostile_home.mkdir()
