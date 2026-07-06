@@ -972,16 +972,25 @@ class SlurmBackend(ShakeBackend):
         self._created_aux_files: list[str] = []
         self._tracked_jobs: dict[str, str] = {}  # job_id -> "pending"|"terminal"
 
+        # Deferred-signal latch guarding the sbatch submit -> _tracked_jobs
+        # window (see _tracked_submit).
+        self._submit_in_flight = False
+        self._deferred_signum: int | None = None
+
         # Index from job_id -> chunk_id, so log lookups don't have to glob.
         self._chunk_id_for_job: dict[str, int] = {}
 
-        def _on_signal(signum, _frame):  # pragma: no cover - exercised via thread test
-            self._scancel_pending()
-            # Restore default handler and re-raise so normal interrupt semantics apply.
-            # graceful_shutdown's restoration won't run until the with block exits, but
-            # os.kill below re-delivers immediately and sys.exit unwinds through it.
-            signal.signal(signum, signal.SIG_DFL)
-            os.kill(os.getpid(), signum)
+        def _on_signal(signum, _frame):
+            if self._submit_in_flight:
+                # An sbatch submit is in flight: the scheduler may already
+                # have created the array, but its id is not yet in
+                # _tracked_jobs, so _scancel_pending would strand it on the
+                # cluster. Latch the signal; _tracked_submit re-delivers it
+                # as soon as the id is tracked. Never raise from here —
+                # unwinding mid-submit is exactly the orphaning bug.
+                self._deferred_signum = signum
+                return
+            self._scancel_and_reraise(signum)
 
         with (
             compiletools.apptools.graceful_shutdown(_on_signal, signal.SIGINT, signal.SIGTERM),
@@ -1044,10 +1053,11 @@ class SlurmBackend(ShakeBackend):
         for mem, tier_rules in tiers.items():
             for chunk_start in range(0, len(tier_rules), max_array):
                 chunk = tier_rules[chunk_start : chunk_start + max_array]
-                array_job_id = self._sbatch_array(chunk, chunk_id=chunk_id, mem=mem)
-                index_map[array_job_id] = chunk
-                self._tracked_jobs[array_job_id] = "pending"
-                self._chunk_id_for_job[array_job_id] = chunk_id
+                with self._tracked_submit():
+                    array_job_id = self._sbatch_array(chunk, chunk_id=chunk_id, mem=mem)
+                    index_map[array_job_id] = chunk
+                    self._tracked_jobs[array_job_id] = "pending"
+                    self._chunk_id_for_job[array_job_id] = chunk_id
                 chunk_id += len(chunk)
 
         all_failures: list[SlurmBackend._TaskFailure] = []
@@ -1104,10 +1114,11 @@ class SlurmBackend(ShakeBackend):
                     for mem, tier_rules in retry_tiers.items():
                         for retry_start in range(0, len(tier_rules), max_array):
                             chunk = tier_rules[retry_start : retry_start + max_array]
-                            array_job_id = self._sbatch_array(chunk, chunk_id=chunk_id, mem=mem)
-                            retry_map[array_job_id] = chunk
-                            self._tracked_jobs[array_job_id] = "pending"
-                            self._chunk_id_for_job[array_job_id] = chunk_id
+                            with self._tracked_submit():
+                                array_job_id = self._sbatch_array(chunk, chunk_id=chunk_id, mem=mem)
+                                retry_map[array_job_id] = chunk
+                                self._tracked_jobs[array_job_id] = "pending"
+                                self._chunk_id_for_job[array_job_id] = chunk_id
                             chunk_id += len(chunk)
 
                     for r, _ in retryable:
@@ -1530,6 +1541,41 @@ class SlurmBackend(ShakeBackend):
             for stale in glob.glob(os.path.join(objdir, "**", f"*.{jid}.*.tmp"), recursive=True):
                 with contextlib.suppress(OSError):
                     os.remove(stale)
+
+    def _scancel_and_reraise(self, signum: int) -> None:
+        """scancel every tracked job, then die by *signum* conventionally.
+
+        Restores the default handler and re-raises so normal interrupt
+        semantics apply. graceful_shutdown's restoration won't run until
+        execute()'s with block exits, but os.kill below re-delivers
+        immediately and the unwind passes through it.
+        """
+        self._scancel_pending()
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+    @contextlib.contextmanager
+    def _tracked_submit(self):
+        """Critical section for an sbatch submit + its _tracked_jobs insert.
+
+        A signal delivered between ``_sbatch_array`` returning and the job id
+        landing in ``_tracked_jobs`` would scancel *without* the fresh id and
+        orphan the just-submitted array on the cluster — and that window is
+        the likeliest place for a Ctrl-C to land, because the interpreter
+        parks the signal during the blocking sbatch call and delivers it at
+        the first bytecode afterwards. ``_on_signal`` therefore latches
+        instead of acting while ``_submit_in_flight`` is set; on exit the
+        latched signal is re-delivered once the id is tracked, so the
+        scancel covers it.
+        """
+        self._submit_in_flight = True
+        try:
+            yield
+        finally:
+            self._submit_in_flight = False
+            signum, self._deferred_signum = self._deferred_signum, None
+            if signum is not None:
+                self._scancel_and_reraise(signum)
 
     def _scancel_pending(self) -> None:
         """Cancel any tracked Slurm jobs not yet known to be terminal. Never raises."""

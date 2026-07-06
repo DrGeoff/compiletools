@@ -107,17 +107,41 @@ def test_flock_acquire_nonblocking_true_when_free(tmp_path):
     assert lock.fd is None
 
 
-def test_run_child_async_spawn_reap_and_returncode():
+def test_run_child_async_spawn_reap_and_returncode(tmp_path):
+    """on_spawn/on_reap fire with the child's pgid and the returncode is
+    propagated.
+
+    The hooks contract only covers a child that is still alive when the pgid
+    is resolved — an instantly-exiting child (``sh -c "exit 7"``) can be
+    reaped before ``os.getpgid`` runs (3.12/3.13: ThreadedChildWatcher's
+    waitpid thread wins the race under load; 3.14: the loop's pidfd callback
+    reaps inside ``create_subprocess_exec``'s own transport-setup awaits),
+    in which case both hooks are documentedly skipped. So the child here
+    holds itself alive until ``on_spawn`` has observably fired: the hook
+    writes the marker the child is polling for. If the hook never fires the
+    child exits 99 via its bounded loop and the rc assertion fails cleanly
+    instead of hanging.
+    """
+    marker = tmp_path / "GO"
     spawned: list[int] = []
     reaped: list[int] = []
+
+    def on_spawn(pgid: int) -> None:
+        spawned.append(pgid)
+        marker.write_text("go")
+
     rc = asyncio.run(
         locking._run_child_async(
-            ["sh", "-c", "exit 7"],
-            on_spawn=spawned.append,
+            [
+                "sh",
+                "-c",
+                f'i=0; while [ ! -e "{marker}" ]; do i=$((i+1)); [ "$i" -gt 500 ] && exit 99; sleep 0.02; done; exit 7',
+            ],
+            on_spawn=on_spawn,
             on_reap=reaped.append,
         )
     )
-    assert rc == 7
+    assert rc == 7, "on_spawn never fired: the child timed out waiting for the marker" if rc == 99 else f"rc={rc}"
     assert len(spawned) == 1 and isinstance(spawned[0], int)
     assert reaped == spawned  # reaped exactly the spawned pgid
 

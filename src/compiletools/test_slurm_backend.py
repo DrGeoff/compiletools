@@ -7,6 +7,7 @@ import contextlib
 import os
 import re
 import shlex
+import signal
 import subprocess
 import threading
 import time
@@ -2322,6 +2323,69 @@ class TestScancelOnSignal:
                 t.join(timeout=5.0)
                 # And confirm scancel ran in the finally block
                 assert _mock_scancel.called
+
+
+class TestSignalDuringSubmit:
+    """A signal landing between sbatch printing the job id and that id
+    entering _tracked_jobs must not strand the just-submitted array.
+
+    The natural moment to Ctrl-C is while the blocking sbatch call is
+    visibly running; the Python-level handler then fires at the first
+    bytecode after check_output returns — exactly between submit and
+    tracking. If the handler scancels immediately, the fresh array id is
+    not yet in _tracked_jobs and the array is orphaned on the cluster.
+    The handler must instead defer until the id is tracked, then scancel
+    (now covering the new array) and re-deliver the signal.
+    """
+
+    def test_signal_during_sbatch_scancels_the_submitted_array(self, tmp_path, _mock_scancel):
+        out = str(tmp_path / "foo.o")
+        graph, _rule = _single_compile_graph(out)
+
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
+            tracked_at_scancel: list[dict] = []
+
+            def _record_scancel(self_backend):
+                tracked_at_scancel.append(dict(self_backend._tracked_jobs))
+
+            _mock_scancel.mock.side_effect = _record_scancel
+
+            kills: list[tuple[int, int]] = []
+
+            def _fake_kill(pid, signum):
+                # Emulate death-by-signal: stop executing forward progress
+                # (a real SIG_DFL re-raise never returns).
+                kills.append((pid, signum))
+                raise KeyboardInterrupt
+
+            def _sbatch_side_effect(cmd, *a, **k):
+                if cmd[0] == "sbatch":
+                    # The signal lands while sbatch runs; the interpreter
+                    # delivers it to the installed handler right after the
+                    # blocking call — before the caller tracks the job id.
+                    handler = signal.getsignal(signal.SIGTERM)
+                    assert callable(handler)
+                    handler(signal.SIGTERM, None)
+                    return "77\n"
+                return "42\n"
+
+            with (
+                patch("subprocess.check_output", side_effect=_sbatch_side_effect),
+                patch.object(backend, "_wait_for_arrays", return_value=[]),
+                patch("os.kill", side_effect=_fake_kill),
+            ):
+                with pytest.raises(KeyboardInterrupt):
+                    backend.execute("build")
+
+            # The scancel triggered by the signal must already see the
+            # submitted array id, otherwise the array is orphaned.
+            assert tracked_at_scancel, "signal never reached scancel"
+            assert "77" in tracked_at_scancel[0], (
+                f"scancel ran before job 77 was tracked — the submitted array "
+                f"would be orphaned on the cluster (saw {tracked_at_scancel[0]!r})"
+            )
+            # The signal is still re-delivered conventionally afterwards.
+            assert (os.getpid(), signal.SIGTERM) in kills
 
 
 # ---------------------------------------------------------------------------
