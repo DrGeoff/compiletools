@@ -15,19 +15,15 @@ import subprocess
 
 import pytest
 
+from compiletools import fetch
 
-def _git_supports_config_global() -> bool:
-    """GIT_CONFIG_GLOBAL is honoured from git 2.32; older gits (e.g. RHEL8's
-    /usr/bin/git 2.31.1) silently ignore it and read ``$HOME/.gitconfig``, so
-    the fixture's shadowing cannot work there."""
-    out = subprocess.run(["git", "--version"], capture_output=True, text=True).stdout
-    # "git version 2.31.1" -> (2, 31)
-    try:
-        parts = out.strip().split()[-1].split(".")
-        major, minor = int(parts[0]), int(parts[1])
-    except (IndexError, ValueError):
-        return False
-    return (major, minor) >= (2, 32)
+# GIT_CONFIG_GLOBAL is honoured from git 2.32; older gits (e.g. RHEL8's
+# /usr/bin/git 2.31.1) silently ignore it and read ``$HOME/.gitconfig``, so the
+# fixture's empty-file shadowing is a no-op there. Reuse fetch._git_version()
+# (cached, and robust to banners like "git version 2.39.3 (Apple Git-146)")
+# instead of re-parsing the version string here.
+_GIT_VERSION = fetch._git_version()
+_GIT_SUPPORTS_CONFIG_GLOBAL = _GIT_VERSION is not None and _GIT_VERSION >= (2, 32)
 
 
 def _git_config_get(cwd: str, key: str) -> str:
@@ -56,6 +52,10 @@ def test_isolation_env_vars_are_set() -> None:
     assert os.environ.get("GIT_CONFIG_SYSTEM") == os.devnull
 
 
+@pytest.mark.skipif(
+    not _GIT_SUPPORTS_CONFIG_GLOBAL,
+    reason=f"git < 2.32 ignores GIT_CONFIG_GLOBAL; hermetic shadowing unavailable (detected {_GIT_VERSION})",
+)
 def test_hostile_ambient_home_gitconfig_is_not_seen(tmp_path, monkeypatch) -> None:
     """A hostile developer ``~/.gitconfig`` must not leak into git subprocesses.
 
@@ -65,8 +65,6 @@ def test_hostile_ambient_home_gitconfig_is_not_seen(tmp_path, monkeypatch) -> No
     takes precedence over the HOME-derived ``~/.gitconfig``), a subprocess must
     NOT observe the hostile value.
     """
-    if not _git_supports_config_global():
-        pytest.skip("git < 2.32 ignores GIT_CONFIG_GLOBAL; hermetic shadowing unavailable")
     hostile_home = tmp_path / "hostile-home"
     hostile_home.mkdir()
     (hostile_home / ".gitconfig").write_text(
