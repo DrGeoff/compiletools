@@ -8,7 +8,7 @@ Generate a static library from a root source file in one shot
 
 :Author: drgeoffathome@gmail.com
 :Date:   2025-11-26
-:Version: 10.1.11
+:Version: 10.2.0
 :Manual section: 1
 :Manual group: developers
 

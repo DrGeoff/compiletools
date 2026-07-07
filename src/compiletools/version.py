@@ -7,7 +7,7 @@ import functools
 import os
 import subprocess
 
-__version__ = "10.1.11"
+__version__ = "10.2.0"
 
 
 @functools.cache
