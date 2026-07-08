@@ -126,6 +126,174 @@ def find_block_comment_spans(str_text: "stringzilla.Str") -> list[tuple[int, int
     return spans
 
 
+# Byte-level character classes. All scanning below slices single bytes and
+# converts with bytes(), never str(): a str() conversion UTF-8-decodes and
+# raises UnicodeDecodeError when the slice lands inside a multibyte sequence
+# (e.g. L'€' puts 0xE2 right after the quote).
+_RAW_DELIM_FORBIDDEN_BYTES = frozenset(b' ()\\"\t\v\f\r\n')
+
+
+def _skip_raw_string_literal(str_text: "stringzilla.Str", start: int, n: int) -> int:
+    """Return the index just past a raw string literal ``R"delim(...)delim"``.
+
+    ``start`` points at the first byte *after* the opening quote (i.e. at the
+    start of the delimiter). Backslashes have no meaning inside a raw string;
+    only the exact ``)delim"`` sequence closes it. The delimiter is at most 16
+    d-chars, so the search for ``(`` is bounded; an ill-formed opener (no
+    ``(`` in range, or forbidden/non-ASCII bytes in the delimiter, e.g.
+    ``R"x"``) falls back to ordinary string skipping rather than swallowing
+    the rest of the file. An unterminated raw string returns ``n``.
+    """
+    window = bytes(str_text[start : start + 17])
+    open_rel = window.find(b"(")
+    if open_rel == -1 or any(
+        c in _RAW_DELIM_FORBIDDEN_BYTES or c >= 0x80 for c in window[:open_rel]
+    ):
+        return _skip_quoted_literal(str_text, start, '"', n)
+    closer = ")" + window[:open_rel].decode("ascii") + '"'
+    end = str_text.find(closer, start + open_rel + 1)
+    if end == -1:
+        return n
+    return end + len(closer)
+
+
+_HEX_DIGIT_BYTES = frozenset(b"0123456789abcdefABCDEF")
+_PP_NUMBER_CONT_BYTES = _HEX_DIGIT_BYTES | frozenset(b"xXuUlL._")
+_TOKEN_CONT_BYTES = frozenset(
+    b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_'."
+)
+_DECIMAL_DIGIT_BYTES = frozenset(b"0123456789")
+_IDENT_BYTES = frozenset(
+    b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
+)
+
+
+def _is_digit_separator(str_text: "stringzilla.Str", quote_pos: int, n: int) -> bool:
+    """True if the ``'`` at ``quote_pos`` is a C++14 digit separator (``5'000``),
+    not the opening quote of a char literal.
+
+    A separator sits inside a pp-number: the token containing it must start
+    with a digit or a ``.digit`` pair (``[lex.ppnumber]`` allows ``.000'001``;
+    the digit-start rule excludes ``u8'a'`` — that token is the identifier
+    ``u8``) and the byte after the ``'`` must be a hex digit (covers both
+    decimal ``1'000`` and hex ``0xDEAD'BEEF`` groups).
+    """
+    if quote_pos + 1 >= n or bytes(str_text[quote_pos + 1 : quote_pos + 2])[0] not in _HEX_DIGIT_BYTES:
+        return False
+    # Back-scan to the start of the token (identifier/number chars plus the
+    # separators and dots a pp-number may contain). One bounded slice, then
+    # pure byte checks — this runs for every candidate apostrophe. Multibyte
+    # UTF-8 bytes (>= 0x80) are not token chars, so they end the scan safely.
+    lo = max(0, quote_pos - 40)
+    window = bytes(str_text[lo:quote_pos])
+    k = len(window)
+    while k > 0 and window[k - 1] in _TOKEN_CONT_BYTES:
+        k -= 1
+    if k == len(window):
+        return False
+    if k == 0 and lo > 0:
+        # Token longer than the scan window: start unknown, treat as literal.
+        return False
+    if window[k] in _DECIMAL_DIGIT_BYTES:
+        return True
+    # A pp-number may start ".digit" ([lex.ppnumber]), e.g. .000'001
+    return window[k] == 0x2E and k + 1 < len(window) and window[k + 1] in _DECIMAL_DIGIT_BYTES
+
+
+def _is_raw_string_prefix(str_text: "stringzilla.Str", quote_pos: int) -> bool:
+    """True if the identifier chars immediately before ``quote_pos`` are a raw
+    string prefix (``R``, ``uR``, ``u8R``, ``UR``, ``LR``).
+
+    A longer identifier ending in those letters (e.g. ``FACTOR"..."``) is not a
+    raw string prefix, so the back-scan checks one byte beyond the candidate.
+    """
+    lo = max(0, quote_pos - 4)
+    window = bytes(str_text[lo:quote_pos])
+    back = len(window)
+    while back > 0 and back > len(window) - 3 and window[back - 1] in _IDENT_BYTES:
+        back -= 1
+    if back > 0 and window[back - 1] in _IDENT_BYTES:
+        return False
+    return window[back:] in (b"R", b"uR", b"u8R", b"UR", b"LR")
+
+
+def find_comment_spans(str_text: "stringzilla.Str") -> list[tuple[int, int]]:
+    """Compute ALL comment byte ranges (``//`` and ``/* */``) in one forward pass.
+
+    Returns a sorted list of ``(start, end)`` half-open intervals covering every
+    ``//`` comment (through end of line, exclusive of the newline) and every
+    ``/* ... */`` block comment (``end`` just past the closing ``*/``, or
+    ``len(str_text)`` when unterminated). The scan is string/char-literal aware,
+    including C++11 raw strings ``R"delim(...)delim"``, so comment openers inside
+    literals (URLs, regexes, embedded code) do not produce phantom spans.
+
+    This differs from :func:`find_block_comment_spans` (which feeds the
+    directive gate and intentionally excludes ``//`` comments because the
+    magic-flag syntax ``//#KEY=...`` lives inside them): these spans are for
+    consumers that must treat BOTH comment kinds as non-code, like marker
+    classification.
+    """
+    spans: list[tuple[int, int]] = []
+    n = len(str_text)
+    i = 0
+    while i < n:
+        j = str_text.find_first_of("/\"'", i)
+        if j == -1:
+            break
+        ch = str_text[j : j + 1]
+        if ch == "/":
+            nxt = str_text[j + 1 : j + 2]
+            if nxt == "*":
+                end = str_text.find("*/", j + 2)
+                if end == -1:
+                    spans.append((j, n))
+                    break
+                end += 2
+                spans.append((j, end))
+                i = end
+            elif nxt == "/":
+                # End of line: first \n or \r (CR-only files must not merge
+                # into one giant span). A backslash immediately before the
+                # newline splices the next physical line into the comment
+                # (translation phase 2), so keep extending the span.
+                eol = str_text.find_first_of("\r\n", j + 2)
+                while eol != -1 and (
+                    str_text[eol - 1 : eol] == "\\"
+                    or (
+                        # LF half of an already-spliced \<CR><LF>: keep going.
+                        str_text[eol : eol + 1] == "\n"
+                        and str_text[eol - 1 : eol] == "\r"
+                        and str_text[eol - 2 : eol - 1] == "\\"
+                    )
+                ):
+                    eol = str_text.find_first_of("\r\n", eol + 1)
+                if eol == -1:
+                    spans.append((j, n))
+                    break
+                spans.append((j, eol))
+                i = eol + 1
+            else:
+                i = j + 1
+        elif ch == "'" and _is_digit_separator(str_text, j, n):
+            # C++14 digit separator (5'000), not a char literal. Skip the
+            # rest of the pp-number so its later separators (1'000'000)
+            # don't each repay the back-scan.
+            i = j + 1
+            while i < n:
+                c = bytes(str_text[i : i + 1])[0]
+                if c in _PP_NUMBER_CONT_BYTES:
+                    i += 1
+                elif c == 0x27 and i + 1 < n and bytes(str_text[i + 1 : i + 2])[0] in _HEX_DIGIT_BYTES:
+                    i += 2
+                else:
+                    break
+        elif ch == '"' and _is_raw_string_prefix(str_text, j):
+            i = _skip_raw_string_literal(str_text, j + 1, n)
+        else:  # opening of an ordinary string (") or char (') literal
+            i = _skip_quoted_literal(str_text, j + 1, str(ch), n)
+    return spans
+
+
 def _pos_in_spans(spans: list[tuple[int, int]], pos: int) -> bool:
     """True if ``pos`` falls inside any half-open ``(start, end)`` span.
 
@@ -1217,27 +1385,60 @@ def _detect_marker_type(
     exe_markers: list,
     test_markers: list,
     library_markers: list,
+    comment_spans: list[tuple[int, int]],
 ) -> MarkerType:
     """Detect EXE/TEST/LIBRARY marker type by scanning the source text.
 
     Priority is intentional: EXE > TEST > LIBRARY. The first matching list
     short-circuits the rest, mirroring the cumulative-flag check in the
     pre-decompose orchestrator.
+
+    Marker hits strictly inside a comment (``comment_spans`` from
+    :func:`find_comment_spans`) are skipped so doctest's generated
+    "Entry point: main() is ..." boilerplate comment does not classify a
+    test file as an executable. A marker that is itself comment-shaped
+    (configured with its comment leader, e.g. ``// CT-LIBRARY``) bypasses the
+    filter entirely — the comment IS the marker, and it must match under
+    Doxygen leaders (``/// CT-LIBRARY``) too, where the hit falls inside the
+    span rather than at its start. Files without commented-out markers still
+    pay exactly one ``find`` per marker.
     """
-    if exe_markers:
-        for marker in exe_markers:
-            if str_text.find(marker) != -1:
-                return MarkerType.EXE
 
-    if test_markers:
-        for marker in test_markers:
-            if str_text.find(marker) != -1:
-                return MarkerType.TEST
+    def _in_comment_interior(pos: int) -> bool:
+        lo, hi = 0, len(comment_spans)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            start, end = comment_spans[mid]
+            if end <= pos:
+                lo = mid + 1
+            elif start >= pos:
+                hi = mid
+            else:
+                return True
+        return False
 
-    if library_markers:
-        for marker in library_markers:
-            if str_text.find(marker) != -1:
-                return MarkerType.LIBRARY
+    def _has_uncommented_marker(markers) -> bool:
+        for marker in markers:
+            if marker.startswith("//") or marker.startswith("/*"):
+                # Comment-shaped marker: the comment IS the marker.
+                if str_text.find(marker) != -1:
+                    return True
+                continue
+            pos = str_text.find(marker)
+            while pos != -1:
+                if not _in_comment_interior(pos):
+                    return True
+                pos = str_text.find(marker, pos + 1)
+        return False
+
+    if exe_markers and _has_uncommented_marker(exe_markers):
+        return MarkerType.EXE
+
+    if test_markers and _has_uncommented_marker(test_markers):
+        return MarkerType.TEST
+
+    if library_markers and _has_uncommented_marker(library_markers):
+        return MarkerType.LIBRARY
 
     return MarkerType.NONE
 
@@ -1323,8 +1524,13 @@ def analyze_file(content_hash: str, context: "BuildContext") -> "FileAnalysisRes
     # Extract macros referenced in conditionals (for cache optimization)
     conditional_macros = _extract_conditional_macros(directives)
 
-    # Detect marker type - check for exe, test, or library markers
-    marker_type = _detect_marker_type(str_text, exe_markers, test_markers, library_markers)
+    # Detect marker type - check for exe, test, or library markers. Uses its
+    # own comment spans (// AND /**/, raw-string aware) rather than
+    # block_comment_spans, which deliberately excludes // comments because
+    # magic flags live inside them.
+    marker_type = _detect_marker_type(
+        str_text, exe_markers, test_markers, library_markers, find_comment_spans(str_text)
+    )
 
     # C++20 module declarations (named modules, partitions, and header
     # units; the global module fragment opener is skipped at the classifier).
