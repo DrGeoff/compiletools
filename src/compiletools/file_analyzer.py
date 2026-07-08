@@ -71,17 +71,27 @@ def _skip_quoted_literal(str_text: "stringzilla.Str", start: int, quote: str, n:
     """Return the index just past a string/char literal that opened at ``start``.
 
     ``start`` points at the first byte *after* the opening quote. Backslash
-    escapes are honoured so an escaped quote does not close the literal. If the
-    literal is unterminated, ``n`` (end of text) is returned.
+    escapes are honoured so an escaped quote does not close the literal, and a
+    backslash-newline (incl. ``\\<CR><LF>``) splices the next physical line
+    into the literal. A bare newline terminates the literal ([lex.string]:
+    ordinary string/char literals cannot span a line), so an unterminated
+    quote — e.g. the apostrophe in ``#error isn't supported`` prose — cannot
+    open a phantom span that swallows the rest of the file. If the literal is
+    unterminated at end of text, ``n`` is returned.
     """
     i = start
-    delims = "\\" + quote
+    delims = "\\\r\n" + quote
     while i < n:
         k = str_text.find_first_of(delims, i)
         if k == -1:
             return n
-        if str_text[k : k + 1] == "\\":
-            i = k + 2  # skip the escaped byte
+        b = bytes(str_text[k : k + 1])
+        if b == b"\\":
+            i = k + 2  # skip the escaped byte (also splices \<newline>)
+            if bytes(str_text[k + 1 : k + 3]) == b"\r\n":
+                i = k + 3  # spliced \<CR><LF>: consume both newline bytes
+        elif b == b"\r" or b == b"\n":
+            return k  # literal cannot span a bare newline: ends here
         else:
             return k + 1  # consumed the closing quote
     return n
@@ -217,23 +227,30 @@ def _is_raw_string_prefix(str_text: "stringzilla.Str", quote_pos: int) -> bool:
     return window[back:] in (b"R", b"uR", b"u8R", b"UR", b"LR")
 
 
-def find_comment_spans(str_text: "stringzilla.Str") -> list[tuple[int, int]]:
-    """Compute ALL comment byte ranges (``//`` and ``/* */``) in one forward pass.
+def find_comment_and_literal_spans(
+    str_text: "stringzilla.Str",
+) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """Compute comment AND string/char-literal byte ranges in one forward pass.
 
-    Returns a sorted list of ``(start, end)`` half-open intervals covering every
-    ``//`` comment (through end of line, exclusive of the newline) and every
-    ``/* ... */`` block comment (``end`` just past the closing ``*/``, or
-    ``len(str_text)`` when unterminated). The scan is string/char-literal aware,
-    including C++11 raw strings ``R"delim(...)delim"``, so comment openers inside
-    literals (URLs, regexes, embedded code) do not produce phantom spans.
+    Returns ``(comment_spans, literal_spans)``, each a sorted list of
+    ``(start, end)`` half-open intervals. Comment spans cover every ``//``
+    comment (through end of line, exclusive of the newline, honouring
+    backslash line splices) and every ``/* ... */`` block comment (``end``
+    just past the closing ``*/``, or ``len(str_text)`` when unterminated).
+    Literal spans cover every ordinary string, char literal, and C++11 raw
+    string ``R"delim(...)delim"``, from the opening quote to just past the
+    closing quote. The scan is literal-aware, so comment openers inside
+    literals (URLs, regexes, embedded code) do not produce phantom spans,
+    and vice versa.
 
     This differs from :func:`find_block_comment_spans` (which feeds the
     directive gate and intentionally excludes ``//`` comments because the
     magic-flag syntax ``//#KEY=...`` lives inside them): these spans are for
-    consumers that must treat BOTH comment kinds as non-code, like marker
-    classification.
+    consumers that must treat comments and string data as non-code, like
+    marker classification.
     """
     spans: list[tuple[int, int]] = []
+    literals: list[tuple[int, int]] = []
     n = len(str_text)
     i = 0
     while i < n:
@@ -289,9 +306,11 @@ def find_comment_spans(str_text: "stringzilla.Str") -> list[tuple[int, int]]:
                     break
         elif ch == '"' and _is_raw_string_prefix(str_text, j):
             i = _skip_raw_string_literal(str_text, j + 1, n)
+            literals.append((j, i))
         else:  # opening of an ordinary string (") or char (') literal
             i = _skip_quoted_literal(str_text, j + 1, str(ch), n)
-    return spans
+            literals.append((j, i))
+    return spans, literals
 
 
 def _pos_in_spans(spans: list[tuple[int, int]], pos: int) -> bool:
@@ -1386,6 +1405,7 @@ def _detect_marker_type(
     test_markers: list,
     library_markers: list,
     comment_spans: list[tuple[int, int]],
+    literal_spans: list[tuple[int, int]] | None = None,
 ) -> MarkerType:
     """Detect EXE/TEST/LIBRARY marker type by scanning the source text.
 
@@ -1393,28 +1413,91 @@ def _detect_marker_type(
     short-circuits the rest, mirroring the cumulative-flag check in the
     pre-decompose orchestrator.
 
-    Marker hits strictly inside a comment (``comment_spans`` from
-    :func:`find_comment_spans`) are skipped so doctest's generated
-    "Entry point: main() is ..." boilerplate comment does not classify a
-    test file as an executable. A marker that is itself comment-shaped
-    (configured with its comment leader, e.g. ``// CT-LIBRARY``) bypasses the
-    filter entirely — the comment IS the marker, and it must match under
-    Doxygen leaders (``/// CT-LIBRARY``) too, where the hit falls inside the
-    span rather than at its start. Files without commented-out markers still
-    pay exactly one ``find`` per marker.
-    """
+    Marker hits strictly inside a comment (``comment_spans``) are skipped so
+    doctest's generated "Entry point: main() is ..." boilerplate comment does
+    not classify a test file as an executable. Hits inside a string/char
+    literal (``literal_spans``) are likewise skipped — help text like
+    ``printf("usage: main(...)")`` is data, not code — EXCEPT when the
+    literal sits on a preprocessor line: test markers normally live in the
+    quoted filename of ``#include "unit_test.hpp"``, which must keep
+    classifying. A marker that is itself comment-shaped (configured with its
+    comment leader, e.g. ``// CT-LIBRARY``) bypasses the filter entirely —
+    the comment IS the marker, and it must match under Doxygen leaders
+    (``/// CT-LIBRARY``) too, where the hit falls inside the span rather than
+    at its start. Files without masked markers still pay exactly one ``find``
+    per marker.
 
-    def _in_comment_interior(pos: int) -> bool:
-        lo, hi = 0, len(comment_spans)
+    Both span lists come from :func:`find_comment_and_literal_spans`.
+    """
+    if literal_spans is None:
+        literal_spans = []
+
+    def _in_interior(spans: list[tuple[int, int]], pos: int) -> bool:
+        lo, hi = 0, len(spans)
         while lo < hi:
             mid = (lo + hi) // 2
-            start, end = comment_spans[mid]
+            start, end = spans[mid]
             if end <= pos:
                 lo = mid + 1
             elif start >= pos:
                 hi = mid
             else:
                 return True
+        return False
+
+    def _span_covering(spans: list[tuple[int, int]], pos: int) -> tuple[int, int] | None:
+        # The (start, end) span with start <= pos < end, or None.
+        lo, hi = 0, len(spans)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            start, end = spans[mid]
+            if end <= pos:
+                lo = mid + 1
+            elif start > pos:
+                hi = mid
+            else:
+                return spans[mid]
+        return None
+
+    def _on_preprocessor_line(pos: int) -> bool:
+        # True if the first non-whitespace byte of pos's LOGICAL line is '#'.
+        # Both newline bytes are line terminators (CR-only files), and a
+        # backslash-newline splices the previous physical line in, so a
+        # continued directive ('#define USAGE \' <newline> '"..."') keeps its
+        # exemption. Comments count as whitespace (translation phase 3), so
+        # '/* lint */ #include "unit_test.hpp"' is still a directive line —
+        # but a '#' that is itself comment- or literal-interior is data, not
+        # a directive (e.g. '#'-leading lines inside a multi-line raw string).
+        line_start = max(str_text.rfind("\n", 0, pos), str_text.rfind("\r", 0, pos)) + 1
+        while line_start > 0:
+            k = line_start - 1  # newline byte ending the previous physical line
+            if (
+                bytes(str_text[k : k + 1]) == b"\n"
+                and bytes(str_text[k - 1 : k]) == b"\r"
+            ):
+                k -= 1  # CRLF: the splice backslash sits before the CR
+            if k > 0 and bytes(str_text[k - 1 : k]) == b"\\":
+                line_start = (
+                    max(str_text.rfind("\n", 0, k - 1), str_text.rfind("\r", 0, k - 1)) + 1
+                )
+            else:
+                break
+        k = line_start
+        while k < pos:
+            comment = _span_covering(comment_spans, k)
+            if comment is not None:
+                k = comment[1]  # comments are whitespace after phase 3
+                continue
+            if _span_covering(literal_spans, k) is not None:
+                # The line begins mid-literal (or with an earlier literal):
+                # its '#' would be string data, never a directive.
+                return False
+            c = bytes(str_text[k : k + 1])[0]
+            if c == 0x23:  # '#'
+                return True
+            if c not in (0x20, 0x09, 0x0D, 0x0A, 0x5C):  # ws + splice bytes
+                return False
+            k += 1
         return False
 
     def _has_uncommented_marker(markers) -> bool:
@@ -1426,7 +1509,9 @@ def _detect_marker_type(
                 continue
             pos = str_text.find(marker)
             while pos != -1:
-                if not _in_comment_interior(pos):
+                if not _in_interior(comment_spans, pos) and (
+                    not _in_interior(literal_spans, pos) or _on_preprocessor_line(pos)
+                ):
                     return True
                 pos = str_text.find(marker, pos + 1)
         return False
@@ -1527,9 +1612,16 @@ def analyze_file(content_hash: str, context: "BuildContext") -> "FileAnalysisRes
     # Detect marker type - check for exe, test, or library markers. Uses its
     # own comment spans (// AND /**/, raw-string aware) rather than
     # block_comment_spans, which deliberately excludes // comments because
-    # magic flags live inside them.
+    # magic flags live inside them. Literal spans filter string data
+    # (with a preprocessor-line exemption for #include "unit_test.hpp").
+    marker_comment_spans, marker_literal_spans = find_comment_and_literal_spans(str_text)
     marker_type = _detect_marker_type(
-        str_text, exe_markers, test_markers, library_markers, find_comment_spans(str_text)
+        str_text,
+        exe_markers,
+        test_markers,
+        library_markers,
+        marker_comment_spans,
+        marker_literal_spans,
     )
 
     # C++20 module declarations (named modules, partitions, and header
