@@ -995,21 +995,29 @@ def _fix_variable_handling_method(cap, argv, verbose):
     # reparse. This dance would be unnecessary if configargparse offered an
     # "append" variable-handling method for environment-sourced values; it
     # only supports global "override", which we partially undo here.
+    #
+    # The re-route happens in a LOCAL copy of the environment handed to
+    # parse_args via its env_vars parameter — os.environ itself is never
+    # touched. An earlier version mutated os.environ (pop CPPFLAGS, set
+    # APPEND_CPPFLAGS), which leaked into every later child process: hook
+    # scripts saw their CPPFLAGS vanish, and append mode diverged from
+    # override mode (which leaves the env alone) in what children observed.
     verbose_print = verbose > 8
     fix_keys = ["CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS", "INCLUDE"]
+    env_vars = dict(os.environ)
     for key in fix_keys:
-        value = os.getenv(key)
+        value = env_vars.get(key)
         if value:
             appendkey = f"APPEND_{key}"
             if verbose_print:
                 print(f"Changing {key=} into {appendkey} with {value=}")
-            os.environ[appendkey] = value
-            os.environ.pop(key)
+            env_vars[appendkey] = value
+            del env_vars[key]
 
     if verbose_print:
-        print(f"{os.environ=}")
+        print(f"{env_vars=}")
         print("_fix_variable_handling_method is forcing reparsing of cap.parse_args")
-    return cap.parse_args(args=argv)
+    return cap.parse_args(args=argv, env_vars=env_vars)
 
 
 # Segment header emitted by ``_ComposingArgumentParser._open_config_files``

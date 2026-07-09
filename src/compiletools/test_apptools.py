@@ -2185,6 +2185,33 @@ class TestVariableHandlingMethod:
         assert args._context is not None, "reparse namespace lost args._context"
         assert args._argv == argv, "reparse namespace lost or replaced args._argv"
 
+    def test_append_mode_does_not_mutate_os_environ(self, monkeypatch):
+        """The env re-route (CXXFLAGS -> APPEND_CXXFLAGS) must happen in a
+        local dict passed to parse_args(env_vars=...), never in os.environ:
+        hook scripts and other children launched after parseargs must still
+        see the flag vars the user exported."""
+        # APPEND_CXXFLAGS is a legitimate user env interface (auto env var
+        # for --append-CXXFLAGS); clear any ambient value so the not-in
+        # assertion below tests for a leak, not for shell hygiene.
+        monkeypatch.delenv("APPEND_CXXFLAGS", raising=False)
+        with uth.TempDirContext(), uth.EnvironmentContext({"CXXFLAGS": "-DVARFROMENV"}):
+            uth.create_temp_ct_conf(os.getcwd(), extralines=["variable-handling-method=append"])
+            with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
+                argv = ["--config=" + temp_config_name, "--no-git-root"]
+                cap = apptools.create_parser("env preservation test", argv=argv)
+                apptools.add_common_arguments(cap, argv=argv)
+                with uth.ParserContext():
+                    args = apptools.parseargs(cap, argv, context=BuildContext())
+                assert "-DVARFROMENV" in args.CXXFLAGS
+                assert os.environ.get("CXXFLAGS") == "-DVARFROMENV", (
+                    "parseargs in append mode mutated os.environ: CXXFLAGS "
+                    f"is now {os.environ.get('CXXFLAGS')!r}. Children launched "
+                    "after parseargs (hook scripts) would see it vanish."
+                )
+                assert "APPEND_CXXFLAGS" not in os.environ, (
+                    "parseargs in append mode leaked APPEND_CXXFLAGS into os.environ"
+                )
+
     def test_append_mode_via_cli_flag(self):
         """--variable-handling-method=append on the CLI (not just conf file)
         triggers the same reparse path."""
