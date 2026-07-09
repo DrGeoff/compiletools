@@ -491,7 +491,24 @@ class CMakeBackend(BuildBackend):
         # (CMake 4.x defaults to RelWithDebInfo → -O2 -g -DNDEBUG). The
         # variant axis owns optimization; a stray -O from CMake desyncs
         # __OPTIMIZE__ between the ct-cake-built PCH and the consumer compile.
-        configure_cmd = [cmake, "-S", source_dir, "-B", build_dir, "-DCMAKE_BUILD_TYPE="]
+        # The three flag cache vars get the same force-empty treatment:
+        # CMake seeds them from env CFLAGS/CXXFLAGS/LDFLAGS at FIRST configure
+        # only, then reuses the cached value forever — so a build dir
+        # configured before the env scrub below existed keeps double-applying
+        # its baked flags on every reconfigure. Forcing them empty on the
+        # command line overwrites the cache entry every configure, curing
+        # warm pre-scrub caches too.
+        configure_cmd = [
+            cmake,
+            "-S",
+            source_dir,
+            "-B",
+            build_dir,
+            "-DCMAKE_BUILD_TYPE=",
+            "-DCMAKE_C_FLAGS=",
+            "-DCMAKE_CXX_FLAGS=",
+            "-DCMAKE_EXE_LINKER_FLAGS=",
+        ]
         if hasattr(self.args, "CXX") and self.args.CXX:
             cxx_parts = compiletools.utils.split_command_cached(self.args.CXX)
             configure_cmd.append(f"-DCMAKE_CXX_COMPILER={cxx_parts[-1]}")
@@ -502,7 +519,18 @@ class CMakeBackend(BuildBackend):
             configure_cmd.append(f"-DCMAKE_C_COMPILER={cc_parts[-1]}")
             if len(cc_parts) > 1:
                 configure_cmd.append("-DCMAKE_C_COMPILER_LAUNCHER=" + ";".join(cc_parts[:-1]))
-        subprocess.check_call(configure_cmd, text=True)
+        # Scrub the flag env vars from the configure environment. parseargs
+        # already folded any env flags into args and the generated CMakeLists
+        # carries them via target_compile_options, so letting cmake read the
+        # env again applies them twice. The -DCMAKE_*_FLAGS= force-empties
+        # above already block the env seeding (an explicit -D wins over env),
+        # so this scrub is belt-and-braces for the three vars cmake reads;
+        # CPPFLAGS/INCLUDE are ignored by cmake and scrubbed for symmetry
+        # with the five vars parseargs folds.
+        configure_env = {
+            k: v for k, v in os.environ.items() if k not in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS", "INCLUDE")
+        }
+        subprocess.check_call(configure_cmd, text=True, env=configure_env)
 
         # Build
         build_cmd = [cmake, "--build", build_dir]

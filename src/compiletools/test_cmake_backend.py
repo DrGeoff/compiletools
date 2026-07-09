@@ -388,9 +388,11 @@ class TestCMakeExecute:
         backend._graph = None
 
         captured = []
+        captured_kwargs = []
 
         def fake_check_call(cmd, **kwargs):
             captured.append(cmd)
+            captured_kwargs.append(kwargs)
 
         cmakelists_dir = cmakelists_dir if cmakelists_dir is not None else tmp_path
         os.makedirs(cmakelists_dir, exist_ok=True)
@@ -407,6 +409,7 @@ class TestCMakeExecute:
             backend._execute_build("build")
 
         # First call is configure
+        self._last_configure_kwargs = captured_kwargs[0]
         return captured[0]
 
     def test_configure_with_plain_compiler(self, tmp_path):
@@ -418,6 +421,35 @@ class TestCMakeExecute:
         assert "-DCMAKE_C_COMPILER=gcc" in cmd
         assert not any(a.startswith("-DCMAKE_CXX_COMPILER_LAUNCHER=") for a in cmd)
         assert not any(a.startswith("-DCMAKE_C_COMPILER_LAUNCHER=") for a in cmd)
+
+    def test_configure_scrubs_flag_env_vars(self, tmp_path, monkeypatch):
+        """The configure env must exclude CPPFLAGS/CFLAGS/CXXFLAGS/LDFLAGS/
+        INCLUDE: cmake reads CFLAGS/CXXFLAGS/LDFLAGS at first configure and
+        bakes them into the reused CMakeCache, double-applying flags that
+        parseargs already folded into args (the generated CMakeLists carries
+        them via target_compile_options)."""
+        monkeypatch.setenv("CXXFLAGS", "-DFROM_ENV_SHOULD_NOT_REACH_CMAKE")
+        monkeypatch.setenv("LDFLAGS", "-Wl,--from-env")
+        monkeypatch.setenv("SOME_UNRELATED_VAR", "kept")
+        self._capture_configure(CXX="g++", CC="gcc", tmp_path=tmp_path)
+
+        env = self._last_configure_kwargs.get("env")
+        assert env is not None, "configure must pass an explicit scrubbed env"
+        for scrubbed in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS", "INCLUDE"):
+            assert scrubbed not in env, f"{scrubbed} leaked into the cmake configure env"
+        assert env.get("SOME_UNRELATED_VAR") == "kept", "scrub must only remove the five flag vars"
+
+    def test_configure_force_empties_flag_cache_vars(self, tmp_path):
+        """The configure command must force the three flag cache vars empty:
+        cmake seeds CMAKE_{C,CXX,EXE_LINKER}_FLAGS from env only at FIRST
+        configure and then reuses the cached value forever, so a build dir
+        configured before the env scrub existed would keep double-applying
+        its baked flags. An explicit -D overwrites the cache every configure,
+        curing warm pre-scrub caches too."""
+        cmd = self._capture_configure(CXX="g++", CC="gcc", tmp_path=tmp_path)
+
+        for forced in ("-DCMAKE_C_FLAGS=", "-DCMAKE_CXX_FLAGS=", "-DCMAKE_EXE_LINKER_FLAGS="):
+            assert forced in cmd, f"{forced} missing: warm CMakeCache flag entries would survive"
 
     def test_build_dir_differs_per_source_dir(self, tmp_path):
         """Two source trees sharing one cas_objdir must NOT collide on
