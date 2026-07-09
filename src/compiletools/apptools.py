@@ -1304,6 +1304,17 @@ def _tier_one_modifications(args):
     # a single space-separated string and break downstream consumers.
     _do_xxpend_list(args, "pkg-config")
 
+    # ct-cake's hook lists get the same treatment. The bare
+    # prebuild-script / postbuild-script conf keys are last-writer-wins
+    # across layers; append-/prepend- is the accumulating spelling.
+    # hasattr-guarded because only ct-cake registers these arguments —
+    # an unconditional _do_xxpend_list would setattr empty lists onto
+    # every other ct-* tool's args.
+    if hasattr(args, "prebuild_scripts"):
+        _do_xxpend_list(args, "prebuild-script", dest_name="prebuild-scripts")
+    if hasattr(args, "postbuild_scripts"):
+        _do_xxpend_list(args, "postbuild-script", dest_name="postbuild-scripts")
+
     # Deduplicate all compiler/linker flags after all processing is complete
     _deduplicate_all_flags(args)
 

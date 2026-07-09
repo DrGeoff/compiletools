@@ -283,11 +283,41 @@ Both options accept a **shell command string** (executed via ``/bin/sh
 so output appears live. Both abort ct-cake with a non-zero exit on the
 first script that fails. Neither runs on ``--clean`` / ``--realclean``.
 
-Each option may be given multiple times. Like other ``action="append"``
-options, the entries **accumulate** across all configuration layers
-(bundled < system < venv < user < project < cwd < env < CLI) — a
-project's ``ct.conf`` listing one script plus a variant ``.conf``
-listing another yields both, in declaration order.
+Each option may be given multiple times on the command line, and CLI
+values combine with conf-file values. In conf files, however, the bare
+``prebuild-script`` / ``postbuild-script`` keys follow the same
+last-writer-wins rule as every other non-``append-``/``prepend-`` key:
+when two layers in the hierarchy (bundled < system < venv < user <
+project < cwd < env < CLI) both set the bare key, the higher-priority
+layer **replaces** the lower one. That makes the bare key the right
+spelling for a deliberate per-project override — including
+``prebuild-script = []`` to suppress a globally-configured hook, or a
+JSON list (``prebuild-script = ["./gen_a.sh", "./gen_b.sh"]``) to set
+several scripts at once.
+
+To **accumulate** hooks across layers instead — a repo-wide generator
+in ``ct.conf.d/ct.conf`` plus a per-variant hook, both running — use
+the accumulating key spelling::
+
+    # ct.conf.d/ct.conf (repo-wide layer)
+    append-PREBUILD-SCRIPT = ./tools/gen_appinfo.sh appinfo.cpp
+
+    # ct.conf.d/asan.conf (variant layer, adds a second hook)
+    append-PREBUILD-SCRIPT = ./tools/gen_asan_suppressions.sh
+
+``append-PREBUILD-SCRIPT`` / ``prepend-PREBUILD-SCRIPT`` (and the
+``POSTBUILD`` twins) merge into the bare-key list the same way the
+other ``append-``/``prepend-`` conf keys compose: prepend entries land
+leftmost, append entries land rightmost, lower layers before higher
+ones, and entries already present in the base list are not duplicated.
+Conf keys are case-sensitive — the accumulating forms must be spelled
+with the uppercase option name (``append-PREBUILD-SCRIPT``, not
+``append-prebuild-script``; the lowercase form is silently ignored).
+
+As with all conf values, an environment variable (e.g.
+``PREBUILD_SCRIPT``) overrides conf-file values per the standard
+hierarchy: command line > environment variables > config files >
+defaults.
 
 Worked example (the generated-implementation-file pattern recommended
 above; full runnable version under ``examples-end-to-end/appinfo``)::

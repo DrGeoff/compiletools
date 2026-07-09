@@ -450,14 +450,28 @@ class Cake:
                 "Shell command string to run before the build graph is "
                 "constructed, so generated headers and other build inputs "
                 "produced by the script are visible to headerdeps. May be "
-                "given multiple times on the CLI, and accumulates across "
-                "ct.conf layers (bundled < system < user < project < variant < "
-                "env < CLI). Each entry is executed via /bin/sh in the ct-cake "
+                "given multiple times on the CLI. In conf files the bare "
+                "'prebuild-script' key is last-writer-wins across ct.conf "
+                "layers (a higher-priority conf REPLACES lower-priority "
+                "values; 'prebuild-script = []' suppresses them; a JSON list "
+                "sets several at once) — use append-PREBUILD-SCRIPT / "
+                "prepend-PREBUILD-SCRIPT to accumulate across layers instead. "
+                "Each entry is executed via /bin/sh in the ct-cake "
                 "invocation cwd; non-zero exit aborts the build. Note: runs "
                 "AFTER --auto target discovery, so generated source files "
                 "(.cpp/.c) are NOT picked up by --auto — list those targets "
                 "explicitly if you need them. Skipped on --clean / --realclean."
             ),
+        )
+        compiletools.apptools._add_xxpend_argument(
+            cap,
+            "prebuild-script",
+            destname="prebuild-scripts",
+            extrahelp="Merged into the --prebuild-script list; prepend lands "
+            "leftmost, append lands rightmost. Use the append-/prepend- form "
+            "in conf files so hooks accumulate across ct.conf layers instead "
+            "of the bare key's replace semantics (conf keys are "
+            "case-sensitive: spell it append-PREBUILD-SCRIPT).",
         )
         cap.add_argument(
             "--postbuild-script",
@@ -467,14 +481,27 @@ class Cake:
             help=(
                 "Shell command string to run after a successful build but "
                 "before executables are copied to the top-level bindir. May "
-                "be given multiple times on the CLI, and accumulates across "
-                "ct.conf layers. Each entry is executed via /bin/sh in the "
+                "be given multiple times on the CLI. In conf files the bare "
+                "'postbuild-script' key is last-writer-wins across ct.conf "
+                "layers — use append-POSTBUILD-SCRIPT / "
+                "prepend-POSTBUILD-SCRIPT to accumulate across layers "
+                "instead. Each entry is executed via /bin/sh in the "
                 "ct-cake invocation cwd; non-zero exit aborts ct-cake with "
                 "a non-zero return code. Use for emitting launcher scripts "
                 "that invoke the built binary in a known environment, "
                 "packaging, checksum manifests, etc. Skipped on --clean / "
                 "--realclean."
             ),
+        )
+        compiletools.apptools._add_xxpend_argument(
+            cap,
+            "postbuild-script",
+            destname="postbuild-scripts",
+            extrahelp="Merged into the --postbuild-script list; prepend lands "
+            "leftmost, append lands rightmost. Use the append-/prepend- form "
+            "in conf files so hooks accumulate across ct.conf layers instead "
+            "of the bare key's replace semantics (conf keys are "
+            "case-sensitive: spell it append-POSTBUILD-SCRIPT).",
         )
 
     def _callfilelist(self):

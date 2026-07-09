@@ -10,12 +10,17 @@ Both abort the build on non-zero exit. Neither fires on --clean /
 --realclean.
 """
 
+import contextlib
 import os
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+import compiletools.apptools
+import compiletools.cake
+import compiletools.testhelper as uth
 from compiletools.build_backend import ensure_backends_registered, get_backend_class
+from compiletools.build_context import BuildContext
 from compiletools.testhelper import CakeTestContext
 
 ensure_backends_registered()
@@ -248,3 +253,142 @@ class TestPrebuildPostbuildHooks:
             # Filter to only shell=True invocations to isolate hook runs.
             shell_calls = [c for c in mock_run.call_args_list if c.kwargs.get("shell") is True]
             assert shell_calls == [], f"empty script lists must not invoke a shell, got: {shell_calls}"
+
+
+@contextlib.contextmanager
+def _hook_conf_repo(ct_conf_lines, variant_conf_lines, variant="hookvariant"):
+    """Two-layer conf fixture for hook-key layering tests.
+
+    Writes a project ``ct.conf`` (lower priority) and a
+    ``ct.conf.d/<variant>.conf`` (higher priority, selected via
+    ``--variant``) inside a TempDirContextNoChange. Yields the repo root.
+    Mirrors ``test_apptools._temp_repo_with_ct_conf`` but keeps both
+    layers hook-focused.
+    """
+    with uth.TempDirContextNoChange() as repo_root:
+        conf_d = os.path.join(repo_root, "ct.conf.d")
+        os.makedirs(conf_d, exist_ok=True)
+        with open(os.path.join(repo_root, "ct.conf"), "w") as fh:
+            fh.write(f"variant = {variant}\n")
+            fh.write(f"variant-canonical-order = {variant}\n")
+            fh.write("exemarkers = [main]\n")
+            fh.write("testmarkers = unit_test.hpp\n")
+            for line in ct_conf_lines:
+                fh.write(line + "\n")
+        with open(os.path.join(conf_d, f"{variant}.conf"), "w") as fh:
+            fh.write("\n".join(variant_conf_lines) + "\n")
+        yield repo_root
+
+
+def _parse_cake_args(repo_root, argv):
+    """create_parser + Cake.add_arguments + registercallback + parseargs,
+    isolated via DirectoryContext + ParserContext (same plumbing as
+    ``cake.main`` / ``test_cake.TestCake._make_cake_args``)."""
+    argv = list(argv)
+    with uth.DirectoryContext(repo_root):
+        with uth.ParserContext():
+            cap = compiletools.apptools.create_parser("hook layering test", argv=argv)
+            compiletools.cake.Cake.add_arguments(cap)
+            compiletools.cake.Cake.registercallback()
+            return compiletools.apptools.parseargs(cap, argv, context=BuildContext())
+
+
+class TestHookConfLayering:
+    """Conf-layer semantics for prebuild-script / postbuild-script.
+
+    Bare keys are last-writer-wins across conf layers (like every other
+    non-``append-``/``prepend-`` key); accumulation is spelled
+    ``append-PREBUILD-SCRIPT`` / ``prepend-PREBUILD-SCRIPT`` (key case
+    matters in conf files — lowercase forms are silently ignored).
+    """
+
+    _ARGV = ("--variant=hookvariant", "--no-git-root")
+
+    @pytest.fixture(autouse=True)
+    def _needs_compiler(self):
+        # parseargs resolves CXX via get_functional_cxx_compiler when the
+        # conf doesn't pin one; skip cleanly on compiler-less machines.
+        if compiletools.apptools.get_functional_cxx_compiler() is None:
+            pytest.skip("No functional C++ compiler detected")
+
+    def test_bare_key_higher_layer_replaces_lower(self):
+        """Pin: a bare ``prebuild-script`` in the higher-priority conf
+        replaces the lower layer's value — it does NOT accumulate."""
+        with _hook_conf_repo(
+            ["prebuild-script = ./global_hook.sh"],
+            ["prebuild-script = ./project_hook.sh"],
+        ) as repo_root:
+            args = _parse_cake_args(repo_root, self._ARGV)
+            assert args.prebuild_scripts == ["./project_hook.sh"]
+
+    def test_bare_key_empty_list_suppresses_lower_layer(self):
+        """Pin: ``prebuild-script = []`` in the higher layer suppresses the
+        lower layer's hook entirely."""
+        with _hook_conf_repo(
+            ["prebuild-script = ./global_hook.sh"],
+            ["prebuild-script = []"],
+        ) as repo_root:
+            args = _parse_cake_args(repo_root, self._ARGV)
+            assert args.prebuild_scripts == []
+
+    def test_bare_key_json_list_yields_all_entries(self):
+        """Pin: a single-layer JSON list value expands to multiple scripts
+        in declaration order."""
+        with _hook_conf_repo(
+            [],
+            ['prebuild-script = ["./gen_a.sh", "./gen_b.sh"]'],
+        ) as repo_root:
+            args = _parse_cake_args(repo_root, self._ARGV)
+            assert args.prebuild_scripts == ["./gen_a.sh", "./gen_b.sh"]
+
+    def test_append_prebuild_script_accumulates_across_layers(self):
+        """``append-PREBUILD-SCRIPT`` in two conf layers must yield both
+        scripts, lower layer first."""
+        with _hook_conf_repo(
+            ["append-PREBUILD-SCRIPT = ./global_hook.sh"],
+            ["append-PREBUILD-SCRIPT = ./project_hook.sh"],
+        ) as repo_root:
+            args = _parse_cake_args(repo_root, self._ARGV)
+            assert args.prebuild_scripts == ["./global_hook.sh", "./project_hook.sh"]
+
+    def test_append_extends_bare_base_across_layers(self):
+        """A bare ``prebuild-script`` base in the lower layer plus an
+        ``append-PREBUILD-SCRIPT`` in the higher layer runs both, base
+        first."""
+        with _hook_conf_repo(
+            ["prebuild-script = ./global_hook.sh"],
+            ["append-PREBUILD-SCRIPT = ./project_hook.sh"],
+        ) as repo_root:
+            args = _parse_cake_args(repo_root, self._ARGV)
+            assert args.prebuild_scripts == ["./global_hook.sh", "./project_hook.sh"]
+
+    def test_prepend_prebuild_script_lands_leftmost(self):
+        """``prepend-PREBUILD-SCRIPT`` places its script before the bare
+        base value."""
+        with _hook_conf_repo(
+            ["prebuild-script = ./global_hook.sh"],
+            ["prepend-PREBUILD-SCRIPT = ./early_hook.sh"],
+        ) as repo_root:
+            args = _parse_cake_args(repo_root, self._ARGV)
+            assert args.prebuild_scripts == ["./early_hook.sh", "./global_hook.sh"]
+
+    def test_append_postbuild_script_accumulates_across_layers(self):
+        """postbuild parity: ``append-POSTBUILD-SCRIPT`` accumulates the
+        same way."""
+        with _hook_conf_repo(
+            ["append-POSTBUILD-SCRIPT = ./global_post.sh"],
+            ["append-POSTBUILD-SCRIPT = ./project_post.sh"],
+        ) as repo_root:
+            args = _parse_cake_args(repo_root, self._ARGV)
+            assert args.postbuild_scripts == ["./global_post.sh", "./project_post.sh"]
+
+    def test_cli_append_combines_with_conf_append(self):
+        """A CLI ``--append-PREBUILD-SCRIPT`` combines with conf-file
+        ``append-PREBUILD-SCRIPT`` values rather than suppressing them."""
+        with _hook_conf_repo(
+            ["append-PREBUILD-SCRIPT = ./global_hook.sh"],
+            [],
+        ) as repo_root:
+            argv = [*self._ARGV, "--append-PREBUILD-SCRIPT=./cli_hook.sh"]
+            args = _parse_cake_args(repo_root, argv)
+            assert args.prebuild_scripts == ["./global_hook.sh", "./cli_hook.sh"]
