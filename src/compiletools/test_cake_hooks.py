@@ -396,8 +396,8 @@ class TestHookConfLayering:
 
     def test_same_script_appended_in_two_layers_runs_twice(self):
         """Pin the dedup scope documented in README.ct-cake.rst: xxpend
-        dedups extras against the bare-key base only, so the same script
-        appended in two layers appears twice."""
+        never dedups append entries against each other, so the same
+        script appended in two layers appears twice."""
         with _hook_conf_repo(
             ["append-PREBUILD-SCRIPT = ./same_hook.sh"],
             ["append-PREBUILD-SCRIPT = ./same_hook.sh"],
@@ -414,6 +414,104 @@ class TestHookConfLayering:
         ) as repo_root:
             args = _parse_cake_args(repo_root, self._ARGV)
             assert args.prebuild_scripts == ["./global_hook.sh"]
+
+    def test_append_entry_matching_prepend_contribution_is_not_duplicated(self):
+        """Pin the cross-group dedup half of the doc claim: prepend
+        contributions merge into the base before append is processed, so
+        an appended script matching a prepend entry is not added again —
+        even with no bare key set at all."""
+        with _hook_conf_repo(
+            ["prepend-PREBUILD-SCRIPT = ./same_hook.sh"],
+            ["append-PREBUILD-SCRIPT = ./same_hook.sh"],
+        ) as repo_root:
+            args = _parse_cake_args(repo_root, self._ARGV)
+            assert args.prebuild_scripts == ["./same_hook.sh"]
+
+    def test_lowercase_append_key_is_silently_ignored(self):
+        """Pin the case-sensitivity warning stated in both READMEs and the
+        --prebuild-script help text: conf keys are case-sensitive, so
+        ``append-prebuild-script`` (lowercase) is an unknown key that
+        configargparse silently drops — no scripts, no error."""
+        with _hook_conf_repo(
+            ["append-prebuild-script = ./global_hook.sh"],
+            [],
+        ) as repo_root:
+            args = _parse_cake_args(repo_root, self._ARGV)
+            assert args.prebuild_scripts == []
+
+    def test_shadowed_bare_key_notes_at_verbose(self, capsys):
+        """At ``-v`` a discarded lower-layer bare-key value gets a stderr
+        note naming its conf file; silent at the default verbosity."""
+        with _hook_conf_repo(
+            ["prebuild-script = ./global_hook.sh"],
+            ["prebuild-script = ./project_hook.sh"],
+        ) as repo_root:
+            args = _parse_cake_args(repo_root, self._ARGV)
+            assert args.prebuild_scripts == ["./project_hook.sh"]
+            assert "discarded" not in capsys.readouterr().err
+
+            args = _parse_cake_args(repo_root, [*self._ARGV, "-v"])
+            err = capsys.readouterr().err
+            assert "prebuild-script = ./global_hook.sh" in err
+            assert "discarded" in err
+            assert "ct.conf:" in err
+            assert "append-PREBUILD-SCRIPT" in err
+
+    def test_shadow_note_fires_for_same_file_duplicate(self, capsys):
+        """A bare key set twice in the SAME conf file is also
+        last-writer-wins; the discarded first value gets the note too."""
+        with _hook_conf_repo(
+            [
+                "prebuild-script = ./first.sh",
+                "prebuild-script = ./second.sh",
+            ],
+            [],
+        ) as repo_root:
+            args = _parse_cake_args(repo_root, [*self._ARGV, "-v"])
+            assert args.prebuild_scripts == ["./second.sh"]
+            err = capsys.readouterr().err
+            assert "prebuild-script = ./first.sh" in err
+            assert "discarded" in err
+
+    def test_shadow_note_not_fooled_by_quoted_values(self, capsys):
+        """A quoted conf value survives post-_strip_quotes under a
+        different spelling; the note must normalise both sides and stay
+        silent for it."""
+        with _hook_conf_repo(
+            ['prebuild-script = "./my hook.sh"'],
+            [],
+        ) as repo_root:
+            args = _parse_cake_args(repo_root, [*self._ARGV, "-v"])
+            assert args.prebuild_scripts == ["./my hook.sh"]
+            assert "discarded" not in capsys.readouterr().err
+
+    def test_shadow_note_not_emitted_for_surviving_or_appended_values(self, capsys):
+        """The note must not fire for the winning value, nor for a value
+        that lost the bare-key contest but re-entered via append-."""
+        with _hook_conf_repo(
+            [
+                "prebuild-script = ./global_hook.sh",
+                "append-PREBUILD-SCRIPT = ./global_hook.sh",
+            ],
+            ["prebuild-script = ./project_hook.sh"],
+        ) as repo_root:
+            args = _parse_cake_args(repo_root, [*self._ARGV, "-v"])
+            # ./global_hook.sh lost the bare-key contest to ./project_hook.sh
+            # but re-entered via append- — it runs, so no note for it.
+            assert args.prebuild_scripts == ["./project_hook.sh", "./global_hook.sh"]
+            assert "discarded" not in capsys.readouterr().err
+
+    def test_bare_cli_combines_with_bare_conf_value(self):
+        """Pin the doc's opening claim for the bare key: a bare
+        ``--prebuild-script`` on the CLI combines with (does not replace)
+        the conf-file bare-key value, CLI value last."""
+        with _hook_conf_repo(
+            ["prebuild-script = ./from_conf.sh"],
+            [],
+        ) as repo_root:
+            argv = [*self._ARGV, "--prebuild-script=./from_cli.sh"]
+            args = _parse_cake_args(repo_root, argv)
+            assert args.prebuild_scripts == ["./from_conf.sh", "./from_cli.sh"]
 
     def test_cli_append_combines_with_conf_append(self):
         """A CLI ``--append-PREBUILD-SCRIPT`` combines with conf-file

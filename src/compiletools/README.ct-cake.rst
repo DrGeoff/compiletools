@@ -287,13 +287,20 @@ Each option may be given multiple times on the command line, and CLI
 values combine with conf-file values. In conf files, however, the bare
 ``prebuild-script`` / ``postbuild-script`` keys follow the same
 last-writer-wins rule as every other non-``append-``/``prepend-`` key:
-when two layers in the hierarchy (bundled < system < venv < user <
-project < cwd < env < CLI) both set the bare key, the higher-priority
-layer **replaces** the lower one. That makes the bare key the right
+when two conf or env layers in the hierarchy (bundled < system < venv
+< user < project < cwd < env) both set the bare key, the
+higher-priority layer **replaces** the lower one (CLI is the
+exception: bare CLI values combine with the surviving conf value, as
+above). That makes the bare key the right
 spelling for a deliberate per-project override — including
 ``prebuild-script = []`` to suppress a globally-configured hook, or a
 JSON list (``prebuild-script = ["./gen_a.sh", "./gen_b.sh"]``) to set
-several scripts at once.
+several scripts at once. Because a replaced hook simply never runs —
+there is no error at the point of damage — ct-cake emits a stderr
+note at ``-v`` and above for every conf-file hook value that lost a
+bare-key contest (whether to a higher layer, an environment variable,
+or a later line in the same conf file), naming the conf file and line
+it came from.
 
 To **accumulate** hooks across layers instead — a repo-wide generator
 in ``ct.conf.d/ct.conf`` plus a per-variant hook, both running — use
@@ -309,9 +316,12 @@ the accumulating key spelling::
 ``POSTBUILD`` twins) merge into the bare-key list the same way the
 other ``append-``/``prepend-`` conf keys compose: prepend entries land
 leftmost, append entries land rightmost, lower layers before higher
-ones, and entries already present in the base list are not duplicated
-(the dedup is against the bare-key base only — the same script
-appended in two layers runs twice). Note the asymmetry with
+ones, and entries already present in the list are not duplicated
+(each group is deduped against the list accumulated so far — the
+bare-key base for ``prepend-`` entries, base plus prepend
+contributions for ``append-`` entries — but never against other
+entries of its own group: the same script appended in two layers runs
+twice). Note the asymmetry with
 suppression: ``prebuild-script = []`` clears only bare-key values;
 entries contributed via ``append-``/``prepend-`` in any layer cannot
 be suppressed by a higher layer. Use the bare key for
@@ -321,10 +331,12 @@ Conf keys are case-sensitive — the accumulating forms must be spelled
 with the uppercase option name (``append-PREBUILD-SCRIPT``, not
 ``append-prebuild-script``; the lowercase form is silently ignored).
 
-As with all conf values, an environment variable (e.g.
-``PREBUILD_SCRIPT``) overrides conf-file values per the standard
-hierarchy: command line > environment variables > config files >
-defaults.
+An environment variable (e.g. ``PREBUILD_SCRIPT``) overrides
+conf-file values per the standard hierarchy (environment variables >
+config files > defaults). Bare CLI values sit outside that override
+chain for these keys: as noted above, ``--prebuild-script`` combines
+with whatever value survived the env/conf contest rather than
+replacing it.
 
 Worked example (the generated-implementation-file pattern recommended
 above; full runnable version under ``examples-end-to-end/appinfo``)::

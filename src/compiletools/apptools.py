@@ -1216,19 +1216,22 @@ def _do_xxpend(args, name):
             setattr(args, name, attr)
 
 
-def _do_xxpend_list(args, name, dest_name=None):
+def _do_xxpend_list(args, name, destname=None):
     """List-typed sibling of ``_do_xxpend`` for attrs whose canonical form
     is a Python list (e.g. ``args.pkg_config``), not a flag string. The
-    base attr is read from ``args.<dest_name or name.replace('-','_')>``,
+    base attr is read from ``args.<destname or name.replace('-','_')>``,
     and the prepend/append sources from
-    ``args.{prepend,append}_<dest_name or name.replace('-','_')>``.
+    ``args.{prepend,append}_<destname or name.replace('-','_')>``.
 
     Mirrors ``_do_xxpend``'s dedup-and-place rule (prepend leftmost,
-    append rightmost, skip duplicates already present in the base) so
-    consumers of ``--prepend-PKG-CONFIG`` / ``--append-PKG-CONFIG`` get
-    the same composition semantics that compiler-flag slots have.
+    append rightmost, skip duplicates already present in the list
+    accumulated so far — prepend extras merge into the base before the
+    append pass, so append entries dedup against base *plus* prepend
+    contributions, but never against other entries of their own group)
+    so consumers of ``--prepend-PKG-CONFIG`` / ``--append-PKG-CONFIG``
+    get the same composition semantics that compiler-flag slots have.
     """
-    dest = (dest_name or name).lower().replace("-", "_")
+    dest = (destname or name).lower().replace("-", "_")
     base = list(getattr(args, dest, []) or [])
     for xx in ("prepend", "append"):
         xxpendname = f"{xx}_{dest}"
@@ -1241,6 +1244,58 @@ def _do_xxpend_list(args, name, dest_name=None):
         else:
             base = base + extras
     setattr(args, dest, base)
+
+
+def _note_shadowed_bare_hook_values(args, name, dest):
+    """At ``verbose >= 1``, emit a stderr note for each conf-file value of
+    the bare hook key *name* that did not survive into ``args.<dest>``.
+
+    The bare key is documented last-writer-wins, and ``<name> = []``
+    suppression is a documented feature — so this is a note, not a
+    warning, and it is silent by default. It exists because the failure
+    mode the semantics enable (a hook silently never running) is
+    otherwise invisible at the point of damage. Fires for any losing
+    value — a later line in the same conf file as well as a
+    higher-priority layer/env winner, hence the "later or
+    higher-priority" wording. Uses the conf-file provenance side channel
+    (``_ComposingArgumentParser.get_conf_file_provenance``); env-var and
+    CLI winners don't appear there, so the note cannot name the winner.
+    Provenance values predate ``_strip_quotes``, so both sides of the
+    membership test are normalised through ``_safely_unquote_string`` —
+    without that, a quoted conf value that survived (post-strip) would be
+    misreported as discarded.
+
+    Must run AFTER ``_do_xxpend_list`` for *name* so values that lost the
+    bare-key contest but re-entered via ``append-``/``prepend-`` are not
+    misreported as discarded. Emits at most once per (args, key):
+    ``substitutions()`` re-runs tier-one after external fetches widen
+    INCLUDE, and the note would otherwise repeat.
+    """
+    if getattr(args, "verbose", 0) < 1:
+        return
+    emitted = getattr(args, "_hook_shadow_notes_emitted", None)
+    if emitted is None:
+        emitted = set()
+        args._hook_shadow_notes_emitted = emitted
+    if name in emitted:
+        return
+    emitted.add(name)
+    parser = getattr(args, "_parser", None)
+    if parser is None or not hasattr(parser, "get_conf_file_provenance"):
+        return
+    try:
+        provenance = parser.get_conf_file_provenance()
+    except Exception:
+        return
+    final = {_safely_unquote_string(v) for v in (getattr(args, dest, []) or [])}
+    for value, source_file, lineno, _literal in provenance.get(name, []):
+        if _safely_unquote_string(value) not in final:
+            print(
+                f"ct: note: {name} = {value} (from {source_file}:{lineno}) was discarded "
+                f"by a later or higher-priority {name} setting (bare keys are "
+                f"last-writer-wins; use append-{name.upper()} to accumulate instead)",
+                file=sys.stderr,
+            )
 
 
 def _unify_cpp_cxx_flags(args):
@@ -1311,9 +1366,11 @@ def _tier_one_modifications(args):
     # an unconditional _do_xxpend_list would setattr empty lists onto
     # every other ct-* tool's args.
     if hasattr(args, "prebuild_scripts"):
-        _do_xxpend_list(args, "prebuild-script", dest_name="prebuild-scripts")
+        _do_xxpend_list(args, "prebuild-script", destname="prebuild-scripts")
+        _note_shadowed_bare_hook_values(args, "prebuild-script", "prebuild_scripts")
     if hasattr(args, "postbuild_scripts"):
-        _do_xxpend_list(args, "postbuild-script", dest_name="postbuild-scripts")
+        _do_xxpend_list(args, "postbuild-script", destname="postbuild-scripts")
+        _note_shadowed_bare_hook_values(args, "postbuild-script", "postbuild_scripts")
 
     # Deduplicate all compiler/linker flags after all processing is complete
     _deduplicate_all_flags(args)
