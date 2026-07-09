@@ -214,7 +214,7 @@ TROUBLESHOOTING
 ===============
 **Locks not being removed**
 
-- Check lock age with ``--verbose 2``
+- Check lock age with ``-vv``
 - Verify locks are older than ``--min-lock-age``
 - For remote locks, verify SSH connectivity
 - Check permissions on lockdir
