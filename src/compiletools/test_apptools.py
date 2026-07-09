@@ -2110,6 +2110,102 @@ class TestVariantResolutionRespectsArgv:
                 )
 
 
+@pytest.mark.usefixtures("parsers_reset")
+class TestVariableHandlingMethod:
+    """End-to-end coverage for --variable-handling-method through the full
+    parseargs pipeline (both parse paths — the plain parse and the append-mode
+    reparse in _fix_variable_handling_method).
+
+    Restores the coverage lost when test_environment_appends_config was
+    deleted in 49dfd43e (2026-03-17): 17 days later, 1237b7b3 + 76bb739b
+    regressed append mode (the reparse returned a namespace lacking the
+    _parser/_context/_argv stashes, crashing _commonsubstitutions) and no
+    test caught it — the regression walked in through this exact coverage
+    hole. The three-part _stash_private_attrs assertion below pins the fix.
+    """
+
+    def _parse_with_env_cxxflags(self, method, extra_argv=None):
+        """Run full parseargs with env CXXFLAGS set and the given
+        variable-handling-method configured in ct.conf.
+
+        Returns (args, cap, argv) so callers can assert the private-attr
+        stashes point at the exact parser/argv this parse used, not merely
+        that the attributes exist."""
+        with uth.TempDirContext(), uth.EnvironmentContext({"CXXFLAGS": "-DVARFROMENV"}):
+            uth.create_temp_ct_conf(os.getcwd(), extralines=[f"variable-handling-method={method}"])
+            with uth.TempConfigContext(
+                tempdir=os.getcwd(), extralines=['CXXFLAGS="-DVARFROMFILE"']
+            ) as temp_config_name:
+                argv = ["--config=" + temp_config_name, "--no-git-root"]
+                if extra_argv:
+                    argv.extend(extra_argv)
+                cap = apptools.create_parser("variable handling test", argv=argv)
+                apptools.add_common_arguments(cap, argv=argv)
+                with uth.ParserContext():
+                    args = apptools.parseargs(cap, argv, context=BuildContext())
+                return args, cap, argv
+
+    def test_environment_overrides_config(self):
+        """Default method: env CXXFLAGS replaces the conf-file value."""
+        args, _, _ = self._parse_with_env_cxxflags("override")
+        assert args.variable_handling_method == "override"
+        assert "-DVARFROMENV" in args.CXXFLAGS
+        assert "-DVARFROMFILE" not in args.CXXFLAGS
+
+    def test_environment_appends_config(self):
+        """Append method: env CXXFLAGS accumulates onto the conf-file value.
+        This is the test whose deletion opened the regression window."""
+        args, _, _ = self._parse_with_env_cxxflags("append")
+        assert args.variable_handling_method == "append"
+        assert "-DVARFROMENV" in args.CXXFLAGS
+        assert "-DVARFROMFILE" in args.CXXFLAGS
+
+    def test_append_mode_at_high_verbosity(self, capsys):
+        """verboseprintconfig (cake.py calls it post-parseargs at verbose>=3)
+        reads args._parser.print_values() — the first stage of the two-stage
+        regression (1237b7b3). The reparse namespace must carry the _parser
+        stash for this not to crash with AttributeError."""
+        args, _, _ = self._parse_with_env_cxxflags("append", extra_argv=["-vvv"])
+        assert "-DVARFROMENV" in args.CXXFLAGS
+        apptools.verboseprintconfig(args)  # crashed pre-fix: no args._parser
+        out = capsys.readouterr().out
+        assert "Using variant =" in out
+
+    def test_append_mode_restashes_private_attrs(self):
+        """The append-mode reparse returns a FRESH namespace; parseargs must
+        re-stash all three private attrs on it (the two-stage regression was
+        exactly these going missing — _context crashed _commonsubstitutions
+        unconditionally, _parser crashed verbose>=3, and a missing _argv
+        silently drops CLI --variant-canonical-order at re-canonicalization).
+        Identity/equality assertions, not hasattr: a stash of None or of a
+        stale parser would still pass a presence check while reintroducing
+        the silent _argv drop."""
+        args, cap, argv = self._parse_with_env_cxxflags("append")
+        assert args._parser is cap, "reparse namespace lost or replaced args._parser"
+        assert args._context is not None, "reparse namespace lost args._context"
+        assert args._argv == argv, "reparse namespace lost or replaced args._argv"
+
+    def test_append_mode_via_cli_flag(self):
+        """--variable-handling-method=append on the CLI (not just conf file)
+        triggers the same reparse path."""
+        with uth.TempDirContext(), uth.EnvironmentContext({"CXXFLAGS": "-DVARFROMENV"}):
+            uth.create_temp_ct_conf(os.getcwd())
+            with uth.TempConfigContext(
+                tempdir=os.getcwd(), extralines=['CXXFLAGS="-DVARFROMFILE"']
+            ) as temp_config_name:
+                argv = [
+                    "--config=" + temp_config_name,
+                    "--variable-handling-method=append",
+                    "--no-git-root",
+                ]
+                cap = apptools.create_parser("cli append test", argv=argv)
+                apptools.add_common_arguments(cap, argv=argv)
+                with uth.ParserContext():
+                    args = apptools.parseargs(cap, argv, context=BuildContext())
+                assert "-DVARFROMENV" in args.CXXFLAGS
+                assert "-DVARFROMFILE" in args.CXXFLAGS
+
+
 def _resolved_compiler_args(value, *, variant="gcc.debug"):
     """SimpleNamespace for _check_resolved_compiler_available with CC/CXX/LD
     all set to the same value — the common case across these tests."""

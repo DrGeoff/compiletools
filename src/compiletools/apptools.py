@@ -1683,6 +1683,36 @@ def graceful_shutdown(handler, *signums) -> Generator[None, None, None]:
                 signal.signal(sig, prev)
 
 
+def _stash_private_attrs(args, cap, context, argv):
+    """Attach the private post-parse attributes to a freshly parsed namespace.
+
+    Every namespace that flows into ``substitutions`` needs all three:
+
+    * ``_parser`` — read by ``verboseprintconfig`` (``print_values()`` at
+      verbose >= 3) and passed into ``_setup_pkg_config_overrides`` for
+      conf-file provenance attribution at verbose >= 4.
+    * ``_context`` — read unconditionally in ``_commonsubstitutions`` for
+      the pkg-config override setup; missing it is an AttributeError.
+    * ``_argv`` — routes the second ``resolve_variant`` /
+      ``canonicalize_variant_input`` calls in ``_commonsubstitutions``
+      through the explicit_config branch when ``--config=path`` was
+      supplied, and lets a CLI ``--variant-canonical-order`` reach the
+      re-canonicalization (absent, the flag is silently ignored and the
+      canonical dotted variant — hence CAS dir suffixes — can shift).
+
+    MUST be called after every ``cap.parse_args`` that produces the
+    namespace ``parseargs`` returns. The append-mode reparse in
+    ``_fix_variable_handling_method`` returns a fresh namespace, so the
+    stashes have to be applied twice; keeping them in one helper stops the
+    two sites drifting apart (the stash set grew one attribute at a time
+    across three commits, and each grower updated only the first site —
+    that drift is exactly the bug that broke append mode).
+    """
+    args._parser = cap
+    args._context = context
+    args._argv = argv
+
+
 def parseargs(cap, argv, verbose=None, *, context):
     """argv must be the logical equivalent of sys.argv[1:]
 
@@ -1693,14 +1723,7 @@ def parseargs(cap, argv, verbose=None, *, context):
     """
     # command-line values override environment variables which override config file values which override defaults.
     args = cap.parse_args(args=argv)
-    args._parser = cap
-    args._context = context
-    # Stash the original argv so post-parse code paths (notably the second
-    # resolve_variant call in _commonsubstitutions) can route through the
-    # explicit_config branch when --config=path was supplied. Without it,
-    # the re-resolve would try to look up the implied basename as an axis
-    # and raise VariantResolutionError.
-    args._argv = argv
+    _stash_private_attrs(args, cap, context, argv)
 
     if "verbose" not in vars(args):
         raise ValueError(
@@ -1729,6 +1752,7 @@ def parseargs(cap, argv, verbose=None, *, context):
     # natively supported an "append" variable-handling method for env vars.
     if args.variable_handling_method == "append":
         args = _fix_variable_handling_method(cap, argv, verbose)
+        _stash_private_attrs(args, cap, context, argv)
     _flatten_variables(args)
     _strip_quotes(args)
 
