@@ -1099,10 +1099,11 @@ class _AccumulatingConfigFileParser(configargparse.DefaultConfigFileParser):
     pre-expansion literal is the value as it appeared in the conf file
     after JSON-list parsing but before ``${CONF_DIR}`` and env-var
     expansion; equals the expanded value when no expansion happened.
-    Used by ``-vv`` diagnostics to attribute each emitted setting back
-    to its conf-file:line origin and to show "literal: $HOME/..." when
-    a value was expanded from an env var. Does not change any
-    ``args.*`` shape.
+    Used by verbose diagnostics (pkg-config path attribution at
+    ``verbose >= 4``, shadowed bare-hook-key notes at ``verbose >= 1``)
+    to attribute each emitted setting back to its conf-file:line origin
+    and to show "literal: $HOME/..." when a value was expanded from an
+    env var. Does not change any ``args.*`` shape.
     """
 
     def __init__(self, *args, **kwargs):
@@ -1259,13 +1260,15 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
         so callers cannot mutate the parser's internal state through the
         returned structure). Keys are conf-file keys as they appeared
         (e.g. ``'prepend-PKG-CONFIG-PATH'``); values are lists of
-        ``(expanded_value, source_file_abspath, lineno)`` tuples in
-        parse order.
+        ``(expanded_value, source_file_abspath, lineno,
+        pre_expansion_literal)`` tuples in parse order.
 
-        Used by ``-vv`` diagnostics in
-        ``_setup_pkg_config_overrides_locked`` and ``ct-config`` to
-        attribute each emitted setting back to the conf file (and line)
-        that contributed it.
+        Consumers: ``_setup_pkg_config_overrides_locked`` (``verbose >= 4``)
+        attributes each emitted pkg-config path back to the conf file (and
+        line) that contributed it, and
+        ``apptools._note_shadowed_bare_hook_values`` (``verbose >= 1``)
+        names the origin of bare hook-key values discarded by
+        last-writer-wins.
         """
         prov = getattr(self._config_file_parser, "_provenance", None) or {}
         return {key: list(entries) for key, entries in prov.items()}

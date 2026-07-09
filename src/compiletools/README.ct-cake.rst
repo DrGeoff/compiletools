@@ -1033,7 +1033,7 @@ Detection trips on whether ``gtest/gtest.h``, ``doctest/doctest.h``
 transitive header set. A test that pulls in two framework headers
 at once is rejected with an error naming both — disambiguate by
 fixing the include paths. A test that matches none runs normally
-and produces no XML; a warning is emitted at ``--verbose=1``.
+and produces no XML; a warning is emitted at ``-v`` and above.
 
 The XML argv is appended *after* the exe_path so prefix tools like
 ``valgrind --quiet`` (passed via ``--TESTPREFIX``) forward the XML
