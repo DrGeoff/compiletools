@@ -309,7 +309,14 @@ the accumulating key spelling::
 ``POSTBUILD`` twins) merge into the bare-key list the same way the
 other ``append-``/``prepend-`` conf keys compose: prepend entries land
 leftmost, append entries land rightmost, lower layers before higher
-ones, and entries already present in the base list are not duplicated.
+ones, and entries already present in the base list are not duplicated
+(the dedup is against the bare-key base only — the same script
+appended in two layers runs twice). Note the asymmetry with
+suppression: ``prebuild-script = []`` clears only bare-key values;
+entries contributed via ``append-``/``prepend-`` in any layer cannot
+be suppressed by a higher layer. Use the bare key for
+globally-configured hooks that individual projects may need to opt
+out of.
 Conf keys are case-sensitive — the accumulating forms must be spelled
 with the uppercase option name (``append-PREBUILD-SCRIPT``, not
 ``append-prebuild-script``; the lowercase form is silently ignored).

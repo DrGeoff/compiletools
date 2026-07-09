@@ -382,6 +382,39 @@ class TestHookConfLayering:
             args = _parse_cake_args(repo_root, self._ARGV)
             assert args.postbuild_scripts == ["./global_post.sh", "./project_post.sh"]
 
+    def test_empty_list_does_not_suppress_append_contributions(self):
+        """Pin the asymmetry documented in README.ct-cake.rst: a higher
+        layer's ``prebuild-script = []`` clears only the bare-key base;
+        an ``append-PREBUILD-SCRIPT`` contribution from a lower layer
+        survives and cannot be suppressed downstream."""
+        with _hook_conf_repo(
+            ["append-PREBUILD-SCRIPT = ./global_hook.sh"],
+            ["prebuild-script = []"],
+        ) as repo_root:
+            args = _parse_cake_args(repo_root, self._ARGV)
+            assert args.prebuild_scripts == ["./global_hook.sh"]
+
+    def test_same_script_appended_in_two_layers_runs_twice(self):
+        """Pin the dedup scope documented in README.ct-cake.rst: xxpend
+        dedups extras against the bare-key base only, so the same script
+        appended in two layers appears twice."""
+        with _hook_conf_repo(
+            ["append-PREBUILD-SCRIPT = ./same_hook.sh"],
+            ["append-PREBUILD-SCRIPT = ./same_hook.sh"],
+        ) as repo_root:
+            args = _parse_cake_args(repo_root, self._ARGV)
+            assert args.prebuild_scripts == ["./same_hook.sh", "./same_hook.sh"]
+
+    def test_append_entry_matching_bare_base_is_not_duplicated(self):
+        """Pin the base-dedup half of the same doc claim: an appended
+        script already present in the bare-key base is not added again."""
+        with _hook_conf_repo(
+            ["prebuild-script = ./global_hook.sh"],
+            ["append-PREBUILD-SCRIPT = ./global_hook.sh"],
+        ) as repo_root:
+            args = _parse_cake_args(repo_root, self._ARGV)
+            assert args.prebuild_scripts == ["./global_hook.sh"]
+
     def test_cli_append_combines_with_conf_append(self):
         """A CLI ``--append-PREBUILD-SCRIPT`` combines with conf-file
         ``append-PREBUILD-SCRIPT`` values rather than suppressing them."""
