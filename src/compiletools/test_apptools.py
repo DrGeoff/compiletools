@@ -2111,6 +2111,47 @@ class TestVariantResolutionRespectsArgv:
 
 
 @pytest.mark.usefixtures("parsers_reset")
+class TestQuietAppliedOnce:
+    """Regression test for the --quiet double-decrement.
+
+    _commonsubstitutions applies `args.verbose -= args.quiet`, but
+    substitutions() is legitimately re-run on the SAME namespace by
+    production code (cake's second-stage target discovery, the //#GIT=
+    external-fetch re-run, compilation_database's refresh). Pre-fix, each
+    re-run decremented verbose by args.quiet again; the _quiet_applied
+    latch makes the application idempotent."""
+
+    def test_substitutions_rerun_does_not_redecrement_verbose(self):
+        with uth.TempDirContext():
+            uth.create_temp_ct_conf(os.getcwd())
+            with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
+                argv = [
+                    "--config=" + temp_config_name,
+                    "--quiet",
+                    "--quiet",
+                    "--no-git-root",
+                ]
+                cap = apptools.create_parser("quiet idempotency test", argv=argv)
+                cdb.CompilationDatabaseCreator.add_arguments(cap)
+                compiletools.hunter.add_arguments(cap)
+                with uth.ParserContext():
+                    args = apptools.parseargs(cap, argv, context=BuildContext())
+                assert args.quiet == 2
+                verbose_after_parseargs = args.verbose
+                # Re-run substitutions on the same namespace, as cake.py's
+                # second-stage target discovery does.
+                apptools.substitutions(args, verbose=0)
+                assert args.verbose == verbose_after_parseargs, (
+                    f"substitutions() re-run changed args.verbose from "
+                    f"{verbose_after_parseargs} to {args.verbose}: --quiet was "
+                    "applied more than once on the same namespace."
+                )
+                # And a third run for good measure — the latch must hold.
+                apptools.substitutions(args, verbose=0)
+                assert args.verbose == verbose_after_parseargs
+
+
+@pytest.mark.usefixtures("parsers_reset")
 class TestVariableHandlingMethod:
     """End-to-end coverage for --variable-handling-method through the full
     parseargs pipeline (both parse paths — the plain parse and the append-mode

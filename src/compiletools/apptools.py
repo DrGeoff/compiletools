@@ -1469,7 +1469,17 @@ def _commonsubstitutions(args):
     """If certain arguments have not been specified but others have
     then there are some obvious substitutions to make
     """
-    args.verbose -= args.quiet
+    # Apply --quiet to --verbose exactly once per namespace. substitutions()
+    # is legitimately re-run on the SAME namespace (cake's second-stage
+    # target discovery, the //#GIT= external-fetch re-run,
+    # compilation_database's refresh), and an unguarded `verbose -= quiet`
+    # would double-decrement on every re-run. Latch pattern matches
+    # _project_macro_deprecation_warned / _hook_shadow_notes_emitted. The
+    # latch survives the append-mode reparse because that reparse replaces
+    # the namespace BEFORE substitutions() first runs in parseargs.
+    if not getattr(args, "_quiet_applied", False):
+        args.verbose -= args.quiet
+        args._quiet_applied = True
 
     if args.verbose > 8:
         print("Performing common substitutions")
