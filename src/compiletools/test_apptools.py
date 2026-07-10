@@ -2226,6 +2226,37 @@ class TestVariableHandlingMethod:
         assert args._context is not None, "reparse namespace lost args._context"
         assert args._argv == argv, "reparse namespace lost or replaced args._argv"
 
+    def test_append_reparse_private_attr_set_matches_override_path(self):
+        """Completeness guard for _stash_private_attrs: catch a fourth
+        pre-reparse stash that bypasses it.
+
+        _stash_private_attrs re-stashes exactly _parser/_context/_argv on
+        the fresh namespace the append-mode reparse returns. The identity
+        test above pins only those three known names — a future commit that
+        stashes a NEW args._* attribute directly in parseargs before the
+        reparse point (and forgets the reparse branch, exactly how the
+        f67555b8 crash was born) would slip past it. Here we run the same
+        argv/config through both parse paths and require the underscore-
+        prefixed attribute sets to be IDENTICAL: any pre-reparse stash added
+        outside _stash_private_attrs appears only in the override path and
+        fails with a self-explanatory set diff. Same argv/config means the
+        conditional stashes set during substitutions (latches, wild-B, ...)
+        take the same branches on both paths, so full set equality holds —
+        no allowlist needed."""
+        args_override, _, _ = self._parse_with_env_cxxflags("override")
+        args_append, _, _ = self._parse_with_env_cxxflags("append")
+        override_private = {k for k in vars(args_override) if k.startswith("_")}
+        append_private = {k for k in vars(args_append) if k.startswith("_")}
+        assert override_private == append_private, (
+            "Private-attr sets diverge between the override and append parse "
+            f"paths.\nOnly in override: {sorted(override_private - append_private)}\n"
+            f"Only in append: {sorted(append_private - override_private)}\n"
+            "An attr present only in the override path means something stashed "
+            "it on the namespace BEFORE the append-mode reparse without going "
+            "through _stash_private_attrs — add it there (not at the call "
+            "sites) so the reparse namespace gets it too."
+        )
+
     def test_append_mode_does_not_mutate_os_environ(self, monkeypatch):
         """The env re-route (CXXFLAGS -> APPEND_CXXFLAGS) must happen in a
         local dict passed to parse_args(env_vars=...), never in os.environ:
