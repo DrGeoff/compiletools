@@ -237,6 +237,10 @@ def _setup_pkg_config_overrides(context, verbose=0, prepend_paths=None, append_p
     * After mutation, ``context._original_pkg_config_path`` records the
       prior value so ``BuildContext.restore_pkg_config_path()`` can
       undo the mutation. Restore is also single-process / serial.
+      Callers should prefer the
+      ``BuildContext.pkg_config_path_restored()`` context manager
+      (``cake.main`` holds it around the whole invocation) over pairing
+      apply/restore calls by hand.
     """
     with _PKG_CONFIG_OVERRIDE_LOCK:
         _setup_pkg_config_overrides_locked(context, verbose, prepend_paths, append_paths, args_parser)

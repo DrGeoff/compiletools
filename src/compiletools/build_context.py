@@ -12,11 +12,14 @@ clean slate — there is no separate ``clear_cache()`` step needed.
 from __future__ import annotations
 
 import argparse
+import contextlib
 from typing import TYPE_CHECKING
 
 import stringzilla as sz
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from compiletools.build_timer import BuildTimer
     from compiletools.file_analyzer import FileAnalysisResult
     from compiletools.preprocessing_cache import MacroCacheKey, MacroDict, ProcessingResult
@@ -32,6 +35,14 @@ class BuildContext:
     Create one at the start of a build and pass it through the call chain.
     When the build (or test) is done, discard the context — all caches are
     garbage-collected with it.
+
+    One piece of state does NOT die with the context: the process-wide
+    ``PKG_CONFIG_PATH`` mutation applied by
+    ``apptools._setup_pkg_config_overrides``. Library embedders driving
+    multiple builds in one process should wrap each build in
+    ``pkg_config_path_restored()`` so project A's auto-discovered
+    pkg-config dirs don't bleed into project B's environment (the
+    ``ct-cake`` CLI does this in ``cake.main``).
     """
 
     def __init__(self) -> None:
@@ -75,6 +86,23 @@ class BuildContext:
         # str means we saved that prior value. None means no override active.
         self._original_pkg_config_path: str | bool | None = None
 
+    @contextlib.contextmanager
+    def pkg_config_path_restored(self) -> Iterator[None]:
+        """Scope within which any PKG_CONFIG_PATH mutation recorded on this
+        context is undone at exit (success or exception).
+
+        Safe to hold around code that may or may not apply overrides: the
+        sentinel is recorded at apply time by
+        ``apptools._setup_pkg_config_overrides``, and
+        ``restore_pkg_config_path`` is a no-op when nothing was applied
+        (``None`` sentinel). Preferred over calling
+        ``restore_pkg_config_path`` directly.
+        """
+        try:
+            yield
+        finally:
+            self.restore_pkg_config_path()
+
     def restore_pkg_config_path(self) -> None:
         """Undo any PKG_CONFIG_PATH mutation made by
         ``apptools._setup_pkg_config_overrides`` against this context.
@@ -83,6 +111,8 @@ class BuildContext:
         create more than one BuildContext should call this between
         contexts to avoid bleeding pkg-config state across builds. After
         restore, the override flag is reset so a future apply works.
+        Prefer the ``pkg_config_path_restored()`` context manager, which
+        pairs apply-scope and restore automatically.
         """
         import os
 

@@ -1118,26 +1118,32 @@ def main(argv=None):
     Cake.registercallback()
 
     context = BuildContext()
-    args = compiletools.apptools.parseargs(cap, argv, context=context)
-    compiletools.apptools.validate_otel_timing_pair(args)
+    # The manager must span parseargs (which applies the PKG_CONFIG_PATH
+    # override via _setup_pkg_config_overrides) AND the build (magicflags
+    # runs pkg-config subprocesses that need the override live), so that a
+    # long-lived embedder calling main() repeatedly doesn't carry project
+    # A's pkg-config dirs into project B's environment.
+    with context.pkg_config_path_restored():
+        args = compiletools.apptools.parseargs(cap, argv, context=context)
+        compiletools.apptools.validate_otel_timing_pair(args)
 
-    if not any([args.filename, args.static, args.dynamic, args.tests, args.auto]):
-        print("Nothing for cake to do.  Did you mean cake --auto? Use cake --help for help.")
-        return 0
+        if not any([args.filename, args.static, args.dynamic, args.tests, args.auto]):
+            print("Nothing for cake to do.  Did you mean cake --auto? Use cake --help for help.")
+            return 0
 
-    with compiletools.apptools.graceful_shutdown(signal_handler, signal.SIGINT, signal.SIGPIPE):
-        try:
-            cake = Cake(args, context=context)
-            cake.process()
-            # For testing purposes, clear out the memcaches for the times when main is called more than once.
-            cake.clear_cache()
-        except Exception as err:
-            # At verbose >= 2 the full traceback is the diagnostic.
-            if args.verbose >= 2:
+        with compiletools.apptools.graceful_shutdown(signal_handler, signal.SIGINT, signal.SIGPIPE):
+            try:
+                cake = Cake(args, context=context)
+                cake.process()
+                # For testing purposes, clear out the memcaches for the times when main is called more than once.
+                cake.clear_cache()
+            except Exception as err:
+                # At verbose >= 2 the full traceback is the diagnostic.
+                if args.verbose >= 2:
+                    raise
+                for exc_type, renderer in _FATAL_ERROR_RENDERERS:
+                    if isinstance(err, exc_type):
+                        renderer(err)
+                        return 1
                 raise
-            for exc_type, renderer in _FATAL_ERROR_RENDERERS:
-                if isinstance(err, exc_type):
-                    renderer(err)
-                    return 1
-            raise
     return 0
