@@ -14,6 +14,7 @@ for O(n) performance without sorting. XOR combination ensures order independence
 The hash is deterministic across Python runs, enabling future disk caching support.
 """
 
+import os
 import sys
 from dataclasses import dataclass, field
 from typing import Optional
@@ -23,6 +24,31 @@ import stringzilla as sz
 # Type aliases for macro dictionaries and cache keys
 MacroDict = dict[sz.Str, sz.Str]
 MacroCacheKey = frozenset[tuple[sz.Str, sz.Str]]
+
+# Include-path env vars the compiler's preprocessor reads (gcc: CPATH acts
+# like -I, the per-language *_INCLUDE_PATH vars like -isystem). Folded into
+# the compile-side build-context hash so a value change invalidates cached
+# objects — ccache hashes these same four vars for the same reason. Shared
+# with headerdeps, which widens the DirectHeaderDeps walk over the same
+# list. Deliberately NOT the link-side list (_LINK_ENVIRONMENT_VARS in
+# backend_command_args.py) — that one must stay byte-stable independently.
+INCLUDE_PATH_ENV_VARS = (
+    "CPATH",
+    "C_INCLUDE_PATH",
+    "CPLUS_INCLUDE_PATH",
+    "OBJC_INCLUDE_PATH",
+)
+
+
+def include_path_environment_snapshot() -> dict[str, str]:
+    """Snapshot of the CPATH-family env vars at call time.
+
+    Same convention as backend_command_args._link_environment_snapshot:
+    unset vars contribute the empty string so 'absent' and 'set to ""'
+    hash identically — one less attack surface for cache-poisoning via
+    env trickery.
+    """
+    return {var: os.environ.get(var, "") for var in INCLUDE_PATH_ENV_VARS}
 
 
 @dataclass
@@ -387,9 +413,10 @@ class MacroState:
 
     def _get_build_context_hash(self) -> int:
         """Hash of the canonicalised build_context block (compiler path,
-        identity, flag tokens). All inputs are MacroState invariants —
-        cache so the scope-filtered hash path doesn't re-canonicalise on
-        every per-TU call.
+        identity, flag tokens, CPATH-family env snapshot). All inputs are
+        MacroState invariants or run-stable environment — cache so the
+        scope-filtered hash path doesn't re-canonicalise on every per-TU
+        call.
         """
         cached = self._build_context_hash
         if cached is not None:
@@ -420,10 +447,18 @@ class MacroState:
         cxxflags_part = "CXXFLAGS_TOKENS=" + "\x00".join(_canon(cxxflags_tokens))
 
         canonical_cc = canonicalize_path_for_cache_key(self.compiler_path, self.anchor_root)
+        # The CPATH-family vars change which headers the compiler (and
+        # CppHeaderDeps' child cpp) resolves without appearing in any flag
+        # string, so a value change must invalidate cached objects. Read at
+        # hash time, not construction: the env is stable within a run (same
+        # assumption as the link-side snapshot).
+        include_env = include_path_environment_snapshot()
+        include_env_part = "INCLUDE_ENV=" + "\x00".join(f"{n}={v}" for n, v in sorted(include_env.items()))
         build_context = (
             f"CC={canonical_cc}\x00"
             f"COMPILER_IDENTITY={self.compiler_identity}\x00"
-            f"{cppflags_part}\x00{cflags_part}\x00{cxxflags_part}"
+            f"{cppflags_part}\x00{cflags_part}\x00{cxxflags_part}\x00"
+            f"{include_env_part}"
         )
         result = int(sz.hash(bytes(build_context, "utf-8")))
         self._build_context_hash = result

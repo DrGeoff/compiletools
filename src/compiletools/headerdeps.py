@@ -16,6 +16,7 @@ import compiletools.wrappedos
 from compiletools.file_analyzer import analyze_file, set_analyzer_args
 from compiletools.global_hash_registry import get_file_hash
 from compiletools.preprocessing_cache import (
+    INCLUDE_PATH_ENV_VARS,
     MacroCacheKey,
     MacroDict,
     MacroState,
@@ -23,6 +24,30 @@ from compiletools.preprocessing_cache import (
     is_permanently_invariant,
 )
 from compiletools.utils import instance_cache, split_command_cached
+
+
+def _include_dirs_from_env() -> list[str]:
+    """Include search dirs from the CPATH-family env vars, in gcc's order.
+
+    gcc searches CPATH dirs as if given by ``-I`` after all command-line
+    ``-I`` dirs, and the per-language vars (C_INCLUDE_PATH etc.) as if
+    given by ``-isystem`` after command-line ``-isystem`` dirs — so all
+    of these belong after the CPPFLAGS-derived dirs, CPATH first.
+    DirectHeaderDeps keeps one flat search list, so this ordering is an
+    approximation of the compiler's staged search, not a replica.
+
+    gcc treats an *empty* os.pathsep entry as "the current directory";
+    nothing else in compiletools honours that rule (PKG_CONFIG_PATH
+    splitting doesn't either), so empty entries are skipped here rather
+    than introducing a cwd-dependence unique to this path.
+    """
+    dirs: list[str] = []
+    for var in INCLUDE_PATH_ENV_VARS:
+        value = os.environ.get(var)
+        if not value:
+            continue
+        dirs.extend(d for d in value.split(os.pathsep) if d)
+    return dirs
 
 
 def clear_caches(context):
@@ -222,6 +247,12 @@ class DirectHeaderDeps(HeaderDepsBase):
             # spaces survive without a shlex round-trip through CPPFLAGS.
             if self._extra_include_dirs:
                 self._includes = self._includes + list(self._extra_include_dirs)
+            # CPATH-family dirs must be walked so headers reachable only via
+            # the environment are content-hashed into dep_hash — otherwise
+            # editing such a header leaves every CAS key component unchanged
+            # and a stale .o is silently linked. (CppHeaderDeps is immune:
+            # the child cpp inherits the env and honours CPATH natively.)
+            self._includes = self._includes + _include_dirs_from_env()
 
             if self.args.verbose >= 3:
                 print("Includes=" + str(self._includes))

@@ -330,9 +330,14 @@ backends accept it consistently.
   empty files at target paths whose recipes have no real prerequisites
   in CAS-only mode, corrupting the cache.  Use ``--use-mtime=True`` if
   you need to mark a build up-to-date without running it.
-* System / ``/usr/include`` headers are not in the cache key (matches
-  ccache/sccache contract).  An in-place compiler swap usually changes
-  ``compiler_identity`` and invalidates the cache implicitly.
+* System / ``/usr/include`` headers are not in the cache key (ccache
+  and sccache likewise exclude default system headers).  An in-place
+  compiler swap usually changes ``compiler_identity`` and invalidates
+  the cache implicitly.
+* The ``CPATH`` / ``C_INCLUDE_PATH`` / ``CPLUS_INCLUDE_PATH`` /
+  ``OBJC_INCLUDE_PATH`` values ARE in the compile cache key (as ccache
+  hashes them), and headers found via those directories are walked and
+  content-hashed into ``dep_hash`` like any ``-I`` header.
 
 CHOOSING A BACKEND
 ==================

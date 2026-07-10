@@ -52,6 +52,12 @@ def _run_scenario_test(filename, scenarios):
         uth.compare_headerdeps_kinds(filename, cppflags=cleaned_cppflags, scenario_name=name)
 
 
+def _clear_include_env(monkeypatch):
+    """Remove all CPATH-family vars so tests control exactly which are set."""
+    for var in compiletools.headerdeps.INCLUDE_PATH_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+
 def _callprocess(headerobj, filenames):
     result = []
     for filename in filenames:
@@ -381,8 +387,11 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
             _assert_headers_present(direct, expectations["expected"])
             _assert_headers_absent(direct, expectations["forbidden"])
 
-    def test_include_flag_parsing(self):
+    def test_include_flag_parsing(self, monkeypatch):
         """Test that -I flags are parsed correctly with and without spaces"""
+        # CPATH-family vars now append to deps.includes; clear them so the
+        # exact-equality assertions below don't depend on the dev's shell.
+        _clear_include_env(monkeypatch)
         test_cases = [
             ("-I /usr/include -I/opt/local/include", ["/usr/include", "/opt/local/include"]),
             ("-Isrc -I build/include", ["src", "build/include"]),
@@ -397,7 +406,7 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
                 f"CPPFLAGS: {cppflags}, Expected: {expected_includes}, Got: {deps.includes}"
             )
 
-    def test_quoted_include_paths_shell_parsing_bug(self):
+    def test_quoted_include_paths_shell_parsing_bug(self, monkeypatch):
         """Test that exposes the shell parsing bug in HeaderDeps with quoted include paths.
 
         This test demonstrates that the current regex-based approach fails to handle
@@ -407,6 +416,7 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
         breaking quoted paths that should be treated as single arguments.
         """
 
+        _clear_include_env(monkeypatch)
         # This is the critical test case that exposes the bug
         expected_includes = ["/path with spaces/include"]
 
@@ -613,3 +623,72 @@ class TestHeaderDepsUnitTests(tb.BaseCompileToolsTestCase):
         deps = compiletools.headerdeps.DirectHeaderDeps(args, context=ctx)
         result = deps.generatetree(filename, macro_cache_key=frozenset({("TEST_MACRO", "1")}))
         assert result is not None
+
+
+class TestIncludePathEnvVars(tb.BaseCompileToolsTestCase):
+    """DirectHeaderDeps must walk headers reachable only via the CPATH-family
+    env vars so their content enters dep_hash (stale-object regression)."""
+
+    def _make_args(self, cppflags=""):
+        cap = configargparse.ArgumentParser(
+            conflict_handler="resolve",
+            args_for_setting_config_path=["-c", "--config"],
+            ignore_unknown_config_file_keys=True,
+        )
+        compiletools.headerdeps.add_arguments(cap)
+        argv = ["-q"]
+        if cppflags:
+            argv.append(f"--CPPFLAGS={cppflags}")
+        return compiletools.apptools.parseargs(cap, argv, context=BuildContext())
+
+    def _make_env_only_header_tree(self, tempdir):
+        """Create main.cpp in tempdir including a header that lives only in
+        tempdir/env_inc (not next to the source, not in any -I dir)."""
+        incdir = os.path.join(tempdir, "env_inc")
+        os.makedirs(incdir)
+        header = os.path.join(incdir, "via_env.hpp")
+        with open(header, "w") as f:
+            f.write("#define VIA_ENV 1\n")
+        src = os.path.join(tempdir, "main.cpp")
+        with open(src, "w") as f:
+            f.write('#include "via_env.hpp"\nint main() { return 0; }\n')
+        return incdir, header, src
+
+    def _assert_env_var_resolves_header(self, monkeypatch, varname):
+        _clear_include_env(monkeypatch)
+        with uth.TempDirContextNoChange() as tempdir:
+            incdir, header, src = self._make_env_only_header_tree(tempdir)
+            monkeypatch.setenv(varname, incdir)
+            args = self._make_args()
+            deps = compiletools.headerdeps.DirectHeaderDeps(args, context=BuildContext())
+            result = deps.process(src, frozenset())
+            expected = compiletools.wrappedos.realpath(header)
+            assert expected in result, f"{varname}-only header not walked: {result}"
+
+    def test_cpath_only_header_is_walked(self, monkeypatch):
+        self._assert_env_var_resolves_header(monkeypatch, "CPATH")
+
+    def test_cplus_include_path_only_header_is_walked(self, monkeypatch):
+        self._assert_env_var_resolves_header(monkeypatch, "CPLUS_INCLUDE_PATH")
+
+    def test_env_dirs_ordered_after_cppflags_and_empty_entries_skipped(self, monkeypatch):
+        """CPPFLAGS -I dirs come first (they win a name collision), CPATH next,
+        the language vars after; empty os.pathsep entries are skipped."""
+        _clear_include_env(monkeypatch)
+        monkeypatch.setenv("CPATH", f"{os.pathsep}/env/cpath_a{os.pathsep}{os.pathsep}/env/cpath_b{os.pathsep}")
+        monkeypatch.setenv("CPLUS_INCLUDE_PATH", "/env/cplus")
+        args = self._make_args(cppflags="-I/flags/one -I /flags/two")
+        deps = compiletools.headerdeps.DirectHeaderDeps(args, context=BuildContext())
+        assert deps.includes == [
+            "/flags/one",
+            "/flags/two",
+            "/env/cpath_a",
+            "/env/cpath_b",
+            "/env/cplus",
+        ]
+
+    def test_unset_env_leaves_includes_untouched(self, monkeypatch):
+        _clear_include_env(monkeypatch)
+        args = self._make_args(cppflags="-I/flags/one")
+        deps = compiletools.headerdeps.DirectHeaderDeps(args, context=BuildContext())
+        assert deps.includes == ["/flags/one"]

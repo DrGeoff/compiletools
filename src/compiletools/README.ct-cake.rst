@@ -591,12 +591,21 @@ exist", a few classical Make/Ninja workflows behave differently:
 
 * **System / ``/usr/include`` headers are not in the cache key.**
   A glibc upgrade between CI runs will silently reuse cached objects
-  built against the prior glibc. This matches the ccache / sccache
-  contract but surprises users coming from full-rebuild CI. If you
-  need glibc-version sensitivity in the cache key, fold it into the
-  ``compiler_identity`` triple (in practice, an in-place compiler
-  swap usually changes ``compiler_identity`` and invalidates the
-  cache implicitly).
+  built against the prior glibc. ccache and sccache likewise exclude
+  default system headers, but this surprises users coming from
+  full-rebuild CI. If you need glibc-version sensitivity in the cache
+  key, fold it into the ``compiler_identity`` triple (in practice, an
+  in-place compiler swap usually changes ``compiler_identity`` and
+  invalidates the cache implicitly).
+
+* **Include-path environment variables ARE in the compile cache key.**
+  ``CPATH``, ``C_INCLUDE_PATH``, ``CPLUS_INCLUDE_PATH``, and
+  ``OBJC_INCLUDE_PATH`` participate in the per-TU
+  ``macro_state_hash`` (as they do in ccache's hash), and headers
+  found via those directories are walked and content-hashed into
+  ``dep_hash`` like any ``-I`` header — editing a header reachable
+  only via ``CPATH``, or changing the value of one of these vars,
+  invalidates cached objects.
 
 * **Linker-time environment variables ARE in the link key.**
   ``SOURCE_DATE_EPOCH``, ``LD_LIBRARY_PATH``, ``LIBRARY_PATH``, and

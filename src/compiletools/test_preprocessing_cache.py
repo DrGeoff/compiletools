@@ -12,7 +12,13 @@ import stringzilla as sz
 
 from compiletools.build_context import BuildContext
 from compiletools.file_analyzer import FileAnalysisResult, PreprocessorDirective
-from compiletools.preprocessing_cache import MacroState, clear_cache, get_cache_stats, get_or_compute_preprocessing
+from compiletools.preprocessing_cache import (
+    INCLUDE_PATH_ENV_VARS,
+    MacroState,
+    clear_cache,
+    get_cache_stats,
+    get_or_compute_preprocessing,
+)
 
 _skip_on_pypy = pytest.mark.skipif(
     hasattr(sys, "pypy_version_info"),
@@ -879,3 +885,50 @@ class TestClearVariantCache(_CacheTestBase):
         after = get_cache_stats(self.ctx)
         assert after["invariant_entries"] == 1, "invariant cache must be preserved"
         assert after["variant_entries"] == 0, "variant cache must be cleared"
+
+
+class TestIncludePathEnvInBuildContextHash:
+    """The CPATH-family env vars must invalidate the compile-side
+    build-context hash (they change which headers the compiler resolves
+    without appearing in any flag string)."""
+
+    @staticmethod
+    def _clear_include_env(monkeypatch):
+        for var in INCLUDE_PATH_ENV_VARS:
+            monkeypatch.delenv(var, raising=False)
+
+    @staticmethod
+    def _full_hash():
+        # Fresh instance per call: the build-context hash is memoised per
+        # MacroState, so env changes must be observed via new states (as in
+        # production, where the env is stable within a run).
+        return MacroState({}, {}, anchor_root="").get_hash(include_core=True)
+
+    def test_hash_changes_when_cpath_changes(self, monkeypatch):
+        self._clear_include_env(monkeypatch)
+        unset_hash = self._full_hash()
+        monkeypatch.setenv("CPATH", "/some/include/dir")
+        assert self._full_hash() != unset_hash
+
+    def test_hash_stable_unset_vs_unset(self, monkeypatch):
+        self._clear_include_env(monkeypatch)
+        assert self._full_hash() == self._full_hash()
+
+    def test_absent_and_empty_hash_identically(self, monkeypatch):
+        """Matches the _link_environment_snapshot convention: unset and
+        set-to-empty are both a no-op to the compiler."""
+        self._clear_include_env(monkeypatch)
+        unset_hash = self._full_hash()
+        monkeypatch.setenv("CPATH", "")
+        assert self._full_hash() == unset_hash
+
+    def test_each_var_participates(self, monkeypatch):
+        self._clear_include_env(monkeypatch)
+        baseline = self._full_hash()
+        seen = {baseline}
+        for var in INCLUDE_PATH_ENV_VARS:
+            self._clear_include_env(monkeypatch)
+            monkeypatch.setenv(var, "/env/probe")
+            h = self._full_hash()
+            assert h not in seen, f"{var} did not alter the build-context hash"
+            seen.add(h)
