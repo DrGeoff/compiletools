@@ -491,8 +491,10 @@ class CMakeBackend(BuildBackend):
         # (CMake 4.x defaults to RelWithDebInfo → -O2 -g -DNDEBUG). The
         # variant axis owns optimization; a stray -O from CMake desyncs
         # __OPTIMIZE__ between the ct-cake-built PCH and the consumer compile.
-        # The three flag cache vars get the same force-empty treatment:
-        # CMake seeds them from env CFLAGS/CXXFLAGS/LDFLAGS at FIRST configure
+        # The five flag cache vars get the same force-empty treatment:
+        # CMAKE_C_FLAGS, CMAKE_CXX_FLAGS, CMAKE_EXE_LINKER_FLAGS,
+        # CMAKE_SHARED_LINKER_FLAGS, and CMAKE_MODULE_LINKER_FLAGS. CMake
+        # seeds them from env CFLAGS/CXXFLAGS/LDFLAGS at FIRST configure
         # only, then reuses the cached value forever — so a build dir
         # configured before the env scrub below existed keeps double-applying
         # its baked flags on every reconfigure. Forcing them empty on the
@@ -508,6 +510,8 @@ class CMakeBackend(BuildBackend):
             "-DCMAKE_C_FLAGS=",
             "-DCMAKE_CXX_FLAGS=",
             "-DCMAKE_EXE_LINKER_FLAGS=",
+            "-DCMAKE_SHARED_LINKER_FLAGS=",
+            "-DCMAKE_MODULE_LINKER_FLAGS=",
         ]
         if hasattr(self.args, "CXX") and self.args.CXX:
             cxx_parts = compiletools.utils.split_command_cached(self.args.CXX)
