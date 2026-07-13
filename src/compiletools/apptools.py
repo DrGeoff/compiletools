@@ -162,13 +162,11 @@ from compiletools.apptools_canonicalize import (
 # Re-exported from the leaf apptools_canonicalize module so existing
 # ``apptools.<name>`` call sites, ``from compiletools.apptools import ...``
 # importers, and test/patch targets keep working with identical object
-# identity. ``_PREFIX_MAP_FLAG_PREFIXES`` still has a live internal caller
-# that stays in apptools (``_has_prefix_map_flag`` reads it) — plain import.
-# ``canonicalize_path_for_cache_key``'s former internal caller
-# (``compiler_identity``) moved to ``apptools_compiler``, so it is now a pure
-# re-export here. The rest are pure re-exports (only consumed by external
-# modules / docstrings), so they carry the redundant ``name as name`` alias
-# to mark them as intentional re-exports for the F401 linter.
+# identity. ``_PREFIX_MAP_FLAG_PREFIXES`` has a live internal caller in this
+# module (``_has_prefix_map_flag`` reads it) — plain import. The rest are
+# pure re-exports (only consumed by external modules / docstrings), so they
+# carry the redundant ``name as name`` alias to mark them as intentional
+# re-exports for the F401 linter.
 from compiletools.apptools_canonicalize import (
     _PREFIX_MAP_FLAG_PREFIXES,
 )
@@ -596,10 +594,10 @@ def extract_command_line_macros(args, flag_sources=None, include_compiler_macros
             flags = flag_string.split()
 
         # Walk tokens recognizing both attached (-DFOO, -DFOO=val) and
-        # detached (-D FOO, -D FOO=val) forms. The detached form was
-        # previously silently dropped and that disagreed with the macro
-        # universe computed by cmdline_d_macro_names, defeating the
-        # cache-key scoping.
+        # detached (-D FOO, -D FOO=val) forms. Both forms must be recognized
+        # here because cmdline_d_macro_names recognizes both: a macro this
+        # walk misses would be absent from one macro universe but present in
+        # the other, defeating the cache-key scoping.
         i = 0
         n = len(flags)
         while i < n:
@@ -809,14 +807,14 @@ def _inject_ffile_prefix_map(args) -> None:
     files embed the absolute source path through gcc's internal
     path-table, which is NOT subject to -ffile-prefix-map.
     -fdebug-compilation-dir= would address this for clang but is not
-    a recognised gcc flag (rejected by gcc as of 16.1.0). Closing
-    the gcc PCH / BMI gap requires either (a) workspace-relative
-    source paths in the precompile rule emitter plus per-backend
-    CWD discipline, or (b) a PWD=/proc/self/cwd subprocess-env
-    trick. Both are deferred follow-ups; cas-pchdir and cas-pcmdir
-    cross-user sharing remains per-user until then. See
-    docs/superpowers/specs/2026-05-12-round3-workspace-relative-compile-paths-design.md
-    "Open Questions" for the design escalation paths.
+    a recognised gcc flag (rejected by gcc as of 16.1.0). The
+    precompile rule emitters close the gap for downstream ``.o``
+    byte-identity instead: they pass the source workspace-relative
+    and set ``BuildRule.cwd`` to the anchor root (see
+    ``_create_pch_rules`` in ``build_backend.py``), so consumers of a
+    shared cas-pchdir / cas-pcmdir still produce byte-identical
+    objects even though the PCH / BMI bytes themselves stay
+    per-workspace.
 
     Skipped when ``compiletools.git_utils.find_git_root()`` returns an
     empty / falsy value (no anchor to canonicalize against). Per-slot
@@ -1429,35 +1427,36 @@ def _safely_unquote_string(value):
         return value
 
     try:
-        # Use shlex to parse the string as shell would
-        # If it parses to exactly one token, it was properly quoted
+        # A single shlex token means the outer quotes were shell quotes;
+        # multiple tokens mean the quotes delimit content, so the value is
+        # returned unchanged.
         tokens = split_command_cached(value)
         if len(tokens) == 1:
-            # Single token means the quotes were shell quotes
             unquoted = tokens[0]
 
-            # For backwards compatibility, if the result still has quotes at both ends,
-            # recursively strip them (mimics old behavior for nested quotes)
+            # Nested quoting (e.g. conf value '"-DFOO"' quoted once by the
+            # conf layer and once by the user) leaves a quote pair per layer;
+            # recurse until no enclosing pair remains.
             if (unquoted.startswith('"') and unquoted.endswith('"')) or (
                 unquoted.startswith("'") and unquoted.endswith("'")
             ):
                 return _safely_unquote_string(unquoted)
             return unquoted
         else:
-            # Multiple tokens or parsing issues - return original
             return value
     except ValueError:
-        # Malformed quoting - fall back to original naive approach for compatibility
-        # but only strip matching quote pairs
+        # Malformed quoting that shlex rejects: strip only a matching
+        # enclosing quote pair rather than failing the whole parse.
         if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
             return value[1:-1].strip()
         return value.strip("\"'").strip()
 
 
 def _flatten_variables(args):
-    """Most of the code base was written to expect CXXFLAGS are a single string with space separation.
-    However, around 20240920 we allowed some variables to be lists of those strings.  To allow this
-    change to slip in with minimal code changes, we flatten out the list into a single string.
+    """Flatten list-valued flag variables into the single space-separated
+    string the rest of the code base expects. These variables are registered
+    with ``nargs="+"``, so argparse stores a list of tokens; downstream
+    consumers read one string.
 
     Uses ``shlex.join`` (not ``' '.join``) so that list elements containing
     shell-special characters (embedded spaces, double-quotes, etc.) survive the
@@ -1465,9 +1464,9 @@ def _flatten_variables(args):
     passes ``--CPPFLAGS '-DFOO=bar baz'`` on the CLI, the shell consumes the
     outer quotes and argparse stores ``'-DFOO=bar baz'`` as a single list element;
     ``' '.join`` would produce ``'-DFOO=bar baz -Wall'`` (unsplit on the space),
-    and ``shlex.split`` would then misparse it as three tokens.  Cousin fix to
-    commit 5cd77781 which patched the same pattern in ``_unify_cpp_cxx_flags``
-    and ``_deduplicate_all_flags``.
+    and ``shlex.split`` would then misparse it as three tokens.
+    ``_unify_cpp_cxx_flags`` and ``_deduplicate_all_flags`` apply the same
+    ``shlex.join`` rule.
     """
     for varname in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "INCLUDE"):
         if isinstance(getattr(args, varname, None), list):
@@ -1766,9 +1765,9 @@ def parseargs(cap, argv, verbose=None, *, context):
         verbose = args.verbose
 
     # configargparse only applies the "override" method to environment-sourced
-    # variables, so when the user asks for "append" we partially undo that in
-    # _fix_variable_handling_method. This would be simpler if configargparse
-    # natively supported an "append" variable-handling method for env vars.
+    # variables — it has no native "append" method for env vars — so when the
+    # user asks for "append", _fix_variable_handling_method partially undoes
+    # the override and reparses.
     if args.variable_handling_method == "append":
         args = _fix_variable_handling_method(cap, argv, verbose)
         _stash_private_attrs(args, cap, context, argv)
