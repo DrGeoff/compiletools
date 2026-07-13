@@ -38,6 +38,35 @@ def test_restore_pkg_config_path_is_idempotent_when_nothing_applied() -> None:
     assert ctx.pkg_config_overrides_applied is False
 
 
+def test_restore_pkg_config_path_acquires_pkg_config_override_lock(monkeypatch) -> None:
+    """restore_pkg_config_path must serialize its env mutation under the same
+    module-level lock the apply side (``_setup_pkg_config_overrides``) takes,
+    rather than merely documenting single-process/serial behavior as a
+    convention."""
+    import compiletools.apptools_pkgconfig as apptools_pkgconfig
+
+    real_lock = apptools_pkgconfig._PKG_CONFIG_OVERRIDE_LOCK
+    calls: list[str] = []
+
+    class SpyLock:
+        def __enter__(self):
+            calls.append("enter")
+            return real_lock.__enter__()
+
+        def __exit__(self, *exc_info):
+            calls.append("exit")
+            return real_lock.__exit__(*exc_info)
+
+    monkeypatch.setattr(apptools_pkgconfig, "_PKG_CONFIG_OVERRIDE_LOCK", SpyLock())
+    monkeypatch.setenv("PKG_CONFIG_PATH", "/whatever")
+
+    ctx = BuildContext()
+    ctx._original_pkg_config_path = True
+    ctx.restore_pkg_config_path()
+
+    assert calls == ["enter", "exit"]
+
+
 def _stub_gitroot_with_pkgconfig(monkeypatch, tmp_path):
     """Create <tmp_path>/ct.conf.d/pkgconfig/ and stub gitroot/cwd to tmp_path
     so _setup_pkg_config_overrides takes the auto-discovery path (same fixture

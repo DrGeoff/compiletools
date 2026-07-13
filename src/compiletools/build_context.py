@@ -113,13 +113,22 @@ class BuildContext:
         restore, the override flag is reset so a future apply works.
         Prefer the ``pkg_config_path_restored()`` context manager, which
         pairs apply-scope and restore automatically.
+
+        Acquires the same module-level
+        ``compiletools.apptools_pkgconfig._PKG_CONFIG_OVERRIDE_LOCK`` that
+        ``_setup_pkg_config_overrides`` takes for its mutation, so the
+        apply/restore serialization contract on ``PKG_CONFIG_PATH`` is
+        enforced rather than merely documented.
         """
         import os
 
-        if self._original_pkg_config_path is True:
-            os.environ.pop("PKG_CONFIG_PATH", None)
-        elif isinstance(self._original_pkg_config_path, str):
-            os.environ["PKG_CONFIG_PATH"] = self._original_pkg_config_path
-        # else: nothing was applied; nothing to undo.
-        self._original_pkg_config_path = None
-        self.pkg_config_overrides_applied = False
+        import compiletools.apptools_pkgconfig
+
+        with compiletools.apptools_pkgconfig._PKG_CONFIG_OVERRIDE_LOCK:
+            if self._original_pkg_config_path is True:
+                os.environ.pop("PKG_CONFIG_PATH", None)
+            elif isinstance(self._original_pkg_config_path, str):
+                os.environ["PKG_CONFIG_PATH"] = self._original_pkg_config_path
+            # else: nothing was applied; nothing to undo.
+            self._original_pkg_config_path = None
+            self.pkg_config_overrides_applied = False
