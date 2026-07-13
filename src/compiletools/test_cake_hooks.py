@@ -453,7 +453,7 @@ class TestHookConfLayering:
             args = _parse_cake_args(repo_root, [*self._ARGV, "-v"])
             err = capsys.readouterr().err
             assert "prebuild-script = ./global_hook.sh" in err
-            assert "discarded" in err
+            assert err.count("discarded") == 1
             assert "ct.conf:" in err
             assert "append-PREBUILD-SCRIPT" in err
 
@@ -523,3 +523,40 @@ class TestHookConfLayering:
             argv = [*self._ARGV, "--append-PREBUILD-SCRIPT=./cli_hook.sh"]
             args = _parse_cake_args(repo_root, argv)
             assert args.prebuild_scripts == ["./global_hook.sh", "./cli_hook.sh"]
+
+    def test_env_var_replaces_conf_and_bare_cli_combines_on_top(self, monkeypatch):
+        """Pin the doc's override chain for the bare key: the
+        ``PREBUILD_SCRIPT`` environment variable replaces the conf-file
+        value (env > conf), while a bare ``--prebuild-script`` on the CLI
+        combines with the env winner rather than replacing it."""
+        monkeypatch.setenv("PREBUILD_SCRIPT", "./from_env.sh")
+        with _hook_conf_repo(
+            ["prebuild-script = ./from_conf.sh"],
+            [],
+        ) as repo_root:
+            args = _parse_cake_args(repo_root, self._ARGV)
+            assert args.prebuild_scripts == ["./from_env.sh"]
+        with _hook_conf_repo(
+            ["prebuild-script = ./from_conf.sh"],
+            [],
+        ) as repo_root:
+            argv = [*self._ARGV, "--prebuild-script=./from_cli.sh"]
+            args = _parse_cake_args(repo_root, argv)
+            assert args.prebuild_scripts == ["./from_env.sh", "./from_cli.sh"]
+
+    def test_shadow_note_fires_for_env_var_winner(self, capsys, monkeypatch):
+        """An environment-variable winner also triggers the ``-v`` note for
+        the discarded conf value. Env winners don't appear in conf
+        provenance, so the note names only the loser's conf file — and it
+        fires exactly once per parse."""
+        monkeypatch.setenv("PREBUILD_SCRIPT", "./from_env.sh")
+        with _hook_conf_repo(
+            ["prebuild-script = ./from_conf.sh"],
+            [],
+        ) as repo_root:
+            args = _parse_cake_args(repo_root, [*self._ARGV, "-v"])
+            assert args.prebuild_scripts == ["./from_env.sh"]
+            err = capsys.readouterr().err
+            assert "prebuild-script = ./from_conf.sh" in err
+            assert err.count("discarded") == 1
+            assert "ct.conf:" in err
