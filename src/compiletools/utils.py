@@ -36,6 +36,7 @@ __all__ = [
     "CPP_SOURCE_EXTS",
     "C_SOURCE_EXTS",
     "ENV_VAR_DISABLED",
+    "FLAG_ENV_VAR_NAMES",
     "HEADER_EXTS",
     "add_boolean_argument",
     "add_flag_argument",
@@ -59,6 +60,11 @@ __all__ = [
     "split_command_cached",
     "to_bool",
 ]
+
+# The five env-var names that parseargs re-routes into APPEND_* form under
+# --variable-handling-method=append (see apptools_argparse._fix_variable_handling_method)
+# and that cmake_backend scrubs from the configure subprocess env for symmetry.
+FLAG_ENV_VAR_NAMES = ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS", "INCLUDE")
 
 # Module-level constant for C++ source extensions (lowercase)
 CPP_SOURCE_EXTS = frozenset({".cpp", ".cxx", ".cc", ".c++", ".cp", ".mm", ".ixx", ".cppm"})

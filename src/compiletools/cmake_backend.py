@@ -527,9 +527,7 @@ class CMakeBackend(BuildBackend):
         # so this scrub is belt-and-braces for the three vars cmake reads;
         # CPPFLAGS/INCLUDE are ignored by cmake and scrubbed for symmetry
         # with the five vars parseargs folds.
-        configure_env = {
-            k: v for k, v in os.environ.items() if k not in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS", "INCLUDE")
-        }
+        configure_env = {k: v for k, v in os.environ.items() if k not in compiletools.utils.FLAG_ENV_VAR_NAMES}
         subprocess.check_call(configure_cmd, text=True, env=configure_env)
 
         # Build

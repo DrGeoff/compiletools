@@ -1003,7 +1003,7 @@ def _fix_variable_handling_method(cap, argv, verbose):
     # scripts saw their CPPFLAGS vanish, and append mode diverged from
     # override mode (which leaves the env alone) in what children observed.
     verbose_print = verbose > 8
-    fix_keys = ["CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS", "INCLUDE"]
+    fix_keys = list(compiletools.utils.FLAG_ENV_VAR_NAMES)
     env_vars = dict(os.environ)
     for key in fix_keys:
         value = env_vars.get(key)
