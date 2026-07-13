@@ -1009,9 +1009,15 @@ def _fix_variable_handling_method(cap, argv, verbose):
         value = env_vars.get(key)
         if value:
             appendkey = f"APPEND_{key}"
+            existing = env_vars.get(appendkey)
+            # Existing APPEND_* first, re-routed bare value last: downstream
+            # _do_xxpend appends the merged string after config-derived flags,
+            # so under the compiler's last-token-wins rule the bare env var
+            # (the "stronger" of the two) wins conflicting tokens.
+            merged = f"{existing} {value}" if existing else value
             if verbose_print:
-                print(f"Changing {key=} into {appendkey} with {value=}")
-            env_vars[appendkey] = value
+                print(f"Changing {key=} into {appendkey} with {value=} (existing {appendkey}={existing!r})")
+            env_vars[appendkey] = merged
             del env_vars[key]
 
     if verbose_print:

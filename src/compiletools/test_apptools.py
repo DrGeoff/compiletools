@@ -2284,6 +2284,37 @@ class TestVariableHandlingMethod:
                     "parseargs in append mode leaked APPEND_CXXFLAGS into os.environ"
                 )
 
+    def test_append_mode_merges_with_existing_append_env_var(self):
+        """If the user sets both CXXFLAGS and APPEND_CXXFLAGS in their
+        environment under --variable-handling-method=append, both values
+        must survive the CXXFLAGS -> APPEND_CXXFLAGS re-route: the
+        pre-existing APPEND_CXXFLAGS must not be silently overwritten by
+        the re-routed CXXFLAGS value."""
+        with (
+            uth.TempDirContext(),
+            uth.EnvironmentContext({"CXXFLAGS": "-DVARFROMENV", "APPEND_CXXFLAGS": "-DFROMAPPENDENV"}),
+        ):
+            uth.create_temp_ct_conf(os.getcwd(), extralines=["variable-handling-method=append"])
+            with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
+                argv = ["--config=" + temp_config_name, "--no-git-root"]
+                cap = apptools.create_parser("append env merge test", argv=argv)
+                apptools.add_common_arguments(cap, argv=argv)
+                with uth.ParserContext():
+                    args = apptools.parseargs(cap, argv, context=BuildContext())
+                assert "-DVARFROMENV" in args.CXXFLAGS, (
+                    f"Expected re-routed CXXFLAGS value in args.CXXFLAGS={args.CXXFLAGS!r}"
+                )
+                assert "-DFROMAPPENDENV" in args.CXXFLAGS, (
+                    "Pre-existing APPEND_CXXFLAGS was discarded when CXXFLAGS was "
+                    f"re-routed onto it: args.CXXFLAGS={args.CXXFLAGS!r}"
+                )
+                # Merge order is policy: existing APPEND_* first, re-routed
+                # bare value last, so the bare env var wins conflicting
+                # tokens under the compiler's last-token-wins rule.
+                assert args.CXXFLAGS.index("-DFROMAPPENDENV") < args.CXXFLAGS.index("-DVARFROMENV"), (
+                    f"Merge order flipped: args.CXXFLAGS={args.CXXFLAGS!r}"
+                )
+
     def test_append_mode_via_cli_flag(self):
         """--variable-handling-method=append on the CLI (not just conf file)
         triggers the same reparse path."""
