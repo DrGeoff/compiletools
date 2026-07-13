@@ -932,3 +932,104 @@ class TestIncludePathEnvInBuildContextHash:
             h = self._full_hash()
             assert h not in seen, f"{var} did not alter the build-context hash"
             seen.add(h)
+
+    @staticmethod
+    def _hash_with_anchor(anchor_root):
+        # Same helper as _full_hash but parameterised over anchor_root, since
+        # canonicalisation of INCLUDE_ENV is exactly what these tests probe.
+        return MacroState({}, {}, anchor_root=anchor_root).get_hash(include_core=True)
+
+    def test_repo_relative_cpath_is_anchor_canonicalized(self, monkeypatch):
+        """A CPATH entry that lives under the gitroot must canonicalize to
+        the same <GITROOT>-relative cache key regardless of which absolute
+        workspace path the gitroot happens to be checked out at — otherwise
+        two users' identical builds would silently miss the shared CAS
+        (see the "Path-canonical CAS keys" invariant)."""
+        self._clear_include_env(monkeypatch)
+        monkeypatch.setenv("CPATH", "/workspace/alice/proj/external/include")
+        hash_alice = self._hash_with_anchor("/workspace/alice/proj")
+
+        self._clear_include_env(monkeypatch)
+        monkeypatch.setenv("CPATH", "/workspace/bob/proj/external/include")
+        hash_bob = self._hash_with_anchor("/workspace/bob/proj")
+
+        assert hash_alice == hash_bob
+
+    def test_empty_anchor_root_is_identity(self, monkeypatch):
+        """The "empty anchor_root is identity" invariant must hold for the
+        INCLUDE_ENV path too: with anchor_root='' an anchored-looking CPATH
+        value is hashed verbatim, so two different workspace paths differ."""
+        self._clear_include_env(monkeypatch)
+        monkeypatch.setenv("CPATH", "/workspace/alice/proj/external/include")
+        hash_alice = self._hash_with_anchor("")
+
+        self._clear_include_env(monkeypatch)
+        monkeypatch.setenv("CPATH", "/workspace/bob/proj/external/include")
+        hash_bob = self._hash_with_anchor("")
+
+        assert hash_alice != hash_bob
+
+    def test_empty_cpath_entry_survives_canonicalization(self, monkeypatch):
+        """gcc treats an empty os.pathsep entry as "the current directory";
+        it is not a path and must pass through canonicalization untouched
+        (a trailing separator must not hash identically to its absence)."""
+        self._clear_include_env(monkeypatch)
+        monkeypatch.setenv("CPATH", "/workspace/alice/proj/inc")
+        hash_no_empty = self._hash_with_anchor("/workspace/alice/proj")
+
+        self._clear_include_env(monkeypatch)
+        monkeypatch.setenv("CPATH", "/workspace/alice/proj/inc" + os.pathsep)
+        hash_trailing_empty = self._hash_with_anchor("/workspace/alice/proj")
+
+        assert hash_no_empty != hash_trailing_empty
+
+        # And the empty entry must not break cross-workspace stability of
+        # the canonicalized entries around it.
+        self._clear_include_env(monkeypatch)
+        monkeypatch.setenv("CPATH", "/workspace/bob/proj/inc" + os.pathsep)
+        hash_bob_trailing_empty = self._hash_with_anchor("/workspace/bob/proj")
+
+        assert hash_trailing_empty == hash_bob_trailing_empty
+
+    def test_unrelated_cpath_values_still_differ(self, monkeypatch):
+        """Guard against an overzealous fix that canonicalizes everything to
+        the same value: two CPATH values with no anchor-relative
+        relationship must still produce different hashes."""
+        self._clear_include_env(monkeypatch)
+        monkeypatch.setenv("CPATH", "/usr/local/include/foo")
+        hash_foo = self._hash_with_anchor("/workspace/alice/proj")
+
+        self._clear_include_env(monkeypatch)
+        monkeypatch.setenv("CPATH", "/usr/local/include/bar")
+        hash_bar = self._hash_with_anchor("/workspace/alice/proj")
+
+        assert hash_foo != hash_bar
+
+    def test_multi_entry_cpath_each_entry_canonicalized(self, monkeypatch):
+        """CPATH is os.pathsep-joined; every entry must be canonicalized
+        independently, not just the first."""
+        self._clear_include_env(monkeypatch)
+        monkeypatch.setenv(
+            "CPATH",
+            os.pathsep.join(
+                [
+                    "/workspace/alice/proj/external/include",
+                    "/workspace/alice/proj/vendor/include",
+                ]
+            ),
+        )
+        hash_alice = self._hash_with_anchor("/workspace/alice/proj")
+
+        self._clear_include_env(monkeypatch)
+        monkeypatch.setenv(
+            "CPATH",
+            os.pathsep.join(
+                [
+                    "/workspace/bob/proj/external/include",
+                    "/workspace/bob/proj/vendor/include",
+                ]
+            ),
+        )
+        hash_bob = self._hash_with_anchor("/workspace/bob/proj")
+
+        assert hash_alice == hash_bob

@@ -447,13 +447,28 @@ class MacroState:
         cxxflags_part = "CXXFLAGS_TOKENS=" + "\x00".join(_canon(cxxflags_tokens))
 
         canonical_cc = canonicalize_path_for_cache_key(self.compiler_path, self.anchor_root)
+
         # The CPATH-family vars change which headers the compiler (and
         # CppHeaderDeps' child cpp) resolves without appearing in any flag
         # string, so a value change must invalidate cached objects. Read at
         # hash time, not construction: the env is stable within a run (same
         # assumption as the link-side snapshot).
+        def _canon_env_value(value):
+            # Entries are canonicalized as given, not normpath'd first —
+            # matching the flag-token canonicalizer, which is a textual
+            # string-prefix op. Empty entries pass through untouched: gcc
+            # treats them as "the current directory", not a path.
+            if not value:
+                return value
+            return os.pathsep.join(
+                canonicalize_path_for_cache_key(entry, self.anchor_root) if entry else entry
+                for entry in value.split(os.pathsep)
+            )
+
         include_env = include_path_environment_snapshot()
-        include_env_part = "INCLUDE_ENV=" + "\x00".join(f"{n}={v}" for n, v in sorted(include_env.items()))
+        include_env_part = "INCLUDE_ENV=" + "\x00".join(
+            f"{n}={_canon_env_value(v)}" for n, v in sorted(include_env.items())
+        )
         build_context = (
             f"CC={canonical_cc}\x00"
             f"COMPILER_IDENTITY={self.compiler_identity}\x00"
