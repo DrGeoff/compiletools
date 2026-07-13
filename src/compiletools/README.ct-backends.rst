@@ -335,9 +335,15 @@ backends accept it consistently.
   compiler swap usually changes ``compiler_identity`` and invalidates
   the cache implicitly.
 * The ``CPATH`` / ``C_INCLUDE_PATH`` / ``CPLUS_INCLUDE_PATH`` /
-  ``OBJC_INCLUDE_PATH`` values ARE in the compile cache key (as ccache
-  hashes them), and headers found via those directories are walked and
-  content-hashed into ``dep_hash`` like any ``-I`` header.
+  ``OBJC_INCLUDE_PATH`` values ARE in the compile cache key (ccache
+  hashes the same four, though verbatim — compiletools first
+  canonicalizes each path entry so a gitroot-prefixed entry hashes
+  identically across checkouts), and headers found via those
+  directories are walked and content-hashed into ``dep_hash`` like any
+  ``-I`` header.  One residual gap: the header walk keeps a single
+  flat search list for C and C++ alike, so a basename present in both
+  a ``C_INCLUDE_PATH`` dir and a ``CPLUS_INCLUDE_PATH`` dir with
+  differing content may hash the copy the compiler does not use.
 
 CHOOSING A BACKEND
 ==================

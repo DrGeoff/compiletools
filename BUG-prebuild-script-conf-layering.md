@@ -5,6 +5,19 @@
 **Severity:** medium — silent misconfiguration; a project-level conf file drops
 globally-configured build hooks with no warning
 **Also affected:** `postbuild-script` (same declaration pattern, same parser path)
+**Status: RESOLVED** post-10.2.1, via the second suggested route ("declare the
+override semantic intentional"), not the preferred one: the bare-key
+last-writer-wins behavior is now the documented contract
+(`README.ct-cake.rst`, `--prebuild-script`/`--postbuild-script` help text),
+accumulation is available through the new `append-PREBUILD-SCRIPT` /
+`prepend-PREBUILD-SCRIPT` (and `POSTBUILD` twins) conf keys, explicit
+suppression via `prebuild-script = []` works, and the silent drop is gone —
+ct-cake emits a stderr note at `-v` and above for every conf-file hook value
+that lost a bare-key contest, naming the conf file and line. Conf-layer
+coverage lives in `test_cake_hooks.py::TestHookConfLayering`. Everything
+below this block describes the 10.2.1 state and is kept as the motivating
+record; its quotes, line numbers, and "no test exists" claim no longer match
+HEAD.
 
 ## Summary
 

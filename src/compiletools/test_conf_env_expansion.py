@@ -257,8 +257,9 @@ def test_provenance_tuple_includes_pre_expansion_literal(monkeypatch, conf_and_c
     """Each provenance entry is a 4-tuple
     (expanded_value, source_file, lineno, pre_expansion_literal). When
     expansion happened, literal != expanded; when nothing was expanded,
-    literal == expanded. This lets -vv diagnostics show 'why did $HOME
-    resolve to /tmp on the CI host'."""
+    literal == expanded. This lets verbose diagnostics (pkg-config attribution
+    at -vvvv, hook-shadow notes at -v) show 'why did $HOME resolve to
+    /tmp on the CI host'."""
     monkeypatch.setenv("HOME", "/test/home")
     conf, other_cwd = conf_and_cwd
     conf.write_text("cas-objdir = $HOME/x\n")

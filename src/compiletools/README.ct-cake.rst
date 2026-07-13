@@ -601,11 +601,19 @@ exist", a few classical Make/Ninja workflows behave differently:
 * **Include-path environment variables ARE in the compile cache key.**
   ``CPATH``, ``C_INCLUDE_PATH``, ``CPLUS_INCLUDE_PATH``, and
   ``OBJC_INCLUDE_PATH`` participate in the per-TU
-  ``macro_state_hash`` (as they do in ccache's hash), and headers
-  found via those directories are walked and content-hashed into
-  ``dep_hash`` like any ``-I`` header — editing a header reachable
-  only via ``CPATH``, or changing the value of one of these vars,
-  invalidates cached objects.
+  ``macro_state_hash`` (ccache hashes the same four, though verbatim —
+  compiletools first canonicalizes each path entry, so a
+  gitroot-prefixed entry hashes identically across checkouts rather
+  than keying the cache to one workspace), and headers found via those
+  directories are walked and content-hashed into ``dep_hash`` like any
+  ``-I`` header — editing a header reachable only via ``CPATH``, or
+  changing the value of one of these vars, invalidates cached objects.
+  One residual gap: the header walk keeps a single flat search list
+  for C and C++ alike, so a basename present in both a
+  ``C_INCLUDE_PATH`` dir and a ``CPLUS_INCLUDE_PATH`` dir with
+  differing content may hash the copy the compiler does not use — an
+  edit to the compiler-resolved header in that shadowing scenario is
+  not guaranteed to invalidate.
 
 * **Linker-time environment variables ARE in the link key.**
   ``SOURCE_DATE_EPOCH``, ``LD_LIBRARY_PATH``, ``LIBRARY_PATH``, and
