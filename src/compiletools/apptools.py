@@ -1286,6 +1286,14 @@ def _note_shadowed_bare_hook_values(args, name, dest):
     try:
         provenance = parser.get_conf_file_provenance()
     except Exception:
+        # Same verbose >= 1 gate as the note itself (checked at function
+        # entry): a silently-failed lookup is indistinguishable from
+        # "nothing was shadowed", which is the ambiguity this note exists
+        # to remove.
+        print(
+            f"ct: note: hook-shadow provenance lookup failed for {name!r}; skipping note",
+            file=sys.stderr,
+        )
         return
     final = {_safely_unquote_string(v) for v in (getattr(args, dest, []) or [])}
     for value, source_file, lineno, _literal in provenance.get(name, []):

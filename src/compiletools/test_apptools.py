@@ -3091,3 +3091,38 @@ class TestCasDirAllowFakeGitPropagation:
         finally:
             compiletools.git_utils.set_allow_fake_git(False)
             compiletools.git_utils.clear_cache()
+
+
+class TestNoteShadowedBareHookValuesProvenanceFailure:
+    """Regression: a raising ``get_conf_file_provenance`` must leave a trace.
+
+    Before the fix, an exception from the provenance side channel was
+    silently swallowed, so at ``verbose >= 1`` a user would see no
+    "ct: note: ..." shadow warning and have no way to tell whether that
+    was because nothing was shadowed or because the lookup itself failed.
+    """
+
+    @staticmethod
+    def _make_args(verbose):
+        parser = SimpleNamespace(get_conf_file_provenance=MagicMock(side_effect=RuntimeError("boom")))
+        return SimpleNamespace(
+            verbose=verbose,
+            _parser=parser,
+            prebuild_scripts=[],
+        )
+
+    def test_breadcrumb_emitted_at_verbose_1(self, capsys):
+        # Same verbose >= 1 gate as the shadow note itself: at any verbosity
+        # where the note could have appeared, its failure must be visible too.
+        args = self._make_args(verbose=1)
+        apptools._note_shadowed_bare_hook_values(args, "prebuild-script", "prebuild_scripts")
+        captured = capsys.readouterr()
+        assert "hook-shadow provenance lookup failed" in captured.err
+        assert "'prebuild-script'" in captured.err
+
+    def test_breadcrumb_not_emitted_at_verbose_0(self, capsys):
+        args = self._make_args(verbose=0)
+        apptools._note_shadowed_bare_hook_values(args, "prebuild-script", "prebuild_scripts")
+        captured = capsys.readouterr()
+        assert "hook-shadow provenance lookup failed" not in captured.err
+        assert captured.err == ""
