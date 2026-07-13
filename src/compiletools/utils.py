@@ -61,9 +61,11 @@ __all__ = [
     "to_bool",
 ]
 
-# The five env-var names that parseargs re-routes into APPEND_* form under
-# --variable-handling-method=append (see apptools_argparse._fix_variable_handling_method)
-# and that cmake_backend scrubs from the configure subprocess env for symmetry.
+# The five flag slots that parseargs re-routes from env into APPEND_* form
+# under --variable-handling-method=append
+# (apptools_argparse._fix_variable_handling_method), that cmake_backend scrubs
+# from the configure subprocess env for symmetry, and whose prepend-/append-
+# variants _tier_one_modifications folds via _do_xxpend.
 FLAG_ENV_VAR_NAMES = ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS", "INCLUDE")
 
 # Module-level constant for C++ source extensions (lowercase)

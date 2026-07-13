@@ -1358,8 +1358,9 @@ def _tier_one_modifications(args):
         print("Tier one modification")
         print(f"{args=}")
     _substitute_CXX_for_missing(args)
-    flaglist = ("INCLUDE", "CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS")
-    for flag in flaglist:
+    # Iteration order is irrelevant: _do_xxpend touches only its own flag's
+    # attrs, so the shared tuple's ordering is safe to inherit.
+    for flag in compiletools.utils.FLAG_ENV_VAR_NAMES:
         _do_xxpend(args, flag)
 
     # args.pkg_config is a list of package names (not a flag string), so
