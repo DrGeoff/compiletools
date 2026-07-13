@@ -8,7 +8,7 @@ Generate man(1) pages from the reStructuredText source tree
 
 :Author: drgeoffathome@gmail.com
 :Date:   2025-11-26
-:Version: 10.2.1
+:Version: 10.3.0
 :Manual section: 1
 :Manual group: developers
 

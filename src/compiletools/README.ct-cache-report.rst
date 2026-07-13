@@ -8,7 +8,7 @@ Summarize occupancy and detect duplication across the CAS directories
 
 :Author: drgeoffathome@gmail.com
 :Date:   2026-06-11
-:Version: 10.2.1
+:Version: 10.3.0
 :Manual section: 1
 :Manual group: developers
 
