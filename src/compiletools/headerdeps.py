@@ -35,6 +35,13 @@ def _include_dirs_from_env() -> list[str]:
     of these belong after the CPPFLAGS-derived dirs, CPATH first.
     DirectHeaderDeps keeps one flat search list, so this ordering is an
     approximation of the compiler's staged search, not a replica.
+    The residual risk: if the same header basename exists in both a
+    C_INCLUDE_PATH dir and a CPLUS_INCLUDE_PATH dir with different content,
+    for a C++ translation unit this flat walk may content-hash the
+    C_INCLUDE_PATH copy (gcc never actually consults C_INCLUDE_PATH for
+    C++ TUs) while the compiler resolves and uses the CPLUS_INCLUDE_PATH
+    copy — so an edit to the compiler-resolved header in that specific
+    shadowing scenario would not change dep_hash.
 
     gcc treats an *empty* os.pathsep entry as "the current directory";
     nothing else in compiletools honours that rule (PKG_CONFIG_PATH
