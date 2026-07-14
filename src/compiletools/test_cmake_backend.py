@@ -29,6 +29,7 @@ class TestCMakeBackendRegistered:
 class TestCMakeGenerate:
     def _make_backend(self):
         args = MagicMock()
+        args.bindir = "bin"
         hunter = MagicMock()
         return CMakeBackend(args=args, hunter=hunter)
 
@@ -838,6 +839,7 @@ class TestCppmPerSourceProperties:
 
     def _make_backend(self):
         args = MagicMock()
+        args.bindir = "bin"
         hunter = MagicMock()
         return CMakeBackend(args=args, hunter=hunter)
 
@@ -957,6 +959,7 @@ class TestCMakeNamedModuleIfaceLinkWiring:
 
     def _make_backend(self):
         args = MagicMock()
+        args.bindir = "bin"
         hunter = MagicMock()
         return CMakeBackend(args=args, hunter=hunter)
 

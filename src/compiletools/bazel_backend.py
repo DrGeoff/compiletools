@@ -25,7 +25,6 @@ from compiletools.build_backend import (
     build_obj_info,
     extract_include_paths,
     extract_linkopts,
-    mangle_target_name,
     register_backend,
 )
 from compiletools.build_graph import BuildGraph, BuildRule, RuleType
@@ -227,7 +226,7 @@ class BazelBackend(BuildBackend):
 
         for kind, rule, linkshared in plan:
             srcs, all_copts = aggregate_rule_sources(rule, bazel_obj_info)
-            target_name = mangle_target_name(os.path.basename(rule.output))
+            target_name = self._target_name_for(rule.output)
             # plan is built exclusively from cc_library / cc_binary / cc_test
             # rules (see the classification loop above). For all three kinds,
             # include prebuilt interface .o files so the module's definitions
@@ -1316,7 +1315,7 @@ class BazelBackend(BuildBackend):
             if not rule.inputs:
                 continue
             exe_path = rule.inputs[0]
-            target_name = mangle_target_name(os.path.basename(exe_path))
+            target_name = self._target_name_for(exe_path)
             test_xml = os.path.join(testlogs, target_name, "test.xml")
             if os.path.exists(test_xml) and self._junit_xml_has_failures(test_xml):
                 failures.append(exe_path)
@@ -1437,7 +1436,7 @@ class BazelBackend(BuildBackend):
         for lib_type in (RuleType.STATIC_LIBRARY, RuleType.SHARED_LIBRARY):
             ext = ".a" if lib_type == RuleType.STATIC_LIBRARY else ".so"
             for rule in self._graph.rules_by_type(lib_type):
-                target_name = mangle_target_name(os.path.basename(rule.output))
+                target_name = self._target_name_for(rule.output)
                 bazel_lib = os.path.join(bazel_bin, f"lib{target_name}{ext}")
                 if os.path.exists(bazel_lib):
                     os.makedirs(os.path.dirname(rule.output), exist_ok=True)

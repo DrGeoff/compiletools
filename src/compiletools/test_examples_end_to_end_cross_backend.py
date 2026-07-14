@@ -181,6 +181,12 @@ _EXAMPLE_PLANS: dict[str, ExamplePlan] = {
         extra_args=("--prebuild-script=./gen_appinfo.sh appinfo.cpp",),
         extra_env={"APP_NAME": "demo_app", "APP_VERSION": "1.2.3"},
     ),
+    # Two subprojects each with a main.cpp — the source-mirrored bindir
+    # layout must build BOTH (they'd silently collide under a flat
+    # layout). Existence/run assertions live in
+    # test_basename_collision_example.py; this cell confirms the build
+    # succeeds on every backend.
+    "basename_collision": _VANILLA,
     "calculator": _VANILLA,
     "cache_scoping": _VANILLA,
     "computed_include": _VANILLA,

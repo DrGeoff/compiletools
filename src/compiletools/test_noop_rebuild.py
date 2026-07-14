@@ -117,9 +117,7 @@ def _run_build(tmp_path, report_name, seed, cas_argv, capped_parallel_argv=()):
 
     ``cas_argv`` is the four ``--cas-*dir`` argv pairs produced by
     ``uth.isolated_cas_dirs``; passed through to the subprocess so the
-    subprocess's ct-cake call doesn't fall back to ``{git_root}/cas-*dir/``
-    (which is the compiletools repo, since the subprocess inherits the
-    parent's cwd).
+    subprocess's ct-cake call doesn't fall back to ``{git_root}/cas-*dir/``.
 
     ``capped_parallel_argv`` is the conftest fixture's ``--parallel`` cap
     (no-op outside pytest-xdist) so the subprocess inherits the parent's
@@ -148,6 +146,10 @@ def _run_build(tmp_path, report_name, seed, cas_argv, capped_parallel_argv=()):
     result = subprocess.run(
         cmd,
         env=env,
+        # Build from the source tree so the executable-mirror anchor
+        # (find_git_root() from cwd) is tmp_path and the exe publishes
+        # flat as bin/main, matching how a user invokes ct-cake.
+        cwd=str(tmp_path),
         capture_output=True,
         text=True,
         timeout=60,

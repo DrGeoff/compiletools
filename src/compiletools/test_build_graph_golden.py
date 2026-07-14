@@ -88,12 +88,18 @@ def _build_graph(tmp_path) -> tuple[MakefileBackend, BuildGraph]:
     for name in _EXAMPLE_FILES:
         shutil.copy(examples_registry.example_file(f"{_EXAMPLE}/{name}"), os.path.join(tmp_path, name))
     root_tu = os.path.join(tmp_path, _EXAMPLE_ROOT_TU)
-    return uth.build_real_backend(
-        MakefileBackend,
-        tmp_path,
-        [root_tu],
-        extra_argv=["--variant=gcc.debug"],
-    )
+    # Build from inside the tmpdir so the executable-mirror anchor
+    # (``find_git_root()`` from cwd) is the tmpdir itself: the sources sit
+    # at the anchor root and publish flat under ``bin/``. Building from the
+    # checkout would classify the tmp sources as outside-anchor and mirror
+    # the nondeterministic pytest tmp path into every bindir output.
+    with uth.DirectoryContext(tmp_path):
+        return uth.build_real_backend(
+            MakefileBackend,
+            tmp_path,
+            [root_tu],
+            extra_argv=["--variant=gcc.debug"],
+        )
 
 
 def _serialize_raw(backend: MakefileBackend, graph: BuildGraph) -> str:

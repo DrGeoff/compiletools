@@ -725,6 +725,58 @@ class TestCake(BaseCompileToolsTestCase):
             expected = os.path.join(outputdir, cake.namer.dynamiclibrary_name())
             assert os.path.exists(expected)
 
+    def test_copyexes_mirrors_subdir_layout_into_topbindir(self):
+        """Same-basename executables from different subdirs publish to
+        distinct bindir-relative paths in the top-level bin dir."""
+        with self._tmpdir_with_config():
+            os.makedirs("appalpha", exist_ok=True)
+            os.makedirs("appbeta", exist_ok=True)
+            for sub in ("appalpha", "appbeta"):
+                with open(os.path.join(sub, "main.cpp"), "w") as f:
+                    f.write("int main() { return 0; }\n")
+
+            args = self._make_cake_args()
+            args.output = None
+            args.filename = [
+                os.path.join(self._tmpdir, "appalpha", "main.cpp"),
+                os.path.join(self._tmpdir, "appbeta", "main.cpp"),
+            ]
+            args.static = None
+            args.dynamic = None
+            args.verbose = 1
+
+            cake = compiletools.cake.Cake(args)
+            cake._createctobjs()
+            assert cake.namer is not None
+
+            srcexes = cake.namer.all_executable_pathnames()
+            assert len(srcexes) == 2, f"mirrored layout must keep both exes distinct, got {srcexes}"
+            for srcexe in srcexes:
+                os.makedirs(os.path.dirname(srcexe), exist_ok=True)
+                with open(srcexe, "w") as f:
+                    f.write("fake")
+                os.chmod(srcexe, 0o755)
+
+            outputdir = cake.namer.topbindir()
+            os.makedirs(outputdir, exist_ok=True)
+            cake._copyexes()
+
+            published = {
+                os.path.relpath(os.path.join(root, ff), outputdir)
+                for root, _dirs, files in os.walk(outputdir)
+                for ff in files
+                if compiletools.utils.is_executable(os.path.join(root, ff))
+            }
+            exe_dir = cake.namer.executable_dir()
+            expected = {os.path.relpath(srcexe, exe_dir) for srcexe in srcexes}
+            # Published copies live outside the variant exe_dir itself.
+            published_outside_variant = {
+                p for p in published if not os.path.join(outputdir, p).startswith(exe_dir + os.sep)
+            }
+            assert expected <= published_outside_variant, (
+                f"expected published copies {expected}, found {published_outside_variant}"
+            )
+
     def test_callfilelist(self):
         """Test that _callfilelist actually invokes the filelist processor."""
         with uth.TempDirContext():

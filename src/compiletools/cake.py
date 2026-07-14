@@ -554,7 +554,13 @@ class Cake:
 
         outputdir = self.namer.topbindir()
 
-        def _publish(src: str, dest: str) -> None:
+        exe_dir = self.namer.executable_dir()
+
+        def _publish(src: str) -> None:
+            # Mirror the artefact's exe_dir-relative path into the top-level
+            # bin dir so same-basename artefacts from different source dirs
+            # stay distinct.
+            dest = os.path.join(outputdir, os.path.relpath(src, exe_dir))
             # samefile catches the hardlink-fast-path of atomic_copy on
             # rerun (the prior publish made src and dest share an inode),
             # so no-op reruns degenerate to a stat.
@@ -562,24 +568,19 @@ class Cake:
                 return
             if self.args.verbose > 0:
                 print(dest)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
             atomic_copy(src, dest)
 
         for srcexe in self.namer.all_executable_pathnames():
             if not compiletools.utils.is_executable(srcexe):
                 continue
-            _publish(srcexe, os.path.join(outputdir, os.path.basename(srcexe)))
+            _publish(srcexe)
 
         if self.args.static:
-            _publish(
-                self.namer.staticlibrary_pathname(),
-                os.path.join(outputdir, self.namer.staticlibrary_name()),
-            )
+            _publish(self.namer.staticlibrary_pathname())
 
         if self.args.dynamic:
-            _publish(
-                self.namer.dynamiclibrary_pathname(),
-                os.path.join(outputdir, self.namer.dynamiclibrary_name()),
-            )
+            _publish(self.namer.dynamiclibrary_pathname())
 
     def _clean_topbindir(self):
         """Remove copied executables from the top-level bin directory."""
@@ -591,13 +592,23 @@ class Cake:
                 pass
         else:
             outputdir = self.namer.topbindir()
-            filelist = os.listdir(outputdir)
-            for ff in filelist:
-                filename = os.path.join(outputdir, ff)
-                try:
-                    os.remove(filename)
-                except OSError:
-                    pass
+            # NOT wrappedos: bindir may be a chdir-relative input.
+            bindir_real = os.path.realpath(self.args.bindir)
+            for root, dirs, files in os.walk(outputdir, topdown=True):
+                # The variant bindir under outputdir holds the build
+                # artefacts themselves — only the mirrored copies
+                # outside it are ours to remove.
+                dirs[:] = [
+                    d
+                    for d in dirs
+                    # NOT wrappedos: chdir-relative walk entries.
+                    if os.path.realpath(os.path.join(root, d)) != bindir_real
+                ]
+                for ff in files:
+                    try:
+                        os.remove(os.path.join(root, ff))
+                    except OSError:
+                        pass
 
     def _run_hook_scripts(self, scripts, phase):
         """Execute a list of shell-command-string hooks; abort on non-zero exit.

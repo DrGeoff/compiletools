@@ -54,9 +54,59 @@ def _make_namer(description):
 
 
 def test_executable_pathname():
+    """A source outside the anchor (cwd under --no-git-root) mirrors its
+    full mount-stripped path under bindir."""
     _args, namer = _make_namer("TestNamer")
     exename = namer.executable_pathname("/home/user/code/my.cpp")
-    assert exename == "bin/gcc.debug/my"
+    assert exename == "bin/gcc.debug/home/user/code/my"
+
+
+def test_executable_pathname_at_anchor_root_stays_flat(tmp_path, monkeypatch):
+    """A source directly at the anchor root keeps today's flat path —
+    the mirror subdir is empty, so single-dir projects see no churn."""
+    monkeypatch.chdir(tmp_path)
+    _args, namer = _make_namer("TestNamerFlat")
+    source = os.path.join(os.path.realpath(str(tmp_path)), "my.cpp")
+    assert namer.executable_pathname(source) == "bin/gcc.debug/my"
+
+
+def test_executable_pathname_mirrors_subdir(tmp_path, monkeypatch):
+    """A source in a subdirectory of the anchor mirrors that subdirectory."""
+    monkeypatch.chdir(tmp_path)
+    _args, namer = _make_namer("TestNamerMirror")
+    root = os.path.realpath(str(tmp_path))
+    source = os.path.join(root, "appalpha", "main.cpp")
+    assert namer.executable_pathname(source) == "bin/gcc.debug/appalpha/main"
+    assert namer.executable_dir(source) == "bin/gcc.debug/appalpha"
+
+
+def test_executable_dir_outside_anchor_is_contained(tmp_path, monkeypatch):
+    """Sources outside the anchor mirror their mount-stripped path — the
+    result stays under bindir with no ``..`` escapes and stays relative."""
+    monkeypatch.chdir(tmp_path)
+    _args, namer = _make_namer("TestNamerContained")
+    exe_dir = namer.executable_dir("/somewhere/else/entirely/main.cpp")
+    assert exe_dir == "bin/gcc.debug/somewhere/else/entirely"
+    assert ".." not in exe_dir.split(os.sep)
+    assert not os.path.isabs(exe_dir)
+
+
+def test_executable_dir_no_arg_returns_base_bindir():
+    """No-arg executable_dir() keeps meaning "base bindir" for clean() /
+    mkdir / topbindir-style consumers."""
+    args, namer = _make_namer("TestNamerBase")
+    assert namer.executable_dir() == args.bindir
+
+
+def test_library_pathnames_mirror_source_dir(tmp_path, monkeypatch):
+    """Libraries follow the same layout rule as executables: the source
+    directory mirrors under bindir."""
+    monkeypatch.chdir(tmp_path)
+    _args, namer = _make_namer("TestNamerLibMirror")
+    root = os.path.realpath(str(tmp_path))
+    source = os.path.join(root, "applib", "mylib.cpp")
+    assert namer.staticlibrary_pathname(source) == "bin/gcc.debug/applib/libmylib.a"
+    assert namer.dynamiclibrary_pathname(source) == "bin/gcc.debug/applib/libmylib.so"
 
 
 def test_object_name_with_dependencies(tmp_path):
@@ -684,13 +734,13 @@ def test_link_key_differs_for_same_basename_different_bindir(monkeypatch, tmp_pa
     tmpdir = str(tmp_path)
     backend1 = _make_minimal_link_backend(tmpdir)
     # Force the bindir on backend1 to e.g. <tmp>/bin/blank
-    backend1.namer.executable_dir = lambda: os.path.join(tmpdir, "bin", "blank")  # type: ignore[method-assign]
+    backend1.namer.executable_dir = lambda sourcefilename=None: os.path.join(tmpdir, "bin", "blank")  # type: ignore[method-assign]
     rules1 = backend1._create_link_rule("/src/main.cpp")
 
     backend2 = _make_minimal_link_backend(tmpdir)
     # bindir is a SIBLING with the SAME BASENAME — exactly the
     # collision case bindir_basename was supposed to defend.
-    backend2.namer.executable_dir = lambda: os.path.join(tmpdir, "out", "blank")  # type: ignore[method-assign]
+    backend2.namer.executable_dir = lambda sourcefilename=None: os.path.join(tmpdir, "out", "blank")  # type: ignore[method-assign]
     rules2 = backend2._create_link_rule("/src/main.cpp")
 
     assert rules1[0].output != rules2[0].output, (

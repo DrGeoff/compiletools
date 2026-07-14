@@ -85,6 +85,7 @@ class TestBazelBackendRegistered:
 class TestBazelGenerate:
     def _make_backend(self):
         args = MagicMock()
+        args.bindir = "bin"
         hunter = MagicMock()
         return BazelBackend(args=args, hunter=hunter)
 
@@ -592,6 +593,7 @@ class TestBazelRunsTestsInBuildPhase:
         exe_path = str(tmp_path / "bin" / "test_foo")
 
         args = MagicMock()
+        args.bindir = "bin"
         args.test_xml_dir = str(tmp_path / "xmlout")
         args.variant = "gcc.debug"
         args.use_mtime = False
@@ -626,6 +628,7 @@ class TestBazelRunsTestsInBuildPhase:
         exe_path = str(tmp_path / "bin" / "test_foo")
 
         args = MagicMock()
+        args.bindir = "bin"
         args.test_xml_dir = None
         args.use_mtime = False
         backend = BazelBackend(args=args, hunter=MagicMock())
@@ -656,6 +659,7 @@ def _make_namer_backend(*, filename=None, tests=None, dest_path, topbindir=None,
     backend = BazelBackend(args=args, hunter=MagicMock())
     backend.namer = MagicMock()
     backend.namer.executable_pathname = MagicMock(return_value=dest_path)
+    backend.namer.executable_dir = MagicMock(return_value=os.path.dirname(dest_path))
     if topbindir is not None:
         backend.namer.topbindir = MagicMock(return_value=topbindir)
     backend._graph = graph
@@ -1093,6 +1097,7 @@ class TestBazelGenerateNoFilesystemMutation:
         )
 
         args = MagicMock()
+        args.bindir = "bin"
         hunter = MagicMock()
         backend = BazelBackend(args=args, hunter=hunter)
 
@@ -1190,6 +1195,7 @@ class TestBazelNamedModuleHandling:
 
     def _make_backend(self, *, module_iface_obj=None, module_iface_gcm=None):
         args = MagicMock()
+        args.bindir = "bin"
         args.LDFLAGS = ""  # explicit: prod always provides a str
         hunter = MagicMock()
         backend = BazelBackend(args=args, hunter=hunter)

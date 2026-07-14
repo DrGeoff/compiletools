@@ -28,6 +28,7 @@ _FEATURES_SUBDIR = "examples-features"
 EXAMPLES_E2E: frozenset[str] = frozenset(
     {
         "appinfo",
+        "basename_collision",
         "calculator",
         "cache_scoping",
         "cli_features",

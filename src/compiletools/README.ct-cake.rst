@@ -86,7 +86,7 @@ If there are multiple executables found and you only want to build one specific 
     ``ct-cake path/to/src/app.cpp``
 
 Only the library cpp files that are needed, directly, or indirectly to create
-./bin/app are actually compiled. If you don't #include anything that refers
+./bin/path/to/src/app are actually compiled. If you don't #include anything that refers
 to a library file, you don't pay for it. Also, only the link options that
 are strictly needed to generate the app are included. Its possible to do in
 make files, but such fine-level granularity is rarely set up in practice,
@@ -530,14 +530,16 @@ all three linker-artefact kinds under a single directory:
 
 The producer rule (link / ar / link-shared) writes directly to its
 CAS path; a downstream ``symlink`` rule then publishes the user-facing
-``bin/<variant>/<name>`` (or ``bin/<variant>/lib<name>.{a,so}``) as a
-hard link to the cached artefact, with a symlink fallback for
-cross-filesystem cases. The hash inputs are the linker identity,
-canonicalized LDFLAGS, sorted gitroot-canonical object paths, and
-(for executables) the bindir basename — a defensive guard against
-RPATH/$ORIGIN linker scripts whose embedded paths could otherwise
-silently miscache across bindir choices. The ``ar`` key is simpler:
-just the ``ar`` argv prefix and the canonical object set.
+``bin/<variant>/<srcdir>/<name>`` (or
+``bin/<variant>/<srcdir>/lib<name>.{a,so}``) — the artefact's
+source-mirrored bindir path — as a hard link to the cached artefact,
+with a symlink fallback for cross-filesystem cases. The hash inputs
+are the linker identity, canonicalized LDFLAGS, sorted
+gitroot-canonical object paths, and the artefact's own canonical
+bindir directory — a defensive guard against RPATH/$ORIGIN linker
+scripts whose embedded paths could otherwise silently miscache across
+bindir choices. The ``ar`` key is simpler: just the ``ar`` argv prefix
+and the canonical object set.
 
 The ``--use-mtime`` flag controls whether classical mtime semantics
 apply on top of the CAS layer. The default ``--no-use-mtime``
@@ -783,7 +785,17 @@ automatic test discovery and execution, use ``--no-auto``.
 If you would prefer to be explicity, ct-cake allows you to specify multiple
 build targets on each line, so the following is valid and useful:
 
-    ``$ ct-cake utilities/*.cpp  # builds specified apps into bin/``
+    ``$ ct-cake utilities/*.cpp  # builds specified apps into bin/utilities/``
+
+Executable and library output paths mirror the source file's directory
+relative to the git root: ``utilities/app.cpp`` builds to
+``bin/<variant>/utilities/app``. Sources at the git root itself build to
+``bin/<variant>/<name>`` directly. This mirroring makes same-basename
+sources in different directories (``appalpha/main.cpp`` and
+``appbeta/main.cpp``) produce distinct outputs instead of silently
+colliding on ``bin/<variant>/main``. Two sources that would still map to
+the same output path (``main.cpp`` and ``main.c`` in one directory) are a
+hard error naming both files.
 
 To explicitly specify build targets and unit tests to be generated and run
 use the following example.  Unit tests are built and when run must return

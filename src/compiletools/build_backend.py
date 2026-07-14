@@ -682,12 +682,27 @@ class BuildBackend(abc.ABC):
         bazel-bin/, cmake-build/) call this after a successful build.
         """
         all_sources = list(self.args.filename or []) + list(self.args.tests or [])
-        source_by_basename: dict[str, str] = {}
+        source_by_name: dict[str, str] = {}
+        basename_counts: dict[str, int] = {}
         for source in all_sources:
-            exe_basename = os.path.splitext(os.path.basename(source))[0]
-            mangled = mangle_target_name(exe_basename)
-            source_by_basename[exe_basename] = source
-            source_by_basename[mangled] = source
+            stem = os.path.splitext(os.path.basename(source))[0]
+            basename_counts[stem] = basename_counts.get(stem, 0) + 1
+        for source in all_sources:
+            dest_path = self.namer.executable_pathname(compiletools.wrappedos.realpath(source))
+            # The native tool names the artefact after the mangled target
+            # (mirrored: appalpha__main); the bare basename stays as a
+            # fallback only while it is unambiguous.
+            source_by_name[self._target_name_for(dest_path)] = source
+            stem = os.path.splitext(os.path.basename(source))[0]
+            if basename_counts[stem] == 1:
+                source_by_name[stem] = source
+
+        def _aliases_for(source: str) -> list[str]:
+            dest = self.namer.executable_pathname(compiletools.wrappedos.realpath(source))
+            return [
+                self._target_name_for(dest),
+                os.path.splitext(os.path.basename(source))[0],
+            ]
 
         for dirpath, dirs, files in os.walk(build_output_dir, followlinks=False):
             dirs[:] = [d for d in dirs if not d.endswith(".runfiles")]
@@ -697,13 +712,11 @@ class BuildBackend(abc.ABC):
                     continue
                 if fname.endswith(".cmake"):
                     continue
-                if fname not in source_by_basename:
+                if fname not in source_by_name:
                     continue
-                source = source_by_basename.pop(fname)
-                exe_basename = os.path.splitext(os.path.basename(source))[0]
-                mangled = mangle_target_name(exe_basename)
-                source_by_basename.pop(exe_basename, None)
-                source_by_basename.pop(mangled, None)
+                source = source_by_name.pop(fname)
+                for alias in _aliases_for(source):
+                    source_by_name.pop(alias, None)
                 dest_path = self.namer.executable_pathname(compiletools.wrappedos.realpath(source))
                 os.makedirs(os.path.dirname(dest_path), exist_ok=True)
                 compiletools.filesystem_utils.atomic_copy(full, dest_path)
@@ -781,9 +794,17 @@ class BuildBackend(abc.ABC):
             )
         )
 
-        # Create executable dir creation rule (needed by link rules as order-only dep)
-        exe_dir = self.namer.executable_dir()
-        if exe_dir != self.args.cas_objdir:
+        # Executable-dir creation rules (needed by link rules as order-only
+        # deps). The mirrored layout gives each source directory its own
+        # bindir subdir, so emit one mkdir per distinct artefact dir.
+        exe_dirs = {self.namer.executable_dir()}
+        for source in list(self.args.filename or []) + list(self.args.tests or []):
+            exe_dirs.add(self.namer.executable_dir(compiletools.wrappedos.realpath(source)))
+        for source in list(self.args.static or []) + list(self.args.dynamic or []):
+            exe_dirs.add(self.namer.executable_dir(compiletools.wrappedos.realpath(source)))
+        for exe_dir in sorted(exe_dirs):
+            if exe_dir == self.args.cas_objdir:
+                continue
             graph.add_rule(
                 BuildRule(
                     output=exe_dir,
@@ -1289,6 +1310,67 @@ class BuildBackend(abc.ABC):
                 )
             )
 
+    def _check_executable_collisions(self) -> None:
+        """Raise when two distinct targets map to one output path.
+
+        The mirrored bindir layout makes cross-directory basename
+        collisions impossible, but same-directory stems (``main.cpp`` +
+        ``main.c``) still share ``<dir>/main``. ``BuildGraph.add_rule``
+        is last-write-wins, so without this check one link rule would
+        silently vanish: one binary never built, exit code still 0.
+        """
+        candidates: list[tuple[str, str]] = []
+        for source in list(self.args.filename or []) + list(self.args.tests or []):
+            real = compiletools.wrappedos.realpath(source)
+            candidates.append((self.namer.executable_pathname(real), real))
+        if self.args.static:
+            real = compiletools.wrappedos.realpath(self.args.static[0])
+            candidates.append((self.namer.staticlibrary_pathname(real), real))
+        if self.args.dynamic:
+            real = compiletools.wrappedos.realpath(self.args.dynamic[0])
+            candidates.append((self.namer.dynamiclibrary_pathname(real), real))
+
+        output_to_source: dict[str, str] = {}
+        for output, real in candidates:
+            prior = output_to_source.get(output)
+            if prior is not None and prior != real:
+                raise ValueError(
+                    f"Executable output collision: {output!r} would be produced by both "
+                    f"{prior!r} and {real!r}. Rename one source — same-directory sources "
+                    f"sharing a stem map to a single output path."
+                )
+            output_to_source[output] = real
+
+    def _target_name_for(self, output_path: str) -> str:
+        """Native-tool (cmake/bazel) target name for a bindir artefact.
+
+        Derived from the bindir-relative path with ``__`` joining path
+        components, so mirrored same-basename outputs get distinct
+        target names while root-level artefacts keep their bare names.
+        The ``__`` join can alias (``a__b/main`` vs ``a/b__main``);
+        aliases raise rather than silently merging two native targets.
+        """
+        exe_dir = self.namer.executable_dir()
+        if output_path.startswith(exe_dir + os.sep):
+            rel = output_path[len(exe_dir) + 1 :]
+        else:
+            # Output outside the bindir (custom rule paths); the bare
+            # basename matches what the native tool would use anyway.
+            rel = os.path.basename(output_path)
+        name = mangle_target_name(rel.replace(os.sep, "__"))
+        registry = getattr(self, "_target_names_registry", None)
+        if registry is None:
+            registry = {}
+            self._target_names_registry = registry
+        prior = registry.get(name)
+        if prior is not None and prior != output_path:
+            raise ValueError(
+                f"Target-name alias: outputs {prior!r} and {output_path!r} both "
+                f"mangle to native target name {name!r}. Rename one source directory."
+            )
+        registry[name] = output_path
+        return name
+
     def _plan_link_and_publish_rules(self, graph: BuildGraph) -> list[str]:
         """Phase J: emit static/shared library, link, publish-symlink, and
         cas-exedir bucket mkdir rules.
@@ -1297,6 +1379,7 @@ class BuildBackend(abc.ABC):
         rule output, or legacy direct output) the ``build`` phony depends on.
         Mutates *graph* in place.
         """
+        self._check_executable_collisions()
         # All three artefact-producing helpers (link / static_library /
         # shared_library) now return list[BuildRule]: in CAS-only mode
         # the list is [producer-rule, publish-symlink-rule]; in
@@ -1523,12 +1606,16 @@ class BuildBackend(abc.ABC):
     def _xml_path_for(self, exe_path: str) -> str:
         """Per-test JUnit XML path under ``--test-xml-dir``.
 
-        Layout: ``<test-xml-dir>/<variant>/<exe_basename>.xml``. Caller
+        Layout: ``<test-xml-dir>/<variant>/<flattened_exe_relpath>.xml``,
+        where the exe's bindir-relative path is flattened with ``_`` so
+        mirrored test exes (``appalpha/main``, ``appbeta/main``) get
+        distinct XML files while the xml dir stays single-level. Caller
         is responsible for ensuring ``--test-xml-dir`` is set.
         """
         xml_dir = self.args.test_xml_dir
         variant = getattr(self.args, "variant", "") or ""
-        return os.path.join(xml_dir, variant, os.path.basename(exe_path) + ".xml")
+        rel = os.path.relpath(exe_path, self.namer.executable_dir())
+        return os.path.join(xml_dir, variant, rel.replace(os.sep, "_") + ".xml")
 
     def _args_signature(self) -> str:
         """Deterministic ``Namespace(k=v, ...)`` repr for the build-file header.
@@ -3159,7 +3246,7 @@ class BuildBackend(abc.ABC):
             inputs=[cas_path],
             command=publish_cmd,
             rule_type="symlink",
-            order_only_deps=[self.namer.executable_dir()],
+            order_only_deps=[os.path.dirname(user_path)],
         )
 
     def _create_link_rule(self, source: str, library_outputs: list[str] | None = None) -> list[BuildRule]:
@@ -3206,8 +3293,12 @@ class BuildBackend(abc.ABC):
         extra_link_argv: list[str] = []
         link_inputs_for_graph = list(object_names)
         if library_outputs:
-            exe_dir = self.namer.executable_dir()
-            extra_link_argv.append(f"-L{exe_dir}")
+            # Libraries mirror their source dirs under bindir, so each
+            # library contributes its own -L directory (ordered-unique).
+            lib_dirs = compiletools.utils.ordered_unique(
+                [os.path.dirname(lib_output) for lib_output in library_outputs]
+            )
+            extra_link_argv.extend(f"-L{lib_dir}" for lib_dir in lib_dirs)
             for lib_output in library_outputs:
                 lib_basename = os.path.basename(lib_output)
                 if lib_basename.startswith("lib"):
@@ -3265,7 +3356,7 @@ class BuildBackend(abc.ABC):
                     inputs=link_inputs_for_graph,
                     command=link_cmd,
                     rule_type="link",
-                    order_only_deps=[self.namer.executable_dir()],
+                    order_only_deps=[os.path.dirname(exename)],
                 )
             ]
 
@@ -3291,19 +3382,20 @@ class BuildBackend(abc.ABC):
                 compiletools.apptools.canonicalize_paths_for_cache_key(library_outputs or [], anchor_root)
             ),
             "ld_extra": compiletools.apptools.canonicalize_for_cache_key(ld_extra, anchor_root),
-            # canonical_bindir: full anchor-relative bindir, not just the
-            # basename. The original ``bindir_basename`` defence (C5) was
-            # wrong-headed in two ways: (1) ``$ORIGIN``-relative RPATH is
-            # resolved at runtime by ld.so against wherever the binary
-            # lives, so identical RPATH text behaves identically across
-            # bindirs of the same shape — basename gives no extra
-            # discrimination; (2) two SIBLING bindirs ``bin/blank`` and
-            # ``out/blank`` shared basename and silently collided. The
-            # canonicalised full bindir disambiguates without breaking
+            # canonical_bindir: the artefact's own anchor-relative mirrored
+            # directory, not just a basename. The original
+            # ``bindir_basename`` defence (C5) was wrong-headed in two
+            # ways: (1) ``$ORIGIN``-relative RPATH is resolved at runtime
+            # by ld.so against wherever the binary lives, so identical
+            # RPATH text behaves identically across bindirs of the same
+            # shape — basename gives no extra discrimination; (2) two
+            # SIBLING bindirs ``bin/blank`` and ``out/blank`` shared
+            # basename and silently collided. The canonicalised full
+            # publish directory disambiguates without breaking
             # workspace-portability (gitroot-A/bin/blank and
             # gitroot-B/bin/blank canonicalise to the same string).
             "canonical_bindir": compiletools.apptools.canonicalize_path_for_cache_key(
-                self.namer.executable_dir(), anchor_root
+                self.namer.executable_dir(real_source), anchor_root
             ),
             "link_environment": _link_environment_snapshot(),
         }
@@ -3380,7 +3472,7 @@ class BuildBackend(abc.ABC):
                     inputs=list(object_names),
                     command=lib_cmd,
                     rule_type="static_library",
-                    order_only_deps=[self.namer.executable_dir()],
+                    order_only_deps=[os.path.dirname(lib_path)],
                 )
             ]
 
@@ -3461,7 +3553,7 @@ class BuildBackend(abc.ABC):
                     inputs=list(object_names),
                     command=lib_cmd,
                     rule_type="shared_library",
-                    order_only_deps=[self.namer.executable_dir()],
+                    order_only_deps=[os.path.dirname(lib_path)],
                 )
             ]
 
@@ -3474,7 +3566,7 @@ class BuildBackend(abc.ABC):
             "merged_ldflags": compiletools.apptools.canonicalize_for_cache_key(list(merged_ldflags), anchor_root),
             "ld_extra": compiletools.apptools.canonicalize_for_cache_key(ld_extra, anchor_root),
             "canonical_bindir": compiletools.apptools.canonicalize_path_for_cache_key(
-                self.namer.executable_dir(), anchor_root
+                self.namer.executable_dir(sourcefilename), anchor_root
             ),
             "link_environment": _link_environment_snapshot(),
         }

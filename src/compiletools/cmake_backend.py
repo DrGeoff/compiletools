@@ -21,7 +21,6 @@ from compiletools.build_backend import (
     aggregate_rule_sources,
     build_obj_info,
     extract_linkopts,
-    mangle_target_name,
     register_backend,
 )
 from compiletools.build_graph import BuildGraph, RuleType
@@ -263,7 +262,7 @@ class CMakeBackend(BuildBackend):
         for lib_type in (RuleType.STATIC_LIBRARY, RuleType.SHARED_LIBRARY):
             for rule in graph.rules_by_type(lib_type):
                 srcs, all_copts = aggregate_rule_sources(rule, cmake_obj_info)
-                target_name = mangle_target_name(os.path.basename(rule.output))
+                target_name = self._target_name_for(rule.output)
                 # Filter orphan -x flags from the global copts; .cppm sources
                 # will receive -x c++ via set_source_files_properties instead.
                 filtered_copts = _filter_x_lang_copts(all_copts)
@@ -287,7 +286,7 @@ class CMakeBackend(BuildBackend):
             srcs, all_copts = aggregate_rule_sources(rule, cmake_obj_info)
             object_files = set(rule.inputs)
             linkopts = extract_linkopts(rule.command, object_files) if rule.command else []
-            target_name = mangle_target_name(os.path.basename(rule.output))
+            target_name = self._target_name_for(rule.output)
             # Filter orphan -x flags from the global copts; .cppm sources
             # will receive -x c++ via set_source_files_properties instead.
             filtered_copts = _filter_x_lang_copts(all_copts)
@@ -350,7 +349,7 @@ class CMakeBackend(BuildBackend):
                 exe_idx = rule.command.index(exe_path)
             except ValueError:
                 continue
-            target_name = mangle_target_name(os.path.basename(exe_path))
+            target_name = self._target_name_for(exe_path)
             test_argv = (
                 list(rule.command[:exe_idx]) + [f"$<TARGET_FILE:{target_name}>"] + list(rule.command[exe_idx + 1 :])
             )
@@ -569,8 +568,7 @@ class CMakeBackend(BuildBackend):
         # Build a lookup from CMake-mangled library name to graph output path
         mangled_to_dest: dict[str, str] = {}
         for rule in lib_rules:
-            basename = os.path.basename(rule.output)
-            mangled = mangle_target_name(basename)
+            mangled = self._target_name_for(rule.output)
             # CMake always produces lib<target>.a for STATIC, lib<target>.so for SHARED
             cmake_name = f"lib{mangled}.a"
             cmake_name_so = f"lib{mangled}.so"

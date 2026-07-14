@@ -22,7 +22,6 @@ class Namer:
     def __init__(self, args, argv=None, variant=None, exedir=None, *, context):
         self.args = args
         self.context = context
-        self._project = compiletools.git_utils.Project(args)
         self._cached_macros = None
 
     @staticmethod
@@ -52,16 +51,32 @@ class Namer:
         else:
             return self.args.bindir
 
-    def _outputdir(self, defaultdir, sourcefilename=None):
-        """Used by object_dir and executable_dir.
-        defaultdir must be either self.args.cas_objdir or self.args.bindir
+    def _exe_mirror_subdir(self, sourcefilename):
+        """Return the bindir-relative subdirectory that mirrors the
+        source file's directory.
+
+        Anchoring: with ``args.git_root`` the anchor is the build's
+        gitroot (``find_git_root()`` from cwd); with ``--no-git-root``
+        the anchor is the cwd. A source still absolute after anchor
+        stripping (outside the anchor, e.g. ``//#GIT=`` externals in
+        sibling dirs) mirrors its full mount-stripped path — contained
+        under bindir, deterministic, no ``..`` escapes (realpath
+        resolves them first). Sources directly at the anchor root
+        return ``""`` so single-dir projects keep flat paths.
         """
-        if sourcefilename:
-            project_pathname = self._project.pathname(sourcefilename)
-            relative = os.path.join(defaultdir, compiletools.wrappedos.dirname(project_pathname))
+        real = compiletools.wrappedos.realpath(sourcefilename)
+        if self.args.git_root:
+            # Anchor on the build's gitroot (cwd-derived), not the
+            # per-file strip_git_root fallback — outside a repo that
+            # fallback is the file's own directory, which would erase
+            # the subdir for every source and re-collide basenames.
+            anchor = compiletools.wrappedos.realpath(compiletools.git_utils.find_git_root())
         else:
-            relative = defaultdir
-        return compiletools.wrappedos.realpath(relative)
+            anchor = os.getcwd()
+        rel = real.removeprefix(anchor + os.sep)
+        if os.path.isabs(rel):
+            rel = compiletools.utils.remove_mount(rel)
+        return compiletools.wrappedos.dirname(rel)
 
     @functools.cache
     def object_dir(self, sourcefilename=None, file_hash=None):
@@ -211,9 +226,21 @@ class Namer:
 
     @functools.cache
     def executable_dir(self, sourcefilename=None):
-        """Similar to object_dir, this allows for alternative
-        behaviour experimentation.
+        """Return the directory an executable (or library) lands in.
+
+        With ``sourcefilename``, mirrors the source's anchor-relative
+        directory under bindir (``appalpha/main.cpp`` →
+        ``<bindir>/appalpha``) so same-basename sources in different
+        directories get distinct outputs; see ``_exe_mirror_subdir``.
+        Without it, returns the base bindir — the root used by
+        ``clean()`` / ``topbindir`` / mkdir consumers. No realpath or
+        normpath: a relative bindir stays relative so string
+        comparisons against other bindir-derived paths hold.
         """
+        if sourcefilename:
+            subdir = self._exe_mirror_subdir(sourcefilename)
+            if subdir:
+                return os.path.join(self.args.bindir, subdir)
         return self.args.bindir
 
     @functools.cache
