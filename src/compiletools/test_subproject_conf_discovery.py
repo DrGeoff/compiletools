@@ -87,6 +87,19 @@ class TestWalkTargetConfLayers:
         )
         assert len(layers) == 1
 
+    def test_non_git_target_walks_to_filesystem_root(self, tmp_path):
+        # No git init: the walk is bounded only by the filesystem root and
+        # includes the target's own directory; nearest ancestor layer wins.
+        appbeta = tmp_path / "plaintree" / "appbeta"
+        deep = appbeta / "src" / "deep"
+        deep.mkdir(parents=True)
+        (appbeta / "ct.conf").write_text("append-CPPFLAGS = -DAPPBETA_EXTRA\n")
+        (deep / "main.cpp").write_text("int main() { return 0; }\n")
+
+        layers = compiletools.configutils.walk_target_conf_layers([str(deep / "main.cpp")])
+        assert len(layers) == 1
+        assert os.path.realpath(layers[0].subproject_dir) == os.path.realpath(str(appbeta))
+
     def test_nonexistent_target_is_skipped(self, tmp_path):
         root = _make_repo(tmp_path)
         layers = compiletools.configutils.walk_target_conf_layers([str(root / "nope" / "missing.cpp")])

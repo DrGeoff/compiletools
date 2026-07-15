@@ -551,9 +551,9 @@ def walk_target_conf_layers(targets, conf_filenames=("ct.conf",), verbose=0):
     Walks from ``dirname(realpath(target))`` up to (exclusive) the target's
     git root. The first level carrying any of *conf_filenames* — as a bare
     file or inside ``ct.conf.d/`` — becomes that target's layer. The gitroot
-    itself is the project layer and is never yielded. Targets outside any
-    git repository are bounded by the filesystem root (find_git_root falls
-    back to the file's own directory, which terminates the walk there).
+    itself is the project layer and is never yielded. For a target outside
+    any git repository the walk starts at the target's own directory and is
+    bounded only by the filesystem root; the nearest layer wins.
 
     Returns a tuple of TargetConfLayer sorted by subproject_dir for
     deterministic downstream ordering. Nonexistent targets are skipped;
@@ -567,13 +567,19 @@ def walk_target_conf_layers(targets, conf_filenames=("ct.conf",), verbose=0):
         if not compiletools.wrappedos.isdir(target_dir):
             continue
         gitroot = compiletools.wrappedos.realpath(compiletools.git_utils.find_git_root(target))
+        # find_git_root falls back to the file's own directory when the target
+        # is not under git; a real toplevel carries a .git dir (or gitlink
+        # file for linked worktrees).
+        in_git_repo = os.path.exists(os.path.join(gitroot, ".git"))
         current = target_dir
-        while current != gitroot:
+        while True:
+            if in_git_repo and current == gitroot:
+                break
             paths = _conf_paths_in_dir(current, conf_filenames)
             if paths:
                 layers.setdefault(current, tuple(paths))
                 break
-            parent = os.path.dirname(current)
+            parent = compiletools.wrappedos.dirname(current)
             if parent == current:
                 break
             current = parent
