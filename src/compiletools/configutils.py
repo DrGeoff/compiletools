@@ -516,6 +516,76 @@ def get_existing_config_files(filename="ct.conf", **kwargs):
     return existing_configs
 
 
+@dataclass(frozen=True)
+class TargetConfLayer:
+    """One subproject's config layer, discovered by walking up from a target.
+
+    conf_paths are in low-to-high priority order, ready to append to
+    configargparse default_config_files.
+    """
+
+    subproject_dir: str
+    conf_paths: tuple[str, ...]
+
+
+def _conf_paths_in_dir(directory, conf_filenames):
+    """Conf files for *directory* treated as a subproject layer.
+
+    Mirrors the cwd layer's file selection: for each conf filename, the
+    ``ct.conf.d/`` entry is lower priority than the bare-directory entry
+    (same relative order ``get_existing_config_files`` produces for cwd).
+    """
+    found = []
+    conf_d = os.path.join(directory, "ct.conf.d")
+    for fname in conf_filenames:
+        for sub in (conf_d, directory):
+            candidate = os.path.join(sub, fname)
+            if compiletools.wrappedos.isfile(candidate):
+                found.append(candidate)
+    return found
+
+
+def walk_target_conf_layers(targets, conf_filenames=("ct.conf",), verbose=0):
+    """Find each target's nearest-ancestor subproject config layer.
+
+    Walks from ``dirname(realpath(target))`` up to (exclusive) the target's
+    git root. The first level carrying any of *conf_filenames* — as a bare
+    file or inside ``ct.conf.d/`` — becomes that target's layer. The gitroot
+    itself is the project layer and is never yielded. Targets outside any
+    git repository are bounded by the filesystem root (find_git_root falls
+    back to the file's own directory, which terminates the walk there).
+
+    Returns a tuple of TargetConfLayer sorted by subproject_dir for
+    deterministic downstream ordering. Nonexistent targets are skipped;
+    downstream code raises its own error for them.
+    """
+    layers = {}
+    for target in targets:
+        if not target:
+            continue
+        target_dir = compiletools.wrappedos.dirname(compiletools.wrappedos.realpath(target))
+        if not compiletools.wrappedos.isdir(target_dir):
+            continue
+        gitroot = compiletools.wrappedos.realpath(compiletools.git_utils.find_git_root(target))
+        current = target_dir
+        while current != gitroot:
+            paths = _conf_paths_in_dir(current, conf_filenames)
+            if paths:
+                layers.setdefault(current, tuple(paths))
+                break
+            parent = os.path.dirname(current)
+            if parent == current:
+                break
+            current = parent
+    if verbose >= 6 and layers:
+        for directory, paths in sorted(layers.items()):
+            print(f"Target-anchored config layer {directory}: {' '.join(paths)}")
+    return tuple(
+        TargetConfLayer(subproject_dir=directory, conf_paths=paths)
+        for directory, paths in sorted(layers.items())
+    )
+
+
 def clear_cache():
     """Clear LRU caches for testing"""
     default_config_directories.cache_clear()
