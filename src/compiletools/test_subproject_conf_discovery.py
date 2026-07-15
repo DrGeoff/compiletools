@@ -365,3 +365,57 @@ class TestParseargsTargetAnchoring:
         (appdelta / "main.cpp").write_text("int main() { return 0; }\n")
         with pytest.raises(compiletools.configutils.ConfContradictionError):
             _parse_cake_args(monorepo, [*_ARGV_BASE, os.path.join("appdelta", "main.cpp")])
+
+
+class TestAutoDiscoveryReanchor:
+    def test_reanchor_helper_loads_discovered_targets_conf(self, monorepo):
+        """Simulates the cake --auto flow: parse with no targets, then
+        assign discovered targets and re-anchor."""
+        args = _parse_cake_args(monorepo, [*_ARGV_BASE])
+        assert "-DAPPBETA_EXTRA" not in args.CPPFLAGS
+        args.filename = [str(monorepo / "appbeta" / "main.cpp")]
+        with uth.DirectoryContext(str(monorepo)):
+            reanchored = compiletools.apptools.reanchor_config_for_discovered_targets(args)
+        assert reanchored is not None
+        assert "-DAPPBETA_EXTRA" in reanchored.CPPFLAGS
+        assert reanchored.filename == [str(monorepo / "appbeta" / "main.cpp")]
+
+    def test_reanchor_helper_returns_none_when_nothing_new(self, monorepo):
+        args = _parse_cake_args(monorepo, [*_ARGV_BASE])
+        args.filename = [str(monorepo / "libcore" / "util.cpp")]
+        with uth.DirectoryContext(str(monorepo)):
+            assert compiletools.apptools.reanchor_config_for_discovered_targets(args) is None
+
+    def test_cake_auto_builds_with_subproject_define(self, monorepo, tmp_path):
+        """End-to-end: ct-cake --auto from the gitroot must compile
+        appbeta/main.cpp with -DAPPBETA_EXTRA (the source #errors without it)."""
+        (monorepo / "appbeta" / "main.cpp").write_text(
+            "#ifndef APPBETA_EXTRA\n"
+            "#error APPBETA_EXTRA missing - subproject ct.conf was not loaded\n"
+            "#endif\n"
+            "int main() { return 0; }\n"
+        )
+        uth.reset()
+        with uth.DirectoryContext(str(monorepo)):
+            with uth.ParserContext():
+                result = compiletools.cake.main([*_ARGV_BASE, "--auto"])
+        # A non-zero result means either main() swallowed an exception or the
+        # compiler rejected the #error -- both mean the subproject ct.conf
+        # was not loaded.
+        assert result == 0
+
+    def test_cake_auto_conflicting_subprojects_error(self, monorepo):
+        appalpha = monorepo / "appalpha"
+        appalpha.mkdir()
+        (appalpha / "ct.conf").write_text("append-CPPFLAGS = -DAPPALPHA_EXTRA\n")
+        # Content must differ from appbeta/main.cpp: the global hash registry
+        # refuses to disambiguate two tracked files with identical content.
+        (appalpha / "main.cpp").write_text("// appalpha\nint main() { return 0; }\n")
+        uth.reset()
+        with uth.DirectoryContext(str(monorepo)):
+            with uth.ParserContext():
+                # -v -v forces verbose >= 2 so cake.main re-raises instead of
+                # swallowing the error into a return code (see main()'s
+                # _FATAL_ERROR_RENDERERS dispatch).
+                with pytest.raises(compiletools.configutils.ConfContradictionError):
+                    compiletools.cake.main([*_ARGV_BASE, "--auto", "-v", "-v"])

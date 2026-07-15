@@ -475,6 +475,45 @@ def _apply_target_conf_layers(cap, argv, args, verbose):
     return new_args
 
 
+def reanchor_config_for_discovered_targets(args):
+    """Re-anchor config discovery after ``--auto`` target discovery.
+
+    ``findtargets.process`` assigns discovered targets onto an
+    already-parsed namespace, so their subproject conf layers were invisible
+    to the parse-time anchoring in ``parseargs``. Re-run the same walk; when
+    it surfaces new layers, re-run the full ``parseargs`` with the widened
+    config set and re-apply the discovered target lists (they came from the
+    filesystem, not argv, so a bare re-parse loses them).
+
+    Returns the fresh namespace, or ``None`` when nothing new was found.
+    Bounded: target discovery already completed and this does not add
+    targets, so the underlying ancestor walk cannot surface a growing set of
+    layers across calls.
+
+    A namespace built without going through ``parseargs`` (e.g. a test
+    double's hand-built ``SimpleNamespace``) lacks the stashed
+    ``_parser``/``_argv``/``_context`` attributes; there is nothing to
+    re-anchor against in that case, so this is a no-op.
+    """
+    cap = getattr(args, "_parser", None)
+    argv = getattr(args, "_argv", None)
+    if cap is None or argv is None:
+        return None
+    saved_targets = {attr: getattr(args, attr, None) for attr in ("filename", "static", "dynamic", "tests")}
+
+    before = list(getattr(cap, "_default_config_files", []) or [])
+    _apply_target_conf_layers(cap, argv, args, args.verbose)
+    after = list(getattr(cap, "_default_config_files", []) or [])
+    if after == before:
+        return None
+
+    new_args = parseargs(cap, argv, context=args._context)
+    for attr, value in saved_targets.items():
+        if value is not None:
+            setattr(new_args, attr, value)
+    return new_args
+
+
 def _extend_includes_using_git_root(args):
     """Unless turned off, the git root will be added
     to the list of include paths

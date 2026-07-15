@@ -219,6 +219,13 @@ class Cake:
         if self.args.auto and not any([self.args.filename, self.args.static, self.args.dynamic, self.args.tests]):
             findtargets = compiletools.findtargets.FindTargets(self.args, context=self.context)
             findtargets.process(self.args)
+            # findtargets discovers targets after parseargs already anchored
+            # config to the (empty) argv target list -- re-anchor now that
+            # the target set is known, re-applying the discovered targets
+            # onto any freshly re-parsed namespace.
+            reanchored = compiletools.apptools.reanchor_config_for_discovered_targets(self.args)
+            if reanchored is not None:
+                self.args = reanchored
             recreateobjs = True
 
         # Auto-clone any //#GIT= externals reachable from the now-final target
