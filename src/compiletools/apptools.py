@@ -415,13 +415,17 @@ def _target_conf_filenames(variant, argv):
     return tuple(dict.fromkeys(filenames))
 
 
-def _apply_target_conf_layers(cap, argv, args, verbose):
+def _apply_target_conf_layers(cap, argv, args, verbose, auto=False):
     """Load explicit targets' subproject config layers; re-parse once if new.
 
     Same-tier contradiction (cwd layer vs target layer, target vs target)
     raises ConfContradictionError before any re-parse. Returns *args*
     unchanged when the walk surfaces nothing new -- the common case costs
     only the ancestor walk.
+
+    *auto* is True on the ``--auto`` re-anchor path (targets came from
+    discovery, not argv); the remedy commands then take the ``cd`` + fresh
+    discovery form rather than argv target filtering.
     """
     targets = _collect_explicit_target_files(args)
     if not targets:
@@ -432,7 +436,10 @@ def _apply_target_conf_layers(cap, argv, args, verbose):
         return args
 
     conf_filenames = _target_conf_filenames(args.variant, argv)
-    layers = compiletools.configutils.walk_target_conf_layers(targets, conf_filenames, verbose=verbose)
+    git_bounded = getattr(args, "git_root", True)
+    layers = compiletools.configutils.walk_target_conf_layers(
+        targets, conf_filenames, verbose=verbose, git_bounded=git_bounded
+    )
     if not layers:
         return args
 
@@ -459,8 +466,14 @@ def _apply_target_conf_layers(cap, argv, args, verbose):
             if os.path.dirname(real) == cwd or os.path.dirname(real) == os.path.join(cwd, "ct.conf.d"):
                 cwd_layer_paths.append(real)
 
+    cwd_layer_dir = cwd if cwd_layer_paths else None
     remedy_commands = compiletools.configutils.build_separate_build_commands(
-        os.path.basename(sys.argv[0]) if sys.argv else "ct-cake", list(argv), new_layers, targets
+        os.path.basename(sys.argv[0]) if sys.argv else "ct-cake",
+        list(argv),
+        new_layers,
+        targets,
+        cwd_layer_dir=cwd_layer_dir,
+        auto=auto,
     )
     compiletools.configutils.validate_no_conf_contradictions(new_layers, cwd_layer_paths, args.variant, remedy_commands)
 
@@ -502,7 +515,7 @@ def reanchor_config_for_discovered_targets(args):
     saved_targets = {attr: getattr(args, attr, None) for attr in ("filename", "static", "dynamic", "tests")}
 
     before = list(getattr(cap, "_default_config_files", []) or [])
-    _apply_target_conf_layers(cap, argv, args, args.verbose)
+    _apply_target_conf_layers(cap, argv, args, args.verbose, auto=True)
     after = list(getattr(cap, "_default_config_files", []) or [])
     if after == before:
         return None

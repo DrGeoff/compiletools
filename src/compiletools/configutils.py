@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import shlex
 import sys
 import types
 from dataclasses import dataclass, field
@@ -545,7 +546,7 @@ def _conf_paths_in_dir(directory, conf_filenames):
     return found
 
 
-def walk_target_conf_layers(targets, conf_filenames=("ct.conf",), verbose=0):
+def walk_target_conf_layers(targets, conf_filenames=("ct.conf",), verbose=0, git_bounded=True):
     """Find each target's nearest-ancestor subproject config layer.
 
     Walks from ``dirname(realpath(target))`` up to (exclusive) the target's
@@ -554,6 +555,11 @@ def walk_target_conf_layers(targets, conf_filenames=("ct.conf",), verbose=0):
     itself is the project layer and is never yielded. For a target outside
     any git repository the walk starts at the target's own directory and is
     bounded only by the filesystem root; the nearest layer wins.
+
+    When *git_bounded* is False (``--no-git-root``), the walk is bounded by
+    the filesystem root instead of stopping at a gitroot, matching the
+    already-landed non-git-target behavior; a conf layer above the gitroot is
+    then eligible.
 
     Returns a tuple of TargetConfLayer sorted by subproject_dir for
     deterministic downstream ordering. Nonexistent targets are skipped;
@@ -569,8 +575,9 @@ def walk_target_conf_layers(targets, conf_filenames=("ct.conf",), verbose=0):
         gitroot = compiletools.wrappedos.realpath(compiletools.git_utils.find_git_root(target))
         # find_git_root falls back to the file's own directory when the target
         # is not under git; a real toplevel carries a .git dir (or gitlink
-        # file for linked worktrees).
-        in_git_repo = os.path.exists(os.path.join(gitroot, ".git"))
+        # file for linked worktrees). Under --no-git-root the gitroot bound is
+        # dropped entirely so the walk runs to the filesystem root.
+        in_git_repo = git_bounded and os.path.exists(os.path.join(gitroot, ".git"))
         current = target_dir
         while True:
             if in_git_repo and current == gitroot:
@@ -617,22 +624,30 @@ def validate_no_conf_contradictions(layers, cwd_layer_paths, invocation_variant,
     Tier peers: the cwd layer (when distinct from the gitroot/project layer)
     and every target-anchored subproject layer. append-*/prepend-* keys with
     differing values count as contradictions: applying both would leak each
-    subproject's flags onto the other's translation units. A layer's
-    ``variant`` is compared (canonicalized) against *invocation_variant*.
+    subproject's flags onto the other's translation units. A TARGET layer's
+    ``variant`` is compared (canonicalized) against *invocation_variant*; the
+    cwd layer's ``variant`` is NOT, because the resolved invocation variant
+    already IS the cwd-tier value (a CLI ``--variant`` legitimately overrides
+    the cwd conf's ``variant`` line without that being a contradiction).
     """
     tier = []
     if cwd_layer_paths:
-        tier.append(("current working directory", _effective_layer_values(cwd_layer_paths)))
+        tier.append(("current working directory", _effective_layer_values(cwd_layer_paths), True))
     for layer in layers:
-        tier.append((layer.subproject_dir, _effective_layer_values(layer.conf_paths)))
+        tier.append((layer.subproject_dir, _effective_layer_values(layer.conf_paths), False))
 
     canonical_invocation_variant = canonicalize_variant_input(invocation_variant)
     merged = {}
     conflicts = []
-    for _, values in tier:
+    for _, values, is_cwd_layer in tier:
         for normalized, (raw_key, value, path) in values.items():
             compare_value = value
             if normalized == "variant":
+                if is_cwd_layer:
+                    # The resolved invocation variant already represents the
+                    # cwd-tier value; a CLI override of the cwd conf's variant
+                    # is not a contradiction, so this value is not compared.
+                    continue
                 compare_value = canonicalize_variant_input(value)
                 if compare_value != canonical_invocation_variant:
                     conflicts.append((raw_key, canonical_invocation_variant, "<invocation>", compare_value, path))
@@ -659,47 +674,123 @@ def validate_no_conf_contradictions(layers, cwd_layer_paths, invocation_variant,
     raise ConfContradictionError("\n".join(lines))
 
 
-def build_separate_build_commands(prog, argv, layers, targets):
-    """Best-effort per-subproject command reconstruction for the error remedy.
+# Flags whose following space-separated positional values are target files.
+# --begintests is a dest=tests synonym for --tests (cake.py), so it belongs here.
+_TARGET_VALUE_FLAGS = ("--tests", "--begintests", "--static", "--dynamic")
 
-    For each layer, reproduce the original argv minus target tokens that
-    belong to a DIFFERENT layer. Handles bare positional targets,
-    ``--flag value`` (the value token is dropped; a flag token left with no
-    following value is dropped too), and ``--flag=value`` forms. Targets
-    under no conflicting layer (shared sources) stay in every command.
+
+def build_separate_build_commands(prog, argv, layers, targets, *, cwd_layer_dir=None, auto=False):
+    """Reconstruct one actionable per-subproject command per conflicting layer.
+
+    Participants are every target-anchored layer plus (when supplied) the cwd
+    layer. Each returned command builds only its own subproject, so the two
+    commands differ and neither reproduces the conflicting invocation:
+
+    * ``--auto`` invocations emit ``cd <subproject> && <prog> ... --auto``:
+      targets were discovered rather than typed, so re-running discovery from
+      inside the subproject rediscovers only that subproject's targets.
+    * Invocations where the cwd layer itself participates in the conflict emit
+      ``cd <subproject> && <prog> <args> <owned-targets>`` so the rebuild runs
+      from inside the subproject (its cwd conf then loads cleanly, no foreign
+      layer is discovered). Explicit targets owned by the subproject are
+      re-expressed relative to it; a participant that owns no explicit target
+      falls back to ``--auto`` so the command still builds that subproject.
+    * Plain explicit-target invocations (no cwd participant) keep the original
+      argv and drop targets owned by a DIFFERENT participant. Target ownership
+      is the DEEPEST matching subproject prefix, so a nested child claims its
+      own target rather than losing it to an ancestor layer.
+
+    Handles bare positional targets, ``--flag value`` (value tokens dropped;
+    a flag left with no surviving value is dropped too), and ``--flag=value``
+    forms. Every emitted token is ``shlex.quote``d.
     """
-    target_realpaths = {}
-    for target in targets:
-        target_realpaths[compiletools.wrappedos.realpath(target)] = target
+    target_realpaths = {compiletools.wrappedos.realpath(t): t for t in targets}
 
-    def owning_layer(token):
+    participant_reals = [compiletools.wrappedos.realpath(layer.subproject_dir) for layer in layers]
+    participants = [(layer.subproject_dir, real) for layer, real in zip(layers, participant_reals)]
+    if cwd_layer_dir is not None:
+        participants.append((cwd_layer_dir, compiletools.wrappedos.realpath(cwd_layer_dir)))
+
+    all_reals = [real for _, real in participants]
+
+    def owning_real(token):
+        """Deepest participant subproject dir that contains *token*, or None."""
         real = compiletools.wrappedos.realpath(token)
         if real not in target_realpaths:
             return None
-        for layer in layers:
-            prefix = compiletools.wrappedos.realpath(layer.subproject_dir) + os.sep
-            if real.startswith(prefix):
-                return layer.subproject_dir
-        return None
+        best = None
+        best_len = -1
+        for dir_real in all_reals:
+            prefix = dir_real + os.sep
+            if real.startswith(prefix) and len(prefix) > best_len:
+                best = dir_real
+                best_len = len(prefix)
+        return best
 
-    commands = []
-    for layer in layers:
-        keep_dir = layer.subproject_dir
+    def filter_argv(drop):
+        """Reproduce argv, dropping target tokens for which *drop(real)* is True."""
         kept = []
-        for i, token in enumerate(argv):
+        i = 0
+        while i < len(argv):
+            token = argv[i]
+            if token in _TARGET_VALUE_FLAGS:
+                j = i + 1
+                values = []
+                while j < len(argv) and not argv[j].startswith("-"):
+                    values.append(argv[j])
+                    j += 1
+                surviving = [
+                    v
+                    for v in values
+                    if not (
+                        compiletools.wrappedos.realpath(v) in target_realpaths
+                        and drop(compiletools.wrappedos.realpath(v))
+                    )
+                ]
+                if surviving or not values:
+                    kept.append(token)
+                    kept.extend(surviving)
+                i = j
+                continue
             candidate = token.split("=", 1)[1] if token.startswith("--") and "=" in token else token
-            owner = owning_layer(candidate)
-            if owner is not None and owner != keep_dir:
-                if (
-                    candidate is token
-                    and kept
-                    and kept[-1] == argv[i - 1]
-                    and kept[-1] in ("--tests", "--static", "--dynamic")
-                ):
-                    kept.pop()
+            real = compiletools.wrappedos.realpath(candidate)
+            if real in target_realpaths and drop(real):
+                i += 1
                 continue
             kept.append(token)
-        commands.append(" ".join([prog] + kept))
+            i += 1
+        return kept
+
+    def join(tokens):
+        return " ".join(shlex.quote(t) for t in tokens)
+
+    commands = []
+    for keep_dir, keep_real in participants:
+        if auto:
+            # Targets were discovered, not typed on the command line. Re-running
+            # --auto from inside the subproject rediscovers only that
+            # subproject's targets, so the remedy is the bare cd + original argv.
+            base = filter_argv(lambda real: True)
+            tokens = [prog] + base
+            if "--auto" not in base:
+                tokens.append("--auto")
+            commands.append(f"cd {shlex.quote(keep_dir)} && {join(tokens)}")
+        elif cwd_layer_dir is not None:
+            # The cwd layer itself participates in the conflict, so filtering
+            # argv in place cannot separate the subprojects. Rebuild from inside
+            # each subproject with only its own explicit targets; a participant
+            # owning no explicit target falls back to --auto discovery.
+            base = filter_argv(lambda real: True)  # drop every target; re-add owned ones below
+            owned = sorted(
+                os.path.relpath(real, keep_real) for real in target_realpaths if owning_real(real) == keep_real
+            )
+            tokens = [prog] + base + owned
+            if not owned and "--auto" not in base:
+                tokens.append("--auto")
+            commands.append(f"cd {shlex.quote(keep_dir)} && {join(tokens)}")
+        else:
+            kept = filter_argv(lambda real, keep=keep_real: owning_real(real) != keep)
+            commands.append(join([prog] + kept))
     return commands
 
 

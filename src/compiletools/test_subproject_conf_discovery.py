@@ -115,6 +115,24 @@ class TestWalkTargetConfLayers:
         layers = compiletools.configutils.walk_target_conf_layers([str(root / "nope" / "missing.cpp")])
         assert layers == ()
 
+    def test_no_git_root_walk_picks_up_conf_above_gitroot(self, tmp_path):
+        # A conf layer above the gitroot is invisible to the git-bounded walk
+        # but becomes eligible under --no-git-root (git_bounded=False), where
+        # the walk is bounded only by the filesystem root.
+        outer = tmp_path / "outer"
+        outer.mkdir()
+        (outer / "ct.conf").write_text("append-CPPFLAGS = -DOUTER\n")
+        repo = outer / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        (repo / "main.cpp").write_text("int main() { return 0; }\n")
+
+        assert compiletools.configutils.walk_target_conf_layers([str(repo / "main.cpp")]) == ()
+
+        layers = compiletools.configutils.walk_target_conf_layers([str(repo / "main.cpp")], git_bounded=False)
+        assert len(layers) == 1
+        assert os.path.realpath(layers[0].subproject_dir) == os.path.realpath(str(outer))
+
     def test_axis_conf_filenames_are_collected_in_order(self, tmp_path):
         root = _make_repo(tmp_path)
         appbeta = root / "appbeta"
@@ -201,6 +219,18 @@ class TestValidateNoConfContradictions:
         beta = _layer(tmp_path, "appbeta", "variant = monovariant\n")
         validate_no_conf_contradictions([beta], [], "monovariant", ["cmd"])
 
+    def test_cwd_layer_variant_pin_overridden_by_cli_is_not_a_contradiction(self, tmp_path):
+        # Critical 1: the cwd conf pins one variant; the CLI overrides it to a
+        # different resolved variant. The cwd layer's variant is the cwd-tier
+        # value, so it must NOT be compared against the invocation variant --
+        # only TARGET layers get that comparison. A harmless target layer that
+        # shares no key must parse cleanly.
+        cwd_conf = tmp_path / "cwdproj" / "ct.conf"
+        cwd_conf.parent.mkdir()
+        cwd_conf.write_text("variant = pinnedvariant\n")
+        beta = _layer(tmp_path, "appbeta", "append-CPPFLAGS = -DBETA\n")
+        validate_no_conf_contradictions([beta], [str(cwd_conf)], "othervariant", ["a", "b"])
+
 
 class TestBuildSeparateBuildCommands:
     def test_partitions_targets_by_subproject(self, tmp_path):
@@ -234,6 +264,92 @@ class TestBuildSeparateBuildCommands:
         )
         assert beta_test not in commands[0]
         assert "--tests" in commands[1] and beta_test in commands[1]
+
+    def test_begintests_synonym_is_partitioned(self, tmp_path):
+        # --begintests is a dest=tests synonym; it must be popped alongside
+        # --tests, and a flag left with no surviving value must be dropped.
+        alpha = _layer(tmp_path, "appalpha", "x = 1\n")
+        beta = _layer(tmp_path, "appbeta", "x = 2\n")
+        alpha_main = str(tmp_path / "appalpha" / "main.cpp")
+        beta_test = str(tmp_path / "appbeta" / "test_foo.cpp")
+        for p in (alpha_main, beta_test):
+            with open(p, "w") as f:
+                f.write("int main() { return 0; }\n")
+
+        commands = build_separate_build_commands(
+            "ct-cake", [alpha_main, "--begintests", beta_test], [alpha, beta], [alpha_main, beta_test]
+        )
+        assert beta_test not in commands[0]
+        assert "--begintests" not in commands[0]  # dangling flag dropped
+        assert "--begintests" in commands[1] and beta_test in commands[1]
+
+    def test_nested_subprojects_use_deepest_prefix(self, tmp_path):
+        # A child subproject nested under a parent: the child's target must be
+        # owned by the child (deepest matching prefix), not lost to the parent.
+        parent = _layer(tmp_path, "app", "x = 1\n")
+        child = _layer(tmp_path, "app/sub", "x = 2\n")
+        parent_main = str(tmp_path / "app" / "other.cpp")
+        child_main = str(tmp_path / "app" / "sub" / "main.cpp")
+        for p in (parent_main, child_main):
+            with open(p, "w") as f:
+                f.write("int main() { return 0; }\n")
+
+        commands = build_separate_build_commands(
+            "ct-cake", [parent_main, child_main], [parent, child], [parent_main, child_main]
+        )
+        assert len(commands) == 2
+        # The command that excludes the parent-only target is the child's; it
+        # must still build the child target (RED under first-prefix ownership).
+        child_only = [c for c in commands if parent_main not in c]
+        assert len(child_only) == 1
+        assert child_main in child_only[0]
+
+    def test_auto_form_emits_distinct_cd_commands(self, tmp_path):
+        # --auto path: discovered targets are not in argv; each remedy must cd
+        # into its own subproject and rediscover via --auto. Two remedies must
+        # differ and each must build only its subproject.
+        alpha = _layer(tmp_path, "appalpha", "x = 1\n")
+        beta = _layer(tmp_path, "appbeta", "x = 2\n")
+        alpha_main = str(tmp_path / "appalpha" / "main.cpp")
+        beta_main = str(tmp_path / "appbeta" / "main.cpp")
+        for p in (alpha_main, beta_main):
+            with open(p, "w") as f:
+                f.write("int main() { return 0; }\n")
+
+        commands = build_separate_build_commands(
+            "ct-cake",
+            ["--variant=monovariant", "--auto"],
+            [alpha, beta],
+            [alpha_main, beta_main],
+            auto=True,
+        )
+        assert len(commands) == 2
+        assert commands[0] != commands[1]
+        assert all(c.startswith("cd ") and "--auto" in c for c in commands)
+        assert str(tmp_path / "appalpha") in commands[0]
+        assert str(tmp_path / "appbeta") in commands[1]
+
+    def test_cwd_vs_target_form_emits_distinct_actionable_pair(self, tmp_path):
+        # cwd layer participates in the conflict: the target subproject gets an
+        # explicit cd + relative target; the cwd subproject (owns no target)
+        # falls back to --auto. The two remedies must differ and be actionable.
+        beta = _layer(tmp_path, "appbeta", "append-CPPFLAGS = -DBETA\n")
+        cwd_dir = str(tmp_path / "appalpha")
+        os.makedirs(cwd_dir, exist_ok=True)
+        beta_main = str(tmp_path / "appbeta" / "main.cpp")
+        with open(beta_main, "w") as f:
+            f.write("int main() { return 0; }\n")
+
+        commands = build_separate_build_commands(
+            "ct-cake", ["--variant=monovariant", beta_main], [beta], [beta_main], cwd_layer_dir=cwd_dir
+        )
+        assert len(commands) == 2
+        assert commands[0] != commands[1]
+        assert all(c.startswith("cd ") for c in commands)
+        beta_cmd = [c for c in commands if "appbeta" in c]
+        assert len(beta_cmd) == 1 and "main.cpp" in beta_cmd[0]
+        alpha_cmd = [c for c in commands if c.rstrip().endswith("--auto")]
+        assert len(alpha_cmd) == 1 and "appalpha" in alpha_cmd[0]
 
 
 _VARIANT = "monovariant"
@@ -417,3 +533,46 @@ class TestAutoDiscoveryReanchor:
                 # _FATAL_ERROR_RENDERERS dispatch).
                 with pytest.raises(compiletools.configutils.ConfContradictionError):
                     compiletools.cake.main([*_ARGV_BASE, "--auto", "-v", "-v"])
+
+
+class TestCakeMainErrorRendering:
+    def test_explicit_conflict_renders_cleanly_without_traceback(self, monorepo, capsys):
+        """Important 4: an explicit-target contradiction raises inside
+        parseargs (before the in-build try). cake.main must render the message
+        + remedies with a nonzero exit and no raw traceback."""
+        appalpha = monorepo / "appalpha"
+        appalpha.mkdir()
+        (appalpha / "ct.conf").write_text("append-CPPFLAGS = -DAPPALPHA_EXTRA\n")
+        (appalpha / "main.cpp").write_text("// appalpha\nint main() { return 0; }\n")
+        uth.reset()
+        with uth.DirectoryContext(str(monorepo)):
+            with uth.ParserContext():
+                result = compiletools.cake.main(
+                    [*_ARGV_BASE, os.path.join("appalpha", "main.cpp"), os.path.join("appbeta", "main.cpp")]
+                )
+        assert result == 1
+        combined = "".join(capsys.readouterr())
+        assert "Build separately" in combined
+        assert "identical" in combined  # remedy 2
+        assert "Traceback" not in combined
+
+    def test_explicit_conflict_reraises_at_high_verbose(self, monorepo):
+        """verbose >= 2 re-raises so the traceback is available for debugging,
+        matching the in-build handler's convention."""
+        appalpha = monorepo / "appalpha"
+        appalpha.mkdir()
+        (appalpha / "ct.conf").write_text("append-CPPFLAGS = -DAPPALPHA_EXTRA\n")
+        (appalpha / "main.cpp").write_text("// appalpha\nint main() { return 0; }\n")
+        uth.reset()
+        with uth.DirectoryContext(str(monorepo)):
+            with uth.ParserContext():
+                with pytest.raises(compiletools.configutils.ConfContradictionError):
+                    compiletools.cake.main(
+                        [
+                            *_ARGV_BASE,
+                            "-v",
+                            "-v",
+                            os.path.join("appalpha", "main.cpp"),
+                            os.path.join("appbeta", "main.cpp"),
+                        ]
+                    )
