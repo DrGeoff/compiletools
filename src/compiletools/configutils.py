@@ -630,7 +630,7 @@ def validate_no_conf_contradictions(layers, cwd_layer_paths, invocation_variant,
     canonical_invocation_variant = canonicalize_variant_input(invocation_variant)
     merged = {}
     conflicts = []
-    for _owner, values in tier:
+    for _, values in tier:
         for normalized, (raw_key, value, path) in values.items():
             compare_value = value
             if normalized == "variant":
