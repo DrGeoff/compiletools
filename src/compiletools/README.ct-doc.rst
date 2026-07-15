@@ -225,9 +225,19 @@ Configuration hierarchy (lowest to highest priority):
 * User config (~/.config/ct/)
 * Project config (<gitroot>/ct.conf.d/)
 * Git repository root directory
-* Current working directory
+* Current working directory, and the nearest-ancestor ct.conf / ct.conf.d
+  of every explicit or --auto-discovered build target (target-anchored
+  layers; same priority tier as the current working directory)
 * Environment variables (capitalized, e.g., VARIANT=release)
 * Command-line arguments
+
+All loaded configuration applies to the whole invocation — there is no
+per-translation-unit scoping. Because target-anchored layers and the
+current-working-directory layer share one tier, they must agree: if two
+same-tier config files set the same key to different values (including
+append-/prepend- keys), the tools stop with an error naming both files and
+the two remedies (build the subprojects separately, or make the values
+identical).
 
 Build variants are composed from *axis* conf files — one per orthogonal
 concern: toolchain (``gcc``, ``clang``), linker (``ld``, ``gold``, ``mold``,
