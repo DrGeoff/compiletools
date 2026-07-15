@@ -700,6 +700,9 @@ def build_separate_build_commands(prog, argv, layers, targets, *, cwd_layer_dir=
       is the DEEPEST matching subproject prefix, so a nested child claims its
       own target rather than losing it to an ancestor layer.
 
+    A target owned by NO participant (a shared source such as
+    ``libcore/util.cpp``) is kept in EVERY command, in both forms.
+
     Handles bare positional targets, ``--flag value`` (value tokens dropped;
     a flag left with no surviving value is dropped too), and ``--flag=value``
     forms. Every emitted token is ``shlex.quote``d.
@@ -780,16 +783,17 @@ def build_separate_build_commands(prog, argv, layers, targets, *, cwd_layer_dir=
             # argv in place cannot separate the subprojects. Rebuild from inside
             # each subproject with only its own explicit targets; a participant
             # owning no explicit target falls back to --auto discovery.
-            base = filter_argv(lambda real: True)  # drop every target; re-add owned ones below
-            owned = sorted(
-                os.path.relpath(real, keep_real) for real in target_realpaths if owning_real(real) == keep_real
+            base = filter_argv(lambda real: True)  # drop every target; re-add owned + shared below
+            kept_targets = sorted(
+                os.path.relpath(real, keep_real) for real in target_realpaths if owning_real(real) in (keep_real, None)
             )
-            tokens = [prog] + base + owned
-            if not owned and "--auto" not in base:
+            owns_any = any(owning_real(real) == keep_real for real in target_realpaths)
+            tokens = [prog] + base + kept_targets
+            if not owns_any and "--auto" not in base:
                 tokens.append("--auto")
             commands.append(f"cd {shlex.quote(keep_dir)} && {join(tokens)}")
         else:
-            kept = filter_argv(lambda real, keep=keep_real: owning_real(real) != keep)
+            kept = filter_argv(lambda real, keep=keep_real: owning_real(real) is not None and owning_real(real) != keep)
             commands.append(join([prog] + kept))
     return commands
 

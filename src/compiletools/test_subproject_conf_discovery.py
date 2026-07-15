@@ -329,6 +329,57 @@ class TestBuildSeparateBuildCommands:
         assert str(tmp_path / "appalpha") in commands[0]
         assert str(tmp_path / "appbeta") in commands[1]
 
+    def test_shared_target_kept_in_every_command(self, tmp_path):
+        # A target owned by NO participant layer (shared source, e.g.
+        # libcore/util.cpp) must stay in every remedy command; only targets
+        # owned by a DIFFERENT participant are dropped.
+        alpha = _layer(tmp_path, "appalpha", "x = 1\n")
+        beta = _layer(tmp_path, "appbeta", "x = 2\n")
+        alpha_main = str(tmp_path / "appalpha" / "main.cpp")
+        beta_main = str(tmp_path / "appbeta" / "main.cpp")
+        libcore = tmp_path / "libcore"
+        libcore.mkdir()
+        shared = str(libcore / "util.cpp")
+        for p in (alpha_main, beta_main, shared):
+            with open(p, "w") as f:
+                f.write("int f() { return 0; }\n")
+
+        commands = build_separate_build_commands(
+            "ct-cake",
+            ["--variant=monovariant", alpha_main, beta_main, shared],
+            [alpha, beta],
+            [alpha_main, beta_main, shared],
+        )
+        assert len(commands) == 2
+        assert shared in commands[0] and shared in commands[1]
+        assert beta_main not in commands[0]
+        assert alpha_main not in commands[1]
+
+    def test_shared_target_kept_in_cwd_participant_form(self, tmp_path):
+        # Same guarantee for the cd form: a shared target owned by no
+        # participant must appear in both commands (re-expressed relative to
+        # each subproject dir).
+        beta = _layer(tmp_path, "appbeta", "append-CPPFLAGS = -DBETA\n")
+        cwd_dir = str(tmp_path / "appalpha")
+        os.makedirs(cwd_dir, exist_ok=True)
+        beta_main = str(tmp_path / "appbeta" / "main.cpp")
+        libcore = tmp_path / "libcore"
+        libcore.mkdir()
+        shared = str(libcore / "util.cpp")
+        for p in (beta_main, shared):
+            with open(p, "w") as f:
+                f.write("int f() { return 0; }\n")
+
+        commands = build_separate_build_commands(
+            "ct-cake",
+            ["--variant=monovariant", beta_main, shared],
+            [beta],
+            [beta_main, shared],
+            cwd_layer_dir=cwd_dir,
+        )
+        assert len(commands) == 2
+        assert all("util.cpp" in c for c in commands)
+
     def test_cwd_vs_target_form_emits_distinct_actionable_pair(self, tmp_path):
         # cwd layer participates in the conflict: the target subproject gets an
         # explicit cd + relative target; the cwd subproject (owns no target)
