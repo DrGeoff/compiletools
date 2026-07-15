@@ -394,6 +394,87 @@ def _substitute_CXX_for_missing(args):
         args.LDFLAGS = unsupplied_replacement(args.LDFLAGS, args.CXXFLAGS, args.verbose, "LDFLAGS")
 
 
+def _collect_explicit_target_files(args):
+    """All explicit target filenames: positional, --static, --dynamic, --tests."""
+    targets = []
+    for attr in ("filename", "static", "dynamic", "tests"):
+        value = getattr(args, attr, None)
+        if value:
+            targets.extend(value)
+    return targets
+
+
+def _target_conf_filenames(variant, argv):
+    """Conf filenames the current variant resolution consults, in flat_paths
+    order (ct.conf, then each axis conf, then the composite conf)."""
+    resolution = compiletools.configutils.resolve_variant(variant=variant, argv=argv)
+    filenames = ["ct.conf"]
+    filenames.extend(f"{axis.name}.conf" for axis in resolution.axes)
+    if resolution.canonical_name and "." in resolution.canonical_name:
+        filenames.append(f"{resolution.canonical_name}.conf")
+    return tuple(dict.fromkeys(filenames))
+
+
+def _apply_target_conf_layers(cap, argv, args, verbose):
+    """Load explicit targets' subproject config layers; re-parse once if new.
+
+    Same-tier contradiction (cwd layer vs target layer, target vs target)
+    raises ConfContradictionError before any re-parse. Returns *args*
+    unchanged when the walk surfaces nothing new -- the common case costs
+    only the ancestor walk.
+    """
+    targets = _collect_explicit_target_files(args)
+    if not targets:
+        return args
+
+    default_config_files = getattr(cap, "_default_config_files", None)
+    if default_config_files is None:
+        return args
+
+    conf_filenames = _target_conf_filenames(args.variant, argv)
+    layers = compiletools.configutils.walk_target_conf_layers(targets, conf_filenames, verbose=verbose)
+    if not layers:
+        return args
+
+    loaded = {compiletools.wrappedos.realpath(p) for p in default_config_files}
+    new_layers = []
+    for layer in layers:
+        fresh = tuple(p for p in layer.conf_paths if compiletools.wrappedos.realpath(p) not in loaded)
+        if fresh:
+            new_layers.append(
+                compiletools.configutils.TargetConfLayer(subproject_dir=layer.subproject_dir, conf_paths=fresh)
+            )
+    if not new_layers:
+        return args
+
+    # cwd layer participates in same-tier comparison only when cwd is not
+    # the gitroot: gitroot confs are the project tier, which subproject
+    # layers legitimately override.
+    cwd = compiletools.wrappedos.realpath(os.getcwd())
+    gitroot = compiletools.wrappedos.realpath(compiletools.git_utils.find_git_root())
+    cwd_layer_paths = []
+    if cwd != gitroot:
+        for path in default_config_files:
+            real = compiletools.wrappedos.realpath(path)
+            if os.path.dirname(real) == cwd or os.path.dirname(real) == os.path.join(cwd, "ct.conf.d"):
+                cwd_layer_paths.append(real)
+
+    remedy_commands = compiletools.configutils.build_separate_build_commands(
+        os.path.basename(sys.argv[0]) if sys.argv else "ct-cake", list(argv), new_layers, targets
+    )
+    compiletools.configutils.validate_no_conf_contradictions(new_layers, cwd_layer_paths, args.variant, remedy_commands)
+
+    new_paths = [p for layer in new_layers for p in layer.conf_paths]
+    _check_legacy_cas_config_keys(new_paths)
+    _check_legacy_variant_config_keys(new_paths)
+    if verbose >= 4:
+        print("Target-anchored config layers loaded: " + " ".join(new_paths))
+    cap._default_config_files = list(default_config_files) + new_paths
+    new_args = cap.parse_args(args=argv)
+    _stash_private_attrs(new_args, cap, args._context, argv)
+    return new_args
+
+
 def _extend_includes_using_git_root(args):
     """Unless turned off, the git root will be added
     to the list of include paths
@@ -1763,6 +1844,11 @@ def parseargs(cap, argv, verbose=None, *, context):
 
     if verbose is None:
         verbose = args.verbose
+
+    # Target-anchored config discovery: explicit targets outside the cwd
+    # subproject pull in their nearest-ancestor ct.conf / ct.conf.d layer.
+    # Raises ConfContradictionError when same-tier layers disagree.
+    args = _apply_target_conf_layers(cap, argv, args, verbose)
 
     # configargparse only applies the "override" method to environment-sourced
     # variables — it has no native "append" method for env vars — so when the

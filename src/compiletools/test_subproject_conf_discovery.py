@@ -9,7 +9,11 @@ import subprocess
 
 import pytest
 
+import compiletools.apptools
+import compiletools.cake
 import compiletools.configutils
+import compiletools.testhelper as uth
+from compiletools.build_context import BuildContext
 from compiletools.configutils import (
     ConfContradictionError,
     TargetConfLayer,
@@ -232,3 +236,134 @@ class TestBuildSeparateBuildCommands:
         )
         assert beta_test not in commands[0]
         assert "--tests" in commands[1] and beta_test in commands[1]
+
+
+_VARIANT = "monovariant"
+_ARGV_BASE = (f"--variant={_VARIANT}",)
+
+
+@pytest.fixture(autouse=True)
+def _needs_compiler():
+    if compiletools.apptools.get_functional_cxx_compiler() is None:
+        pytest.skip("No functional C++ compiler detected")
+
+
+@pytest.fixture
+def monorepo(tmp_path):
+    """gitroot ct.conf + ct.conf.d/<variant>.conf, two subprojects, shared libcore."""
+    root = _make_repo(tmp_path)
+    (root / "ct.conf").write_text(
+        f"variant = {_VARIANT}\n"
+        f"variant-canonical-order = {_VARIANT}\n"
+        "exemarkers = [main]\n"
+        "testmarkers = unit_test.hpp\n"
+    )
+    conf_d = root / "ct.conf.d"
+    conf_d.mkdir()
+    (conf_d / f"{_VARIANT}.conf").write_text("# variant conf\n")
+
+    appbeta = root / "appbeta"
+    appbeta.mkdir()
+    (appbeta / "ct.conf").write_text("append-CPPFLAGS = -DAPPBETA_EXTRA\n")
+    (appbeta / "main.cpp").write_text("int main() { return 0; }\n")
+
+    libcore = root / "libcore"
+    libcore.mkdir()
+    (libcore / "util.cpp").write_text("int util() { return 42; }\n")
+    return root
+
+
+def _parse_cake_args(cwd, argv):
+    argv = list(argv)
+    uth.reset()
+    with uth.DirectoryContext(str(cwd)):
+        with uth.ParserContext():
+            cap = compiletools.apptools.create_parser("subproject conf discovery test", argv=argv)
+            compiletools.cake.Cake.add_arguments(cap)
+            compiletools.cake.Cake.registercallback()
+            return compiletools.apptools.parseargs(cap, argv, context=BuildContext())
+
+
+class TestParseargsTargetAnchoring:
+    def test_explicit_target_outside_cwd_project_picks_up_its_ct_conf(self, monorepo):
+        """The bug: invoking from gitroot with a target inside appbeta/ must
+        load appbeta/ct.conf."""
+        args = _parse_cake_args(monorepo, [*_ARGV_BASE, os.path.join("appbeta", "main.cpp")])
+        assert "-DAPPBETA_EXTRA" in args.CPPFLAGS
+
+    def test_control_cwd_inside_subproject_picks_up_its_ct_conf(self, monorepo):
+        args = _parse_cake_args(monorepo / "appbeta", [*_ARGV_BASE, "main.cpp"])
+        assert "-DAPPBETA_EXTRA" in args.CPPFLAGS
+
+    def test_control_subproject_flags_apply_invocation_globally(self, monorepo):
+        """Pins invocation-global application (spec: no per-TU scoping)."""
+        args = _parse_cake_args(
+            monorepo / "appbeta", [*_ARGV_BASE, os.path.join("..", "libcore", "util.cpp")]
+        )
+        assert "-DAPPBETA_EXTRA" in args.CPPFLAGS
+
+    def test_no_subproject_conf_means_no_extra_parse_effects(self, monorepo):
+        args = _parse_cake_args(monorepo, [*_ARGV_BASE, os.path.join("libcore", "util.cpp")])
+        assert "-DAPPBETA_EXTRA" not in args.CPPFLAGS
+
+    def test_deeply_nested_target_finds_subproject_conf(self, monorepo):
+        deep = monorepo / "appbeta" / "src" / "deep"
+        deep.mkdir(parents=True)
+        (deep / "prog.cpp").write_text("int main() { return 0; }\n")
+        args = _parse_cake_args(monorepo, [*_ARGV_BASE, os.path.join("appbeta", "src", "deep", "prog.cpp")])
+        assert "-DAPPBETA_EXTRA" in args.CPPFLAGS
+
+    def test_ct_conf_d_only_subproject_is_loaded(self, monorepo):
+        appgamma = monorepo / "appgamma"
+        conf_d = appgamma / "ct.conf.d"
+        conf_d.mkdir(parents=True)
+        (conf_d / "ct.conf").write_text("append-CPPFLAGS = -DAPPGAMMA_EXTRA\n")
+        (appgamma / "main.cpp").write_text("int main() { return 0; }\n")
+        args = _parse_cake_args(monorepo, [*_ARGV_BASE, os.path.join("appgamma", "main.cpp")])
+        assert "-DAPPGAMMA_EXTRA" in args.CPPFLAGS
+
+    def test_two_conflicting_subprojects_error_with_remedies(self, monorepo):
+        appalpha = monorepo / "appalpha"
+        appalpha.mkdir()
+        (appalpha / "ct.conf").write_text("append-CPPFLAGS = -DAPPALPHA_EXTRA\n")
+        (appalpha / "main.cpp").write_text("int main() { return 0; }\n")
+        with pytest.raises(compiletools.configutils.ConfContradictionError) as excinfo:
+            _parse_cake_args(
+                monorepo,
+                [*_ARGV_BASE, os.path.join("appalpha", "main.cpp"), os.path.join("appbeta", "main.cpp")],
+            )
+        message = str(excinfo.value)
+        assert "-DAPPALPHA_EXTRA" in message and "-DAPPBETA_EXTRA" in message
+        assert "Build separately" in message
+        assert "identical" in message
+
+    def test_two_harmonious_subprojects_merge(self, monorepo):
+        appalpha = monorepo / "appalpha"
+        appalpha.mkdir()
+        (appalpha / "ct.conf").write_text("append-CPPFLAGS = -DAPPBETA_EXTRA\n")  # identical value
+        (appalpha / "main.cpp").write_text("int main() { return 0; }\n")
+        args = _parse_cake_args(
+            monorepo,
+            [*_ARGV_BASE, os.path.join("appalpha", "main.cpp"), os.path.join("appbeta", "main.cpp")],
+        )
+        assert "-DAPPBETA_EXTRA" in args.CPPFLAGS
+
+    def test_cwd_conf_vs_target_conf_conflict_errors(self, monorepo):
+        appalpha = monorepo / "appalpha"
+        appalpha.mkdir()
+        (appalpha / "ct.conf").write_text("append-CPPFLAGS = -DAPPALPHA_EXTRA\n")
+        (appalpha / "main.cpp").write_text("int main() { return 0; }\n")
+        # cwd inside appalpha, target in appbeta: both are cwd-tier peers
+        with pytest.raises(compiletools.configutils.ConfContradictionError):
+            _parse_cake_args(
+                monorepo / "appalpha",
+                [*_ARGV_BASE, os.path.join("..", "appbeta", "main.cpp")],
+            )
+
+    def test_variant_contradiction_errors(self, monorepo):
+        appdelta = monorepo / "appdelta"
+        appdelta.mkdir()
+        (appdelta / "ct.conf").write_text("variant = othervariant\n")
+        (appdelta / "main.cpp").write_text("int main() { return 0; }\n")
+        with pytest.raises(compiletools.configutils.ConfContradictionError):
+            _parse_cake_args(monorepo, [*_ARGV_BASE, os.path.join("appdelta", "main.cpp")])
