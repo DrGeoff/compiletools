@@ -7,7 +7,15 @@ Spec: docs/superpowers/specs/2026-07-15-subproject-conf-discovery-design.md
 import os
 import subprocess
 
+import pytest
+
 import compiletools.configutils
+from compiletools.configutils import (
+    ConfContradictionError,
+    TargetConfLayer,
+    build_separate_build_commands,
+    validate_no_conf_contradictions,
+)
 
 
 def _make_repo(tmp_path):
@@ -124,3 +132,103 @@ class TestWalkTargetConfLayers:
             os.path.join(beta, "ct.conf"),
             os.path.join(beta, "ct.conf.d", "monovariant.conf"),
         )
+
+
+def _layer(tmp_path, name, content):
+    d = tmp_path / name
+    d.mkdir(parents=True, exist_ok=True)
+    conf = d / "ct.conf"
+    conf.write_text(content)
+    return TargetConfLayer(subproject_dir=str(d), conf_paths=(str(conf),))
+
+
+class TestValidateNoConfContradictions:
+    def test_disjoint_keys_pass(self, tmp_path):
+        alpha = _layer(tmp_path, "appalpha", "append-CPPFLAGS = -DALPHA\n")
+        beta = _layer(tmp_path, "appbeta", "append-CXXFLAGS = -DBETA\n")
+        validate_no_conf_contradictions([alpha, beta], [], "monovariant", ["cmd-a", "cmd-b"])
+
+    def test_identical_values_merge_silently(self, tmp_path):
+        alpha = _layer(tmp_path, "appalpha", "append-CPPFLAGS = -DSHARED\n")
+        beta = _layer(tmp_path, "appbeta", "append-CPPFLAGS = -DSHARED\n")
+        validate_no_conf_contradictions([alpha, beta], [], "monovariant", ["cmd-a", "cmd-b"])
+
+    def test_same_key_different_value_raises_with_remedies(self, tmp_path):
+        alpha = _layer(tmp_path, "appalpha", "append-CPPFLAGS = -DALPHA\n")
+        beta = _layer(tmp_path, "appbeta", "append-CPPFLAGS = -DBETA\n")
+        with pytest.raises(ConfContradictionError) as excinfo:
+            validate_no_conf_contradictions(
+                [alpha, beta], [], "monovariant", ["ct-cake appalpha/main.cpp", "ct-cake appbeta/main.cpp"]
+            )
+        message = str(excinfo.value)
+        assert "append-CPPFLAGS" in message
+        assert "-DALPHA" in message and "-DBETA" in message
+        assert str(tmp_path / "appalpha" / "ct.conf") in message
+        assert str(tmp_path / "appbeta" / "ct.conf") in message
+        assert "ct-cake appalpha/main.cpp" in message
+        assert "ct-cake appbeta/main.cpp" in message
+        assert "identical" in message  # remedy 2
+
+    def test_cwd_layer_participates_as_a_tier_peer(self, tmp_path):
+        cwd_conf = tmp_path / "cwdproj" / "ct.conf"
+        cwd_conf.parent.mkdir()
+        cwd_conf.write_text("append-CPPFLAGS = -DCWD\n")
+        beta = _layer(tmp_path, "appbeta", "append-CPPFLAGS = -DBETA\n")
+        with pytest.raises(ConfContradictionError):
+            validate_no_conf_contradictions([beta], [str(cwd_conf)], "monovariant", ["a", "b"])
+
+    def test_intra_layer_override_is_not_a_contradiction(self, tmp_path):
+        d = tmp_path / "appbeta"
+        conf_d = d / "ct.conf.d"
+        conf_d.mkdir(parents=True)
+        (conf_d / "ct.conf").write_text("append-CPPFLAGS = -DLOW\n")
+        (d / "ct.conf").write_text("append-CPPFLAGS = -DHIGH\n")
+        layer = TargetConfLayer(
+            subproject_dir=str(d),
+            conf_paths=(str(conf_d / "ct.conf"), str(d / "ct.conf")),
+        )
+        validate_no_conf_contradictions([layer], [], "monovariant", ["cmd"])
+
+    def test_variant_mismatch_is_a_contradiction(self, tmp_path):
+        beta = _layer(tmp_path, "appbeta", "variant = othervariant\n")
+        with pytest.raises(ConfContradictionError) as excinfo:
+            validate_no_conf_contradictions([beta], [], "monovariant", ["cmd"])
+        assert "variant" in str(excinfo.value)
+
+    def test_variant_match_passes(self, tmp_path):
+        beta = _layer(tmp_path, "appbeta", "variant = monovariant\n")
+        validate_no_conf_contradictions([beta], [], "monovariant", ["cmd"])
+
+
+class TestBuildSeparateBuildCommands:
+    def test_partitions_targets_by_subproject(self, tmp_path):
+        alpha = _layer(tmp_path, "appalpha", "x = 1\n")
+        beta = _layer(tmp_path, "appbeta", "x = 2\n")
+        alpha_main = str(tmp_path / "appalpha" / "main.cpp")
+        beta_main = str(tmp_path / "appbeta" / "main.cpp")
+        for p in (alpha_main, beta_main):
+            with open(p, "w") as f:
+                f.write("int main() { return 0; }\n")
+
+        commands = build_separate_build_commands(
+            "ct-cake", ["--variant=monovariant", alpha_main, beta_main], [alpha, beta], [alpha_main, beta_main]
+        )
+        assert len(commands) == 2
+        assert alpha_main in commands[0] and beta_main not in commands[0]
+        assert beta_main in commands[1] and alpha_main not in commands[1]
+        assert all("--variant=monovariant" in c for c in commands)
+
+    def test_flag_value_form_is_partitioned(self, tmp_path):
+        beta = _layer(tmp_path, "appbeta", "x = 2\n")
+        alpha = _layer(tmp_path, "appalpha", "x = 1\n")
+        alpha_main = str(tmp_path / "appalpha" / "main.cpp")
+        beta_test = str(tmp_path / "appbeta" / "test_foo.cpp")
+        for p in (alpha_main, beta_test):
+            with open(p, "w") as f:
+                f.write("int main() { return 0; }\n")
+
+        commands = build_separate_build_commands(
+            "ct-cake", [alpha_main, "--tests", beta_test], [alpha, beta], [alpha_main, beta_test]
+        )
+        assert beta_test not in commands[0]
+        assert "--tests" in commands[1] and beta_test in commands[1]

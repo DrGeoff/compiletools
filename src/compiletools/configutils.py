@@ -592,6 +592,120 @@ def walk_target_conf_layers(targets, conf_filenames=("ct.conf",), verbose=0):
     )
 
 
+class ConfContradictionError(RuntimeError):
+    """Two same-tier config layers set the same key to different values."""
+
+
+def _effective_layer_values(conf_paths):
+    """Merge one layer's conf files (low-to-high) into key -> (raw_key, value, path).
+
+    Keys are normalized (dashes to underscores) for comparison; the raw key
+    is kept for display. Later files override earlier ones — intra-layer
+    override is normal layering, never a contradiction.
+    """
+    values = {}
+    for path in conf_paths:
+        parsed = _parse_conf_file_cached(compiletools.wrappedos.realpath(path))
+        for raw_key, value in parsed.items():
+            normalized = raw_key.replace("-", "_")
+            values[normalized] = (raw_key, str(value).strip().strip("\"'"), path)
+    return values
+
+
+def validate_no_conf_contradictions(layers, cwd_layer_paths, invocation_variant, remedy_commands):
+    """Raise ConfContradictionError when same-tier layers disagree on a key.
+
+    Tier peers: the cwd layer (when distinct from the gitroot/project layer)
+    and every target-anchored subproject layer. append-*/prepend-* keys with
+    differing values count as contradictions: applying both would leak each
+    subproject's flags onto the other's translation units. A layer's
+    ``variant`` is compared (canonicalized) against *invocation_variant*.
+    """
+    tier = []
+    if cwd_layer_paths:
+        tier.append(("current working directory", _effective_layer_values(cwd_layer_paths)))
+    for layer in layers:
+        tier.append((layer.subproject_dir, _effective_layer_values(layer.conf_paths)))
+
+    canonical_invocation_variant = canonicalize_variant_input(invocation_variant)
+    merged = {}
+    conflicts = []
+    for _owner, values in tier:
+        for normalized, (raw_key, value, path) in values.items():
+            compare_value = value
+            if normalized == "variant":
+                compare_value = canonicalize_variant_input(value)
+                if compare_value != canonical_invocation_variant:
+                    conflicts.append(
+                        (raw_key, canonical_invocation_variant, "<invocation>", compare_value, path)
+                    )
+                    continue
+            if normalized in merged:
+                prev_value, prev_path = merged[normalized]
+                if prev_value != compare_value:
+                    conflicts.append((raw_key, prev_value, prev_path, compare_value, path))
+            else:
+                merged[normalized] = (compare_value, path)
+
+    if not conflicts:
+        return
+
+    lines = ["ERROR: conflicting subproject configs in one invocation"]
+    for raw_key, value_a, path_a, value_b, path_b in conflicts:
+        lines.append(f"  {raw_key} = {value_a}   (from {path_a})")
+        lines.append(f"  {raw_key} = {value_b}   (from {path_b})")
+    lines.append("Choose one:")
+    lines.append("  1) Build separately:")
+    for command in remedy_commands:
+        lines.append(f"       {command}")
+    lines.append("  2) Make the conflicting values identical in the files above, then re-run.")
+    raise ConfContradictionError("\n".join(lines))
+
+
+def build_separate_build_commands(prog, argv, layers, targets):
+    """Best-effort per-subproject command reconstruction for the error remedy.
+
+    For each layer, reproduce the original argv minus target tokens that
+    belong to a DIFFERENT layer. Handles bare positional targets,
+    ``--flag value`` (the value token is dropped; a flag token left with no
+    following value is dropped too), and ``--flag=value`` forms. Targets
+    under no conflicting layer (shared sources) stay in every command.
+    """
+    target_realpaths = {}
+    for target in targets:
+        target_realpaths[compiletools.wrappedos.realpath(target)] = target
+
+    def owning_layer(token):
+        real = compiletools.wrappedos.realpath(token)
+        if real not in target_realpaths:
+            return None
+        for layer in layers:
+            prefix = compiletools.wrappedos.realpath(layer.subproject_dir) + os.sep
+            if real.startswith(prefix):
+                return layer.subproject_dir
+        return None
+
+    commands = []
+    for layer in layers:
+        keep_dir = layer.subproject_dir
+        kept = []
+        for i, token in enumerate(argv):
+            candidate = token.split("=", 1)[1] if token.startswith("--") and "=" in token else token
+            owner = owning_layer(candidate)
+            if owner is not None and owner != keep_dir:
+                if (
+                    candidate is token
+                    and kept
+                    and kept[-1] == argv[i - 1]
+                    and kept[-1] in ("--tests", "--static", "--dynamic")
+                ):
+                    kept.pop()
+                continue
+            kept.append(token)
+        commands.append(" ".join([prog] + kept))
+    return commands
+
+
 def clear_cache():
     """Clear LRU caches for testing"""
     default_config_directories.cache_clear()
