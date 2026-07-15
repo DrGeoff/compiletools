@@ -587,8 +587,7 @@ def walk_target_conf_layers(targets, conf_filenames=("ct.conf",), verbose=0):
         for directory, paths in sorted(layers.items()):
             print(f"Target-anchored config layer {directory}: {' '.join(paths)}")
     return tuple(
-        TargetConfLayer(subproject_dir=directory, conf_paths=paths)
-        for directory, paths in sorted(layers.items())
+        TargetConfLayer(subproject_dir=directory, conf_paths=paths) for directory, paths in sorted(layers.items())
     )
 
 
@@ -636,9 +635,7 @@ def validate_no_conf_contradictions(layers, cwd_layer_paths, invocation_variant,
             if normalized == "variant":
                 compare_value = canonicalize_variant_input(value)
                 if compare_value != canonical_invocation_variant:
-                    conflicts.append(
-                        (raw_key, canonical_invocation_variant, "<invocation>", compare_value, path)
-                    )
+                    conflicts.append((raw_key, canonical_invocation_variant, "<invocation>", compare_value, path))
                     continue
             if normalized in merged:
                 prev_value, prev_path = merged[normalized]

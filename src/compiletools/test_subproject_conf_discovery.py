@@ -64,9 +64,7 @@ class TestWalkTargetConfLayers:
 
         layers = compiletools.configutils.walk_target_conf_layers([str(appbeta / "main.cpp")])
         assert len(layers) == 1
-        assert layers[0].conf_paths == (
-            os.path.join(os.path.realpath(str(appbeta)), "ct.conf.d", "ct.conf"),
-        )
+        assert layers[0].conf_paths == (os.path.join(os.path.realpath(str(appbeta)), "ct.conf.d", "ct.conf"),)
 
     def test_gitroot_conf_is_excluded(self, tmp_path):
         # gitroot ct.conf is the project layer, never a subproject layer
