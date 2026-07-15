@@ -297,9 +297,7 @@ class TestParseargsTargetAnchoring:
 
     def test_control_subproject_flags_apply_invocation_globally(self, monorepo):
         """Pins invocation-global application (spec: no per-TU scoping)."""
-        args = _parse_cake_args(
-            monorepo / "appbeta", [*_ARGV_BASE, os.path.join("..", "libcore", "util.cpp")]
-        )
+        args = _parse_cake_args(monorepo / "appbeta", [*_ARGV_BASE, os.path.join("..", "libcore", "util.cpp")])
         assert "-DAPPBETA_EXTRA" in args.CPPFLAGS
 
     def test_no_subproject_conf_means_no_extra_parse_effects(self, monorepo):
