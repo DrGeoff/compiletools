@@ -63,7 +63,16 @@ class Namer:
         under bindir, deterministic, no ``..`` escapes (realpath
         resolves them first). Sources directly at the anchor root
         return ``""`` so single-dir projects keep flat paths.
+
+        ``--force-flat-exe-layout`` disables mirroring entirely: every
+        source returns ``""`` so artefacts land directly in bindir.
+        Same-basename sources in different directories then map to one
+        output path; ``_check_executable_collisions`` turns that into a
+        hard error instead of the silent last-write-wins drop that
+        motivated mirroring.
         """
+        if getattr(self.args, "force_flat_exe_layout", False):
+            return ""
         real = compiletools.wrappedos.realpath(sourcefilename)
         if self.args.git_root:
             # Anchor on the build's gitroot (cwd-derived), not the

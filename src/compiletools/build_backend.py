@@ -1334,10 +1334,15 @@ class BuildBackend(abc.ABC):
         for output, real in candidates:
             prior = output_to_source.get(output)
             if prior is not None and prior != real:
+                remedy = (
+                    "Rename one source, or drop --force-flat-exe-layout to restore "
+                    "the source-mirrored layout that separates them."
+                    if getattr(self.args, "force_flat_exe_layout", False)
+                    else "Rename one source — same-directory sources sharing a stem map to a single output path."
+                )
                 raise ValueError(
                     f"Executable output collision: {output!r} would be produced by both "
-                    f"{prior!r} and {real!r}. Rename one source — same-directory sources "
-                    f"sharing a stem map to a single output path."
+                    f"{prior!r} and {real!r}. {remedy}"
                 )
             output_to_source[output] = real
 

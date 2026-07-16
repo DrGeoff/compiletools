@@ -78,6 +78,37 @@ def test_control_build_graph_add_rule_last_write_wins():
     assert survivor.inputs == ["/repo/appbeta/main.o"], "last writer wins"
 
 
+def test_force_flat_exe_layout_collision_raises_naming_both_sources():
+    """--force-flat-exe-layout reintroduces cross-directory basename
+    collisions by design; the backstop must turn them into a hard error
+    naming both sources, never a silent last-write-wins drop."""
+    from types import SimpleNamespace
+
+    _args, namer = _make_namer("TestExeCollisionFlatFlag", extra_argv=["--force-flat-exe-layout"])
+
+    exe_alpha = namer.executable_pathname("/repo/appalpha/main.cpp")
+    exe_beta = namer.executable_pathname("/repo/appbeta/main.cpp")
+    assert exe_alpha == exe_beta == "bin/gcc.debug/main"
+
+    backend = _ConcreteBackend.__new__(_ConcreteBackend)
+    backend.args = SimpleNamespace(
+        filename=["/repo/appalpha/main.cpp"],
+        tests=["/repo/appbeta/main.cpp"],
+        static=[],
+        dynamic=[],
+        force_flat_exe_layout=True,
+    )
+    backend.namer = namer
+
+    with pytest.raises(ValueError) as excinfo:
+        backend._check_executable_collisions()
+
+    message = str(excinfo.value)
+    assert "/repo/appalpha/main.cpp" in message
+    assert "/repo/appbeta/main.cpp" in message
+    assert "--force-flat-exe-layout" in message
+
+
 def test_control_distinct_basenames_get_distinct_pathnames():
     """Distinct basenames get distinct targets (as they always did)."""
     _args, namer = _make_namer("TestExeDistinct")
