@@ -449,6 +449,11 @@ def _apply_target_conf_layers(cap, argv, args, verbose, auto=False, reparse=True
     Runs once, no fixpoint: a target injected BY a freshly loaded layer
     (e.g. a subproject ct.conf's own ``tests = foo.cpp``) does not get its
     ancestor layers walked in turn.
+
+    Outside a git repository ``find_git_root()`` falls back to the cwd, so
+    ``cwd == gitroot`` and the cwd layer never participates in same-tier
+    validation -- the cwd conf is then the fallback project tier, which a
+    target layer legitimately overrides via re-parse ordering.
     """
     targets = _collect_explicit_target_files(args)
     if not targets:
@@ -512,7 +517,10 @@ def _apply_target_conf_layers(cap, argv, args, verbose, auto=False, reparse=True
     new_paths = [p for layer in new_layers for p in layer.conf_paths]
     _check_legacy_cas_config_keys(new_paths)
     _check_legacy_variant_config_keys(new_paths)
-    if verbose >= 4:
+    if verbose >= 1:
+        # A vestigial subproject ct.conf that was inert before target
+        # anchoring now changes flags; naming the loaded files makes a
+        # mysteriously changed build self-diagnosing.
         print("Target-anchored config layers loaded: " + " ".join(new_paths))
     cap._default_config_files = list(default_config_files) + new_paths
     if not reparse:
@@ -541,6 +549,11 @@ def reanchor_config_for_discovered_targets(args):
     double's hand-built ``SimpleNamespace``) lacks the stashed
     ``_parser``/``_argv``/``_context`` attributes; there is nothing to
     re-anchor against in that case, so this is a no-op.
+
+    Known first-pass leak: discovery-affecting keys (``exemarkers``,
+    ``testmarkers``) from a target layer arrive only AFTER
+    ``findtargets.process`` already ran with the first-pass values, so a
+    subproject's own markers cannot change which of its files are discovered.
     """
     cap = getattr(args, "_parser", None)
     argv = getattr(args, "_argv", None)

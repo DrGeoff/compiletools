@@ -196,17 +196,70 @@ class TestValidateNoConfContradictions:
         with pytest.raises(ConfContradictionError):
             validate_no_conf_contradictions([beta], [str(cwd_conf)], "monovariant", ["a", "b"])
 
-    def test_intra_layer_override_is_not_a_contradiction(self, tmp_path):
+    def test_intra_layer_scalar_override_is_not_a_contradiction(self, tmp_path):
         d = tmp_path / "appbeta"
         conf_d = d / "ct.conf.d"
         conf_d.mkdir(parents=True)
-        (conf_d / "ct.conf").write_text("append-CPPFLAGS = -DLOW\n")
-        (d / "ct.conf").write_text("append-CPPFLAGS = -DHIGH\n")
+        (conf_d / "ct.conf").write_text("CXX = g++\n")
+        (d / "ct.conf").write_text("CXX = clang++\n")
         layer = TargetConfLayer(
             subproject_dir=str(d),
             conf_paths=(str(conf_d / "ct.conf"), str(d / "ct.conf")),
         )
         validate_no_conf_contradictions([layer], [], "monovariant", ["cmd"])
+
+    def test_intra_layer_append_masking_is_still_a_contradiction(self, tmp_path):
+        """append-* accumulates across a layer's files, so alpha's effective
+        value is "-DALPHA_ONLY -DCOMMON", not the last file's "-DCOMMON".
+        Raw last-writer-wins comparison would see both layers as -DCOMMON and
+        let -DALPHA_ONLY leak onto appbeta's translation units."""
+        alpha_dir = tmp_path / "appalpha"
+        alpha_conf_d = alpha_dir / "ct.conf.d"
+        alpha_conf_d.mkdir(parents=True)
+        (alpha_conf_d / "ct.conf").write_text("append-CPPFLAGS = -DALPHA_ONLY\n")
+        (alpha_dir / "ct.conf").write_text("append-CPPFLAGS = -DCOMMON\n")
+        alpha = TargetConfLayer(
+            subproject_dir=str(alpha_dir),
+            conf_paths=(str(alpha_conf_d / "ct.conf"), str(alpha_dir / "ct.conf")),
+        )
+        beta = _layer(tmp_path, "appbeta", "append-CPPFLAGS = -DCOMMON\n")
+        with pytest.raises(ConfContradictionError) as excinfo:
+            validate_no_conf_contradictions([alpha, beta], [], "monovariant", ["a", "b"])
+        message = str(excinfo.value)
+        assert "-DALPHA_ONLY -DCOMMON" in message
+
+    def test_identical_conf_dir_placeholders_expand_differently_and_contradict(self, tmp_path):
+        """Two layers with the textually identical value
+        ``-I${CONF_DIR}/include`` expand to different absolute dirs; comparing
+        raw text would pass validation and apply both include dirs to every
+        translation unit."""
+        alpha = _layer(tmp_path, "appalpha", "append-CPPFLAGS = -I${CONF_DIR}/include\n")
+        beta = _layer(tmp_path, "appbeta", "append-CPPFLAGS = -I${CONF_DIR}/include\n")
+        with pytest.raises(ConfContradictionError) as excinfo:
+            validate_no_conf_contradictions([alpha, beta], [], "monovariant", ["a", "b"])
+        message = str(excinfo.value)
+        assert str(tmp_path / "appalpha" / "include") in message
+        assert str(tmp_path / "appbeta" / "include") in message
+
+    def test_env_vars_expanding_to_same_value_are_not_a_contradiction(self, monkeypatch, tmp_path):
+        """Two different spellings that expand identically must merge silently
+        -- raw-text comparison would raise a spurious contradiction."""
+        monkeypatch.setenv("CT_TEST_SUBPROJ_FLAG", "-DFROMENV")
+        alpha = _layer(tmp_path, "appalpha", "append-CPPFLAGS = $CT_TEST_SUBPROJ_FLAG\n")
+        beta = _layer(tmp_path, "appbeta", "append-CPPFLAGS = -DFROMENV\n")
+        validate_no_conf_contradictions([alpha, beta], [], "monovariant", ["a", "b"])
+
+    def test_three_layer_conflict_renders_each_value_once(self, tmp_path):
+        """A/B/B across three layers renders one line per distinct value, not
+        one line pair per clashing layer pair."""
+        alpha = _layer(tmp_path, "appalpha", "append-CPPFLAGS = -DALPHA\n")
+        beta = _layer(tmp_path, "appbeta", "append-CPPFLAGS = -DBETA\n")
+        gamma = _layer(tmp_path, "appgamma", "append-CPPFLAGS = -DBETA\n")
+        with pytest.raises(ConfContradictionError) as excinfo:
+            validate_no_conf_contradictions([alpha, beta, gamma], [], "monovariant", ["a", "b", "c"])
+        message = str(excinfo.value)
+        assert message.count("-DALPHA") == 1
+        assert message.count("-DBETA") == 1
 
     def test_variant_mismatch_is_a_contradiction(self, tmp_path):
         beta = _layer(tmp_path, "appbeta", "variant = othervariant\n")
@@ -547,6 +600,19 @@ class TestParseargsTargetAnchoring:
         assert excinfo.value.code == 1
         err = capsys.readouterr().err
         assert "Build separately" in err and "identical" in err
+
+    def test_identical_append_values_across_layers_apply_once(self, monorepo):
+        """Two layers appending the same value pass validation, and the
+        accumulating parser applies the token once, not once per layer."""
+        appdelta = monorepo / "appdelta"
+        appdelta.mkdir()
+        (appdelta / "ct.conf").write_text("append-CPPFLAGS = -DAPPBETA_EXTRA\n")
+        (appdelta / "main.cpp").write_text("int main() { return 0; }\n")
+        args = _parse_cake_args(
+            monorepo,
+            [*_ARGV_BASE, os.path.join("appbeta", "main.cpp"), os.path.join("appdelta", "main.cpp")],
+        )
+        assert args.CPPFLAGS.count("-DAPPBETA_EXTRA") == 1
 
     def test_two_harmonious_subprojects_merge(self, monorepo):
         appalpha = monorepo / "appalpha"

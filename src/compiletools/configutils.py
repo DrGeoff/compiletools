@@ -588,7 +588,10 @@ def walk_target_conf_layers(targets, conf_filenames=("ct.conf",), verbose=0, git
                     # Non-git target or --no-git-root: the walk is bounded
                     # only by the filesystem root, so the layer may come from
                     # far above the target (e.g. a stray ~/ct.conf).
-                    print(f"Note: config layer for {target} found at {current}; the walk was not bounded by a git root")
+                    print(
+                        f"Note: config layer for {target} found at {current}; the walk was not bounded by a git root",
+                        file=sys.stderr,
+                    )
                 layers.setdefault(current, tuple(paths))
                 break
             parent = compiletools.wrappedos.dirname(current)
@@ -607,19 +610,45 @@ class ConfContradictionError(RuntimeError):
     """Two same-tier config layers set the same key to different values."""
 
 
+def _flatten_conf_value(value):
+    """Render a parsed conf value (scalar or list) as one comparison string."""
+    if isinstance(value, list):
+        return " ".join(str(elem).strip().strip("\"'") for elem in value)
+    return str(value).strip().strip("\"'")
+
+
 def _effective_layer_values(conf_paths):
     """Merge one layer's conf files (low-to-high) into key -> (raw_key, value, path).
 
     Keys are normalized (dashes to underscores) for comparison; the raw key
-    is kept for display. Later files override earlier ones — intra-layer
-    override is normal layering, never a contradiction.
+    is kept for display. Semantics mirror what ``_AccumulatingConfigFileParser``
+    will actually apply, so validation compares effective values, not raw
+    text: each file is parsed with that parser (``${CONF_DIR}`` expands
+    against the file's own directory, env vars and ``~`` expand),
+    ``append-*``/``prepend-*`` values accumulate across the layer's files in
+    load order, and scalar keys are last-writer-wins (intra-layer override of
+    a scalar is normal layering, never a contradiction). Comparing raw text
+    instead would let a masked intra-layer append value or two textually
+    identical ``${CONF_DIR}`` values leak cross-subproject flags past the
+    contradiction check.
     """
+    # Deferred: apptools_argparse imports this module at its top level.
+    from compiletools.apptools_argparse import _AccumulatingConfigFileParser
+
     values = {}
     for path in conf_paths:
-        parsed = _parse_conf_file_cached(compiletools.wrappedos.realpath(path))
+        real = compiletools.wrappedos.realpath(path)
+        parser = _AccumulatingConfigFileParser()
+        with open(real, encoding="utf-8", errors="replace") as stream:
+            parsed = parser.parse(stream)
         for raw_key, value in parsed.items():
             normalized = raw_key.replace("-", "_")
-            values[normalized] = (raw_key, str(value).strip().strip("\"'"), path)
+            flat = _flatten_conf_value(value)
+            if normalized.startswith(("append_", "prepend_")) and normalized in values:
+                same_raw_key, prev_flat, _ = values[normalized]
+                values[normalized] = (same_raw_key, f"{prev_flat} {flat}".strip(), real)
+            else:
+                values[normalized] = (raw_key, flat, real)
     return values
 
 
@@ -642,8 +671,10 @@ def validate_no_conf_contradictions(layers, cwd_layer_paths, invocation_variant,
         tier.append((layer.subproject_dir, _effective_layer_values(layer.conf_paths), False))
 
     canonical_invocation_variant = canonicalize_variant_input(invocation_variant)
-    merged = {}
-    conflicts = []
+    # normalized key -> (raw_key, {value: first path}); a key with more than
+    # one distinct value is a contradiction, rendered once per distinct value
+    # (not once per clashing layer pair, which duplicated lines for A/B/B).
+    seen = {}
     for _, values, is_cwd_layer in tier:
         for normalized, (raw_key, value, path) in values.items():
             compare_value = value
@@ -654,23 +685,20 @@ def validate_no_conf_contradictions(layers, cwd_layer_paths, invocation_variant,
                     # is not a contradiction, so this value is not compared.
                     continue
                 compare_value = canonicalize_variant_input(value)
-                if compare_value != canonical_invocation_variant:
-                    conflicts.append((raw_key, canonical_invocation_variant, "<invocation>", compare_value, path))
-                    continue
-            if normalized in merged:
-                prev_value, prev_path = merged[normalized]
-                if prev_value != compare_value:
-                    conflicts.append((raw_key, prev_value, prev_path, compare_value, path))
-            else:
-                merged[normalized] = (compare_value, path)
+                _, by_value = seen.setdefault(normalized, (raw_key, {canonical_invocation_variant: "<invocation>"}))
+                by_value.setdefault(compare_value, path)
+                continue
+            _, by_value = seen.setdefault(normalized, (raw_key, {}))
+            by_value.setdefault(compare_value, path)
 
+    conflicts = [(raw_key, by_value) for raw_key, by_value in seen.values() if len(by_value) > 1]
     if not conflicts:
         return
 
     lines = ["ERROR: conflicting subproject configs in one invocation"]
-    for raw_key, value_a, path_a, value_b, path_b in conflicts:
-        lines.append(f"  {raw_key} = {value_a}   (from {path_a})")
-        lines.append(f"  {raw_key} = {value_b}   (from {path_b})")
+    for raw_key, by_value in conflicts:
+        for value, path in by_value.items():
+            lines.append(f"  {raw_key} = {value}   (from {path})")
     lines.append("Choose one:")
     lines.append("  1) Build separately:")
     for command in remedy_commands:
@@ -730,6 +758,11 @@ def build_separate_build_commands(
     Handles bare positional targets, ``--flag value`` (value tokens dropped;
     a flag left with no surviving value is dropped too), and ``--flag=value``
     forms. Every emitted token is ``shlex.quote``d.
+
+    Caveat on the ``cd`` forms: non-target flag values are reproduced
+    verbatim, so a relative path in e.g. ``--config=path`` resolves
+    differently after the ``cd``. Remedies are suggestions the user reviews,
+    not commands run blind.
     """
     target_realpaths = {compiletools.wrappedos.realpath(t): t for t in targets}
 
