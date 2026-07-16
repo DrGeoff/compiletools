@@ -917,13 +917,7 @@ class TestDetectMarkerTypeCommentAware:
         # A '#'-leading line INSIDE a multi-line raw string is string data
         # (codegen templates, embedded scripts), never a directive; it must
         # not spoof the pp-line exemption.
-        src = (
-            'const char* tmpl = R"(\n'
-            '#include "unit_test.hpp"\n'
-            "void generated();\n"
-            ')";\n'
-            "void helper();\n"
-        )
+        src = 'const char* tmpl = R"(\n#include "unit_test.hpp"\nvoid generated();\n)";\nvoid helper();\n'
         assert self._detect(src, exe=(), test=("unit_test.hpp",)) == MarkerType.NONE
 
     def test_hash_define_inside_raw_string_does_not_classify(self):

@@ -156,9 +156,7 @@ def _skip_raw_string_literal(str_text: "stringzilla.Str", start: int, n: int) ->
     """
     window = bytes(str_text[start : start + 17])
     open_rel = window.find(b"(")
-    if open_rel == -1 or any(
-        c in _RAW_DELIM_FORBIDDEN_BYTES or c >= 0x80 for c in window[:open_rel]
-    ):
+    if open_rel == -1 or any(c in _RAW_DELIM_FORBIDDEN_BYTES or c >= 0x80 for c in window[:open_rel]):
         return _skip_quoted_literal(str_text, start, '"', n)
     closer = ")" + window[:open_rel].decode("ascii") + '"'
     end = str_text.find(closer, start + open_rel + 1)
@@ -169,13 +167,9 @@ def _skip_raw_string_literal(str_text: "stringzilla.Str", start: int, n: int) ->
 
 _HEX_DIGIT_BYTES = frozenset(b"0123456789abcdefABCDEF")
 _PP_NUMBER_CONT_BYTES = _HEX_DIGIT_BYTES | frozenset(b"xXuUlL._")
-_TOKEN_CONT_BYTES = frozenset(
-    b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_'."
-)
+_TOKEN_CONT_BYTES = frozenset(b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_'.")
 _DECIMAL_DIGIT_BYTES = frozenset(b"0123456789")
-_IDENT_BYTES = frozenset(
-    b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
-)
+_IDENT_BYTES = frozenset(b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
 
 
 def _is_digit_separator(str_text: "stringzilla.Str", quote_pos: int, n: int) -> bool:
@@ -1471,15 +1465,10 @@ def _detect_marker_type(
         line_start = max(str_text.rfind("\n", 0, pos), str_text.rfind("\r", 0, pos)) + 1
         while line_start > 0:
             k = line_start - 1  # newline byte ending the previous physical line
-            if (
-                bytes(str_text[k : k + 1]) == b"\n"
-                and bytes(str_text[k - 1 : k]) == b"\r"
-            ):
+            if bytes(str_text[k : k + 1]) == b"\n" and bytes(str_text[k - 1 : k]) == b"\r":
                 k -= 1  # CRLF: the splice backslash sits before the CR
             if k > 0 and bytes(str_text[k - 1 : k]) == b"\\":
-                line_start = (
-                    max(str_text.rfind("\n", 0, k - 1), str_text.rfind("\r", 0, k - 1)) + 1
-                )
+                line_start = max(str_text.rfind("\n", 0, k - 1), str_text.rfind("\r", 0, k - 1)) + 1
             else:
                 break
         k = line_start
