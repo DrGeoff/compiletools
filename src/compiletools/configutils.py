@@ -584,6 +584,11 @@ def walk_target_conf_layers(targets, conf_filenames=("ct.conf",), verbose=0, git
                 break
             paths = _conf_paths_in_dir(current, conf_filenames)
             if paths:
+                if not in_git_repo and verbose >= 1:
+                    # Non-git target or --no-git-root: the walk is bounded
+                    # only by the filesystem root, so the layer may come from
+                    # far above the target (e.g. a stray ~/ct.conf).
+                    print(f"Note: config layer for {target} found at {current}; the walk was not bounded by a git root")
                 layers.setdefault(current, tuple(paths))
                 break
             parent = compiletools.wrappedos.dirname(current)
@@ -675,11 +680,24 @@ def validate_no_conf_contradictions(layers, cwd_layer_paths, invocation_variant,
 
 
 # Flags whose following space-separated positional values are target files.
-# --begintests is a dest=tests synonym for --tests (cake.py), so it belongs here.
-_TARGET_VALUE_FLAGS = ("--tests", "--begintests", "--static", "--dynamic")
+# Includes every synonym: --begintests is a dest=tests synonym (cake.py);
+# --static-library / --dynamic-library are add_target_arguments synonyms
+# (apptools_argparse.py). Callers with a live parser should pass
+# target_value_flags derived from it (apptools._target_value_flags_from_parser)
+# so new synonyms cannot drift from this fallback tuple.
+_TARGET_VALUE_FLAGS = (
+    "--tests",
+    "--begintests",
+    "--static",
+    "--static-library",
+    "--dynamic",
+    "--dynamic-library",
+)
 
 
-def build_separate_build_commands(prog, argv, layers, targets, *, cwd_layer_dir=None, auto=False):
+def build_separate_build_commands(
+    prog, argv, layers, targets, *, cwd_layer_dir=None, auto=False, target_value_flags=_TARGET_VALUE_FLAGS
+):
     """Reconstruct one actionable per-subproject command per conflicting layer.
 
     Participants are every target-anchored layer plus (when supplied) the cwd
@@ -695,13 +713,19 @@ def build_separate_build_commands(prog, argv, layers, targets, *, cwd_layer_dir=
       layer is discovered). Explicit targets owned by the subproject are
       re-expressed relative to it; a participant that owns no explicit target
       falls back to ``--auto`` so the command still builds that subproject.
+      The ``--auto`` fallback carries NO explicit targets: cake ignores
+      ``--auto`` whenever any target list is non-empty, so appending targets
+      (even shared ones) would suppress the very discovery the fallback
+      relies on. Shared sources a discovered target actually needs are folded
+      in by implied-source discovery.
     * Plain explicit-target invocations (no cwd participant) keep the original
       argv and drop targets owned by a DIFFERENT participant. Target ownership
       is the DEEPEST matching subproject prefix, so a nested child claims its
       own target rather than losing it to an ancestor layer.
 
     A target owned by NO participant (a shared source such as
-    ``libcore/util.cpp``) is kept in EVERY command, in both forms.
+    ``libcore/util.cpp``) is kept in every command that carries explicit
+    targets; only the ``--auto``-fallback form omits it (see above).
 
     Handles bare positional targets, ``--flag value`` (value tokens dropped;
     a flag left with no surviving value is dropped too), and ``--flag=value``
@@ -736,7 +760,7 @@ def build_separate_build_commands(prog, argv, layers, targets, *, cwd_layer_dir=
         i = 0
         while i < len(argv):
             token = argv[i]
-            if token in _TARGET_VALUE_FLAGS:
+            if token in target_value_flags:
                 j = i + 1
                 values = []
                 while j < len(argv) and not argv[j].startswith("-"):
@@ -773,7 +797,7 @@ def build_separate_build_commands(prog, argv, layers, targets, *, cwd_layer_dir=
             # Targets were discovered, not typed on the command line. Re-running
             # --auto from inside the subproject rediscovers only that
             # subproject's targets, so the remedy is the bare cd + original argv.
-            base = filter_argv(lambda real: True)
+            base = filter_argv(lambda _real: True)
             tokens = [prog] + base
             if "--auto" not in base:
                 tokens.append("--auto")
@@ -782,15 +806,22 @@ def build_separate_build_commands(prog, argv, layers, targets, *, cwd_layer_dir=
             # The cwd layer itself participates in the conflict, so filtering
             # argv in place cannot separate the subprojects. Rebuild from inside
             # each subproject with only its own explicit targets; a participant
-            # owning no explicit target falls back to --auto discovery.
-            base = filter_argv(lambda real: True)  # drop every target; re-add owned + shared below
-            kept_targets = sorted(
-                os.path.relpath(real, keep_real) for real in target_realpaths if owning_real(real) in (keep_real, None)
-            )
+            # owning no explicit target falls back to --auto discovery, which
+            # cake honors only when EVERY target list is empty -- so the
+            # fallback form must carry no targets at all, shared or not.
+            base = filter_argv(lambda _real: True)  # drop every target; re-add owned + shared below
             owns_any = any(owning_real(real) == keep_real for real in target_realpaths)
-            tokens = [prog] + base + kept_targets
-            if not owns_any and "--auto" not in base:
-                tokens.append("--auto")
+            if owns_any:
+                kept_targets = sorted(
+                    os.path.relpath(real, keep_real)
+                    for real in target_realpaths
+                    if owning_real(real) in (keep_real, None)
+                )
+                tokens = [prog] + base + kept_targets
+            else:
+                tokens = [prog] + base
+                if "--auto" not in base:
+                    tokens.append("--auto")
             commands.append(f"cd {shlex.quote(keep_dir)} && {join(tokens)}")
         else:
             kept = filter_argv(lambda real, keep=keep_real: owning_real(real) is not None and owning_real(real) != keep)

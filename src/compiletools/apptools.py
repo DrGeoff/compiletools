@@ -415,17 +415,40 @@ def _target_conf_filenames(variant, argv):
     return tuple(dict.fromkeys(filenames))
 
 
-def _apply_target_conf_layers(cap, argv, args, verbose, auto=False):
+def _target_value_flags_from_parser(cap):
+    """Every option string whose action collects target files (dest in
+    tests/static/dynamic), so remedy-command argv filtering recognizes all
+    synonyms (--begintests, --static-library, --dynamic-library) without a
+    hand-maintained list that can drift from the parser."""
+    flags = []
+    for action in cap._actions:
+        if action.dest in ("tests", "static", "dynamic"):
+            flags.extend(action.option_strings)
+    return tuple(dict.fromkeys(flags)) or compiletools.configutils._TARGET_VALUE_FLAGS
+
+
+def _apply_target_conf_layers(cap, argv, args, verbose, auto=False, reparse=True):
     """Load explicit targets' subproject config layers; re-parse once if new.
 
-    Same-tier contradiction (cwd layer vs target layer, target vs target)
-    raises ConfContradictionError before any re-parse. Returns *args*
-    unchanged when the walk surfaces nothing new -- the common case costs
-    only the ancestor walk.
+    Same-tier contradiction (cwd layer vs target layer, target vs target) is
+    rendered to stderr with its remedy commands and exits via SystemExit(1) --
+    the argparse convention, so every ct-* entry point gets traceback-free
+    rendering without per-tool handlers. At verbose >= 2 the underlying
+    ConfContradictionError propagates instead so the traceback is available.
+    Returns *args* unchanged when the walk surfaces nothing new -- the common
+    case costs only the ancestor walk.
 
     *auto* is True on the ``--auto`` re-anchor path (targets came from
     discovery, not argv); the remedy commands then take the ``cd`` + fresh
     discovery form rather than argv target filtering.
+
+    *reparse* False widens ``cap._default_config_files`` (after validation)
+    but skips the re-parse, returning *args* unchanged -- for callers that
+    re-run the full ``parseargs`` themselves and would discard the namespace.
+
+    Runs once, no fixpoint: a target injected BY a freshly loaded layer
+    (e.g. a subproject ct.conf's own ``tests = foo.cpp``) does not get its
+    ancestor layers walked in turn.
     """
     targets = _collect_explicit_target_files(args)
     if not targets:
@@ -474,8 +497,17 @@ def _apply_target_conf_layers(cap, argv, args, verbose, auto=False):
         targets,
         cwd_layer_dir=cwd_layer_dir,
         auto=auto,
+        target_value_flags=_target_value_flags_from_parser(cap),
     )
-    compiletools.configutils.validate_no_conf_contradictions(new_layers, cwd_layer_paths, args.variant, remedy_commands)
+    try:
+        compiletools.configutils.validate_no_conf_contradictions(
+            new_layers, cwd_layer_paths, args.variant, remedy_commands
+        )
+    except compiletools.configutils.ConfContradictionError as err:
+        if verbose >= 2:
+            raise
+        print(str(err), file=sys.stderr)
+        raise SystemExit(1) from None
 
     new_paths = [p for layer in new_layers for p in layer.conf_paths]
     _check_legacy_cas_config_keys(new_paths)
@@ -483,6 +515,8 @@ def _apply_target_conf_layers(cap, argv, args, verbose, auto=False):
     if verbose >= 4:
         print("Target-anchored config layers loaded: " + " ".join(new_paths))
     cap._default_config_files = list(default_config_files) + new_paths
+    if not reparse:
+        return args
     new_args = cap.parse_args(args=argv)
     _stash_private_attrs(new_args, cap, args._context, argv)
     return new_args
@@ -515,7 +549,9 @@ def reanchor_config_for_discovered_targets(args):
     saved_targets = {attr: getattr(args, attr, None) for attr in ("filename", "static", "dynamic", "tests")}
 
     before = list(getattr(cap, "_default_config_files", []) or [])
-    _apply_target_conf_layers(cap, argv, args, args.verbose, auto=True)
+    # reparse=False: the internal re-parse would be discarded anyway --
+    # parseargs below re-runs the whole pipeline over the widened config set.
+    _apply_target_conf_layers(cap, argv, args, args.verbose, auto=True, reparse=False)
     after = list(getattr(cap, "_default_config_files", []) or [])
     if after == before:
         return None

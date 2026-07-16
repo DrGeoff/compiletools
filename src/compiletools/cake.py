@@ -1121,24 +1121,6 @@ _FATAL_ERROR_RENDERERS: list = [
 ]
 
 
-def _argv_verbose_level(argv):
-    """Best-effort verbose level from argv, matching the ``-v``/``-q`` count
-    actions. Used to decide whether a parseargs-time fatal error re-raises
-    with a full traceback (verbose >= 2) or renders cleanly."""
-    tokens = list(argv) if argv is not None else sys.argv[1:]
-    verbose = 0
-    for tok in tokens:
-        if tok in ("-v", "--verbose"):
-            verbose += 1
-        elif tok in ("-q", "--quiet"):
-            verbose -= 1
-        elif len(tok) >= 2 and tok[0] == "-" and tok[1] != "-" and set(tok[1:]) == {"v"}:
-            verbose += len(tok) - 1
-        elif len(tok) >= 2 and tok[0] == "-" and tok[1] != "-" and set(tok[1:]) == {"q"}:
-            verbose -= len(tok) - 1
-    return verbose
-
-
 def main(argv=None):
     sha = get_package_git_sha()
     version_str = f"🍰 ct-cake {__version__}"
@@ -1160,19 +1142,12 @@ def main(argv=None):
     # long-lived embedder calling main() repeatedly doesn't carry project
     # A's pkg-config dirs into project B's environment.
     with context.pkg_config_path_restored():
-        try:
-            args = compiletools.apptools.parseargs(cap, argv, context=context)
-        except compiletools.configutils.ConfContradictionError as err:
-            # Explicit-target contradictions raise inside parseargs, outside
-            # the try below that renders _FATAL_ERROR_RENDERERS -- so without
-            # this the --auto path rendered cleanly while the explicit-target
-            # path printed a raw traceback. Render the message + remedies with
-            # no traceback and a nonzero exit, honoring the same verbose>=2
-            # re-raise convention the in-build handler uses.
-            if _argv_verbose_level(argv) >= 2:
-                raise
-            print(str(err), file=sys.stderr)
-            return 1
+        # Conf contradictions (explicit-target and --auto alike) are rendered
+        # to stderr inside apptools._apply_target_conf_layers, which raises
+        # SystemExit(1) at verbose < 2 and the raw ConfContradictionError at
+        # verbose >= 2 -- both propagate through main() untouched, same as
+        # the validate_otel_timing_pair SystemExit below.
+        args = compiletools.apptools.parseargs(cap, argv, context=context)
         compiletools.apptools.validate_otel_timing_pair(args)
 
         if not any([args.filename, args.static, args.dynamic, args.tests, args.auto]):

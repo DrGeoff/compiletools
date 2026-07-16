@@ -1,7 +1,6 @@
 """Target-anchored config discovery: a target's nearest-ancestor ct.conf /
 ct.conf.d layer loads regardless of cwd; same-tier contradictions hard-error.
-
-Spec: docs/superpowers/specs/2026-07-15-subproject-conf-discovery-design.md
+Subproject flags apply invocation-globally (no per-TU scoping).
 """
 
 import os
@@ -356,9 +355,11 @@ class TestBuildSeparateBuildCommands:
         assert alpha_main not in commands[1]
 
     def test_shared_target_kept_in_cwd_participant_form(self, tmp_path):
-        # Same guarantee for the cd form: a shared target owned by no
-        # participant must appear in both commands (re-expressed relative to
-        # each subproject dir).
+        # cd form: the shared target rides along with the participant that
+        # owns an explicit target, but the --auto fallback (participant owning
+        # no target) must carry NO targets at all -- cake ignores --auto
+        # whenever any target list is non-empty, so a shared target appended
+        # there would make the remedy command build nothing.
         beta = _layer(tmp_path, "appbeta", "append-CPPFLAGS = -DBETA\n")
         cwd_dir = str(tmp_path / "appalpha")
         os.makedirs(cwd_dir, exist_ok=True)
@@ -378,7 +379,37 @@ class TestBuildSeparateBuildCommands:
             cwd_layer_dir=cwd_dir,
         )
         assert len(commands) == 2
-        assert all("util.cpp" in c for c in commands)
+        beta_cmd = [c for c in commands if "appbeta" in c.split("&&")[0]]
+        assert len(beta_cmd) == 1
+        assert "util.cpp" in beta_cmd[0] and "main.cpp" in beta_cmd[0]
+        auto_cmd = [c for c in commands if c is not beta_cmd[0]]
+        assert auto_cmd[0].rstrip().endswith("--auto")
+        assert "util.cpp" not in auto_cmd[0] and "main.cpp" not in auto_cmd[0]
+
+    def test_library_flag_synonyms_are_partitioned(self, tmp_path):
+        # --static-library / --dynamic-library are add_target_arguments
+        # synonyms of --static / --dynamic; their values must partition the
+        # same way (RED with the pre-fix _TARGET_VALUE_FLAGS tuple, which
+        # would drop the flag but keep the value as a stray positional).
+        alpha = _layer(tmp_path, "appalpha", "x = 1\n")
+        beta = _layer(tmp_path, "appbeta", "x = 2\n")
+        alpha_lib = str(tmp_path / "appalpha" / "lib.cpp")
+        beta_lib = str(tmp_path / "appbeta" / "lib.cpp")
+        for p in (alpha_lib, beta_lib):
+            with open(p, "w") as f:
+                f.write("int f() { return 0; }\n")
+
+        commands = build_separate_build_commands(
+            "ct-cake",
+            ["--static-library", alpha_lib, "--dynamic-library", beta_lib],
+            [alpha, beta],
+            [alpha_lib, beta_lib],
+        )
+        assert len(commands) == 2
+        assert "--static-library" in commands[0] and alpha_lib in commands[0]
+        assert "--dynamic-library" not in commands[0] and beta_lib not in commands[0]
+        assert "--dynamic-library" in commands[1] and beta_lib in commands[1]
+        assert "--static-library" not in commands[1] and alpha_lib not in commands[1]
 
     def test_cwd_vs_target_form_emits_distinct_actionable_pair(self, tmp_path):
         # cwd layer participates in the conflict: the target subproject gets an
@@ -490,15 +521,32 @@ class TestParseargsTargetAnchoring:
         appalpha.mkdir()
         (appalpha / "ct.conf").write_text("append-CPPFLAGS = -DAPPALPHA_EXTRA\n")
         (appalpha / "main.cpp").write_text("int main() { return 0; }\n")
+        # -v -v: at verbose >= 2 the raw ConfContradictionError propagates
+        # (at lower verbosity it is rendered to stderr and exits SystemExit(1),
+        # covered by TestCakeMainErrorRendering).
         with pytest.raises(compiletools.configutils.ConfContradictionError) as excinfo:
             _parse_cake_args(
                 monorepo,
-                [*_ARGV_BASE, os.path.join("appalpha", "main.cpp"), os.path.join("appbeta", "main.cpp")],
+                [*_ARGV_BASE, "-v", "-v", os.path.join("appalpha", "main.cpp"), os.path.join("appbeta", "main.cpp")],
             )
         message = str(excinfo.value)
         assert "-DAPPALPHA_EXTRA" in message and "-DAPPBETA_EXTRA" in message
         assert "Build separately" in message
         assert "identical" in message
+
+    def test_conflict_at_default_verbosity_renders_and_exits(self, monorepo, capsys):
+        appalpha = monorepo / "appalpha"
+        appalpha.mkdir()
+        (appalpha / "ct.conf").write_text("append-CPPFLAGS = -DAPPALPHA_EXTRA\n")
+        (appalpha / "main.cpp").write_text("int main() { return 0; }\n")
+        with pytest.raises(SystemExit) as excinfo:
+            _parse_cake_args(
+                monorepo,
+                [*_ARGV_BASE, os.path.join("appalpha", "main.cpp"), os.path.join("appbeta", "main.cpp")],
+            )
+        assert excinfo.value.code == 1
+        err = capsys.readouterr().err
+        assert "Build separately" in err and "identical" in err
 
     def test_two_harmonious_subprojects_merge(self, monorepo):
         appalpha = monorepo / "appalpha"
@@ -520,7 +568,7 @@ class TestParseargsTargetAnchoring:
         with pytest.raises(compiletools.configutils.ConfContradictionError):
             _parse_cake_args(
                 monorepo / "appalpha",
-                [*_ARGV_BASE, os.path.join("..", "appbeta", "main.cpp")],
+                [*_ARGV_BASE, "-v", "-v", os.path.join("..", "appbeta", "main.cpp")],
             )
 
     def test_variant_contradiction_errors(self, monorepo):
@@ -529,7 +577,7 @@ class TestParseargsTargetAnchoring:
         (appdelta / "ct.conf").write_text("variant = othervariant\n")
         (appdelta / "main.cpp").write_text("int main() { return 0; }\n")
         with pytest.raises(compiletools.configutils.ConfContradictionError):
-            _parse_cake_args(monorepo, [*_ARGV_BASE, os.path.join("appdelta", "main.cpp")])
+            _parse_cake_args(monorepo, [*_ARGV_BASE, "-v", "-v", os.path.join("appdelta", "main.cpp")])
 
 
 class TestAutoDiscoveryReanchor:
@@ -569,6 +617,28 @@ class TestAutoDiscoveryReanchor:
         # was not loaded.
         assert result == 0
 
+    def test_compilation_database_auto_reanchors_subproject_conf(self, monorepo):
+        """ct-compilation-database --auto must re-anchor after discovery like
+        cake.process() does: appbeta/main.cpp's CDB entry must carry
+        -DAPPBETA_EXTRA from appbeta/ct.conf."""
+        import json
+
+        import compiletools.compilation_database
+
+        uth.reset()
+        output = str(monorepo / "cdb.json")
+        with uth.DirectoryContext(str(monorepo)):
+            with uth.ParserContext():
+                result = compiletools.compilation_database.main(
+                    [*_ARGV_BASE, "--auto", f"--compilation-database-output={output}"]
+                )
+        assert result == 0
+        with open(output) as f:
+            entries = json.load(f)
+        beta_entries = [e for e in entries if e["file"].endswith(os.path.join("appbeta", "main.cpp"))]
+        assert beta_entries, f"appbeta/main.cpp missing from CDB: {[e['file'] for e in entries]}"
+        assert "-DAPPBETA_EXTRA" in beta_entries[0]["arguments"]
+
     def test_cake_auto_conflicting_subprojects_error(self, monorepo):
         appalpha = monorepo / "appalpha"
         appalpha.mkdir()
@@ -579,18 +649,19 @@ class TestAutoDiscoveryReanchor:
         uth.reset()
         with uth.DirectoryContext(str(monorepo)):
             with uth.ParserContext():
-                # -v -v forces verbose >= 2 so cake.main re-raises instead of
-                # swallowing the error into a return code (see main()'s
-                # _FATAL_ERROR_RENDERERS dispatch).
+                # -v -v forces verbose >= 2 so _apply_target_conf_layers
+                # propagates the raw error instead of rendering to stderr and
+                # raising SystemExit(1).
                 with pytest.raises(compiletools.configutils.ConfContradictionError):
                     compiletools.cake.main([*_ARGV_BASE, "--auto", "-v", "-v"])
 
 
 class TestCakeMainErrorRendering:
     def test_explicit_conflict_renders_cleanly_without_traceback(self, monorepo, capsys):
-        """Important 4: an explicit-target contradiction raises inside
-        parseargs (before the in-build try). cake.main must render the message
-        + remedies with a nonzero exit and no raw traceback."""
+        """An explicit-target contradiction is rendered to stderr inside
+        parseargs (message + remedies, no raw traceback) and exits via
+        SystemExit(1) -- the argparse convention every ct-* entry point
+        inherits without a per-tool handler."""
         appalpha = monorepo / "appalpha"
         appalpha.mkdir()
         (appalpha / "ct.conf").write_text("append-CPPFLAGS = -DAPPALPHA_EXTRA\n")
@@ -598,10 +669,11 @@ class TestCakeMainErrorRendering:
         uth.reset()
         with uth.DirectoryContext(str(monorepo)):
             with uth.ParserContext():
-                result = compiletools.cake.main(
-                    [*_ARGV_BASE, os.path.join("appalpha", "main.cpp"), os.path.join("appbeta", "main.cpp")]
-                )
-        assert result == 1
+                with pytest.raises(SystemExit) as excinfo:
+                    compiletools.cake.main(
+                        [*_ARGV_BASE, os.path.join("appalpha", "main.cpp"), os.path.join("appbeta", "main.cpp")]
+                    )
+        assert excinfo.value.code == 1
         combined = "".join(capsys.readouterr())
         assert "Build separately" in combined
         assert "identical" in combined  # remedy 2

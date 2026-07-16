@@ -408,6 +408,13 @@ def main(argv=None):
             print("Auto-detecting targets...")
         findtargets = compiletools.findtargets.FindTargets(args, context=context)
         findtargets.process(args)
+        # Discovered targets may live in subprojects whose conf layers were
+        # invisible at parse time. Re-anchor exactly like cake.process() does,
+        # otherwise the CDB's flags diverge from what ct-cake --auto compiles
+        # with (and contradiction validation is skipped).
+        reanchored = compiletools.apptools.reanchor_config_for_discovered_targets(args)
+        if reanchored is not None:
+            args = reanchored
         # Re-run substitutions after targets are discovered
         compiletools.apptools.substitutions(args, verbose=0)
 
