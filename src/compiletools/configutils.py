@@ -522,11 +522,17 @@ class TargetConfLayer:
     """One subproject's config layer, discovered by walking up from a target.
 
     conf_paths are in low-to-high priority order, ready to append to
-    configargparse default_config_files.
+    configargparse default_config_files. anchor_targets are the sorted
+    targets whose ancestor walks landed on this layer (for diagnostics
+    naming which target pulled the layer in). git_bounded is False when
+    any anchoring walk ran without a git-root bound (non-git target or
+    ``--no-git-root``), so the layer may sit far above its targets.
     """
 
     subproject_dir: str
     conf_paths: tuple[str, ...]
+    anchor_targets: tuple[str, ...] = ()
+    git_bounded: bool = True
 
 
 def _conf_paths_in_dir(directory, conf_filenames):
@@ -561,11 +567,24 @@ def walk_target_conf_layers(targets, conf_filenames=("ct.conf",), verbose=0, git
     already-landed non-git-target behavior; a conf layer above the gitroot is
     then eligible.
 
+    An unbounded walk (non-git target or ``--no-git-root``) can land on a
+    conf far above the target — e.g. a forgotten ``~/ct.conf`` — that then
+    silently applies to the whole build. Two stderr notices cover this:
+    a layer whose directory is ``$HOME`` or an ancestor of ``$HOME`` warns
+    UNCONDITIONALLY (legitimate user-level config lives at
+    ``~/.config/ct/``, never bare ``~/ct.conf``, so such a layer is almost
+    certainly a stray file); any other unbounded-walk layer is noted at
+    ``verbose >= 1``. When the caller iterates this walk to a fixpoint the
+    note can repeat for an already-loaded layer — rare and cosmetic.
+
     Returns a tuple of TargetConfLayer sorted by subproject_dir for
     deterministic downstream ordering. Nonexistent targets are skipped;
     downstream code raises its own error for them.
     """
     layers = {}
+    # expanduser/realpath deliberately direct, NOT cached: HOME is
+    # process-mutable (tests monkeypatch it).
+    home = os.path.realpath(os.path.expanduser("~"))
     for target in targets:
         if not target:
             continue
@@ -584,25 +603,46 @@ def walk_target_conf_layers(targets, conf_filenames=("ct.conf",), verbose=0, git
                 break
             paths = _conf_paths_in_dir(current, conf_filenames)
             if paths:
-                if not in_git_repo and verbose >= 2:
-                    # Non-git target or --no-git-root: the walk is bounded
-                    # only by the filesystem root, so the layer may come from
-                    # far above the target (e.g. a stray ~/ct.conf).
-                    print(
-                        f"Note: config layer for {target} found at {current}; the walk was not bounded by a git root",
-                        file=sys.stderr,
-                    )
-                layers.setdefault(current, tuple(paths))
+                if not in_git_repo:
+                    if current == home or home.startswith(current + os.sep):
+                        # A conf at or above $HOME reached by an unbounded
+                        # walk is almost never an intentional subproject
+                        # layer, so this prints regardless of verbosity.
+                        print(
+                            f"ct: warning: config layer for {target} found at {current}, which is your home "
+                            f"directory or above; this is almost certainly a stray file, and its settings apply "
+                            f"to the whole build. Remove or relocate {' '.join(paths)} if unintended, or build "
+                            f"inside a git repository so the walk stops at the repo root.",
+                            file=sys.stderr,
+                        )
+                    elif verbose >= 1:
+                        print(
+                            f"ct: note: config layer for {target} found at {current}; the walk was not bounded "
+                            f"by a git root, so this file's settings apply to the whole build. Remove or "
+                            f"relocate {' '.join(paths)} if unintended, or build inside a git repository to "
+                            f"bound the search.",
+                            file=sys.stderr,
+                        )
+                entry = layers.setdefault(current, (tuple(paths), set(), in_git_repo))
+                entry[1].add(target)
+                if not in_git_repo and entry[2]:
+                    layers[current] = (entry[0], entry[1], False)
                 break
             parent = compiletools.wrappedos.dirname(current)
             if parent == current:
                 break
             current = parent
     if verbose >= 6 and layers:
-        for directory, paths in sorted(layers.items()):
+        for directory, (paths, _, _) in sorted(layers.items()):
             print(f"Target-anchored config layer {directory}: {' '.join(paths)}")
     return tuple(
-        TargetConfLayer(subproject_dir=directory, conf_paths=paths) for directory, paths in sorted(layers.items())
+        TargetConfLayer(
+            subproject_dir=directory,
+            conf_paths=paths,
+            anchor_targets=tuple(sorted(anchors)),
+            git_bounded=bounded,
+        )
+        for directory, (paths, anchors, bounded) in sorted(layers.items())
     )
 
 

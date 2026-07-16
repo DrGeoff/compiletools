@@ -13,6 +13,7 @@ import pytest
 import compiletools.apptools
 import compiletools.cake
 import compiletools.configutils
+import compiletools.findtargets
 import compiletools.testhelper as uth
 from compiletools.build_context import BuildContext
 from compiletools.configutils import (
@@ -111,21 +112,67 @@ class TestWalkTargetConfLayers:
         assert len(layers) == 1
         assert os.path.realpath(layers[0].subproject_dir) == os.path.realpath(str(appbeta))
 
-    def test_unbounded_walk_note_is_silent_at_verbose_one(self, tmp_path, capsys):
-        # verbose >= 1 prints load-bearing discovery output ("layers loaded");
-        # the unbounded-walk note is a per-parse nag under --no-git-root, so
-        # it belongs with the verbose >= 2 diagnostics.
+    def test_unbounded_walk_note_prints_at_verbose_one_and_is_silent_at_zero(self, tmp_path, capsys):
+        # An unbounded-walk layer can be a stray conf far above the target,
+        # so the note is a load-bearing verbose >= 1 advisory (not a >= 2
+        # diagnostic). Silent at verbose 0 for layers below $HOME's parent.
         appbeta = tmp_path / "plaintree" / "appbeta"
         appbeta.mkdir(parents=True)
         (appbeta / "ct.conf").write_text("append-CPPFLAGS = -DAPPBETA_EXTRA\n")
         (appbeta / "main.cpp").write_text("int main() { return 0; }\n")
         target = str(appbeta / "main.cpp")
 
-        compiletools.configutils.walk_target_conf_layers([target], verbose=1)
+        compiletools.configutils.walk_target_conf_layers([target], verbose=0)
         assert "not bounded by a git root" not in capsys.readouterr().err
 
-        compiletools.configutils.walk_target_conf_layers([target], verbose=2)
-        assert "not bounded by a git root" in capsys.readouterr().err
+        compiletools.configutils.walk_target_conf_layers([target], verbose=1)
+        err = capsys.readouterr().err
+        assert "not bounded by a git root" in err
+        assert "apply to the whole build" in err
+
+    def test_home_ancestor_layer_warns_unconditionally(self, tmp_path, monkeypatch, capsys):
+        # A conf at $HOME (or above) reached by an unbounded walk is almost
+        # certainly a stray file; the warning prints even at verbose 0.
+        fakehome = tmp_path / "fakehome"
+        proj = fakehome / "proj"
+        proj.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(fakehome))
+        conf = fakehome / "ct.conf"
+        conf.write_text("append-CPPFLAGS = -DSTRAY\n")
+        (proj / "main.cpp").write_text("int main() { return 0; }\n")
+
+        compiletools.configutils.walk_target_conf_layers([str(proj / "main.cpp")], verbose=0)
+        err = capsys.readouterr().err
+        assert "ct: warning:" in err
+        assert "home directory or above" in err
+        assert str(conf.resolve()) in err
+
+    def test_git_bounded_layer_emits_no_note(self, tmp_path, capsys):
+        # The common git-repo subproject case stays silent: the walk was
+        # bounded by the gitroot, so no unbounded-walk note or warning.
+        root = _make_repo(tmp_path)
+        appbeta = root / "appbeta"
+        appbeta.mkdir()
+        (appbeta / "ct.conf").write_text("append-CPPFLAGS = -DAPPBETA_EXTRA\n")
+        (appbeta / "main.cpp").write_text("int main() { return 0; }\n")
+
+        layers = compiletools.configutils.walk_target_conf_layers([str(appbeta / "main.cpp")], verbose=1)
+        err = capsys.readouterr().err
+        assert "not bounded by a git root" not in err
+        assert "ct: warning:" not in err
+        assert layers[0].git_bounded is True
+
+    def test_layer_records_anchor_targets(self, tmp_path):
+        root = _make_repo(tmp_path)
+        appbeta = root / "appbeta"
+        appbeta.mkdir()
+        (appbeta / "ct.conf").write_text("append-CPPFLAGS = -DAPPBETA_EXTRA\n")
+        (appbeta / "main.cpp").write_text("int main() { return 0; }\n")
+        (appbeta / "other.cpp").write_text("int other() { return 1; }\n")
+        targets = [str(appbeta / "main.cpp"), str(appbeta / "other.cpp")]
+
+        layers = compiletools.configutils.walk_target_conf_layers(targets)
+        assert layers[0].anchor_targets == tuple(sorted(targets))
 
     def test_nonexistent_target_is_skipped(self, tmp_path):
         root = _make_repo(tmp_path)
@@ -705,6 +752,86 @@ class TestParseargsTargetAnchoring:
         with pytest.raises(compiletools.configutils.ConfContradictionError):
             _parse_cake_args(monorepo, [*_ARGV_BASE, "-v", "-v", os.path.join("appdelta", "main.cpp")])
 
+    def test_layer_loaded_note_names_target_and_scope(self, monorepo, capsys):
+        """The verbose>=1 note must say WHICH target anchored the layer,
+        WHAT was loaded, and that the settings apply invocation-wide --
+        otherwise a changed build is not self-diagnosing."""
+        target = os.path.join("appbeta", "main.cpp")
+        _parse_cake_args(monorepo, [*_ARGV_BASE, "-v", target])
+        err = capsys.readouterr().err
+        assert "ct: note: target" in err
+        assert target in err
+        assert str(monorepo / "appbeta" / "ct.conf") in err
+        assert "whole invocation" in err
+
+    def test_layer_loaded_note_silent_at_verbose_zero(self, monorepo, capsys):
+        _parse_cake_args(monorepo, [*_ARGV_BASE, os.path.join("appbeta", "main.cpp")])
+        assert "ct: note: target" not in capsys.readouterr().err
+
+    def test_cwd_tier_participation_note_at_verbose_two(self, monorepo, capsys):
+        appalpha = monorepo / "appalpha"
+        appalpha.mkdir()
+        # Different key from appbeta's layer: participates in same-tier
+        # validation without contradicting.
+        (appalpha / "ct.conf").write_text("append-CXXFLAGS = -DALPHA_CXX\n")
+        _parse_cake_args(
+            monorepo / "appalpha",
+            [*_ARGV_BASE, "-v", "-v", os.path.join("..", "appbeta", "main.cpp")],
+        )
+        err = capsys.readouterr().err
+        assert "cwd config layer" in err
+        assert "contradiction validation" in err
+
+    def test_conf_injected_test_target_gets_its_layer_walked(self, monorepo):
+        """Fixpoint: appbeta's conf injects a test target inside appgamma;
+        appgamma's own layer must then be walked and loaded too. Before the
+        fixpoint the injected target's layer was silently skipped."""
+        appgamma = monorepo / "appgamma"
+        appgamma.mkdir()
+        (appgamma / "ct.conf").write_text("append-CXXFLAGS = -DAPPGAMMA_EXTRA\n")
+        (appgamma / "test_gamma.cpp").write_text("int main() { return 0; }\n")
+        (monorepo / "appbeta" / "ct.conf").write_text(
+            "append-CPPFLAGS = -DAPPBETA_EXTRA\ntests = [${CONF_DIR}/../appgamma/test_gamma.cpp]\n"
+        )
+        args = _parse_cake_args(monorepo, [*_ARGV_BASE, os.path.join("appbeta", "main.cpp")])
+        assert "-DAPPBETA_EXTRA" in args.CPPFLAGS
+        assert "-DAPPGAMMA_EXTRA" in args.CXXFLAGS
+        assert any(t.endswith("test_gamma.cpp") for t in args.tests)
+
+    def test_conf_injected_targets_terminate_on_mutual_injection(self, monorepo):
+        """Mutual injection (beta's conf points into gamma, gamma's conf
+        points back into beta) converges: round two finds beta's layer
+        already loaded, so the fixpoint stops instead of looping."""
+        appgamma = monorepo / "appgamma"
+        appgamma.mkdir()
+        (appgamma / "test_gamma.cpp").write_text("int main() { return 0; }\n")
+        (appgamma / "ct.conf").write_text(
+            "append-CXXFLAGS = -DAPPGAMMA_EXTRA\ndynamic = [${CONF_DIR}/../appbeta/libbeta.cpp]\n"
+        )
+        (monorepo / "appbeta" / "libbeta.cpp").write_text("int beta() { return 1; }\n")
+        (monorepo / "appbeta" / "ct.conf").write_text(
+            "append-CPPFLAGS = -DAPPBETA_EXTRA\ntests = [${CONF_DIR}/../appgamma/test_gamma.cpp]\n"
+        )
+        args = _parse_cake_args(monorepo, [*_ARGV_BASE, os.path.join("appbeta", "main.cpp")])
+        assert "-DAPPBETA_EXTRA" in args.CPPFLAGS
+        assert "-DAPPGAMMA_EXTRA" in args.CXXFLAGS
+        assert any(t.endswith("libbeta.cpp") for t in args.dynamic)
+
+    def test_round_two_layer_contradicting_round_one_layer_errors(self, monorepo):
+        """A layer loaded in a later fixpoint round must be validated against
+        the layers from earlier rounds, not only its own round's peers."""
+        appgamma = monorepo / "appgamma"
+        appgamma.mkdir()
+        (appgamma / "ct.conf").write_text("append-CPPFLAGS = -DAPPGAMMA_DIFFERENT\n")
+        (appgamma / "test_gamma.cpp").write_text("int main() { return 0; }\n")
+        (monorepo / "appbeta" / "ct.conf").write_text(
+            "append-CPPFLAGS = -DAPPBETA_EXTRA\ntests = [${CONF_DIR}/../appgamma/test_gamma.cpp]\n"
+        )
+        with pytest.raises(compiletools.configutils.ConfContradictionError) as excinfo:
+            _parse_cake_args(monorepo, [*_ARGV_BASE, "-v", "-v", os.path.join("appbeta", "main.cpp")])
+        message = str(excinfo.value)
+        assert "-DAPPBETA_EXTRA" in message and "-DAPPGAMMA_DIFFERENT" in message
+
 
 class TestAutoDiscoveryReanchor:
     def test_reanchor_helper_loads_discovered_targets_conf(self, monorepo):
@@ -717,7 +844,10 @@ class TestAutoDiscoveryReanchor:
             reanchored = compiletools.apptools.reanchor_config_for_discovered_targets(args)
         assert reanchored is not None
         assert "-DAPPBETA_EXTRA" in reanchored.CPPFLAGS
-        assert reanchored.filename == [str(monorepo / "appbeta" / "main.cpp")]
+        # Pure config re-anchor: discovered targets are NOT re-applied; the
+        # discover_targets_and_reanchor driver re-discovers them under the
+        # widened config so freshly loaded markers can shape the set.
+        assert reanchored.filename == []
 
     def test_reanchor_helper_returns_none_when_nothing_new(self, monorepo):
         args = _parse_cake_args(monorepo, [*_ARGV_BASE])
@@ -814,6 +944,53 @@ class TestAutoDiscoveryReanchor:
             assert expected in os.environ.get("PKG_CONFIG_PATH", "").split(os.pathsep)
         finally:
             args._context.restore_pkg_config_path()
+
+    def test_auto_rediscovery_honors_subproject_disable_tests(self, monorepo):
+        """The marker leak: appbeta's own conf sets disable-tests, which
+        arrives only after round-one discovery already classified
+        test_beta.cpp as a test. The driver's round two must re-discover
+        under the new config and drop it. Fails without the analyze-file
+        cache clear between rounds (marker_type is baked into the cached
+        result keyed only by content hash)."""
+        (monorepo / "appbeta" / "ct.conf").write_text("append-CPPFLAGS = -DAPPBETA_EXTRA\ndisable-tests = true\n")
+        # Content must differ from appbeta/main.cpp: the global hash registry
+        # refuses to disambiguate two tracked files with identical content.
+        (monorepo / "appbeta" / "test_beta.cpp").write_text("// test_beta\nint main() { return 0; }\n")
+        args = _parse_cake_args(monorepo, [*_ARGV_BASE, "--auto"])
+        with uth.DirectoryContext(str(monorepo)):
+            final = compiletools.findtargets.discover_targets_and_reanchor(args, args._context)
+        assert "-DAPPBETA_EXTRA" in final.CPPFLAGS
+        assert not final.tests
+        assert any(f.endswith(os.path.join("appbeta", "main.cpp")) for f in final.filename)
+
+    def test_auto_rediscovery_honors_subproject_exemarkers(self, monorepo):
+        """A subproject layer's own exemarkers must shape discovery. The
+        layer's value REPLACES the project-tier one (highest-priority conf
+        wins), so appbeta/main.cpp -- discovered in round one under
+        `exemarkers = [main]` -- is no longer an executable in round two.
+        This is the tripwire for the analyze-file cache clear between
+        rounds: without it, round two replays the cached
+        marker_type == EXE classification and main.cpp survives."""
+        (monorepo / "appbeta" / "ct.conf").write_text(
+            "append-CPPFLAGS = -DAPPBETA_EXTRA\nexemarkers = [SPECIAL_ENTRY]\n"
+        )
+        args = _parse_cake_args(monorepo, [*_ARGV_BASE, "--auto"])
+        with uth.DirectoryContext(str(monorepo)):
+            final = compiletools.findtargets.discover_targets_and_reanchor(args, args._context)
+        assert "-DAPPBETA_EXTRA" in final.CPPFLAGS  # the layer WAS loaded
+        assert not any(f.endswith(os.path.join("appbeta", "main.cpp")) for f in final.filename)
+
+    def test_rediscovery_does_not_duplicate_targets(self, monorepo):
+        """A config-widening round triggers a fresh discovery pass;
+        FindTargets.process appends, so the driver must start each round
+        from a namespace without the previous round's discoveries."""
+        args = _parse_cake_args(monorepo, [*_ARGV_BASE, "--auto"])
+        with uth.DirectoryContext(str(monorepo)):
+            final = compiletools.findtargets.discover_targets_and_reanchor(args, args._context)
+        assert "-DAPPBETA_EXTRA" in final.CPPFLAGS  # the widening round ran
+        beta_main = [f for f in final.filename if f.endswith(os.path.join("appbeta", "main.cpp"))]
+        assert len(beta_main) == 1
+        assert len(final.filename) == len(set(final.filename))
 
     def test_cake_auto_conflicting_subprojects_error(self, monorepo):
         appalpha = monorepo / "appalpha"

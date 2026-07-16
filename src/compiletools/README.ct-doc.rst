@@ -239,6 +239,12 @@ append-/prepend- keys), the tools stop with an error naming both files and
 the two remedies (build the subprojects separately, or make the values
 identical).
 
+For a target outside any git repository (or under ``--no-git-root``) the
+ancestor walk is bounded only by the filesystem root; a layer it finds at or
+above your home directory triggers an unconditional ``ct: warning:`` because
+such a file (e.g. a forgotten ``~/ct.conf``) is almost certainly stray —
+legitimate user-level config belongs in ``~/.config/ct/``.
+
 Build variants are composed from *axis* conf files — one per orthogonal
 concern: toolchain (``gcc``, ``clang``), linker (``ld``, ``gold``, ``mold``,
 ``wild``), optimization (``debug``, ``release``), instrumentation
