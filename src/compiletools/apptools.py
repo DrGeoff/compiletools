@@ -517,6 +517,7 @@ def _apply_target_conf_layers(cap, argv, args, verbose, auto=False, reparse=True
     new_paths = [p for layer in new_layers for p in layer.conf_paths]
     _check_legacy_cas_config_keys(new_paths)
     _check_legacy_variant_config_keys(new_paths)
+    _note_case_mismatched_conf_keys(cap, new_paths, verbose)
     if verbose >= 1:
         # A vestigial subproject ct.conf that was inert before target
         # anchoring now changes flags; naming the loaded files makes a
@@ -528,6 +529,42 @@ def _apply_target_conf_layers(cap, argv, args, verbose, auto=False, reparse=True
     new_args = cap.parse_args(args=argv)
     _stash_private_attrs(new_args, cap, args._context, argv)
     return new_args
+
+
+def _note_case_mismatched_conf_keys(cap, conf_paths, verbose):
+    """At ``verbose >= 1``, note conf keys that miss a registered key only by
+    case (or dash/underscore spelling).
+
+    Conf keys are case-sensitive and ``create_parser`` sets
+    ``ignore_unknown_config_file_keys``, so ``append-cppflags`` is silently
+    dropped where ``append-CPPFLAGS`` would apply -- a no-op invisible at the
+    point of damage. Genuinely unknown keys stay silent (they may belong to
+    another ct-* tool sharing the conf file); only near-misses are noted.
+    """
+    if verbose < 1:
+        return
+
+    def _fold(key):
+        return key.lower().replace("_", "-")
+
+    registered = {}
+    for action in cap._actions:
+        for key in cap.get_possible_config_keys(action):
+            if not key.startswith("-"):
+                registered.setdefault(_fold(key), key)
+    for path in conf_paths:
+        try:
+            items = compiletools.configutils._parse_conf_file_cached(path)
+        except OSError:
+            continue
+        for key in items:
+            canonical = registered.get(_fold(key))
+            if canonical is not None and canonical != key:
+                print(
+                    f"ct: note: conf key {key!r} in {path} is not registered and was "
+                    f"ignored (conf keys are case-sensitive); did you mean {canonical!r}?",
+                    file=sys.stderr,
+                )
 
 
 def reanchor_config_for_discovered_targets(args):
@@ -569,6 +606,12 @@ def reanchor_config_for_discovered_targets(args):
     if after == before:
         return None
 
+    # The first parseargs latched context.pkg_config_overrides_applied, so
+    # the re-run below would early-return and drop any prepend-/append-
+    # PKG-CONFIG-PATH contributed by the freshly loaded target layers.
+    # Restore resets the latch (and un-mutates PKG_CONFIG_PATH) so the
+    # re-apply sees the pre-override environment plus the widened conf set.
+    args._context.restore_pkg_config_path()
     new_args = parseargs(cap, argv, context=args._context)
     for attr, value in saved_targets.items():
         if value is not None:
@@ -1921,6 +1964,12 @@ def parseargs(cap, argv, verbose=None, *, context):
             and used by substitution callbacks (e.g. to set up project-level
             pkg-config overrides).
     """
+    # Console entry points pass argv=None meaning "use sys.argv". Normalize
+    # here so everything downstream (target-anchored conf discovery, the
+    # _argv stash the --auto re-anchor reads) sees a real list -- argparse
+    # only resolves None internally, which left _argv=None and disabled the
+    # re-anchor on the real CLI.
+    argv = list(sys.argv[1:]) if argv is None else list(argv)
     # command-line values override environment variables which override config file values which override defaults.
     args = cap.parse_args(args=argv)
     _stash_private_attrs(args, cap, context, argv)

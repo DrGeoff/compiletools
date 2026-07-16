@@ -4,7 +4,9 @@ Subproject flags apply invocation-globally (no per-TU scoping).
 """
 
 import os
+import shlex
 import subprocess
+import sys
 
 import pytest
 
@@ -108,6 +110,22 @@ class TestWalkTargetConfLayers:
         layers = compiletools.configutils.walk_target_conf_layers([str(deep / "main.cpp")])
         assert len(layers) == 1
         assert os.path.realpath(layers[0].subproject_dir) == os.path.realpath(str(appbeta))
+
+    def test_unbounded_walk_note_is_silent_at_verbose_one(self, tmp_path, capsys):
+        # verbose >= 1 prints load-bearing discovery output ("layers loaded");
+        # the unbounded-walk note is a per-parse nag under --no-git-root, so
+        # it belongs with the verbose >= 2 diagnostics.
+        appbeta = tmp_path / "plaintree" / "appbeta"
+        appbeta.mkdir(parents=True)
+        (appbeta / "ct.conf").write_text("append-CPPFLAGS = -DAPPBETA_EXTRA\n")
+        (appbeta / "main.cpp").write_text("int main() { return 0; }\n")
+        target = str(appbeta / "main.cpp")
+
+        compiletools.configutils.walk_target_conf_layers([target], verbose=1)
+        assert "not bounded by a git root" not in capsys.readouterr().err
+
+        compiletools.configutils.walk_target_conf_layers([target], verbose=2)
+        assert "not bounded by a git root" in capsys.readouterr().err
 
     def test_nonexistent_target_is_skipped(self, tmp_path):
         root = _make_repo(tmp_path)
@@ -464,6 +482,31 @@ class TestBuildSeparateBuildCommands:
         assert "--dynamic-library" in commands[1] and beta_lib in commands[1]
         assert "--static-library" not in commands[1] and alpha_lib not in commands[1]
 
+    def test_dash_prefixed_target_survives_cwd_form_as_path_token(self, tmp_path):
+        # A legal-but-pathological source name beginning with '-' must not be
+        # emitted as a bare '-weird.cpp' in the cd remedy form: relpath strips
+        # the './' the user needed to make argparse treat it as a positional.
+        beta = _layer(tmp_path, "appbeta", "append-CPPFLAGS = -DBETA\n")
+        cwd_dir = str(tmp_path / "appalpha")
+        os.makedirs(cwd_dir, exist_ok=True)
+        weird = str(tmp_path / "appbeta" / "-weird.cpp")
+        with open(weird, "w") as f:
+            f.write("int f() { return 0; }\n")
+
+        commands = build_separate_build_commands(
+            "ct-cake",
+            ["--variant=monovariant", weird],
+            [beta],
+            [weird],
+            cwd_layer_dir=cwd_dir,
+        )
+        beta_cmd = next(c for c in commands if "appbeta" in c.split("&&")[0])
+        rebuilt_targets = [t for t in shlex.split(beta_cmd.split("&&", 1)[1]) if t.endswith("-weird.cpp")]
+        assert rebuilt_targets, f"target missing from remedy: {beta_cmd}"
+        assert all(not t.startswith("-") for t in rebuilt_targets), (
+            f"dash-prefixed target emitted as a flag token: {beta_cmd}"
+        )
+
     def test_cwd_vs_target_form_emits_distinct_actionable_pair(self, tmp_path):
         # cwd layer participates in the conflict: the target subproject gets an
         # explicit cd + relative target; the cwd subproject (owns no target)
@@ -568,6 +611,23 @@ class TestParseargsTargetAnchoring:
         (appgamma / "main.cpp").write_text("int main() { return 0; }\n")
         args = _parse_cake_args(monorepo, [*_ARGV_BASE, os.path.join("appgamma", "main.cpp")])
         assert "-DAPPGAMMA_EXTRA" in args.CPPFLAGS
+
+    def test_case_mismatched_key_in_target_layer_gets_did_you_mean_note(self, monorepo, capsys):
+        """Conf keys are case-sensitive; configargparse silently ignores
+        unknown ones. A target-layer key differing from a registered key only
+        in case must produce a stderr note naming the file and the intended
+        spelling, so the resulting no-op is self-diagnosing."""
+        (monorepo / "appbeta" / "ct.conf").write_text("append-cppflags = -DAPPBETA_EXTRA\n")
+        args = _parse_cake_args(monorepo, [*_ARGV_BASE, "-v", os.path.join("appbeta", "main.cpp")])
+        assert "-DAPPBETA_EXTRA" not in args.CPPFLAGS  # still ignored -- the note is diagnostic only
+        err = capsys.readouterr().err
+        assert "append-cppflags" in err
+        assert "append-CPPFLAGS" in err
+        assert str(monorepo / "appbeta" / "ct.conf") in err
+
+    def test_correctly_cased_target_layer_keys_emit_no_note(self, monorepo, capsys):
+        _parse_cake_args(monorepo, [*_ARGV_BASE, "-v", os.path.join("appbeta", "main.cpp")])
+        assert "did you mean" not in capsys.readouterr().err
 
     def test_two_conflicting_subprojects_error_with_remedies(self, monorepo):
         appalpha = monorepo / "appalpha"
@@ -704,6 +764,56 @@ class TestAutoDiscoveryReanchor:
         beta_entries = [e for e in entries if e["file"].endswith(os.path.join("appbeta", "main.cpp"))]
         assert beta_entries, f"appbeta/main.cpp missing from CDB: {[e['file'] for e in entries]}"
         assert "-DAPPBETA_EXTRA" in beta_entries[0]["arguments"]
+
+    def test_cake_main_argv_none_explicit_target(self, monorepo, monkeypatch):
+        """Console entry points call main(argv=None); the target-layer walk
+        must resolve sys.argv itself. Regression: list(None) TypeError."""
+        (monorepo / "appbeta" / "main.cpp").write_text(
+            "#ifndef APPBETA_EXTRA\n"
+            "#error APPBETA_EXTRA missing - subproject ct.conf was not loaded\n"
+            "#endif\n"
+            "int main() { return 0; }\n"
+        )
+        monkeypatch.setattr(sys, "argv", ["ct-cake", *_ARGV_BASE, os.path.join("appbeta", "main.cpp")])
+        uth.reset()
+        with uth.DirectoryContext(str(monorepo)):
+            with uth.ParserContext():
+                assert compiletools.cake.main(None) == 0
+
+    def test_cake_main_argv_none_auto_reanchors(self, monorepo, monkeypatch):
+        """main(argv=None) with --auto must still re-anchor after discovery.
+        Regression: _argv stashed as None made the re-anchor a silent no-op."""
+        (monorepo / "appbeta" / "main.cpp").write_text(
+            "#ifndef APPBETA_EXTRA\n"
+            "#error APPBETA_EXTRA missing - subproject ct.conf was not loaded\n"
+            "#endif\n"
+            "int main() { return 0; }\n"
+        )
+        monkeypatch.setattr(sys, "argv", ["ct-cake", *_ARGV_BASE, "--auto"])
+        uth.reset()
+        with uth.DirectoryContext(str(monorepo)):
+            with uth.ParserContext():
+                assert compiletools.cake.main(None) == 0
+
+    def test_reanchor_reapplies_subproject_pkg_config_path(self, monorepo, monkeypatch):
+        """The first parseargs latches context.pkg_config_overrides_applied;
+        the re-anchor's parseargs re-run must reset it so a target layer's
+        prepend-PKG-CONFIG-PATH reaches os.environ."""
+        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+        (monorepo / "appbeta" / "ct.conf").write_text(
+            "append-CPPFLAGS = -DAPPBETA_EXTRA\nprepend-PKG-CONFIG-PATH = ${CONF_DIR}/pkgconfig\n"
+        )
+        (monorepo / "appbeta" / "pkgconfig").mkdir()
+        args = _parse_cake_args(monorepo, [*_ARGV_BASE])
+        try:
+            args.filename = [str(monorepo / "appbeta" / "main.cpp")]
+            with uth.DirectoryContext(str(monorepo)):
+                reanchored = compiletools.apptools.reanchor_config_for_discovered_targets(args)
+            assert reanchored is not None
+            expected = str(monorepo / "appbeta" / "pkgconfig")
+            assert expected in os.environ.get("PKG_CONFIG_PATH", "").split(os.pathsep)
+        finally:
+            args._context.restore_pkg_config_path()
 
     def test_cake_auto_conflicting_subprojects_error(self, monorepo):
         appalpha = monorepo / "appalpha"

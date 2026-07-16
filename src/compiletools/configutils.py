@@ -584,7 +584,7 @@ def walk_target_conf_layers(targets, conf_filenames=("ct.conf",), verbose=0, git
                 break
             paths = _conf_paths_in_dir(current, conf_filenames)
             if paths:
-                if not in_git_repo and verbose >= 1:
+                if not in_git_repo and verbose >= 2:
                     # Non-git target or --no-git-root: the walk is bounded
                     # only by the filesystem root, so the layer may come from
                     # far above the target (e.g. a stray ~/ct.conf).
@@ -845,10 +845,15 @@ def build_separate_build_commands(
             base = filter_argv(lambda _real: True)  # drop every target; re-add owned + shared below
             owns_any = any(owning_real(real) == keep_real for real in target_realpaths)
             if owns_any:
+                # relpath can yield a bare '-name.cpp' that argparse would
+                # read as a flag; anchor such tokens with './'.
                 kept_targets = sorted(
-                    os.path.relpath(real, keep_real)
-                    for real in target_realpaths
-                    if owning_real(real) in (keep_real, None)
+                    rel if not rel.startswith("-") else os.path.join(os.curdir, rel)
+                    for rel in (
+                        os.path.relpath(real, keep_real)
+                        for real in target_realpaths
+                        if owning_real(real) in (keep_real, None)
+                    )
                 )
                 tokens = [prog] + base + kept_targets
             else:
