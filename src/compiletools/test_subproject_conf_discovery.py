@@ -980,6 +980,29 @@ class TestAutoDiscoveryReanchor:
         assert "-DAPPBETA_EXTRA" in final.CPPFLAGS  # the layer WAS loaded
         assert not any(f.endswith(os.path.join("appbeta", "main.cpp")) for f in final.filename)
 
+    def test_round_two_discovered_layer_contradicting_round_one_layer_errors(self, monorepo):
+        """A layer loaded in an earlier driver round must stay visible to a
+        later round's contradiction validation even when its own target is
+        no longer discovered. appbeta's exemarkers swap drops
+        appbeta/main.cpp from round-two discovery, which instead finds
+        appgamma; without the parser-persisted layer accumulation,
+        appgamma's conflicting append-CPPFLAGS would merge silently with
+        appbeta's."""
+        (monorepo / "appbeta" / "ct.conf").write_text("append-CPPFLAGS = -DFROM_BETA\nexemarkers = [SPECIAL_ENTRY]\n")
+        appgamma = monorepo / "appgamma"
+        appgamma.mkdir()
+        (appgamma / "ct.conf").write_text("append-CPPFLAGS = -DFROM_GAMMA\n")
+        # Invisible to round one (no `main` marker), discovered in round two
+        # once appbeta's layer swaps exemarkers to SPECIAL_ENTRY. The marker
+        # must be code, not a comment -- comment-only markers don't classify.
+        (appgamma / "tool.cpp").write_text("int SPECIAL_ENTRY() { return 0; }\n")
+        # -v -v: propagate the raw ConfContradictionError instead of the
+        # rendered-stderr SystemExit(1) path.
+        args = _parse_cake_args(monorepo, [*_ARGV_BASE, "--auto", "-v", "-v"])
+        with uth.DirectoryContext(str(monorepo)):
+            with pytest.raises(compiletools.configutils.ConfContradictionError):
+                compiletools.findtargets.discover_targets_and_reanchor(args, args._context)
+
     def test_rediscovery_does_not_duplicate_targets(self, monorepo):
         """A config-widening round triggers a fresh discovery pass;
         FindTargets.process appends, so the driver must start each round

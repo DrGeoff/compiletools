@@ -279,8 +279,8 @@ def discover_targets_and_reanchor(args, context):
         args = new_args
     raise RuntimeError(
         f"--auto discovery and config re-anchoring did not converge after "
-        f"{_MAX_DISCOVERY_REANCHOR_ROUNDS} rounds; a subproject conf layer keeps changing the "
-        f"discovered target set"
+        f"{_MAX_DISCOVERY_REANCHOR_ROUNDS} rounds; every round kept widening the config file set "
+        f"(discovered targets keep pulling in new subproject conf layers)"
     )
 
 

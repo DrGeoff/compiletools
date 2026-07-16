@@ -143,6 +143,19 @@ def test_force_flat_exe_layout_defaults_off(tmp_path, monkeypatch):
     assert namer.executable_pathname(source) == "bin/gcc.debug/appalpha/main"
 
 
+def test_force_flat_exe_layout_settable_from_conf_file(tmp_path, monkeypatch):
+    """``force-flat-exe-layout = true`` in a conf file enables the flat
+    layout exactly like the CLI flag (the documented per-project form)."""
+    monkeypatch.chdir(tmp_path)
+    conf = tmp_path / "flat.conf"
+    conf.write_text("force-flat-exe-layout = true\n")
+    args, namer = _make_namer("TestNamerFlatFlagConf", extra_argv=["--config", str(conf)])
+    assert args.force_flat_exe_layout is True
+    root = os.path.realpath(str(tmp_path))
+    source = os.path.join(root, "appalpha", "main.cpp")
+    assert namer.executable_pathname(source) == "bin/gcc.debug/main"
+
+
 def test_object_name_with_dependencies(tmp_path):
     """Test that object naming includes dependency hash."""
     tmpdir = str(tmp_path)

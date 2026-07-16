@@ -464,7 +464,13 @@ def _apply_target_conf_layers(cap, argv, args, verbose, auto=False, reparse=True
     by the conf files on the targets' ancestor chains; contradiction
     validation runs over the layers accumulated across ALL rounds, so a
     round-2 layer conflicting with a round-1 layer errors identically to
-    the single-round case.
+    the single-round case. The accumulation persists on the parser
+    (``cap._ct_loaded_target_layers``) across ``parseargs`` invocations:
+    the ``--auto`` driver re-enters via a fresh ``parseargs`` per
+    discovery round, and a layer loaded in an earlier driver round is
+    already in ``cap._default_config_files`` (so the freshness filter
+    skips it) yet still shapes the build -- without the persisted list a
+    later round's layer could contradict it silently.
 
     Outside a git repository ``find_git_root()`` falls back to the cwd, so
     ``cwd == gitroot`` and the cwd layer never participates in same-tier
@@ -489,7 +495,9 @@ def _apply_target_conf_layers(cap, argv, args, verbose, auto=False, reparse=True
                 cwd_layer_paths.append(real)
     cwd_layer_dir = cwd if cwd_layer_paths else None
 
-    loaded_layers = []
+    if not hasattr(cap, "_ct_loaded_target_layers"):
+        cap._ct_loaded_target_layers = []
+    loaded_layers = cap._ct_loaded_target_layers
     for _round in range(_MAX_TARGET_CONF_ROUNDS):
         targets = _collect_explicit_target_files(args)
         if not targets:

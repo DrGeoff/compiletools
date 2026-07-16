@@ -604,7 +604,7 @@ def walk_target_conf_layers(targets, conf_filenames=("ct.conf",), verbose=0, git
             paths = _conf_paths_in_dir(current, conf_filenames)
             if paths:
                 if not in_git_repo:
-                    if current == home or home.startswith(current + os.sep):
+                    if current == home or home.startswith(current.rstrip(os.sep) + os.sep):
                         # A conf at or above $HOME reached by an unbounded
                         # walk is almost never an intentional subproject
                         # layer, so this prints regardless of verbosity.
