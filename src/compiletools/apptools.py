@@ -439,6 +439,9 @@ def _registered_conf_keys_and_canonicalizers(cap):
     canonicalizers = {}
     for action in cap._actions:
         canonicalizer = None
+        # Private argparse classes, stable across CPython releases; the
+        # public alternative (inspecting action.const) misclassifies
+        # store_const actions with boolean consts.
         if isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction)):
             canonicalizer = compiletools.utils.to_bool
         elif callable(action.type):
@@ -560,10 +563,6 @@ def _apply_target_conf_layers(cap, argv, args, verbose, auto=False, reparse=True
                 )
         if not new_layers:
             return args
-        # Fresh layers only: re-emitting for already-loaded layers would
-        # repeat the warning every fixpoint round.
-        compiletools.configutils.emit_unbounded_walk_notices(new_layers, verbose)
-
         # Validate the candidate set BEFORE accumulating, so a caught
         # contradiction leaves no rejected layers on the parser.
         candidate_layers = loaded_layers + new_layers
@@ -592,6 +591,11 @@ def _apply_target_conf_layers(cap, argv, args, verbose, auto=False, reparse=True
             print(str(err), file=sys.stderr)
             raise SystemExit(1) from None
         loaded_layers.extend(new_layers)
+        # Fresh, validated layers only: emitting before validation would
+        # re-warn on a retried parse after a caught contradiction, and
+        # re-emitting for already-loaded layers would repeat the warning
+        # every fixpoint round.
+        compiletools.configutils.emit_unbounded_walk_notices(new_layers, verbose)
 
         new_paths = [p for layer in new_layers for p in layer.conf_paths]
         _check_legacy_cas_config_keys(new_paths)

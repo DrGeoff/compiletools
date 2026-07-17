@@ -542,7 +542,7 @@ class Cake:
         )
         creator.write_compilation_database()
 
-    def _published_dest_paths(self):
+    def _published_src_dest_pairs(self):
         """Return the (src, dest) pairs ``_copyexes`` publishes into the
         top-level bin directory.
 
@@ -585,7 +585,7 @@ class Cake:
             return
 
         exe_srcs = set(self.namer.all_executable_pathnames())
-        for src, dest in self._published_dest_paths():
+        for src, dest in self._published_src_dest_pairs():
             # Executables may not be built (or built non-executable);
             # libraries skip this gate.
             if src in exe_srcs and not compiletools.utils.is_executable(src):
@@ -604,7 +604,7 @@ class Cake:
         """Remove published executables from the top-level bin directory.
 
         Removes exactly the destinations ``_copyexes`` publishes (via the
-        shared ``_published_dest_paths``), then prunes any mirror
+        shared ``_published_src_dest_pairs``), then prunes any mirror
         directories the removals emptied. Never touches other variants'
         trees, user files under bin/, or — for dot-prefixed bindirs —
         the workspace itself.
@@ -620,7 +620,7 @@ class Cake:
         # NOT wrappedos: publish destinations may be chdir-relative and
         # this runs post-build, so cached stat answers would be stale.
         topbindir_real = os.path.realpath(self.namer.topbindir())
-        for _src, dest in self._published_dest_paths():
+        for _src, dest in self._published_src_dest_pairs():
             try:
                 os.remove(dest)
             except OSError:

@@ -686,6 +686,10 @@ def _effective_layer_values(conf_paths):
     instead would let a masked intra-layer append value or two textually
     identical ``${CONF_DIR}`` values leak cross-subproject flags past the
     contradiction check.
+
+    Also consumed by ``apptools._apply_target_conf_layers`` for the verbose
+    scalar-keys note, so signature or return-shape changes must keep that
+    caller in step.
     """
     # Deferred: apptools_argparse imports this module at its top level.
     from compiletools.apptools_argparse import _AccumulatingConfigFileParser
@@ -749,9 +753,17 @@ def validate_no_conf_contradictions(
         if canonicalizer is None:
             return value
         try:
-            return canonicalizer(value)
+            canonical = canonicalizer(value)
         except Exception:
             return value
+        try:
+            hash(canonical)
+        except TypeError:
+            # Structured canonical values (e.g. a list of tuples from a
+            # parsing type=) still need to serve as dict keys; repr keeps
+            # equal canonical values comparing equal.
+            return repr(canonical)
+        return canonical
 
     canonical_invocation_variant = canonicalize_variant_input(invocation_variant)
     # normalized key -> (raw_key, {value: first path}); a key with more than

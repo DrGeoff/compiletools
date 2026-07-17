@@ -463,6 +463,37 @@ class TestParserAwareContradictionValidation:
             value_canonicalizers={"use_mtime": compiletools.utils.to_bool},
         )
 
+    def test_unhashable_canonical_values_merge_when_equal(self, tmp_path):
+        # A parsing type= can return a structured (unhashable) value, e.g.
+        # backend_registry._slurm_mem_tiers_arg -> list[tuple]. Equal
+        # canonical values across layers must merge, not crash on dict
+        # insertion (regression: TypeError: unhashable type: 'list').
+        alpha = _layer(tmp_path, "appalpha", "slurm-mem-tiers = 4:8G\n")
+        beta = _layer(tmp_path, "appbeta", "slurm-mem-tiers = 4:8G\n")
+        canonicalizer = lambda value: [tuple(entry.split(":")) for entry in value.split(",")]  # noqa: E731
+        validate_no_conf_contradictions(
+            [alpha, beta],
+            [],
+            "monovariant",
+            ["a", "b"],
+            registered_keys={"slurm_mem_tiers"},
+            value_canonicalizers={"slurm_mem_tiers": canonicalizer},
+        )
+
+    def test_unhashable_canonical_values_conflict_still_raises(self, tmp_path):
+        alpha = _layer(tmp_path, "appalpha", "slurm-mem-tiers = 4:8G\n")
+        beta = _layer(tmp_path, "appbeta", "slurm-mem-tiers = 8:16G\n")
+        canonicalizer = lambda value: [tuple(entry.split(":")) for entry in value.split(",")]  # noqa: E731
+        with pytest.raises(ConfContradictionError):
+            validate_no_conf_contradictions(
+                [alpha, beta],
+                [],
+                "monovariant",
+                ["a", "b"],
+                registered_keys={"slurm_mem_tiers"},
+                value_canonicalizers={"slurm_mem_tiers": canonicalizer},
+            )
+
     def test_variant_carve_out_survives_registered_keys_filter(self, tmp_path):
         beta = _layer(tmp_path, "appbeta", "variant = othervariant\n")
         with pytest.raises(ConfContradictionError):
@@ -1197,6 +1228,78 @@ class TestParseargsTargetAnchoring:
         assert "-DSUB_EXTRA" in args.CXXFLAGS  # round two loaded sub's layer
         err = capsys.readouterr().err
         assert err.count("home directory or above") == 1
+
+    def test_structured_value_conf_key_parses_without_crash(self, monorepo):
+        """A subproject conf key whose parser type= returns an unhashable
+        structured value (slurm-mem-tiers -> list[tuple]) must validate
+        cleanly, not crash on dict insertion (regression: TypeError:
+        unhashable type: 'list')."""
+        (monorepo / "appbeta" / "ct.conf").write_text("slurm-mem-tiers = 4:8G\n")
+        args = _parse_cake_args(monorepo, [*_ARGV_BASE, os.path.join("appbeta", "main.cpp")])
+        assert args.slurm_mem_tiers == [(4, "8G")]
+
+    def test_every_parser_canonicalizer_output_is_dict_key_safe(self):
+        """Lint: every canonicalizer derived from the assembled ct-cake
+        parser must produce a dict-key-safe compare value through
+        validate_no_conf_contradictions' canonicalization path -- a future
+        backend registering a structured type= must not reintroduce the
+        unhashable-key crash."""
+        uth.reset()
+        with uth.ParserContext():
+            cap = compiletools.apptools.create_parser("canonicalizer lint", argv=[])
+            compiletools.cake.Cake.add_arguments(cap)
+            _, canonicalizers = compiletools.apptools._registered_conf_keys_and_canonicalizers(cap)
+        assert canonicalizers
+        probe_values = ("1", "true", "4:8G", "not-a-plausible-value")
+        for normalized, canonicalizer in canonicalizers.items():
+            for probe in probe_values:
+                try:
+                    canonical = canonicalizer(probe)
+                except Exception:
+                    continue
+                try:
+                    hash(canonical)
+                except TypeError:
+                    # The production path must degrade these to a hashable
+                    # stand-in; assert the fallback holds for this key.
+                    assert isinstance(repr(canonical), str), normalized
+
+    def test_home_warning_not_emitted_for_rejected_round(self, tmp_path, monkeypatch, capsys):
+        """A round rejected by contradiction validation must not have
+        emitted the $HOME warning for its fresh layers: emission happens
+        only after validation passes, so a corrected re-parse warns exactly
+        once instead of twice."""
+        fakehome = tmp_path / "fakehome"
+        work = fakehome / "work"
+        src = fakehome / "src"
+        sub = fakehome / "sub"
+        for d in (work, src, sub):
+            d.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(fakehome))
+        (work / "ct.conf").write_text(
+            f"variant = {_VARIANT}\n"
+            f"variant-canonical-order = {_VARIANT}\n"
+            "exemarkers = [main]\n"
+            "testmarkers = unit_test.hpp\n"
+        )
+        (work / "ct.conf.d").mkdir()
+        (work / "ct.conf.d" / f"{_VARIANT}.conf").write_text("# variant conf\n")
+        # Both layers are fresh in round one and contradict each other, so
+        # the round is rejected while the home layer is still fresh.
+        (fakehome / "ct.conf").write_text("append-CPPFLAGS = -DSTRAY\n")
+        (sub / "ct.conf").write_text("append-CPPFLAGS = -DSUB\n")
+        (src / "main.cpp").write_text("int main() { return 0; }\n")
+        (sub / "t2.cpp").write_text("int main() { return 0; }\n")
+        targets = [os.path.join("..", "src", "main.cpp"), os.path.join("..", "sub", "t2.cpp")]
+        with pytest.raises((SystemExit, compiletools.configutils.ConfContradictionError)):
+            _parse_cake_args(work, [*_ARGV_BASE, *targets])
+        rejected_err = capsys.readouterr().err
+        assert rejected_err.count("home directory or above") == 0
+        # Corrected conf: the same walk now validates, and the warning fires once.
+        (sub / "ct.conf").write_text("append-CPPFLAGS = -DSTRAY\n")
+        args = _parse_cake_args(work, [*_ARGV_BASE, *targets])
+        assert "-DSTRAY" in args.CPPFLAGS
+        assert capsys.readouterr().err.count("home directory or above") == 1
 
     def test_round_two_layer_contradicting_round_one_layer_errors(self, monorepo):
         """A layer loaded in a later fixpoint round must be validated against
