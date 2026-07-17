@@ -303,6 +303,26 @@ class TestFindTargetsOsWalkFallback:
             assert any("hello.cpp" in e for e in exes)
 
 
+class TestFindTargetsTopbindirFilter:
+    """The os.walk fallback skips roots containing topbindir() as a
+    substring. A dot-prefixed relative bindir must never yield ``./``
+    there — that substring matches every walked root and would silently
+    skip all sources."""
+
+    def test_dot_prefixed_bindir_never_yields_dot_slash_topbindir(self, tmp_path):
+        (tmp_path / "hello.cpp").write_text("#include <iostream>\nint main() { return 0; }\n")
+
+        _args, findtargets = _make_findtargets("TestTopbindirFilter", "--bindir=./bin/x")
+
+        topbindir = findtargets.namer.topbindir()
+        assert topbindir != "." + os.sep, "normalized bindir must not degrade topbindir() to './'"
+        assert topbindir == "bin" + os.sep
+
+        with patch("compiletools.global_hash_registry.get_tracked_files", return_value={}):
+            exes, _tests = findtargets(path=str(tmp_path))
+            assert any("hello.cpp" in e for e in exes)
+
+
 class TestFindTargetsMain:
     """Test findtargets.main() entry point."""
 

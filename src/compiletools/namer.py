@@ -51,13 +51,30 @@ class Namer:
         else:
             return self.args.bindir
 
+    @functools.cached_property
+    def _mirror_anchor(self):
+        """Absolute anchor directory for ``_exe_mirror_subdir``, resolved
+        once per Namer instance (on first use) and pinned thereafter so an
+        in-process chdir between calls cannot shift mirror subdirs.
+
+        With ``args.git_root`` the anchor is the build's gitroot
+        (``find_git_root()`` from cwd), not the per-file strip_git_root
+        fallback — outside a repo that fallback is the file's own
+        directory, which would erase the subdir for every source and
+        re-collide basenames. With ``--no-git-root`` the anchor is the
+        cwd. Both are captured as absolute strings, so caching them is
+        chdir-safe (the wrappedos rule).
+        """
+        if self.args.git_root:
+            return compiletools.wrappedos.realpath(compiletools.git_utils.find_git_root())
+        return os.getcwd()
+
     def _exe_mirror_subdir(self, sourcefilename):
         """Return the bindir-relative subdirectory that mirrors the
         source file's directory.
 
-        Anchoring: with ``args.git_root`` the anchor is the build's
-        gitroot (``find_git_root()`` from cwd); with ``--no-git-root``
-        the anchor is the cwd. A source still absolute after anchor
+        Anchoring: ``_mirror_anchor`` — gitroot with ``args.git_root``,
+        cwd with ``--no-git-root``. A source still absolute after anchor
         stripping (outside the anchor, e.g. ``//#GIT=`` externals in
         sibling dirs) mirrors its full mount-stripped path — contained
         under bindir, deterministic, no ``..`` escapes (realpath
@@ -74,15 +91,7 @@ class Namer:
         if getattr(self.args, "force_flat_exe_layout", False):
             return ""
         real = compiletools.wrappedos.realpath(sourcefilename)
-        if self.args.git_root:
-            # Anchor on the build's gitroot (cwd-derived), not the
-            # per-file strip_git_root fallback — outside a repo that
-            # fallback is the file's own directory, which would erase
-            # the subdir for every source and re-collide basenames.
-            anchor = compiletools.wrappedos.realpath(compiletools.git_utils.find_git_root())
-        else:
-            anchor = os.getcwd()
-        rel = real.removeprefix(anchor + os.sep)
+        rel = real.removeprefix(self._mirror_anchor + os.sep)
         if os.path.isabs(rel):
             rel = compiletools.utils.remove_mount(rel)
         return compiletools.wrappedos.dirname(rel)
@@ -243,8 +252,11 @@ class Namer:
         directories get distinct outputs; see ``_exe_mirror_subdir``.
         Without it, returns the base bindir — the root used by
         ``clean()`` / ``topbindir`` / mkdir consumers. No realpath or
-        normpath: a relative bindir stays relative so string
-        comparisons against other bindir-derived paths hold.
+        normpath here: a relative bindir stays relative so string
+        comparisons against other bindir-derived paths hold. bindir
+        itself is normalized once at parse time
+        (``apptools._commonsubstitutions``), so ``./bin/x`` and
+        ``bin/x/`` never reach this method.
         """
         if sourcefilename:
             subdir = self._exe_mirror_subdir(sourcefilename)
@@ -466,4 +478,5 @@ class Namer:
         for attr in vars(type(self)).values():
             if hasattr(attr, "cache_clear"):
                 attr.cache_clear()
+        self.__dict__.pop("_mirror_anchor", None)
         self._cached_macros = None

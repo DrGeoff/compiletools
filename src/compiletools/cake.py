@@ -542,6 +542,30 @@ class Cake:
         )
         creator.write_compilation_database()
 
+    def _published_dest_paths(self):
+        """Return the (src, dest) pairs ``_copyexes`` publishes into the
+        top-level bin directory.
+
+        Shared by ``_copyexes`` (writer) and ``_clean_topbindir``
+        (remover) so the two can never drift: clean removes exactly
+        what publish would have written. Pure path math — valid even
+        when nothing was built.
+        """
+        assert self.namer is not None
+        outputdir = self.namer.topbindir()
+        exe_dir = self.namer.executable_dir()
+
+        srcs = list(self.namer.all_executable_pathnames())
+        if self.args.static:
+            srcs.append(self.namer.staticlibrary_pathname())
+        if self.args.dynamic:
+            srcs.append(self.namer.dynamiclibrary_pathname())
+
+        # Mirror each artefact's exe_dir-relative path into the top-level
+        # bin dir so same-basename artefacts from different source dirs
+        # stay distinct.
+        return [(src, os.path.join(outputdir, os.path.relpath(src, exe_dir))) for src in srcs]
+
     def _copyexes(self):
         assert self.namer is not None
         # If the user set --output or a custom bindir, trust their layout.
@@ -560,63 +584,57 @@ class Cake:
                 atomic_copy(self.namer.dynamiclibrary_pathname(), self.args.output)
             return
 
-        outputdir = self.namer.topbindir()
-
-        exe_dir = self.namer.executable_dir()
-
-        def _publish(src: str) -> None:
-            # Mirror the artefact's exe_dir-relative path into the top-level
-            # bin dir so same-basename artefacts from different source dirs
-            # stay distinct.
-            dest = os.path.join(outputdir, os.path.relpath(src, exe_dir))
+        exe_srcs = set(self.namer.all_executable_pathnames())
+        for src, dest in self._published_dest_paths():
+            # Executables may not be built (or built non-executable);
+            # libraries skip this gate.
+            if src in exe_srcs and not compiletools.utils.is_executable(src):
+                continue
             # samefile catches the hardlink-fast-path of atomic_copy on
             # rerun (the prior publish made src and dest share an inode),
             # so no-op reruns degenerate to a stat.
             if os.path.exists(dest) and os.path.samefile(src, dest):
-                return
+                continue
             if self.args.verbose > 0:
                 print(dest)
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             atomic_copy(src, dest)
 
-        for srcexe in self.namer.all_executable_pathnames():
-            if not compiletools.utils.is_executable(srcexe):
-                continue
-            _publish(srcexe)
-
-        if self.args.static:
-            _publish(self.namer.staticlibrary_pathname())
-
-        if self.args.dynamic:
-            _publish(self.namer.dynamiclibrary_pathname())
-
     def _clean_topbindir(self):
-        """Remove copied executables from the top-level bin directory."""
+        """Remove published executables from the top-level bin directory.
+
+        Removes exactly the destinations ``_copyexes`` publishes (via the
+        shared ``_published_dest_paths``), then prunes any mirror
+        directories the removals emptied. Never touches other variants'
+        trees, user files under bin/, or — for dot-prefixed bindirs —
+        the workspace itself.
+        """
         assert self.namer is not None
         if self.args.output:
             try:
                 os.remove(self.args.output)
             except OSError:
                 pass
-        else:
-            outputdir = self.namer.topbindir()
-            # NOT wrappedos: bindir may be a chdir-relative input.
-            bindir_real = os.path.realpath(self.args.bindir)
-            for root, dirs, files in os.walk(outputdir, topdown=True):
-                # The variant bindir under outputdir holds the build
-                # artefacts themselves — only the mirrored copies
-                # outside it are ours to remove.
-                dirs[:] = [
-                    d
-                    for d in dirs
-                    # NOT wrappedos: chdir-relative walk entries.
-                    if os.path.realpath(os.path.join(root, d)) != bindir_real
-                ]
-                for ff in files:
-                    try:
-                        os.remove(os.path.join(root, ff))
-                    except OSError:
-                        pass
+            return
+
+        # NOT wrappedos: publish destinations may be chdir-relative and
+        # this runs post-build, so cached stat answers would be stale.
+        topbindir_real = os.path.realpath(self.namer.topbindir())
+        for _src, dest in self._published_dest_paths():
+            try:
+                os.remove(dest)
+            except OSError:
+                pass
+            # Prune now-empty mirror dirs upward, stopping (exclusive)
+            # at topbindir; a non-empty dir ends the walk naturally.
+            parent = os.path.dirname(dest)
+            # NOT wrappedos: chdir-relative post-build paths.
+            while parent and os.path.realpath(parent) != topbindir_real:
+                try:
+                    os.rmdir(parent)
+                except OSError:
+                    break
+                parent = os.path.dirname(parent)
 
     def _run_hook_scripts(self, scripts, phase):
         """Execute a list of shell-command-string hooks; abort on non-zero exit.

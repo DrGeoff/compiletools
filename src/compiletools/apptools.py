@@ -1804,6 +1804,9 @@ def _commonsubstitutions(args):
     try:
         # If the user didn't explicitly supply a bindir then modify the bindir to use the variant name
         args.bindir = unsupplied_replacement(args.bindir, os.path.join("bin", args.variant), args.verbose, "bindir")
+        # Normalize once so ./bin/x, bin/x/ and bin/./x collapse to bin/x.
+        # Leading .. and bare . are deliberately preserved.
+        args.bindir = os.path.normpath(args.bindir)
     except AttributeError:
         pass
 

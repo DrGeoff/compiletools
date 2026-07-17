@@ -133,6 +133,24 @@ def test_force_flat_exe_layout_flattens_libraries(tmp_path, monkeypatch):
     assert namer.dynamiclibrary_pathname(source) == "bin/gcc.debug/libmylib.so"
 
 
+def test_exe_mirror_anchor_survives_chdir(tmp_path, monkeypatch):
+    """The mirror anchor is resolved once per Namer instance, so an
+    in-process chdir between calls cannot shift the mirror subdir."""
+    monkeypatch.chdir(tmp_path)
+    _args, namer = _make_namer("TestNamerAnchorChdir")
+    root = os.path.realpath(str(tmp_path))
+    first = namer.executable_pathname(os.path.join(root, "appalpha", "main.cpp"))
+    assert first == "bin/gcc.debug/appalpha/main"
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    second = namer.executable_pathname(os.path.join(root, "appbeta", "main.cpp"))
+    assert second == "bin/gcc.debug/appbeta/main", (
+        f"anchor must stay pinned to the Namer's construction-time cwd, got {second!r}"
+    )
+
+
 def test_force_flat_exe_layout_defaults_off(tmp_path, monkeypatch):
     """Without the flag the parsed default is False and mirroring stays on."""
     monkeypatch.chdir(tmp_path)
