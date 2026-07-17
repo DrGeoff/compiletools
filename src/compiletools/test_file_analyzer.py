@@ -832,7 +832,7 @@ class TestDetectMarkerTypeCommentAware:
     def test_multibyte_near_digit_separator_window(self):
         # Multibyte chars inside the 40-byte back-scan window (and straddling
         # its start) must not crash or break separator detection.
-        src = "// tempo: allegro™ ›→ set αβγδεζηθικλμ\nint x = 5'000; // main( commented\nint helper();\n"
+        src = "// tempo: allegro™ ›→ set αβγδεζηθικλμ\nint x = 5'000; // main( commented\nint helper();\n"  # noqa: RUF001
         assert self._detect(src) == MarkerType.NONE
 
     def test_multibyte_before_raw_string_window(self):
