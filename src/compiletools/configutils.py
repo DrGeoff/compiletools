@@ -692,7 +692,15 @@ def _effective_layer_values(conf_paths):
     return values
 
 
-def validate_no_conf_contradictions(layers, cwd_layer_paths, invocation_variant, remedy_commands):
+def validate_no_conf_contradictions(
+    layers,
+    cwd_layer_paths,
+    invocation_variant,
+    remedy_commands,
+    *,
+    registered_keys=None,
+    value_canonicalizers=None,
+):
     """Raise ConfContradictionError when same-tier layers disagree on a key.
 
     Tier peers: the cwd layer (when distinct from the gitroot/project layer)
@@ -703,12 +711,32 @@ def validate_no_conf_contradictions(layers, cwd_layer_paths, invocation_variant,
     cwd layer's ``variant`` is NOT, because the resolved invocation variant
     already IS the cwd-tier value (a CLI ``--variant`` legitimately overrides
     the cwd conf's ``variant`` line without that being a contradiction).
+
+    *registered_keys*: set of normalized (dash->underscore) config keys the
+    active parser accepts. When provided, keys not in the set are skipped --
+    a shared conf layout carries keys for every ct-* tool, and another tool's
+    key differing across subprojects must not block this one. When None,
+    every key is compared (legacy/direct-caller behavior).
+
+    *value_canonicalizers*: dict of normalized key -> callable applied to
+    each value before comparison, so type synonyms (``true`` vs ``1`` for a
+    boolean) merge instead of false-positiving. A value the callable rejects
+    falls back to the raw string -- argparse produces the real error later.
     """
     tier = []
     if cwd_layer_paths:
         tier.append(("current working directory", _effective_layer_values(cwd_layer_paths), True))
     for layer in layers:
         tier.append((layer.subproject_dir, _effective_layer_values(layer.conf_paths), False))
+
+    def canonicalize_value(normalized, value):
+        canonicalizer = (value_canonicalizers or {}).get(normalized)
+        if canonicalizer is None:
+            return value
+        try:
+            return canonicalizer(value)
+        except Exception:
+            return value
 
     canonical_invocation_variant = canonicalize_variant_input(invocation_variant)
     # normalized key -> (raw_key, {value: first path}); a key with more than
@@ -717,7 +745,6 @@ def validate_no_conf_contradictions(layers, cwd_layer_paths, invocation_variant,
     seen = {}
     for _, values, is_cwd_layer in tier:
         for normalized, (raw_key, value, path) in values.items():
-            compare_value = value
             if normalized == "variant":
                 if is_cwd_layer:
                     # The resolved invocation variant already represents the
@@ -728,6 +755,9 @@ def validate_no_conf_contradictions(layers, cwd_layer_paths, invocation_variant,
                 _, by_value = seen.setdefault(normalized, (raw_key, {canonical_invocation_variant: "<invocation>"}))
                 by_value.setdefault(compare_value, path)
                 continue
+            if registered_keys is not None and normalized not in registered_keys:
+                continue
+            compare_value = canonicalize_value(normalized, value)
             _, by_value = seen.setdefault(normalized, (raw_key, {}))
             by_value.setdefault(compare_value, path)
 
@@ -739,6 +769,9 @@ def validate_no_conf_contradictions(layers, cwd_layer_paths, invocation_variant,
     for raw_key, by_value in conflicts:
         for value, path in by_value.items():
             lines.append(f"  {raw_key} = {value}   (from {path})")
+    lines.append(
+        "Note: conf-level conflicts are reported even when a CLI or environment value would override both files."
+    )
     lines.append("Choose one:")
     lines.append("  1) Build separately:")
     for command in remedy_commands:
@@ -747,25 +780,7 @@ def validate_no_conf_contradictions(layers, cwd_layer_paths, invocation_variant,
     raise ConfContradictionError("\n".join(lines))
 
 
-# Flags whose following space-separated positional values are target files.
-# Includes every synonym: --begintests is a dest=tests synonym (cake.py);
-# --static-library / --dynamic-library are add_target_arguments synonyms
-# (apptools_argparse.py). Callers with a live parser should pass
-# target_value_flags derived from it (apptools._target_value_flags_from_parser)
-# so new synonyms cannot drift from this fallback tuple.
-_TARGET_VALUE_FLAGS = (
-    "--tests",
-    "--begintests",
-    "--static",
-    "--static-library",
-    "--dynamic",
-    "--dynamic-library",
-)
-
-
-def build_separate_build_commands(
-    prog, argv, layers, targets, *, cwd_layer_dir=None, auto=False, target_value_flags=_TARGET_VALUE_FLAGS
-):
+def build_separate_build_commands(prog, argv, layers, targets, *, target_value_flags, cwd_layer_dir=None, auto=False):
     """Reconstruct one actionable per-subproject command per conflicting layer.
 
     Participants are every target-anchored layer plus (when supplied) the cwd
@@ -776,10 +791,12 @@ def build_separate_build_commands(
       targets were discovered rather than typed, so re-running discovery from
       inside the subproject rediscovers only that subproject's targets.
     * Invocations where the cwd layer itself participates in the conflict emit
-      ``cd <subproject> && <prog> <args> <owned-targets>`` so the rebuild runs
-      from inside the subproject (its cwd conf then loads cleanly, no foreign
-      layer is discovered). Explicit targets owned by the subproject are
-      re-expressed relative to it; a participant that owns no explicit target
+      ``cd <subproject> && <prog> <args-with-rewritten-targets>`` so the
+      rebuild runs from inside the subproject (its cwd conf then loads
+      cleanly, no foreign layer is discovered). Kept explicit targets are
+      rewritten IN PLACE to paths relative to the subproject, so a value
+      stays attached to its flag (``--tests test.cpp`` keeps being a test);
+      a participant that owns no explicit target
       falls back to ``--auto`` so the command still builds that subproject.
       The ``--auto`` fallback carries NO explicit targets: cake ignores
       ``--auto`` whenever any target list is non-empty, so appending targets
@@ -795,9 +812,10 @@ def build_separate_build_commands(
     ``libcore/util.cpp``) is kept in every command that carries explicit
     targets; only the ``--auto``-fallback form omits it (see above).
 
-    Handles bare positional targets, ``--flag value`` (value tokens dropped;
-    a flag left with no surviving value is dropped too), and ``--flag=value``
-    forms. Every emitted token is ``shlex.quote``d.
+    Handles bare positional targets, ``--flag value`` (value tokens dropped
+    or rewritten; a flag left with no surviving value is dropped too), and
+    ``--flag=value`` forms (reassembled after a rewrite). Every emitted token
+    is ``shlex.quote``d.
 
     Caveat on the ``cd`` forms: non-target flag values are reproduced
     verbatim, so a relative path in e.g. ``--config=path`` resolves
@@ -827,8 +845,19 @@ def build_separate_build_commands(
                 best_len = len(prefix)
         return best
 
-    def filter_argv(drop):
-        """Reproduce argv, dropping target tokens for which *drop(real)* is True."""
+    def filter_argv(drop, rewrite=None):
+        """Reproduce argv, dropping target tokens for which *drop(real)* is
+        True. Kept target tokens are rewritten in place via *rewrite(real)*
+        when provided (a None return keeps the original spelling), so a flag
+        value stays attached to its flag and ``--flag=value`` forms are
+        reassembled."""
+
+        def transformed(original, real):
+            if rewrite is None:
+                return original
+            replacement = rewrite(real)
+            return original if replacement is None else replacement
+
         kept = []
         i = 0
         while i < len(argv):
@@ -839,27 +868,45 @@ def build_separate_build_commands(
                 while j < len(argv) and not argv[j].startswith("-"):
                     values.append(argv[j])
                     j += 1
-                surviving = [
-                    v
-                    for v in values
-                    if not (
-                        compiletools.wrappedos.realpath(v) in target_realpaths
-                        and drop(compiletools.wrappedos.realpath(v))
-                    )
-                ]
+                surviving = []
+                for v in values:
+                    real = compiletools.wrappedos.realpath(v)
+                    if real in target_realpaths:
+                        if drop(real):
+                            continue
+                        surviving.append(transformed(v, real))
+                    else:
+                        surviving.append(v)
                 if surviving or not values:
                     kept.append(token)
                     kept.extend(surviving)
                 i = j
                 continue
-            candidate = token.split("=", 1)[1] if token.startswith("--") and "=" in token else token
+            if token.startswith("--") and "=" in token:
+                flag, candidate = token.split("=", 1)
+            else:
+                flag, candidate = None, token
             real = compiletools.wrappedos.realpath(candidate)
-            if real in target_realpaths and drop(real):
+            if real in target_realpaths:
+                if drop(real):
+                    i += 1
+                    continue
+                new_value = transformed(candidate, real)
+                kept.append(f"{flag}={new_value}" if flag is not None else new_value)
                 i += 1
                 continue
             kept.append(token)
             i += 1
         return kept
+
+    def rewrite_relative_to(base_real):
+        def rewrite(real):
+            rel = os.path.relpath(real, base_real)
+            # relpath can yield a bare '-name.cpp' that argparse would read
+            # as a flag; anchor such tokens with './'.
+            return rel if not rel.startswith("-") else os.path.join(os.curdir, rel)
+
+        return rewrite
 
     def join(tokens):
         return " ".join(shlex.quote(t) for t in tokens)
@@ -876,27 +923,23 @@ def build_separate_build_commands(
                 tokens.append("--auto")
             commands.append(f"cd {shlex.quote(keep_dir)} && {join(tokens)}")
         elif cwd_layer_dir is not None:
-            # The cwd layer itself participates in the conflict, so filtering
-            # argv in place cannot separate the subprojects. Rebuild from inside
-            # each subproject with only its own explicit targets; a participant
-            # owning no explicit target falls back to --auto discovery, which
-            # cake honors only when EVERY target list is empty -- so the
-            # fallback form must carry no targets at all, shared or not.
-            base = filter_argv(lambda _real: True)  # drop every target; re-add owned + shared below
+            # The cwd layer itself participates in the conflict, so the
+            # rebuild runs from inside each subproject (cd form). Kept
+            # targets (owned by this subproject, plus shared unowned ones)
+            # are rewritten in place to subproject-relative paths so each
+            # value stays attached to its flag; a participant owning no
+            # explicit target falls back to --auto discovery, which cake
+            # honors only when EVERY target list is empty -- so the fallback
+            # form must carry no targets at all, shared or not.
             owns_any = any(owning_real(real) == keep_real for real in target_realpaths)
             if owns_any:
-                # relpath can yield a bare '-name.cpp' that argparse would
-                # read as a flag; anchor such tokens with './'.
-                kept_targets = sorted(
-                    rel if not rel.startswith("-") else os.path.join(os.curdir, rel)
-                    for rel in (
-                        os.path.relpath(real, keep_real)
-                        for real in target_realpaths
-                        if owning_real(real) in (keep_real, None)
-                    )
+                base = filter_argv(
+                    lambda real, keep=keep_real: owning_real(real) not in (keep, None),
+                    rewrite=rewrite_relative_to(keep_real),
                 )
-                tokens = [prog] + base + kept_targets
+                tokens = [prog] + base
             else:
+                base = filter_argv(lambda _real: True)
                 tokens = [prog] + base
                 if "--auto" not in base:
                     tokens.append("--auto")
