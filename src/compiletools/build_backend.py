@@ -687,22 +687,18 @@ class BuildBackend(abc.ABC):
         for source in all_sources:
             stem = os.path.splitext(os.path.basename(source))[0]
             basename_counts[stem] = basename_counts.get(stem, 0) + 1
+        aliases_by_source: dict[str, list[str]] = {}
         for source in all_sources:
             dest_path = self.namer.executable_pathname(compiletools.wrappedos.realpath(source))
             # The native tool names the artefact after the mangled target
             # (mirrored: appalpha__main); the bare basename stays as a
             # fallback only while it is unambiguous.
-            source_by_name[self._target_name_for(dest_path)] = source
+            target_name = self._target_name_for(dest_path)
+            source_by_name[target_name] = source
             stem = os.path.splitext(os.path.basename(source))[0]
+            aliases_by_source[source] = [target_name, stem]
             if basename_counts[stem] == 1:
                 source_by_name[stem] = source
-
-        def _aliases_for(source: str) -> list[str]:
-            dest = self.namer.executable_pathname(compiletools.wrappedos.realpath(source))
-            return [
-                self._target_name_for(dest),
-                os.path.splitext(os.path.basename(source))[0],
-            ]
 
         for dirpath, dirs, files in os.walk(build_output_dir, followlinks=False):
             dirs[:] = [d for d in dirs if not d.endswith(".runfiles")]
@@ -715,7 +711,7 @@ class BuildBackend(abc.ABC):
                 if fname not in source_by_name:
                     continue
                 source = source_by_name.pop(fname)
-                for alias in _aliases_for(source):
+                for alias in aliases_by_source[source]:
                     source_by_name.pop(alias, None)
                 dest_path = self.namer.executable_pathname(compiletools.wrappedos.realpath(source))
                 os.makedirs(os.path.dirname(dest_path), exist_ok=True)
@@ -1346,6 +1342,23 @@ class BuildBackend(abc.ABC):
                 )
             output_to_source[output] = real
 
+        # A strict path-prefix collision (``foo.cpp`` -> ``<bindir>/foo``
+        # the file, ``foo/bar.cpp`` -> ``<bindir>/foo/bar`` needing
+        # directory ``<bindir>/foo``) fails natively with an opaque "Not
+        # a directory". Sorting by path components makes a strict prefix
+        # adjacent to its extensions (plain string sort would not:
+        # ``bin/foo-x`` sorts between ``bin/foo`` and ``bin/foo/bar``),
+        # so one adjacent-pair pass catches every such collision.
+        outputs = sorted(output_to_source, key=lambda p: p.split(os.sep))
+        for shorter, longer in itertools.pairwise(outputs):
+            if longer.startswith(shorter + os.sep):
+                raise ValueError(
+                    f"Executable output collision: {shorter!r} (from "
+                    f"{output_to_source[shorter]!r}) is needed as a directory for {longer!r} "
+                    f"(from {output_to_source[longer]!r}). Rename one source — a source file "
+                    f"and a source directory sharing a name map to conflicting output paths."
+                )
+
     def _target_name_for(self, output_path: str) -> str:
         """Native-tool (cmake/bazel) target name for a bindir artefact.
 
@@ -1356,9 +1369,8 @@ class BuildBackend(abc.ABC):
         aliases raise rather than silently merging two native targets.
         """
         exe_dir = self.namer.executable_dir()
-        if output_path.startswith(exe_dir + os.sep):
-            rel = output_path[len(exe_dir) + 1 :]
-        else:
+        rel = os.path.relpath(output_path, exe_dir)
+        if rel == os.pardir or rel.startswith(os.pardir + os.sep):
             # Output outside the bindir (custom rule paths); the bare
             # basename matches what the native tool would use anyway.
             rel = os.path.basename(output_path)
@@ -1611,16 +1623,18 @@ class BuildBackend(abc.ABC):
     def _xml_path_for(self, exe_path: str) -> str:
         """Per-test JUnit XML path under ``--test-xml-dir``.
 
-        Layout: ``<test-xml-dir>/<variant>/<flattened_exe_relpath>.xml``,
-        where the exe's bindir-relative path is flattened with ``_`` so
-        mirrored test exes (``appalpha/main``, ``appbeta/main``) get
-        distinct XML files while the xml dir stays single-level. Caller
-        is responsible for ensuring ``--test-xml-dir`` is set.
+        Layout: ``<test-xml-dir>/<variant>/<target_name>.xml``, keyed on
+        the registry-checked ``_target_name_for`` name so mirrored test
+        exes (``appalpha/main``, ``appbeta/main``) get distinct XML files
+        while the xml dir stays single-level. A naive ``_``-flattening of
+        the bindir-relative path is non-injective (``a_b/main`` vs
+        ``a/b_main``) and would silently drop one test rule via
+        ``BuildGraph.add_rule``'s last-write-wins. Caller is responsible
+        for ensuring ``--test-xml-dir`` is set.
         """
         xml_dir = self.args.test_xml_dir
         variant = getattr(self.args, "variant", "") or ""
-        rel = os.path.relpath(exe_path, self.namer.executable_dir())
-        return os.path.join(xml_dir, variant, rel.replace(os.sep, "_") + ".xml")
+        return os.path.join(xml_dir, variant, self._target_name_for(exe_path) + ".xml")
 
     def _args_signature(self) -> str:
         """Deterministic ``Namespace(k=v, ...)`` repr for the build-file header.

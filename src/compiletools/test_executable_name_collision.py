@@ -13,6 +13,7 @@ mirroring cannot separate (``main.cpp`` + ``main.c`` in one directory).
 """
 
 import os
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -176,6 +177,60 @@ def test_check_executable_collisions_raises_naming_both_sources(tmp_path):
     assert "/proj/app/main.c" in message
 
 
+def test_check_executable_collisions_raises_on_path_prefix_collision():
+    """``foo.cpp`` publishes ``<bindir>/foo`` (a file) while
+    ``foo/bar.cpp`` needs ``<bindir>/foo`` as a directory; the pre-link
+    check must raise a friendly error naming both sources instead of the
+    native tool's opaque "Not a directory" failure."""
+    from types import SimpleNamespace
+
+    _args, namer = _make_namer("TestExePrefixCollision")
+
+    assert namer.executable_pathname("/repo/foo.cpp") == "bin/gcc.debug/repo/foo"
+    assert namer.executable_pathname("/repo/foo/bar.cpp") == "bin/gcc.debug/repo/foo/bar"
+
+    backend = _ConcreteBackend.__new__(_ConcreteBackend)
+    backend.args = SimpleNamespace(
+        filename=["/repo/foo.cpp"],
+        tests=["/repo/foo/bar.cpp"],
+        static=[],
+        dynamic=[],
+    )
+    backend.namer = namer
+
+    with pytest.raises(ValueError) as excinfo:
+        backend._check_executable_collisions()
+
+    message = str(excinfo.value)
+    assert "/repo/foo.cpp" in message
+    assert "/repo/foo/bar.cpp" in message
+
+
+def test_check_executable_collisions_prefix_check_ignores_sibling_stems():
+    """``foo`` and ``foo-extra`` share a string prefix but not a path
+    prefix; the component-wise check must not raise for them."""
+    from types import SimpleNamespace
+
+    _args, namer = _make_namer("TestExePrefixSiblings")
+
+    backend = _ConcreteBackend.__new__(_ConcreteBackend)
+    backend.args = SimpleNamespace(
+        filename=["/repo/foo.cpp", "/repo/foo-extra.cpp"],
+        tests=["/repo/foo/bar.cpp"],
+        static=[],
+        dynamic=[],
+    )
+    backend.namer = namer
+
+    with pytest.raises(ValueError) as excinfo:
+        backend._check_executable_collisions()
+
+    message = str(excinfo.value)
+    assert "/repo/foo.cpp" in message
+    assert "/repo/foo/bar.cpp" in message
+    assert "foo-extra" not in message
+
+
 def test_check_executable_collisions_passes_for_distinct_outputs(tmp_path):
     backend = _make_backend(
         str(tmp_path),
@@ -213,7 +268,7 @@ def test_link_rule_emits_per_library_search_dirs(tmp_path):
 
 
 def test_xml_path_flattens_mirrored_exe_paths(tmp_path):
-    """JUnit XML files are keyed on the bindir-relative exe path so
+    """JUnit XML files are keyed on the registry-checked target name so
     mirrored test exes get distinct XML files in one flat xml dir."""
     backend = _make_backend(str(tmp_path))
     backend.args.test_xml_dir = os.path.join(str(tmp_path), "xml")
@@ -225,8 +280,58 @@ def test_xml_path_flattens_mirrored_exe_paths(tmp_path):
 
     assert xml_alpha != xml_beta
     assert os.path.dirname(xml_alpha) == os.path.dirname(xml_beta)
-    assert os.path.basename(xml_alpha) == "appalpha_main.xml"
-    assert os.path.basename(xml_beta) == "appbeta_main.xml"
+    assert os.path.basename(xml_alpha) == "appalpha__main.xml"
+    assert os.path.basename(xml_beta) == "appbeta__main.xml"
+
+
+def test_xml_paths_distinct_for_underscore_ambiguous_exe_paths(tmp_path):
+    """A naive ``_``-flattening of the bindir-relative path is
+    non-injective: ``a_b/main`` and ``a/b_main`` both flatten to
+    ``a_b_main.xml``, and last-write-wins in BuildGraph.add_rule would
+    silently drop one test rule. The target-name authority keeps them
+    distinct."""
+    backend = _make_backend(str(tmp_path))
+    backend.args.test_xml_dir = os.path.join(str(tmp_path), "xml")
+    backend.args.variant = "gcc.debug"
+    bindir = backend.args.bindir
+
+    xml_first = backend._xml_path_for(os.path.join(bindir, "a_b", "main"))
+    xml_second = backend._xml_path_for(os.path.join(bindir, "a", "b_main"))
+
+    assert xml_first != xml_second
+
+
+def test_xml_path_for_is_idempotent_per_exe_path(tmp_path):
+    """_xml_path_for is called repeatedly for one exe (bucket-dir probe,
+    rule output, test argv); repeat calls must return the same path, not
+    trip the alias registry."""
+    backend = _make_backend(str(tmp_path))
+    backend.args.test_xml_dir = os.path.join(str(tmp_path), "xml")
+    backend.args.variant = "gcc.debug"
+    exe = os.path.join(backend.args.bindir, "appalpha", "main")
+
+    assert backend._xml_path_for(exe) == backend._xml_path_for(exe)
+
+
+def test_xml_path_for_raises_on_genuine_target_name_alias(tmp_path):
+    """Two exes whose target names genuinely alias (``a__b/main`` vs
+    ``a/b__main``) must raise naming both outputs rather than silently
+    sharing one XML file."""
+    backend = _make_backend(str(tmp_path))
+    backend.args.test_xml_dir = os.path.join(str(tmp_path), "xml")
+    backend.args.variant = "gcc.debug"
+    bindir = backend.args.bindir
+
+    first = os.path.join(bindir, "a__b", "main")
+    second = os.path.join(bindir, "a", "b__main")
+    backend._xml_path_for(first)
+
+    with pytest.raises(ValueError) as excinfo:
+        backend._xml_path_for(second)
+
+    message = str(excinfo.value)
+    assert first in message
+    assert second in message
 
 
 def test_target_name_for_mirrored_outputs(tmp_path):
@@ -242,6 +347,32 @@ def test_target_name_for_mirrored_outputs(tmp_path):
     assert name_alpha == "appalpha__main"
     assert name_beta == "appbeta__main"
     assert name_root == "standalone"
+
+
+def test_target_name_for_with_trailing_separator_exe_dir(tmp_path):
+    """A denormalized bindir (trailing separator) must not defeat the
+    containment check: mirrored outputs keep their mirrored (non-basename)
+    target names. Constructed at the function level — argument
+    normalization at parse time is a separate concern."""
+    backend = _make_backend(str(tmp_path))
+    bindir = backend.args.bindir
+    backend.namer.executable_dir = MagicMock(return_value=bindir + os.sep)
+
+    name_alpha = backend._target_name_for(os.path.join(bindir, "appalpha", "main"))
+    name_beta = backend._target_name_for(os.path.join(bindir, "appbeta", "main"))
+    name_root = backend._target_name_for(os.path.join(bindir, "standalone"))
+
+    assert name_alpha == "appalpha__main"
+    assert name_beta == "appbeta__main"
+    assert name_root == "standalone"
+
+
+def test_target_name_for_output_outside_bindir_keeps_basename(tmp_path):
+    """Outputs outside the bindir (custom rule paths) keep the bare
+    basename fallback under the relpath containment check."""
+    backend = _make_backend(str(tmp_path))
+
+    assert backend._target_name_for(os.path.join(str(tmp_path), "elsewhere", "tool")) == "tool"
 
 
 def test_target_name_for_raises_on_aliased_names(tmp_path):
