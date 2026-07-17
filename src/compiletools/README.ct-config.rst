@@ -40,9 +40,19 @@ locations (from lowest to highest priority):
 5. User config: ~/.config/ct (XDG compliant)
 6. Project-level config: <gitroot>/ct.conf.d (for project-specific settings)
 7. Git repository root directory
-8. Current working directory
+8. Current working directory, and the nearest-ancestor ct.conf / ct.conf.d
+   of every explicit or --auto-discovered build target (target-anchored
+   layers; same priority tier as the current working directory)
 9. Environment variables (override config files)
 10. Command line arguments (highest priority, override everything)
+
+All loaded configuration applies to the whole invocation — there is no
+per-translation-unit scoping.  Because target-anchored layers and the
+current-working-directory layer share one tier, they must agree: if two
+same-tier config files set the same key to different values (including
+append-/prepend- keys), the tools stop with an error naming both files and
+the two remedies (build the subprojects separately, or make the values
+identical).
 
 The ct-* applications are aware of two levels of configs.
 There is a base level ct.conf that contains the basic variables that apply no

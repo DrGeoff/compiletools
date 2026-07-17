@@ -406,8 +406,12 @@ def main(argv=None):
     if args.auto and not any([args.filename, args.static, args.dynamic, args.tests]):
         if args.verbose >= 2:
             print("Auto-detecting targets...")
-        findtargets = compiletools.findtargets.FindTargets(args, context=context)
-        findtargets.process(args)
+        # Discovered targets may live in subprojects whose conf layers were
+        # invisible at parse time. Use the same discovery/re-anchor driver as
+        # cake.process(), otherwise the CDB's flags diverge from what
+        # ct-cake --auto compiles with (and contradiction validation is
+        # skipped).
+        args = compiletools.findtargets.discover_targets_and_reanchor(args, context)
         # Re-run substitutions after targets are discovered
         compiletools.apptools.substitutions(args, verbose=0)
 

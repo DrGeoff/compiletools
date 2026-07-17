@@ -394,6 +394,273 @@ def _substitute_CXX_for_missing(args):
         args.LDFLAGS = unsupplied_replacement(args.LDFLAGS, args.CXXFLAGS, args.verbose, "LDFLAGS")
 
 
+def _collect_explicit_target_files(args):
+    """All explicit target filenames: positional, --static, --dynamic, --tests."""
+    targets = []
+    for attr in ("filename", "static", "dynamic", "tests"):
+        value = getattr(args, attr, None)
+        if value:
+            targets.extend(value)
+    return targets
+
+
+def _target_conf_filenames(variant, argv):
+    """Conf filenames the current variant resolution consults, in flat_paths
+    order (ct.conf, then each axis conf, then the composite conf)."""
+    resolution = compiletools.configutils.resolve_variant(variant=variant, argv=argv)
+    filenames = ["ct.conf"]
+    filenames.extend(f"{axis.name}.conf" for axis in resolution.axes)
+    if resolution.canonical_name and "." in resolution.canonical_name:
+        filenames.append(f"{resolution.canonical_name}.conf")
+    return tuple(dict.fromkeys(filenames))
+
+
+def _target_value_flags_from_parser(cap):
+    """Every option string whose action collects target files (dest in
+    tests/static/dynamic), so remedy-command argv filtering recognizes all
+    synonyms (--begintests, --static-library, --dynamic-library) without a
+    hand-maintained list that can drift from the parser."""
+    flags = []
+    for action in cap._actions:
+        if action.dest in ("tests", "static", "dynamic"):
+            flags.extend(action.option_strings)
+    return tuple(dict.fromkeys(flags)) or compiletools.configutils._TARGET_VALUE_FLAGS
+
+
+# Defensive bound on the target-anchored config fixpoint. Each round strictly
+# grows cap._default_config_files (fresh-path realpath dedup guarantees it),
+# and the reachable conf set is bounded by the targets' ancestor chains, so a
+# correct run converges in one or two rounds. Exhaustion is a hard error --
+# a silent stop would ship a half-anchored config.
+_MAX_TARGET_CONF_ROUNDS = 10
+
+
+def _apply_target_conf_layers(cap, argv, args, verbose, auto=False, reparse=True):
+    """Load explicit targets' subproject config layers to a fixpoint.
+
+    Same-tier contradiction (cwd layer vs target layer, target vs target) is
+    rendered to stderr with its remedy commands and exits via SystemExit(1) --
+    the argparse convention, so every ct-* entry point gets traceback-free
+    rendering without per-tool handlers. At verbose >= 2 the underlying
+    ConfContradictionError propagates instead so the traceback is available.
+    Returns *args* unchanged when the walk surfaces nothing new -- the common
+    case costs only the ancestor walk.
+
+    *auto* is True on the ``--auto`` re-anchor path (targets came from
+    discovery, not argv); the remedy commands then take the ``cd`` + fresh
+    discovery form rather than argv target filtering.
+
+    *reparse* False widens ``cap._default_config_files`` (after validation)
+    but performs only a single widening round, returning *args* unchanged --
+    for callers that re-run the full ``parseargs`` themselves and would
+    discard the namespace. Their follow-up ``parseargs`` re-enters this
+    function, whose fixpoint then continues where the single round stopped.
+
+    Fixpoint: a target injected BY a freshly loaded layer (a subproject
+    ct.conf's own ``tests = foo.cpp`` -- ``tests``/``static``/``dynamic``
+    are config-file-settable keys) appears on the re-parsed namespace, so
+    the next round walks its ancestor layers too. Terminates because
+    ``cap._default_config_files`` grows strictly each round and is bounded
+    by the conf files on the targets' ancestor chains; contradiction
+    validation runs over the layers accumulated across ALL rounds, so a
+    round-2 layer conflicting with a round-1 layer errors identically to
+    the single-round case. The accumulation persists on the parser
+    (``cap._ct_loaded_target_layers``) across ``parseargs`` invocations:
+    the ``--auto`` driver re-enters via a fresh ``parseargs`` per
+    discovery round, and a layer loaded in an earlier driver round is
+    already in ``cap._default_config_files`` (so the freshness filter
+    skips it) yet still shapes the build -- without the persisted list a
+    later round's layer could contradict it silently.
+
+    Outside a git repository ``find_git_root()`` falls back to the cwd, so
+    ``cwd == gitroot`` and the cwd layer never participates in same-tier
+    validation -- the cwd conf is then the fallback project tier, which a
+    target layer legitimately overrides via re-parse ordering.
+    """
+    if getattr(cap, "_default_config_files", None) is None:
+        return args
+    context = args._context
+
+    # cwd layer participates in same-tier comparison only when cwd is not
+    # the gitroot: gitroot confs are the project tier, which subproject
+    # layers legitimately override. Computed once: later rounds only ever
+    # add target layers, never cwd-layer entries.
+    cwd = compiletools.wrappedos.realpath(os.getcwd())
+    gitroot = compiletools.wrappedos.realpath(compiletools.git_utils.find_git_root())
+    cwd_layer_paths = []
+    if cwd != gitroot:
+        for path in cap._default_config_files:
+            real = compiletools.wrappedos.realpath(path)
+            if os.path.dirname(real) == cwd or os.path.dirname(real) == os.path.join(cwd, "ct.conf.d"):
+                cwd_layer_paths.append(real)
+    cwd_layer_dir = cwd if cwd_layer_paths else None
+
+    if not hasattr(cap, "_ct_loaded_target_layers"):
+        cap._ct_loaded_target_layers = []
+    loaded_layers = cap._ct_loaded_target_layers
+    for _round in range(_MAX_TARGET_CONF_ROUNDS):
+        targets = _collect_explicit_target_files(args)
+        if not targets:
+            return args
+
+        default_config_files = cap._default_config_files
+        conf_filenames = _target_conf_filenames(args.variant, argv)
+        git_bounded = getattr(args, "git_root", True)
+        layers = compiletools.configutils.walk_target_conf_layers(
+            targets, conf_filenames, verbose=verbose, git_bounded=git_bounded
+        )
+
+        loaded = {compiletools.wrappedos.realpath(p) for p in default_config_files}
+        new_layers = []
+        for layer in layers:
+            fresh = tuple(p for p in layer.conf_paths if compiletools.wrappedos.realpath(p) not in loaded)
+            if fresh:
+                new_layers.append(
+                    compiletools.configutils.TargetConfLayer(
+                        subproject_dir=layer.subproject_dir,
+                        conf_paths=fresh,
+                        anchor_targets=layer.anchor_targets,
+                        git_bounded=layer.git_bounded,
+                    )
+                )
+        if not new_layers:
+            return args
+        loaded_layers.extend(new_layers)
+
+        remedy_commands = compiletools.configutils.build_separate_build_commands(
+            os.path.basename(sys.argv[0]) if sys.argv else "ct-cake",
+            list(argv),
+            loaded_layers,
+            targets,
+            cwd_layer_dir=cwd_layer_dir,
+            auto=auto,
+            target_value_flags=_target_value_flags_from_parser(cap),
+        )
+        try:
+            compiletools.configutils.validate_no_conf_contradictions(
+                loaded_layers, cwd_layer_paths, args.variant, remedy_commands
+            )
+        except compiletools.configutils.ConfContradictionError as err:
+            if verbose >= 2:
+                raise
+            print(str(err), file=sys.stderr)
+            raise SystemExit(1) from None
+
+        new_paths = [p for layer in new_layers for p in layer.conf_paths]
+        _check_legacy_cas_config_keys(new_paths)
+        _check_legacy_variant_config_keys(new_paths)
+        _note_case_mismatched_conf_keys(cap, new_paths, verbose)
+        if verbose >= 1:
+            # A vestigial subproject ct.conf that was inert before target
+            # anchoring now changes flags; naming the anchoring target and
+            # the loaded files makes a mysteriously changed build
+            # self-diagnosing, and the invocation-wide scope answers "why
+            # did that conf affect THIS translation unit".
+            for layer in new_layers:
+                anchors = " ".join(layer.anchor_targets)
+                print(
+                    f"ct: note: target {anchors} anchored config layer {layer.subproject_dir}: "
+                    f"loaded {' '.join(layer.conf_paths)}; these settings apply to the whole invocation",
+                    file=sys.stderr,
+                )
+            if verbose >= 2 and cwd_layer_paths and _round == 0:
+                print(
+                    f"ct: note: cwd config layer {cwd} participates in same-tier contradiction "
+                    f"validation against the target-anchored layers",
+                    file=sys.stderr,
+                )
+        cap._default_config_files = list(default_config_files) + new_paths
+        if not reparse:
+            return args
+        args = cap.parse_args(args=argv)
+        _stash_private_attrs(args, cap, context, argv)
+    raise RuntimeError(
+        f"target-anchored config discovery did not converge after {_MAX_TARGET_CONF_ROUNDS} rounds; "
+        f"last layers: {' '.join(layer.subproject_dir for layer in loaded_layers)}"
+    )
+
+
+def _note_case_mismatched_conf_keys(cap, conf_paths, verbose):
+    """At ``verbose >= 1``, note conf keys that miss a registered key only by
+    case (or dash/underscore spelling).
+
+    Conf keys are case-sensitive and ``create_parser`` sets
+    ``ignore_unknown_config_file_keys``, so ``append-cppflags`` is silently
+    dropped where ``append-CPPFLAGS`` would apply -- a no-op invisible at the
+    point of damage. Genuinely unknown keys stay silent (they may belong to
+    another ct-* tool sharing the conf file); only near-misses are noted.
+    """
+    if verbose < 1:
+        return
+
+    def _fold(key):
+        return key.lower().replace("_", "-")
+
+    registered = {}
+    for action in cap._actions:
+        for key in cap.get_possible_config_keys(action):
+            if not key.startswith("-"):
+                registered.setdefault(_fold(key), key)
+    for path in conf_paths:
+        try:
+            items = compiletools.configutils._parse_conf_file_cached(path)
+        except OSError:
+            continue
+        for key in items:
+            canonical = registered.get(_fold(key))
+            if canonical is not None and canonical != key:
+                print(
+                    f"ct: note: conf key {key!r} in {path} is not registered and was "
+                    f"ignored (conf keys are case-sensitive); did you mean {canonical!r}?",
+                    file=sys.stderr,
+                )
+
+
+def reanchor_config_for_discovered_targets(args):
+    """Re-anchor config discovery after ``--auto`` target discovery.
+
+    ``findtargets.process`` assigns discovered targets onto an
+    already-parsed namespace, so their subproject conf layers were invisible
+    to the parse-time anchoring in ``parseargs``. Re-run the same walk; when
+    it surfaces new layers, re-run the full ``parseargs`` with the widened
+    config set. This is a pure config re-anchor: the returned namespace
+    holds only argv/conf-level target lists, NOT the discovered targets --
+    the caller (``findtargets.discover_targets_and_reanchor``) re-discovers
+    under the new config, so re-applying stale targets here would both
+    duplicate (``FindTargets.process`` appends) and bypass any freshly
+    loaded discovery-affecting keys (``exemarkers``/``testmarkers``/
+    ``disable-tests``).
+
+    Returns the fresh namespace, or ``None`` when nothing new was found
+    (fixpoint -- the caller keeps its namespace, discovered targets intact).
+
+    A namespace built without going through ``parseargs`` (e.g. a test
+    double's hand-built ``SimpleNamespace``) lacks the stashed
+    ``_parser``/``_argv``/``_context`` attributes; there is nothing to
+    re-anchor against in that case, so this is a no-op.
+    """
+    cap = getattr(args, "_parser", None)
+    argv = getattr(args, "_argv", None)
+    if cap is None or argv is None:
+        return None
+
+    before = list(getattr(cap, "_default_config_files", []) or [])
+    # reparse=False: the internal re-parse would be discarded anyway --
+    # parseargs below re-runs the whole pipeline over the widened config set.
+    _apply_target_conf_layers(cap, argv, args, args.verbose, auto=True, reparse=False)
+    after = list(getattr(cap, "_default_config_files", []) or [])
+    if after == before:
+        return None
+
+    # The first parseargs latched context.pkg_config_overrides_applied, so
+    # the re-run below would early-return and drop any prepend-/append-
+    # PKG-CONFIG-PATH contributed by the freshly loaded target layers.
+    # Restore resets the latch (and un-mutates PKG_CONFIG_PATH) so the
+    # re-apply sees the pre-override environment plus the widened conf set.
+    args._context.restore_pkg_config_path()
+    return parseargs(cap, argv, context=args._context)
+
+
 def _extend_includes_using_git_root(args):
     """Unless turned off, the git root will be added
     to the list of include paths
@@ -1739,6 +2006,12 @@ def parseargs(cap, argv, verbose=None, *, context):
             and used by substitution callbacks (e.g. to set up project-level
             pkg-config overrides).
     """
+    # Console entry points pass argv=None meaning "use sys.argv". Normalize
+    # here so everything downstream (target-anchored conf discovery, the
+    # _argv stash the --auto re-anchor reads) sees a real list -- argparse
+    # only resolves None internally, which left _argv=None and disabled the
+    # re-anchor on the real CLI.
+    argv = list(sys.argv[1:]) if argv is None else list(argv)
     # command-line values override environment variables which override config file values which override defaults.
     args = cap.parse_args(args=argv)
     _stash_private_attrs(args, cap, context, argv)
@@ -1763,6 +2036,11 @@ def parseargs(cap, argv, verbose=None, *, context):
 
     if verbose is None:
         verbose = args.verbose
+
+    # Target-anchored config discovery: explicit targets outside the cwd
+    # subproject pull in their nearest-ancestor ct.conf / ct.conf.d layer.
+    # Raises ConfContradictionError when same-tier layers disagree.
+    args = _apply_target_conf_layers(cap, argv, args, verbose)
 
     # configargparse only applies the "override" method to environment-sourced
     # variables — it has no native "append" method for env vars — so when the

@@ -232,6 +232,58 @@ class FindTargets:
         return executabletargets, testtargets
 
 
+# Defensive bound mirroring apptools._MAX_TARGET_CONF_ROUNDS: each re-anchor
+# strictly widens the parser's config-file set, which is bounded by the conf
+# files on the discovered targets' ancestor chains, so a correct run
+# converges in one or two rounds.
+_MAX_DISCOVERY_REANCHOR_ROUNDS = 10
+
+
+def discover_targets_and_reanchor(args, context):
+    """Run ``--auto`` target discovery and config re-anchoring to a fixpoint.
+
+    Discovery classifies files with the exemarkers/testmarkers in force at
+    call time, but the discovered targets may pull in subproject conf layers
+    that CHANGE those markers (or set ``disable-tests``). One discovery pass
+    followed by one re-anchor therefore isn't enough: the re-anchored config
+    must drive a fresh discovery, repeated until the config set stops
+    growing. Both ``cake.process`` and ``compilation_database.main`` use
+    this driver so their ``--auto`` semantics cannot drift apart.
+
+    Each round: discover onto *args* (``FindTargets.process`` appends via
+    ``+=``; a conf-injected target that discovery also finds is deduped
+    below), re-anchor. ``reanchor_config_for_discovered_targets`` returns
+    ``None`` when the walk surfaced nothing new -- fixpoint, return *args*
+    with the discovered targets on it. Otherwise it returns a fresh
+    namespace whose target lists hold only argv/conf-level values, and the
+    next round re-discovers under the new config. The analyze-file cache is
+    cleared between rounds because ``marker_type`` -- computed from the OLD
+    markers -- is baked into cached ``FileAnalysisResult`` objects keyed
+    only by content hash; without the clear, re-discovery would replay
+    round-one classifications and marker changes would be invisible.
+
+    Terminates because each re-anchor strictly widens the parser's config
+    set (bounded by the targets' ancestor conf files); exhaustion raises
+    rather than returning a half-anchored namespace.
+    """
+    for _round in range(_MAX_DISCOVERY_REANCHOR_ROUNDS):
+        FindTargets(args, context=context).process(args)
+        for attr in ("filename", "tests"):
+            value = getattr(args, attr, None)
+            if value:
+                setattr(args, attr, compiletools.utils.ordered_unique(value))
+        new_args = compiletools.apptools.reanchor_config_for_discovered_targets(args)
+        if new_args is None:
+            return args
+        context.analyze_file_cache.clear()
+        args = new_args
+    raise RuntimeError(
+        f"--auto discovery and config re-anchoring did not converge after "
+        f"{_MAX_DISCOVERY_REANCHOR_ROUNDS} rounds; every round kept widening the config file set "
+        f"(discovered targets keep pulling in new subproject conf layers)"
+    )
+
+
 def main(argv=None):
     cap = compiletools.apptools.create_parser("Find C/C++ files with main functions and unit tests", argv=argv)
     add_arguments(cap)

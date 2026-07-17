@@ -27,7 +27,7 @@ pytest config in `pyproject.toml [tool.pytest.ini_options]`; tests live next to 
 ## Architecture
 
 ### Build flow (`ct-cake --auto`, in `cake.py`)
-1. **Config** (`configutils.py`): merge bundled < system < venv < user < project < cwd < env < CLI. Variants are *composed* from axis confs (toolchain / linker / optimization / instrumentation); `--variant=gcc,debug,asan` synthesizes from `gcc.conf` + `debug.conf` + `asan.conf`. Canonical token order from `variant-canonical-order` in `ct.conf` (or `_DEFAULT_VARIANT_CANONICAL_ORDER` builtin) — both halves of the system must agree, drift-guarded by `test_bundled_ct_conf_comment_example_matches_builtin`. Legacy `variantaliases = {...}` is hard-failed by `_check_legacy_variant_config_keys`.
+1. **Config** (`configutils.py`): merge bundled < system < venv < user < project < cwd+target-subprojects < env < CLI (explicit and --auto targets pull in their nearest-ancestor ct.conf / ct.conf.d at the cwd tier; same-tier same-key-different-value conflicts are a hard ConfContradictionError with split-build/harmonize remedies). Variants are *composed* from axis confs (toolchain / linker / optimization / instrumentation); `--variant=gcc,debug,asan` synthesizes from `gcc.conf` + `debug.conf` + `asan.conf`. Canonical token order from `variant-canonical-order` in `ct.conf` (or `_DEFAULT_VARIANT_CANONICAL_ORDER` builtin) — both halves of the system must agree, drift-guarded by `test_bundled_ct_conf_comment_example_matches_builtin`. Legacy `variantaliases = {...}` is hard-failed by `_check_legacy_variant_config_keys`.
 2. **Targets** (`findtargets.py`): two-stage argparse — first parse extracts variant, discovery modifies target list, second parse produces final config. Once targets settle, `cake._fetch_and_register_externals` scans them (and transitive headers) for `//#GIT=<url>[@<ref>]` declarations (`fetch.py`), clones/pulls each external to a sibling `../<name>` dir, and widens `args.INCLUDE` so a re-run of `substitutions()` folds the external's sources into the build. Standalone entry point: `ct-fetch`.
 3. **Deps** (`hunter.py`, `headerdeps.py`, `magicflags.py`): walk `#include` graph (factory: `DirectHeaderDeps`/`CppHeaderDeps`); extract `//#` flag annotations; discover implied sources (`foo.h` → `foo.cpp`).
 4. **LDFLAGS merge** (`utils.merge_ldflags_with_topo_sort`): soft edges (single `PKG-CONFIG`) cancel on disagreement; hard edges (multi-package `PKG-CONFIG=a b`) always kept; cycles after cancellation raise `ValueError` naming offenders.
@@ -80,7 +80,7 @@ Every `ct-*` entry point uses `apptools.create_parser` + `add_base_arguments` (g
 - `ct.conf.d/ct.conf` — default variant, canonical order, exe/test markers, locking
 - `ct.conf.d/{axis}.conf` — toolchain (`gcc.conf`, `clang.conf`), linker (`ld/gold/mold/wild/wild-B.conf`), optimization (`debug/release.conf`), instrumentation (`asan/ubsan/tsan/coverage/lto.conf`)
 - `ct.conf.d/{variant}.conf` — composite overrides (e.g. `gcc.debug.conf`)
-- Priority: bundled < system (`/etc/xdg/ct`) < venv < user (`~/.config/ct`) < project (`{gitroot}/ct.conf.d/`) < cwd < env < CLI
+- Priority: bundled < system (`/etc/xdg/ct`) < venv < user (`~/.config/ct`) < project (`{gitroot}/ct.conf.d/`) < cwd+target-subprojects < env < CLI
 
 ## Test Conventions
 

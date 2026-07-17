@@ -797,6 +797,12 @@ colliding on ``bin/<variant>/main``. Two sources that would still map to
 the same output path (``main.cpp`` and ``main.c`` in one directory) are a
 hard error naming both files.
 
+``--force-flat-exe-layout`` disables the mirroring and places every
+executable and library directly at ``bin/<variant>/<name>`` (the layout of
+releases up to 10.3). Same-basename sources in different directories then trigger the
+collision error above. The flag is settable per project with
+``force-flat-exe-layout = true`` in ``ct.conf``.
+
 To explicitly specify build targets and unit tests to be generated and run
 use the following example.  Unit tests are built and when run must return
 an exit code of 0 otherwise this will become a build failure. The flag used

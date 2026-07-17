@@ -28,11 +28,12 @@ def _reset_parser_state():
     uth.reset()
 
 
-def _make_namer(description):
+def _make_namer(description, extra_argv=()):
     """Build (args, namer) for the bundled ``gcc.debug`` variant.
 
     The args/namer share a single BuildContext, mirroring the production
-    create_parser → parseargs → Namer flow.
+    create_parser → parseargs → Namer flow. ``extra_argv`` appends flags
+    (e.g. ``--force-flat-exe-layout``) to the base ``--no-git-root`` argv.
     """
     config_dir = os.path.join(uth.cakedir(), "ct.conf.d")
     config_files = [os.path.join(config_dir, "gcc.debug.conf")]
@@ -44,7 +45,7 @@ def _make_namer(description):
         args_for_setting_config_path=["-c", "--config"],
         ignore_unknown_config_file_keys=True,
     )
-    argv = ["--no-git-root"]
+    argv = ["--no-git-root", *extra_argv]
     compiletools.apptools.add_common_arguments(cap=cap, argv=argv, variant="gcc.debug")
     compiletools.namer.Namer.add_arguments(cap=cap, argv=argv, variant="gcc.debug")
     ctx = BuildContext()
@@ -107,6 +108,52 @@ def test_library_pathnames_mirror_source_dir(tmp_path, monkeypatch):
     source = os.path.join(root, "applib", "mylib.cpp")
     assert namer.staticlibrary_pathname(source) == "bin/gcc.debug/applib/libmylib.a"
     assert namer.dynamiclibrary_pathname(source) == "bin/gcc.debug/applib/libmylib.so"
+
+
+def test_force_flat_exe_layout_flattens_executables(tmp_path, monkeypatch):
+    """--force-flat-exe-layout drops the mirror subdir: every executable
+    lands directly in bindir regardless of source directory."""
+    monkeypatch.chdir(tmp_path)
+    _args, namer = _make_namer("TestNamerFlatFlag", extra_argv=["--force-flat-exe-layout"])
+    root = os.path.realpath(str(tmp_path))
+    source = os.path.join(root, "appalpha", "main.cpp")
+    assert namer.executable_pathname(source) == "bin/gcc.debug/main"
+    assert namer.executable_dir(source) == "bin/gcc.debug"
+    outside = namer.executable_pathname("/somewhere/else/entirely/other.cpp")
+    assert outside == "bin/gcc.debug/other"
+
+
+def test_force_flat_exe_layout_flattens_libraries(tmp_path, monkeypatch):
+    """Libraries follow executables: flat layout applies to them too."""
+    monkeypatch.chdir(tmp_path)
+    _args, namer = _make_namer("TestNamerFlatFlagLib", extra_argv=["--force-flat-exe-layout"])
+    root = os.path.realpath(str(tmp_path))
+    source = os.path.join(root, "applib", "mylib.cpp")
+    assert namer.staticlibrary_pathname(source) == "bin/gcc.debug/libmylib.a"
+    assert namer.dynamiclibrary_pathname(source) == "bin/gcc.debug/libmylib.so"
+
+
+def test_force_flat_exe_layout_defaults_off(tmp_path, monkeypatch):
+    """Without the flag the parsed default is False and mirroring stays on."""
+    monkeypatch.chdir(tmp_path)
+    args, namer = _make_namer("TestNamerFlatFlagDefault")
+    assert args.force_flat_exe_layout is False
+    root = os.path.realpath(str(tmp_path))
+    source = os.path.join(root, "appalpha", "main.cpp")
+    assert namer.executable_pathname(source) == "bin/gcc.debug/appalpha/main"
+
+
+def test_force_flat_exe_layout_settable_from_conf_file(tmp_path, monkeypatch):
+    """``force-flat-exe-layout = true`` in a conf file enables the flat
+    layout exactly like the CLI flag (the documented per-project form)."""
+    monkeypatch.chdir(tmp_path)
+    conf = tmp_path / "flat.conf"
+    conf.write_text("force-flat-exe-layout = true\n")
+    args, namer = _make_namer("TestNamerFlatFlagConf", extra_argv=["--config", str(conf)])
+    assert args.force_flat_exe_layout is True
+    root = os.path.realpath(str(tmp_path))
+    source = os.path.join(root, "appalpha", "main.cpp")
+    assert namer.executable_pathname(source) == "bin/gcc.debug/main"
 
 
 def test_object_name_with_dependencies(tmp_path):

@@ -682,6 +682,17 @@ def add_output_directory_arguments(cap, variant):
         help="Output directory for executables",
         default=bindir_default,
     )
+    compiletools.utils.add_flag_argument(
+        parser=cap,
+        name="force-flat-exe-layout",
+        dest="force_flat_exe_layout",
+        default=False,
+        help="Place executables and libraries directly in bindir (bin/<variant>/<name>) "
+        "instead of mirroring the source directory (bin/<variant>/<srcdir>/<name>). "
+        "Same-basename sources in different directories then collide and the build "
+        "stops with an error naming both sources. Settable per project via "
+        "force-flat-exe-layout = true in ct.conf.",
+    )
     add_cas_directory_arguments(cap, variant)
     # Register --use-mtime here so every backend that calls
     # add_output_directory_arguments picks it up. Previously only

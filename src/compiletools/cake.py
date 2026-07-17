@@ -216,9 +216,17 @@ class Cake:
             self.args.dynamic.extend(self.hunter.required_source_files(dynamic_lib_seed))
             recreateobjs = True
 
+        # Guard evaluated once against the first-parse namespace: a target
+        # list that a subproject conf layer injects mid-loop keeps the
+        # discovery loop running (the driver re-discovers), it does not
+        # retroactively suppress --auto.
         if self.args.auto and not any([self.args.filename, self.args.static, self.args.dynamic, self.args.tests]):
-            findtargets = compiletools.findtargets.FindTargets(self.args, context=self.context)
-            findtargets.process(self.args)
+            # findtargets discovers targets after parseargs already anchored
+            # config to the (empty) argv target list -- the driver iterates
+            # discovery and config re-anchoring to a fixpoint so the
+            # discovered subprojects' conf layers (including their
+            # exemarkers/testmarkers/disable-tests) shape the final set.
+            self.args = compiletools.findtargets.discover_targets_and_reanchor(self.args, self.context)
             recreateobjs = True
 
         # Auto-clone any //#GIT= externals reachable from the now-final target
@@ -1135,6 +1143,11 @@ def main(argv=None):
     # long-lived embedder calling main() repeatedly doesn't carry project
     # A's pkg-config dirs into project B's environment.
     with context.pkg_config_path_restored():
+        # Conf contradictions (explicit-target and --auto alike) are rendered
+        # to stderr inside apptools._apply_target_conf_layers, which raises
+        # SystemExit(1) at verbose < 2 and the raw ConfContradictionError at
+        # verbose >= 2 -- both propagate through main() untouched, same as
+        # the validate_otel_timing_pair SystemExit below.
         args = compiletools.apptools.parseargs(cap, argv, context=context)
         compiletools.apptools.validate_otel_timing_pair(args)
 
