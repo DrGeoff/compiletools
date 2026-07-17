@@ -1,3 +1,4 @@
+import argparse
 import contextlib
 import logging
 import os
@@ -424,7 +425,32 @@ def _target_value_flags_from_parser(cap):
     for action in cap._actions:
         if action.dest in ("tests", "static", "dynamic"):
             flags.extend(action.option_strings)
-    return tuple(dict.fromkeys(flags)) or compiletools.configutils._TARGET_VALUE_FLAGS
+    return tuple(dict.fromkeys(flags))
+
+
+def _registered_conf_keys_and_canonicalizers(cap):
+    """Normalized (dash->underscore) config keys the parser accepts, plus a
+    per-key value canonicalizer derived from each action's type. Flag and
+    boolean actions (store_true/store_false and the nargs='?' to_bool form)
+    canonicalize through utils.to_bool -- the same coercion
+    add_flag_argument/add_boolean_argument register -- so boolean synonyms
+    (``true`` vs ``1``) compare equal across subproject confs."""
+    registered_keys = set()
+    canonicalizers = {}
+    for action in cap._actions:
+        canonicalizer = None
+        if isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction)):
+            canonicalizer = compiletools.utils.to_bool
+        elif callable(action.type):
+            canonicalizer = action.type
+        for key in cap.get_possible_config_keys(action):
+            if key.startswith("-"):
+                continue
+            normalized = key.replace("-", "_")
+            registered_keys.add(normalized)
+            if canonicalizer is not None:
+                canonicalizers[normalized] = canonicalizer
+    return registered_keys, canonicalizers
 
 
 # Defensive bound on the target-anchored config fixpoint. Each round strictly
@@ -536,9 +562,15 @@ def _apply_target_conf_layers(cap, argv, args, verbose, auto=False, reparse=True
             auto=auto,
             target_value_flags=_target_value_flags_from_parser(cap),
         )
+        registered_keys, value_canonicalizers = _registered_conf_keys_and_canonicalizers(cap)
         try:
             compiletools.configutils.validate_no_conf_contradictions(
-                loaded_layers, cwd_layer_paths, args.variant, remedy_commands
+                loaded_layers,
+                cwd_layer_paths,
+                args.variant,
+                remedy_commands,
+                registered_keys=registered_keys,
+                value_canonicalizers=value_canonicalizers,
             )
         except compiletools.configutils.ConfContradictionError as err:
             if verbose >= 2:

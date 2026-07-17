@@ -15,6 +15,7 @@ import compiletools.cake
 import compiletools.configutils
 import compiletools.findtargets
 import compiletools.testhelper as uth
+import compiletools.utils
 from compiletools.build_context import BuildContext
 from compiletools.configutils import (
     ConfContradictionError,
@@ -226,6 +227,18 @@ def _layer(tmp_path, name, content):
     return TargetConfLayer(subproject_dir=str(d), conf_paths=(str(conf),))
 
 
+# Explicit tuple for direct unit-test calls; production callers derive this
+# from the live parser via apptools._target_value_flags_from_parser.
+_TARGET_FLAGS = (
+    "--tests",
+    "--begintests",
+    "--static",
+    "--static-library",
+    "--dynamic",
+    "--dynamic-library",
+)
+
+
 class TestValidateNoConfContradictions:
     def test_disjoint_keys_pass(self, tmp_path):
         alpha = _layer(tmp_path, "appalpha", "append-CPPFLAGS = -DALPHA\n")
@@ -348,6 +361,108 @@ class TestValidateNoConfContradictions:
         beta = _layer(tmp_path, "appbeta", "append-CPPFLAGS = -DBETA\n")
         validate_no_conf_contradictions([beta], [str(cwd_conf)], "othervariant", ["a", "b"])
 
+    def test_error_message_notes_conf_level_strictness(self, tmp_path):
+        alpha = _layer(tmp_path, "appalpha", "append-CPPFLAGS = -DALPHA\n")
+        beta = _layer(tmp_path, "appbeta", "append-CPPFLAGS = -DBETA\n")
+        with pytest.raises(ConfContradictionError) as excinfo:
+            validate_no_conf_contradictions([alpha, beta], [], "monovariant", ["a", "b"])
+        assert "CLI" in str(excinfo.value)
+
+
+class TestParserAwareContradictionValidation:
+    def test_unregistered_key_is_skipped_when_registered_keys_given(self, tmp_path):
+        # Another ct-* tool's key differing across subprojects must not block
+        # a tool that never registered it.
+        alpha = _layer(tmp_path, "appalpha", "some-other-tools-key = red\n")
+        beta = _layer(tmp_path, "appbeta", "some-other-tools-key = blue\n")
+        validate_no_conf_contradictions(
+            [alpha, beta],
+            [],
+            "monovariant",
+            ["a", "b"],
+            registered_keys={"append_CPPFLAGS", "variant"},
+        )
+
+    def test_unregistered_key_still_raises_without_registered_keys(self, tmp_path):
+        alpha = _layer(tmp_path, "appalpha", "some-other-tools-key = red\n")
+        beta = _layer(tmp_path, "appbeta", "some-other-tools-key = blue\n")
+        with pytest.raises(ConfContradictionError):
+            validate_no_conf_contradictions([alpha, beta], [], "monovariant", ["a", "b"])
+
+    def test_registered_key_conflict_still_raises(self, tmp_path):
+        alpha = _layer(tmp_path, "appalpha", "append-CPPFLAGS = -DALPHA\n")
+        beta = _layer(tmp_path, "appbeta", "append-CPPFLAGS = -DBETA\n")
+        with pytest.raises(ConfContradictionError):
+            validate_no_conf_contradictions(
+                [alpha, beta],
+                [],
+                "monovariant",
+                ["a", "b"],
+                registered_keys={"append_CPPFLAGS", "variant"},
+            )
+
+    def test_scalar_conflict_still_raises_with_registered_keys(self, tmp_path):
+        alpha = _layer(tmp_path, "appalpha", "CXX = g++\n")
+        beta = _layer(tmp_path, "appbeta", "CXX = clang++\n")
+        with pytest.raises(ConfContradictionError):
+            validate_no_conf_contradictions(
+                [alpha, beta],
+                [],
+                "monovariant",
+                ["a", "b"],
+                registered_keys={"CXX", "variant"},
+            )
+
+    def test_boolean_synonyms_merge_via_canonicalizer(self, tmp_path):
+        alpha = _layer(tmp_path, "appalpha", "use-mtime = true\n")
+        beta = _layer(tmp_path, "appbeta", "use-mtime = 1\n")
+        validate_no_conf_contradictions(
+            [alpha, beta],
+            [],
+            "monovariant",
+            ["a", "b"],
+            registered_keys={"use_mtime"},
+            value_canonicalizers={"use_mtime": compiletools.utils.to_bool},
+        )
+
+    def test_boolean_true_vs_false_still_raises(self, tmp_path):
+        alpha = _layer(tmp_path, "appalpha", "use-mtime = true\n")
+        beta = _layer(tmp_path, "appbeta", "use-mtime = false\n")
+        with pytest.raises(ConfContradictionError):
+            validate_no_conf_contradictions(
+                [alpha, beta],
+                [],
+                "monovariant",
+                ["a", "b"],
+                registered_keys={"use_mtime"},
+                value_canonicalizers={"use_mtime": compiletools.utils.to_bool},
+            )
+
+    def test_canonicalizer_rejection_falls_back_to_raw_string(self, tmp_path):
+        # A value the type rejects compares as its raw string; argparse
+        # produces the real error later. Identical raw strings merge.
+        alpha = _layer(tmp_path, "appalpha", "use-mtime = maybe\n")
+        beta = _layer(tmp_path, "appbeta", "use-mtime = maybe\n")
+        validate_no_conf_contradictions(
+            [alpha, beta],
+            [],
+            "monovariant",
+            ["a", "b"],
+            registered_keys={"use_mtime"},
+            value_canonicalizers={"use_mtime": compiletools.utils.to_bool},
+        )
+
+    def test_variant_carve_out_survives_registered_keys_filter(self, tmp_path):
+        beta = _layer(tmp_path, "appbeta", "variant = othervariant\n")
+        with pytest.raises(ConfContradictionError):
+            validate_no_conf_contradictions(
+                [beta],
+                [],
+                "monovariant",
+                ["cmd"],
+                registered_keys={"variant"},
+            )
+
 
 class TestBuildSeparateBuildCommands:
     def test_partitions_targets_by_subproject(self, tmp_path):
@@ -360,7 +475,11 @@ class TestBuildSeparateBuildCommands:
                 f.write("int main() { return 0; }\n")
 
         commands = build_separate_build_commands(
-            "ct-cake", ["--variant=monovariant", alpha_main, beta_main], [alpha, beta], [alpha_main, beta_main]
+            "ct-cake",
+            ["--variant=monovariant", alpha_main, beta_main],
+            [alpha, beta],
+            [alpha_main, beta_main],
+            target_value_flags=_TARGET_FLAGS,
         )
         assert len(commands) == 2
         assert alpha_main in commands[0] and beta_main not in commands[0]
@@ -377,7 +496,11 @@ class TestBuildSeparateBuildCommands:
                 f.write("int main() { return 0; }\n")
 
         commands = build_separate_build_commands(
-            "ct-cake", [alpha_main, "--tests", beta_test], [alpha, beta], [alpha_main, beta_test]
+            "ct-cake",
+            [alpha_main, "--tests", beta_test],
+            [alpha, beta],
+            [alpha_main, beta_test],
+            target_value_flags=_TARGET_FLAGS,
         )
         assert beta_test not in commands[0]
         assert "--tests" in commands[1] and beta_test in commands[1]
@@ -394,7 +517,11 @@ class TestBuildSeparateBuildCommands:
                 f.write("int main() { return 0; }\n")
 
         commands = build_separate_build_commands(
-            "ct-cake", [alpha_main, "--begintests", beta_test], [alpha, beta], [alpha_main, beta_test]
+            "ct-cake",
+            [alpha_main, "--begintests", beta_test],
+            [alpha, beta],
+            [alpha_main, beta_test],
+            target_value_flags=_TARGET_FLAGS,
         )
         assert beta_test not in commands[0]
         assert "--begintests" not in commands[0]  # dangling flag dropped
@@ -412,7 +539,11 @@ class TestBuildSeparateBuildCommands:
                 f.write("int main() { return 0; }\n")
 
         commands = build_separate_build_commands(
-            "ct-cake", [parent_main, child_main], [parent, child], [parent_main, child_main]
+            "ct-cake",
+            [parent_main, child_main],
+            [parent, child],
+            [parent_main, child_main],
+            target_value_flags=_TARGET_FLAGS,
         )
         assert len(commands) == 2
         # The command that excludes the parent-only target is the child's; it
@@ -439,6 +570,7 @@ class TestBuildSeparateBuildCommands:
             [alpha, beta],
             [alpha_main, beta_main],
             auto=True,
+            target_value_flags=_TARGET_FLAGS,
         )
         assert len(commands) == 2
         assert commands[0] != commands[1]
@@ -466,6 +598,7 @@ class TestBuildSeparateBuildCommands:
             ["--variant=monovariant", alpha_main, beta_main, shared],
             [alpha, beta],
             [alpha_main, beta_main, shared],
+            target_value_flags=_TARGET_FLAGS,
         )
         assert len(commands) == 2
         assert shared in commands[0] and shared in commands[1]
@@ -495,6 +628,7 @@ class TestBuildSeparateBuildCommands:
             [beta],
             [beta_main, shared],
             cwd_layer_dir=cwd_dir,
+            target_value_flags=_TARGET_FLAGS,
         )
         assert len(commands) == 2
         beta_cmd = [c for c in commands if "appbeta" in c.split("&&")[0]]
@@ -507,8 +641,7 @@ class TestBuildSeparateBuildCommands:
     def test_library_flag_synonyms_are_partitioned(self, tmp_path):
         # --static-library / --dynamic-library are add_target_arguments
         # synonyms of --static / --dynamic; their values must partition the
-        # same way (RED with the pre-fix _TARGET_VALUE_FLAGS tuple, which
-        # would drop the flag but keep the value as a stray positional).
+        # same way as the short forms.
         alpha = _layer(tmp_path, "appalpha", "x = 1\n")
         beta = _layer(tmp_path, "appbeta", "x = 2\n")
         alpha_lib = str(tmp_path / "appalpha" / "lib.cpp")
@@ -522,6 +655,7 @@ class TestBuildSeparateBuildCommands:
             ["--static-library", alpha_lib, "--dynamic-library", beta_lib],
             [alpha, beta],
             [alpha_lib, beta_lib],
+            target_value_flags=_TARGET_FLAGS,
         )
         assert len(commands) == 2
         assert "--static-library" in commands[0] and alpha_lib in commands[0]
@@ -546,6 +680,7 @@ class TestBuildSeparateBuildCommands:
             [beta],
             [weird],
             cwd_layer_dir=cwd_dir,
+            target_value_flags=_TARGET_FLAGS,
         )
         beta_cmd = next(c for c in commands if "appbeta" in c.split("&&")[0])
         rebuilt_targets = [t for t in shlex.split(beta_cmd.split("&&", 1)[1]) if t.endswith("-weird.cpp")]
@@ -553,6 +688,61 @@ class TestBuildSeparateBuildCommands:
         assert all(not t.startswith("-") for t in rebuilt_targets), (
             f"dash-prefixed target emitted as a flag token: {beta_cmd}"
         )
+
+    def test_cwd_form_keeps_flag_target_association(self, tmp_path):
+        # A7 regression: in the cwd-participant form, a kept target must stay
+        # attached to its flag. Stripping all targets and re-appending kept
+        # ones as bare positionals silently turned `--tests test.cpp` into a
+        # plain executable target.
+        alpha = _layer(tmp_path, "appalpha", "append-CPPFLAGS = -DALPHA\n")
+        beta = _layer(tmp_path, "appbeta", "append-CPPFLAGS = -DBETA\n")
+        alpha_test = str(tmp_path / "appalpha" / "test.cpp")
+        beta_lib = str(tmp_path / "appbeta" / "lib.cpp")
+        for p in (alpha_test, beta_lib):
+            with open(p, "w") as f:
+                f.write("int f() { return 0; }\n")
+
+        commands = build_separate_build_commands(
+            "ct-cake",
+            ["--tests", alpha_test, "--dynamic", beta_lib],
+            [alpha, beta],
+            [alpha_test, beta_lib],
+            cwd_layer_dir=str(tmp_path / "appalpha"),
+            target_value_flags=_TARGET_FLAGS,
+        )
+        alpha_cmd = next(c for c in commands if "test.cpp" in c)
+        beta_cmd = next(c for c in commands if "lib.cpp" in c)
+        assert alpha_cmd != beta_cmd
+        alpha_tokens = shlex.split(alpha_cmd.split("&&", 1)[1])
+        beta_tokens = shlex.split(beta_cmd.split("&&", 1)[1])
+        assert alpha_tokens[alpha_tokens.index("--tests") + 1] == "test.cpp"
+        assert "--dynamic" not in alpha_tokens and "lib.cpp" not in alpha_tokens
+        assert beta_tokens[beta_tokens.index("--dynamic") + 1] == "lib.cpp"
+        assert "--tests" not in beta_tokens and "test.cpp" not in beta_tokens
+
+    def test_cwd_form_reassembles_flag_equals_value(self, tmp_path):
+        # `--tests=path` form: the kept target is rewritten in place and the
+        # `--flag=value` token reassembled relative to the subproject.
+        alpha = _layer(tmp_path, "appalpha", "append-CPPFLAGS = -DALPHA\n")
+        beta = _layer(tmp_path, "appbeta", "append-CPPFLAGS = -DBETA\n")
+        alpha_test = str(tmp_path / "appalpha" / "test.cpp")
+        beta_main = str(tmp_path / "appbeta" / "main.cpp")
+        for p in (alpha_test, beta_main):
+            with open(p, "w") as f:
+                f.write("int f() { return 0; }\n")
+
+        commands = build_separate_build_commands(
+            "ct-cake",
+            [f"--tests={alpha_test}", beta_main],
+            [alpha, beta],
+            [alpha_test, beta_main],
+            cwd_layer_dir=str(tmp_path / "appalpha"),
+            target_value_flags=_TARGET_FLAGS,
+        )
+        alpha_cmd = next(c for c in commands if "test.cpp" in c)
+        alpha_tokens = shlex.split(alpha_cmd.split("&&", 1)[1])
+        assert "--tests=test.cpp" in alpha_tokens
+        assert "main.cpp" not in alpha_cmd
 
     def test_cwd_vs_target_form_emits_distinct_actionable_pair(self, tmp_path):
         # cwd layer participates in the conflict: the target subproject gets an
@@ -566,7 +756,12 @@ class TestBuildSeparateBuildCommands:
             f.write("int main() { return 0; }\n")
 
         commands = build_separate_build_commands(
-            "ct-cake", ["--variant=monovariant", beta_main], [beta], [beta_main], cwd_layer_dir=cwd_dir
+            "ct-cake",
+            ["--variant=monovariant", beta_main],
+            [beta],
+            [beta_main],
+            cwd_layer_dir=cwd_dir,
+            target_value_flags=_TARGET_FLAGS,
         )
         assert len(commands) == 2
         assert commands[0] != commands[1]
@@ -642,6 +837,88 @@ class TestParseargsTargetAnchoring:
     def test_no_subproject_conf_means_no_extra_parse_effects(self, monorepo):
         args = _parse_cake_args(monorepo, [*_ARGV_BASE, os.path.join("libcore", "util.cpp")])
         assert "-DAPPBETA_EXTRA" not in args.CPPFLAGS
+
+    def test_unregistered_key_conflict_does_not_block_ct_cake(self, monorepo):
+        # A key ct-cake never registered (another ct-* tool's key) differing
+        # across two subprojects must not raise for ct-cake.
+        appalpha = monorepo / "appalpha"
+        appalpha.mkdir()
+        (appalpha / "ct.conf").write_text("some-other-tools-key = red\n")
+        (appalpha / "main.cpp").write_text("int main() { return 0; }\n")
+        (monorepo / "appbeta" / "ct.conf").write_text("some-other-tools-key = blue\n")
+        args = _parse_cake_args(
+            monorepo,
+            [*_ARGV_BASE, os.path.join("appalpha", "main.cpp"), os.path.join("appbeta", "main.cpp")],
+        )
+        assert args is not None
+
+    def test_boolean_synonym_values_do_not_conflict_for_ct_cake(self, monorepo):
+        # `use-mtime = true` vs `use-mtime = 1` canonicalize identically via
+        # the parser's bool coercion, so no contradiction is raised.
+        appalpha = monorepo / "appalpha"
+        appalpha.mkdir()
+        (appalpha / "ct.conf").write_text("use-mtime = true\n")
+        (appalpha / "main.cpp").write_text("int main() { return 0; }\n")
+        (monorepo / "appbeta" / "ct.conf").write_text("use-mtime = 1\n")
+        args = _parse_cake_args(
+            monorepo,
+            [*_ARGV_BASE, os.path.join("appalpha", "main.cpp"), os.path.join("appbeta", "main.cpp")],
+        )
+        assert args.use_mtime is True
+
+    def test_boolean_true_vs_false_conflicts_for_ct_cake(self, monorepo):
+        appalpha = monorepo / "appalpha"
+        appalpha.mkdir()
+        (appalpha / "ct.conf").write_text("use-mtime = true\n")
+        (appalpha / "main.cpp").write_text("int main() { return 0; }\n")
+        (monorepo / "appbeta" / "ct.conf").write_text("use-mtime = false\n")
+        with pytest.raises(compiletools.configutils.ConfContradictionError):
+            _parse_cake_args(
+                monorepo,
+                [
+                    *_ARGV_BASE,
+                    "-v",
+                    "-v",
+                    os.path.join("appalpha", "main.cpp"),
+                    os.path.join("appbeta", "main.cpp"),
+                ],
+            )
+
+    def test_remedy_keeps_tests_flag_attached_to_target(self, monorepo):
+        # A7 e2e: cwd-layer conflict with `--tests appalpha/test.cpp
+        # --dynamic appbeta/lib.cpp` must produce remedies that keep each
+        # target attached to its flag.
+        appalpha = monorepo / "appalpha"
+        appalpha.mkdir()
+        (appalpha / "ct.conf").write_text("append-CPPFLAGS = -DAPPALPHA_EXTRA\n")
+        (appalpha / "test.cpp").write_text("int main() { return 0; }\n")
+        (monorepo / "appbeta" / "lib.cpp").write_text("int f() { return 0; }\n")
+        appgamma = monorepo / "appgamma"
+        appgamma.mkdir()
+        (appgamma / "ct.conf").write_text("append-CPPFLAGS = -DAPPGAMMA_EXTRA\n")
+        with pytest.raises(compiletools.configutils.ConfContradictionError) as excinfo:
+            _parse_cake_args(
+                appgamma,
+                [
+                    *_ARGV_BASE,
+                    "-v",
+                    "-v",
+                    "--tests",
+                    os.path.join("..", "appalpha", "test.cpp"),
+                    "--dynamic",
+                    os.path.join("..", "appbeta", "lib.cpp"),
+                ],
+            )
+        message = str(excinfo.value)
+        remedies = [line.strip() for line in message.splitlines() if line.strip().startswith("cd ")]
+        alpha_cmd = next(c for c in remedies if "test.cpp" in c)
+        alpha_tokens = shlex.split(alpha_cmd.split("&&", 1)[1])
+        assert alpha_tokens[alpha_tokens.index("--tests") + 1] == "test.cpp"
+        assert "lib.cpp" not in alpha_tokens
+        beta_cmd = next(c for c in remedies if "lib.cpp" in c)
+        beta_tokens = shlex.split(beta_cmd.split("&&", 1)[1])
+        assert beta_tokens[beta_tokens.index("--dynamic") + 1] == "lib.cpp"
+        assert "test.cpp" not in beta_tokens
 
     def test_deeply_nested_target_finds_subproject_conf(self, monorepo):
         deep = monorepo / "appbeta" / "src" / "deep"
