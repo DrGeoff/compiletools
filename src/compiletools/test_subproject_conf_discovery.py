@@ -117,16 +117,23 @@ class TestWalkTargetConfLayers:
         # An unbounded-walk layer can be a stray conf far above the target,
         # so the note is a load-bearing verbose >= 1 advisory (not a >= 2
         # diagnostic). Silent at verbose 0 for layers below $HOME's parent.
+        # Emission is the caller's job (emit_unbounded_walk_notices); the
+        # walk itself only records the hazard on the layer.
         appbeta = tmp_path / "plaintree" / "appbeta"
         appbeta.mkdir(parents=True)
         (appbeta / "ct.conf").write_text("append-CPPFLAGS = -DAPPBETA_EXTRA\n")
         (appbeta / "main.cpp").write_text("int main() { return 0; }\n")
         target = str(appbeta / "main.cpp")
 
-        compiletools.configutils.walk_target_conf_layers([target], verbose=0)
+        layers = compiletools.configutils.walk_target_conf_layers([target], verbose=0)
+        assert layers[0].git_bounded is False
+        assert layers[0].above_home is False
+        assert capsys.readouterr().err == ""
+
+        compiletools.configutils.emit_unbounded_walk_notices(layers, verbose=0)
         assert "not bounded by a git root" not in capsys.readouterr().err
 
-        compiletools.configutils.walk_target_conf_layers([target], verbose=1)
+        compiletools.configutils.emit_unbounded_walk_notices(layers, verbose=1)
         err = capsys.readouterr().err
         assert "not bounded by a git root" in err
         assert "apply to the whole build" in err
@@ -142,7 +149,9 @@ class TestWalkTargetConfLayers:
         conf.write_text("append-CPPFLAGS = -DSTRAY\n")
         (proj / "main.cpp").write_text("int main() { return 0; }\n")
 
-        compiletools.configutils.walk_target_conf_layers([str(proj / "main.cpp")], verbose=0)
+        layers = compiletools.configutils.walk_target_conf_layers([str(proj / "main.cpp")], verbose=0)
+        assert layers[0].above_home is True
+        compiletools.configutils.emit_unbounded_walk_notices(layers, verbose=0)
         err = capsys.readouterr().err
         assert "ct: warning:" in err
         assert "home directory or above" in err
@@ -158,10 +167,12 @@ class TestWalkTargetConfLayers:
         (appbeta / "main.cpp").write_text("int main() { return 0; }\n")
 
         layers = compiletools.configutils.walk_target_conf_layers([str(appbeta / "main.cpp")], verbose=1)
+        compiletools.configutils.emit_unbounded_walk_notices(layers, verbose=1)
         err = capsys.readouterr().err
         assert "not bounded by a git root" not in err
         assert "ct: warning:" not in err
         assert layers[0].git_bounded is True
+        assert layers[0].above_home is False
 
     def test_layer_records_anchor_targets(self, tmp_path):
         root = _make_repo(tmp_path)
@@ -1040,6 +1051,17 @@ class TestParseargsTargetAnchoring:
         assert target in err
         assert str(monorepo / "appbeta" / "ct.conf") in err
         assert "whole invocation" in err
+        # appbeta's layer sets only append-CPPFLAGS: no scalar-keys suffix.
+        assert "scalar keys" not in err
+
+    def test_layer_note_names_scalar_keys(self, monorepo, capsys):
+        """The verbose>=1 anchoring note names the scalar keys the layer
+        sets, so an invocation-global scalar (e.g. disable-tests) is visible
+        at the point it sneaks in."""
+        (monorepo / "appbeta" / "ct.conf").write_text("append-CPPFLAGS = -DAPPBETA_EXTRA\ndisable-tests = true\n")
+        _parse_cake_args(monorepo, [*_ARGV_BASE, "-v", os.path.join("appbeta", "main.cpp")])
+        err = capsys.readouterr().err
+        assert "(scalar keys: disable-tests)" in err
 
     def test_layer_loaded_note_silent_at_verbose_zero(self, monorepo, capsys):
         _parse_cake_args(monorepo, [*_ARGV_BASE, os.path.join("appbeta", "main.cpp")])
@@ -1093,6 +1115,88 @@ class TestParseargsTargetAnchoring:
         assert "-DAPPBETA_EXTRA" in args.CPPFLAGS
         assert "-DAPPGAMMA_EXTRA" in args.CXXFLAGS
         assert any(t.endswith("libbeta.cpp") for t in args.dynamic)
+
+    def test_rejected_layers_do_not_persist_on_parser(self, monorepo):
+        """A caught contradiction must leave no accumulated layers on the
+        parser: a caller that catches the SystemExit and re-runs parseargs
+        on the same parser would otherwise re-validate rejected layers."""
+        appalpha = monorepo / "appalpha"
+        appalpha.mkdir()
+        (appalpha / "ct.conf").write_text("append-CPPFLAGS = -DAPPALPHA_EXTRA\n")
+        (appalpha / "main.cpp").write_text("int main() { return 0; }\n")
+        argv = [*_ARGV_BASE, os.path.join("appalpha", "main.cpp"), os.path.join("appbeta", "main.cpp")]
+        uth.reset()
+        with uth.DirectoryContext(str(monorepo)):
+            with uth.ParserContext():
+                cap = compiletools.apptools.create_parser("subproject conf discovery test", argv=argv)
+                compiletools.cake.Cake.add_arguments(cap)
+                compiletools.cake.Cake.registercallback()
+                with pytest.raises(SystemExit):
+                    compiletools.apptools.parseargs(cap, argv, context=BuildContext())
+        assert getattr(cap, "_ct_loaded_target_layers", []) == []
+
+    def test_eleven_deep_nested_subproject_chain_converges(self, tmp_path):
+        """An 11-deep nested-subproject layout with harmonious confs is
+        legal and must converge without hitting the fixpoint cap. Conf
+        discovery only -- no compilation."""
+        root = _make_repo(tmp_path)
+        (root / "ct.conf").write_text(
+            f"variant = {_VARIANT}\n"
+            f"variant-canonical-order = {_VARIANT}\n"
+            "exemarkers = [main]\n"
+            "testmarkers = unit_test.hpp\n"
+        )
+        conf_d = root / "ct.conf.d"
+        conf_d.mkdir()
+        (conf_d / f"{_VARIANT}.conf").write_text("# variant conf\n")
+        current = root
+        targets = []
+        conf_paths = []
+        for level in range(1, 12):
+            current = current / f"proj{level}"
+            current.mkdir()
+            conf = current / "ct.conf"
+            conf.write_text("append-CPPFLAGS = -DCHAIN\n")
+            conf_paths.append(str(conf))
+            src = current / f"main{level}.cpp"
+            src.write_text(f"// level {level}\nint main() {{ return 0; }}\n")
+            targets.append(os.path.relpath(str(src), str(root)))
+        args = _parse_cake_args(root, [*_ARGV_BASE, *targets])
+        assert args.CPPFLAGS.count("-DCHAIN") == 1
+        loaded = {os.path.realpath(p) for p in args._parser._default_config_files}
+        for conf in conf_paths:
+            assert os.path.realpath(conf) in loaded
+        assert len(args._parser._ct_loaded_target_layers) == 11
+
+    def test_home_warning_fires_once_across_multi_round_fixpoint(self, tmp_path, monkeypatch, capsys):
+        """The stray-$HOME-conf warning must print once for the layer's
+        loading round, not once per fixpoint round: round two (triggered by
+        the home conf injecting a test target) walks the home layer again
+        but finds it already loaded."""
+        fakehome = tmp_path / "fakehome"
+        work = fakehome / "work"
+        src = fakehome / "src"
+        sub = fakehome / "sub"
+        for d in (work, src, sub):
+            d.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(fakehome))
+        (work / "ct.conf").write_text(
+            f"variant = {_VARIANT}\n"
+            f"variant-canonical-order = {_VARIANT}\n"
+            "exemarkers = [main]\n"
+            "testmarkers = unit_test.hpp\n"
+        )
+        (work / "ct.conf.d").mkdir()
+        (work / "ct.conf.d" / f"{_VARIANT}.conf").write_text("# variant conf\n")
+        (sub / "ct.conf").write_text("append-CXXFLAGS = -DSUB_EXTRA\n")
+        (sub / "t2.cpp").write_text("// sub test\nint main() { return 0; }\n")
+        (fakehome / "ct.conf").write_text(f"append-CPPFLAGS = -DSTRAY\ntests = [{sub / 't2.cpp'}]\n")
+        (src / "main.cpp").write_text("int main() { return 0; }\n")
+        args = _parse_cake_args(work, [*_ARGV_BASE, os.path.join("..", "src", "main.cpp")])
+        assert "-DSTRAY" in args.CPPFLAGS
+        assert "-DSUB_EXTRA" in args.CXXFLAGS  # round two loaded sub's layer
+        err = capsys.readouterr().err
+        assert err.count("home directory or above") == 1
 
     def test_round_two_layer_contradicting_round_one_layer_errors(self, monorepo):
         """A layer loaded in a later fixpoint round must be validated against

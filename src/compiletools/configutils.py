@@ -527,12 +527,16 @@ class TargetConfLayer:
     naming which target pulled the layer in). git_bounded is False when
     any anchoring walk ran without a git-root bound (non-git target or
     ``--no-git-root``), so the layer may sit far above its targets.
+    above_home marks an unbounded-walk layer whose directory is ``$HOME``
+    or an ancestor of it -- almost certainly a stray file;
+    ``emit_unbounded_walk_notices`` warns on it unconditionally.
     """
 
     subproject_dir: str
     conf_paths: tuple[str, ...]
     anchor_targets: tuple[str, ...] = ()
     git_bounded: bool = True
+    above_home: bool = False
 
 
 def _conf_paths_in_dir(directory, conf_filenames):
@@ -569,13 +573,10 @@ def walk_target_conf_layers(targets, conf_filenames=("ct.conf",), verbose=0, git
 
     An unbounded walk (non-git target or ``--no-git-root``) can land on a
     conf far above the target — e.g. a forgotten ``~/ct.conf`` — that then
-    silently applies to the whole build. Two stderr notices cover this:
-    a layer whose directory is ``$HOME`` or an ancestor of ``$HOME`` warns
-    UNCONDITIONALLY (legitimate user-level config lives at
-    ``~/.config/ct/``, never bare ``~/ct.conf``, so such a layer is almost
-    certainly a stray file); any other unbounded-walk layer is noted at
-    ``verbose >= 1``. When the caller iterates this walk to a fixpoint the
-    note can repeat for an already-loaded layer — rare and cosmetic.
+    silently applies to the whole build. The walk records the hazard on the
+    layer (``git_bounded`` / ``above_home``); the caller decides when to
+    print via ``emit_unbounded_walk_notices``, so a fixpoint caller can
+    emit only for freshly loaded layers instead of re-warning every round.
 
     Returns a tuple of TargetConfLayer sorted by subproject_dir for
     deterministic downstream ordering. Nonexistent targets are skipped;
@@ -603,26 +604,6 @@ def walk_target_conf_layers(targets, conf_filenames=("ct.conf",), verbose=0, git
                 break
             paths = _conf_paths_in_dir(current, conf_filenames)
             if paths:
-                if not in_git_repo:
-                    if current == home or home.startswith(current.rstrip(os.sep) + os.sep):
-                        # A conf at or above $HOME reached by an unbounded
-                        # walk is almost never an intentional subproject
-                        # layer, so this prints regardless of verbosity.
-                        print(
-                            f"ct: warning: config layer for {target} found at {current}, which is your home "
-                            f"directory or above; this is almost certainly a stray file, and its settings apply "
-                            f"to the whole build. Remove or relocate {' '.join(paths)} if unintended, or build "
-                            f"inside a git repository so the walk stops at the repo root.",
-                            file=sys.stderr,
-                        )
-                    elif verbose >= 1:
-                        print(
-                            f"ct: note: config layer for {target} found at {current}; the walk was not bounded "
-                            f"by a git root, so this file's settings apply to the whole build. Remove or "
-                            f"relocate {' '.join(paths)} if unintended, or build inside a git repository to "
-                            f"bound the search.",
-                            file=sys.stderr,
-                        )
                 entry = layers.setdefault(current, (tuple(paths), set(), in_git_repo))
                 entry[1].add(target)
                 if not in_git_repo and entry[2]:
@@ -641,9 +622,43 @@ def walk_target_conf_layers(targets, conf_filenames=("ct.conf",), verbose=0, git
             conf_paths=paths,
             anchor_targets=tuple(sorted(anchors)),
             git_bounded=bounded,
+            above_home=not bounded and (directory == home or home.startswith(directory.rstrip(os.sep) + os.sep)),
         )
         for directory, (paths, anchors, bounded) in sorted(layers.items())
     )
+
+
+def emit_unbounded_walk_notices(layers, verbose=0):
+    """Print stderr notices for layers an unbounded ancestor walk landed on.
+
+    A layer at or above ``$HOME`` warns UNCONDITIONALLY (legitimate
+    user-level config lives at ``~/.config/ct/``, never bare ``~/ct.conf``,
+    so such a layer is almost certainly a stray file); any other
+    unbounded-walk layer is noted at ``verbose >= 1``. Callers that iterate
+    the walk to a fixpoint pass only freshly loaded layers so an
+    already-loaded layer is not re-warned every round.
+    """
+    for layer in layers:
+        if layer.git_bounded:
+            continue
+        targets = " ".join(layer.anchor_targets)
+        paths = " ".join(layer.conf_paths)
+        if layer.above_home:
+            print(
+                f"ct: warning: config layer for {targets} found at {layer.subproject_dir}, which is your home "
+                f"directory or above; this is almost certainly a stray file, and its settings apply "
+                f"to the whole build. Remove or relocate {paths} if unintended, or build "
+                f"inside a git repository so the walk stops at the repo root.",
+                file=sys.stderr,
+            )
+        elif verbose >= 1:
+            print(
+                f"ct: note: config layer for {targets} found at {layer.subproject_dir}; the walk was not bounded "
+                f"by a git root, so this file's settings apply to the whole build. Remove or "
+                f"relocate {paths} if unintended, or build inside a git repository to "
+                f"bound the search.",
+                file=sys.stderr,
+            )
 
 
 class ConfContradictionError(RuntimeError):

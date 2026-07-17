@@ -232,11 +232,10 @@ class FindTargets:
         return executabletargets, testtargets
 
 
-# Defensive bound mirroring apptools._MAX_TARGET_CONF_ROUNDS: each re-anchor
-# strictly widens the parser's config-file set, which is bounded by the conf
-# files on the discovered targets' ancestor chains, so a correct run
-# converges in one or two rounds.
-_MAX_DISCOVERY_REANCHOR_ROUNDS = 10
+# Shared runaway backstop: each re-anchor strictly widens the parser's
+# config-file set, which is bounded by the conf files on the discovered
+# targets' ancestor chains.
+_MAX_DISCOVERY_REANCHOR_ROUNDS = compiletools.apptools._MAX_TARGET_CONF_ROUNDS
 
 
 def discover_targets_and_reanchor(args, context):
@@ -277,10 +276,9 @@ def discover_targets_and_reanchor(args, context):
             return args
         context.analyze_file_cache.clear()
         args = new_args
-    raise RuntimeError(
-        f"--auto discovery and config re-anchoring did not converge after "
-        f"{_MAX_DISCOVERY_REANCHOR_ROUNDS} rounds; every round kept widening the config file set "
-        f"(discovered targets keep pulling in new subproject conf layers)"
+    raise compiletools.apptools._fixpoint_not_converged_error(
+        "--auto discovery and config re-anchoring",
+        "every round kept widening the config file set (discovered targets keep pulling in new subproject conf layers)",
     )
 
 

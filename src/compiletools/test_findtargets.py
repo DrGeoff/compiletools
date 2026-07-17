@@ -329,3 +329,9 @@ class TestFindTargetsMain:
     def test_main_runs(self):
         """Test main() runs without error."""
         compiletools.findtargets.main(argv=["--style=flat", "--shorten"])
+
+
+def test_discovery_reanchor_cap_is_the_shared_apptools_cap():
+    """One defensive cap in one place: the discovery re-anchor loop must
+    reuse apptools._MAX_TARGET_CONF_ROUNDS, not carry its own copy."""
+    assert compiletools.findtargets._MAX_DISCOVERY_REANCHOR_ROUNDS == compiletools.apptools._MAX_TARGET_CONF_ROUNDS

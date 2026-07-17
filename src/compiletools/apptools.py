@@ -453,12 +453,20 @@ def _registered_conf_keys_and_canonicalizers(cap):
     return registered_keys, canonicalizers
 
 
-# Defensive bound on the target-anchored config fixpoint. Each round strictly
-# grows cap._default_config_files (fresh-path realpath dedup guarantees it),
-# and the reachable conf set is bounded by the targets' ancestor chains, so a
-# correct run converges in one or two rounds. Exhaustion is a hard error --
-# a silent stop would ship a half-anchored config.
-_MAX_TARGET_CONF_ROUNDS = 10
+# Defensive bound shared by the target-anchored config fixpoint here and the
+# --auto discovery re-anchor loop in findtargets. Termination is guaranteed by
+# strict growth of cap._default_config_files (fresh-path realpath dedup), so
+# the cap is purely a runaway backstop; it must exceed any plausible legal
+# ancestor-chain depth (a 10-deep nested-subproject layout is legal; 100 is
+# not plausible). Exhaustion is a hard error -- a silent stop would ship a
+# half-anchored config.
+_MAX_TARGET_CONF_ROUNDS = 100
+
+
+def _fixpoint_not_converged_error(what, detail):
+    """Shared "fixpoint did not converge" RuntimeError for both bounded
+    loops, so the two messages cannot drift."""
+    return RuntimeError(f"{what} did not converge after {_MAX_TARGET_CONF_ROUNDS} rounds; {detail}")
 
 
 def _apply_target_conf_layers(cap, argv, args, verbose, auto=False, reparse=True):
@@ -547,16 +555,22 @@ def _apply_target_conf_layers(cap, argv, args, verbose, auto=False, reparse=True
                         conf_paths=fresh,
                         anchor_targets=layer.anchor_targets,
                         git_bounded=layer.git_bounded,
+                        above_home=layer.above_home,
                     )
                 )
         if not new_layers:
             return args
-        loaded_layers.extend(new_layers)
+        # Fresh layers only: re-emitting for already-loaded layers would
+        # repeat the warning every fixpoint round.
+        compiletools.configutils.emit_unbounded_walk_notices(new_layers, verbose)
 
+        # Validate the candidate set BEFORE accumulating, so a caught
+        # contradiction leaves no rejected layers on the parser.
+        candidate_layers = loaded_layers + new_layers
         remedy_commands = compiletools.configutils.build_separate_build_commands(
             os.path.basename(sys.argv[0]) if sys.argv else "ct-cake",
             list(argv),
-            loaded_layers,
+            candidate_layers,
             targets,
             cwd_layer_dir=cwd_layer_dir,
             auto=auto,
@@ -565,7 +579,7 @@ def _apply_target_conf_layers(cap, argv, args, verbose, auto=False, reparse=True
         registered_keys, value_canonicalizers = _registered_conf_keys_and_canonicalizers(cap)
         try:
             compiletools.configutils.validate_no_conf_contradictions(
-                loaded_layers,
+                candidate_layers,
                 cwd_layer_paths,
                 args.variant,
                 remedy_commands,
@@ -577,6 +591,7 @@ def _apply_target_conf_layers(cap, argv, args, verbose, auto=False, reparse=True
                 raise
             print(str(err), file=sys.stderr)
             raise SystemExit(1) from None
+        loaded_layers.extend(new_layers)
 
         new_paths = [p for layer in new_layers for p in layer.conf_paths]
         _check_legacy_cas_config_keys(new_paths)
@@ -590,9 +605,18 @@ def _apply_target_conf_layers(cap, argv, args, verbose, auto=False, reparse=True
             # did that conf affect THIS translation unit".
             for layer in new_layers:
                 anchors = " ".join(layer.anchor_targets)
+                scalars = sorted(
+                    raw_key
+                    for normalized, (raw_key, _, _) in compiletools.configutils._effective_layer_values(
+                        layer.conf_paths
+                    ).items()
+                    if not normalized.startswith(("append_", "prepend_"))
+                )
+                scalar_note = f" (scalar keys: {' '.join(scalars)})" if scalars else ""
                 print(
                     f"ct: note: target {anchors} anchored config layer {layer.subproject_dir}: "
-                    f"loaded {' '.join(layer.conf_paths)}; these settings apply to the whole invocation",
+                    f"loaded {' '.join(layer.conf_paths)}; these settings apply to the whole invocation"
+                    f"{scalar_note}",
                     file=sys.stderr,
                 )
             if verbose >= 2 and cwd_layer_paths and _round == 0:
@@ -606,9 +630,9 @@ def _apply_target_conf_layers(cap, argv, args, verbose, auto=False, reparse=True
             return args
         args = cap.parse_args(args=argv)
         _stash_private_attrs(args, cap, context, argv)
-    raise RuntimeError(
-        f"target-anchored config discovery did not converge after {_MAX_TARGET_CONF_ROUNDS} rounds; "
-        f"last layers: {' '.join(layer.subproject_dir for layer in loaded_layers)}"
+    raise _fixpoint_not_converged_error(
+        "target-anchored config discovery",
+        f"last layers: {' '.join(layer.subproject_dir for layer in loaded_layers)}",
     )
 
 
