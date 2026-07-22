@@ -6,6 +6,7 @@ dot-prefixed / bare-dot bindirs) the workspace itself.
 """
 
 import os
+import subprocess
 
 import pytest
 
@@ -217,3 +218,42 @@ def test_clean_removes_exactly_published_set():
         assert os.path.isdir("bin")
         assert os.path.exists(os.path.join("bin", "v1", "appalpha", "main"))
         assert os.path.exists(os.path.join("bin", "v1", "solo"))
+
+
+@uth.requires_functional_compiler
+@pytest.mark.parametrize("clean_flag", ["--clean", "--realclean"])
+def test_real_cake_clean_with_bindir_dot_spares_workspace(clean_flag):
+    """End-to-end regression for the --bindir=. workspace wipe: run the real
+    ct-cake build then the real --clean/--realclean flow (cake.main, which
+    exercises BuildBackend.clean()/realclean() BEFORE _clean_topbindir) in a
+    sandboxed git repo, and assert the workspace — sources, user files,
+    .git — survives with only build artifacts removed."""
+    with uth.TempDirContext():
+        tmpdir = os.getcwd()
+        config = _write_config(tmpdir)
+        _write_source("appalpha/main.cpp")
+        with open("keepme.txt", "w") as f:
+            f.write("sentinel\n")
+        subprocess.run(["git", "init", "-q"], cwd=tmpdir, check=True)
+
+        argv = [
+            "--exemarkers=main",
+            "--testmarkers=unittest.hpp",
+            "--config=" + config,
+            "--bindir=.",
+            "--no-auto",
+            os.path.join(tmpdir, "appalpha", "main.cpp"),
+        ]
+        with uth.ParserContext():
+            assert compiletools.cake.main(list(argv)) == 0
+        published = os.path.join("appalpha", "main")
+        assert os.path.exists(published), "build should publish next to the source for --bindir=."
+
+        uth.reset()
+        with uth.ParserContext():
+            assert compiletools.cake.main(list(argv) + [clean_flag]) == 0
+
+        assert os.path.exists("keepme.txt"), f"{clean_flag} deleted user files in the workspace"
+        assert os.path.isdir(".git"), f"{clean_flag} deleted .git"
+        assert os.path.exists(os.path.join("appalpha", "main.cpp")), f"{clean_flag} deleted sources"
+        assert not os.path.exists(published), f"{clean_flag} should remove the published executable"

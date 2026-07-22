@@ -2586,6 +2586,70 @@ class TestDefaultClean:
         # Should not raise
         backend.clean()
 
+    def test_clean_refuses_to_rmtree_workspace_bindir_dot(self, tmp_path, monkeypatch):
+        """--bindir=. makes exe_dir the invocation cwd; clean() must remove
+        only graph outputs, never the workspace tree."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "keepme.txt").write_text("sentinel\n")
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+        obj_dir = tmp_path / "obj"
+        obj_dir.mkdir()
+        published = tmp_path / "appalpha" / "main"
+        published.parent.mkdir()
+        published.write_text("fake exe")
+
+        backend = self._make_backend(".", obj_dir)
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output=str(published),
+                inputs=["appalpha/main.o"],
+                command=["g++", "-o", str(published)],
+                rule_type="link",
+            )
+        )
+        backend._graph = graph
+        backend.clean()
+
+        assert (tmp_path / "keepme.txt").exists()
+        assert (tmp_path / ".git" / "HEAD").exists()
+        assert not published.exists()
+        assert not published.parent.exists(), "emptied mirror dir should be pruned"
+
+    def test_clean_refuses_to_rmtree_bindir_dotdot(self, tmp_path, monkeypatch):
+        """--bindir=.. makes exe_dir an ancestor of cwd; clean() must not
+        rmtree it."""
+        workdir = tmp_path / "ws"
+        workdir.mkdir()
+        (tmp_path / "outer.txt").write_text("outer sentinel\n")
+        (workdir / "keepme.txt").write_text("sentinel\n")
+        monkeypatch.chdir(workdir)
+
+        backend = self._make_backend("..", workdir / "obj")
+        backend._graph = BuildGraph()
+        backend.clean()
+
+        assert (tmp_path / "outer.txt").exists()
+        assert (workdir / "keepme.txt").exists()
+
+    def test_clean_refuses_to_rmtree_gitroot_even_from_subdir(self, tmp_path, monkeypatch):
+        """A bindir covering the gitroot is protected even when the cwd sits
+        outside the exe_dir tree."""
+        gitroot = tmp_path / "repo"
+        elsewhere = tmp_path / "elsewhere"
+        gitroot.mkdir()
+        elsewhere.mkdir()
+        (gitroot / "keepme.txt").write_text("sentinel\n")
+        monkeypatch.chdir(elsewhere)
+
+        backend = self._make_backend(gitroot, gitroot / "obj")
+        backend._anchor_root = str(gitroot)
+        backend._graph = BuildGraph()
+        backend.clean()
+
+        assert (gitroot / "keepme.txt").exists()
+
 
 class TestDefaultRealclean:
     """Test the default realclean() method on BuildBackend."""
@@ -2669,6 +2733,35 @@ class TestDefaultRealclean:
         backend.realclean(graph)
 
         assert not linked.exists()
+
+    def test_realclean_refuses_to_rmtree_workspace_bindir_dot(self, tmp_path, monkeypatch):
+        """--bindir=. makes exe_dir the invocation cwd; realclean() must
+        remove only graph artefact outputs, never the workspace tree."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "keepme.txt").write_text("sentinel\n")
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+        obj_dir = tmp_path / "obj"
+        obj_dir.mkdir()
+        published = tmp_path / "solo"
+        published.write_text("fake exe")
+
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output=str(published),
+                inputs=["solo.o"],
+                command=["g++", "-o", str(published)],
+                rule_type="link",
+            )
+        )
+
+        backend = self._make_backend(".", obj_dir)
+        backend.realclean(graph)
+
+        assert (tmp_path / "keepme.txt").exists()
+        assert (tmp_path / ".git" / "HEAD").exists()
+        assert not published.exists()
 
     def test_realclean_skips_nonexistent_files(self, tmp_path):
         """realclean() should not error when build products don't exist yet."""

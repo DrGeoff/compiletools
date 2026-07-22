@@ -330,10 +330,23 @@ class MakefileBackend(BuildBackend):
 
         q_exe_dir = _make_quote(exe_dir)
         q_obj_dir = _make_quote(obj_dir)
-        clean_parts = [f"find {q_exe_dir} -type f -executable -delete 2>/dev/null"]
+
+        # A bindir of "." or ".." puts the workspace inside exe_dir, so the
+        # whole-tree recipes (`find -executable -delete`, `rm -rf`) would
+        # delete sources and .git. Emit only the per-output rm -f scoping
+        # in that case (same fallback as BuildBackend.clean()/realclean()).
+        exe_dir_holds_workspace = self._rmtree_would_destroy_workspace(exe_dir)
+        if exe_dir_holds_workspace:
+            # The find/rm -rf recipes lose their coverage of published
+            # links, so fold those outputs into the per-file rm -f set.
+            all_outputs.extend(rule.output for rule in graph.rules_by_type(RuleType.SYMLINK))
+
+        clean_parts = []
+        if not exe_dir_holds_workspace:
+            clean_parts.append(f"find {q_exe_dir} -type f -executable -delete 2>/dev/null")
         clean_parts.extend(_rm_f_chunked(all_outputs + all_objects))
         clean_parts.append(f"find {q_obj_dir} -type d -empty -delete")
-        if exe_dir != obj_dir:
+        if exe_dir != obj_dir and not exe_dir_holds_workspace:
             clean_parts.append(f"find {q_exe_dir} -type d -empty -delete")
         self._write_phony_recipe(f, "clean", clean_parts)
 
@@ -341,7 +354,10 @@ class MakefileBackend(BuildBackend):
         # products from obj_dir (which may be shared with peer sub-projects).
         # Mirrors BuildBackend.realclean() so `make realclean` and
         # `ct-cake --realclean` are equivalent.
-        realclean_parts = [f"rm -rf {q_exe_dir}"]
+        if exe_dir_holds_workspace:
+            realclean_parts = [] if exe_dir != obj_dir else _rm_f_chunked(all_outputs + all_objects)
+        else:
+            realclean_parts = [f"rm -rf {q_exe_dir}"]
         if exe_dir != obj_dir:
             realclean_parts.extend(_rm_f_chunked(all_outputs + all_objects))
             if all_outputs or all_objects:

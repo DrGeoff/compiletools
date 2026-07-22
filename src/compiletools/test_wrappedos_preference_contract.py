@@ -139,7 +139,6 @@ _WRAPPEDOS_EXEMPT: frozenset[tuple[str, str]] = frozenset(
             "backend_pch.py",
             "target = pchdir if os.path.isdir(pchdir) else parent",
         ),  # #2: PCH cache-dir stat in a stat-the-target helper (mtime-bearing)
-        ("build_backend.py", "if os.path.isdir(exe_dir):"),  # #2: clean()/realclean() removes exe_dir if present
         (
             "build_backend.py",
             "if obj_dir != exe_dir and os.path.isdir(obj_dir):",

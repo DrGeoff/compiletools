@@ -618,14 +618,96 @@ class BuildBackend(abc.ABC):
                 # to atomic_compile.
                 execute_link_rule(rule.output, list(rule.command), self.args, skip_if_exists=skip_if_exists)
 
+    # Graph rule types whose outputs land under exe_dir: linked/library
+    # artefacts, backend copy artifacts, and the published symlinks/hard
+    # links (in CAS-only mode the LINK output is the cas-exedir path and
+    # the SYMLINK output is the bindir publish path).
+    _ARTEFACT_RULE_TYPES = (
+        RuleType.LINK,
+        RuleType.STATIC_LIBRARY,
+        RuleType.SHARED_LIBRARY,
+        RuleType.COPY,
+        RuleType.SYMLINK,
+    )
+
+    def _rmtree_would_destroy_workspace(self, directory: str) -> bool:
+        """True when recursively deleting *directory* would take the
+        workspace with it.
+
+        A bindir of ``.`` or ``..`` (legal, preserved by the parse-time
+        normalization in apptools) makes ``executable_dir()`` resolve to
+        the invocation cwd or an ancestor of it, so an unscoped rmtree
+        there deletes sources and ``.git``, not just build artifacts.
+        The check is ancestor-or-equal on realpaths against both the cwd
+        and the gitroot.
+        """
+        # NOT wrappedos: clean runs post-build and the input may be a
+        # chdir-relative path (wrappedos skip cases 2 and 3).
+        real = os.path.realpath(directory)
+        for protected in (os.getcwd(), self._anchor_root):
+            if not protected:
+                continue
+            try:
+                # NOT wrappedos: getcwd changes across chdir-heavy tests.
+                if os.path.commonpath([real, os.path.realpath(protected)]) == real:
+                    return True
+            except ValueError:
+                continue
+        return False
+
+    def _remove_tree_or_outputs(
+        self, directory: str, rule_types: tuple[str, ...], graph: BuildGraph | None = None
+    ) -> None:
+        """rmtree *directory*, or fall back to per-output removal when the
+        tree contains the workspace.
+
+        The fallback removes this build's graph outputs of *rule_types*
+        individually (the same scoping the Makefile clean recipe uses)
+        and prunes the directories those removals emptied, stopping
+        (exclusive) at *directory*. *graph* defaults to ``self._graph``
+        (populated by ``generate()``).
+        """
+        # NOT wrappedos: post-build existence check.
+        if not os.path.isdir(directory):
+            return
+        if not self._rmtree_would_destroy_workspace(directory):
+            shutil.rmtree(directory)
+            return
+        if graph is None:
+            graph = self._graph
+        if graph is None:
+            return
+        # NOT wrappedos: chdir-relative post-build paths (skip cases 2 and 3).
+        real = os.path.realpath(directory)
+        for rule in graph.rules:
+            if rule.rule_type not in rule_types:
+                continue
+            # NOT wrappedos: build-output existence check after the build ran.
+            if os.path.isfile(rule.output):
+                os.remove(rule.output)
+            parent = os.path.dirname(rule.output)
+            # NOT wrappedos: chdir-relative post-build paths.
+            while parent and os.path.realpath(parent) != real:
+                try:
+                    os.rmdir(parent)
+                except OSError:
+                    break
+                parent = os.path.dirname(parent)
+
     def clean(self) -> None:
-        """Remove build artifacts. Override for backend-specific cleanup."""
+        """Remove build artifacts. Override for backend-specific cleanup.
+
+        Both directory removals refuse to rmtree a tree that contains the
+        workspace (``--bindir=.`` / ``..``) and degrade to removing this
+        build's graph outputs instead; see ``_remove_tree_or_outputs``.
+        """
         exe_dir = self.namer.executable_dir()
         obj_dir = self.namer.object_dir()
-        if os.path.isdir(exe_dir):
-            shutil.rmtree(exe_dir)
-        if obj_dir != exe_dir and os.path.isdir(obj_dir):
-            shutil.rmtree(obj_dir)
+        if obj_dir == exe_dir:
+            self._remove_tree_or_outputs(exe_dir, self._ARTEFACT_RULE_TYPES + (RuleType.COMPILE,))
+        else:
+            self._remove_tree_or_outputs(exe_dir, self._ARTEFACT_RULE_TYPES)
+            self._remove_tree_or_outputs(obj_dir, (RuleType.COMPILE,))
 
     def realclean(self, graph: BuildGraph) -> None:
         """Remove bin/ entirely and selectively clean this build's objects from the object CAS.
@@ -636,11 +718,12 @@ class BuildBackend(abc.ABC):
         (e.g. cas-objdir/) used by multiple sub-projects -- we must not
         destroy other sub-projects' objects.
 
-        The exe_dir is still removed entirely since it is per-project.
+        The exe_dir is removed entirely since it is per-project — unless it
+        contains the workspace (``--bindir=.`` / ``..``), in which case only
+        this build's artefact outputs are removed.
         """
         exe_dir = self.namer.executable_dir()
-        if os.path.isdir(exe_dir):
-            shutil.rmtree(exe_dir)
+        self._remove_tree_or_outputs(exe_dir, self._ARTEFACT_RULE_TYPES, graph)
 
         # Selectively remove only this build's products from the objdir.
         # `compile` covers both .o and PCH .gch outputs (PCH rules are emitted

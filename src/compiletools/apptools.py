@@ -1865,7 +1865,11 @@ def _commonsubstitutions(args):
         # If the user didn't explicitly supply a bindir then modify the bindir to use the variant name
         args.bindir = unsupplied_replacement(args.bindir, os.path.join("bin", args.variant), args.verbose, "bindir")
         # Normalize once so ./bin/x, bin/x/ and bin/./x collapse to bin/x.
-        # Leading .. and bare . are deliberately preserved.
+        # Leading .. and bare . are deliberately preserved as legal values;
+        # they put the workspace inside the bindir, so every clean path
+        # (cake._clean_topbindir, BuildBackend.clean()/realclean(), the
+        # Makefile clean/realclean recipes) must scope removals to build
+        # outputs instead of removing the tree.
         args.bindir = os.path.normpath(args.bindir)
     except AttributeError:
         pass
