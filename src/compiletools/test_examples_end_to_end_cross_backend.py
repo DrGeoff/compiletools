@@ -146,9 +146,7 @@ _VANILLA: ExamplePlan = ExamplePlan()
 # Named C++20 modules (interface units, partitions, split impl, import std) now
 # build on EVERY backend, so this blocklist is empty (kept as a named symbol the
 # module ExamplePlans reference, in case a future backend needs re-blocking).
-# make/ninja build them natively; slurm via _prebuild_aux_artefacts locally
-# executing the named-module interface compiles before the flat job array is
-# submitted (so importer compiles don't race interface compiles); cmake/bazel
+# make/ninja/shake build them natively; cmake/bazel
 # have no native module support, so ct-cake prebuilds the module artefacts
 # (interface BMIs + objects AND implementation-unit objects) itself and feeds the
 # native tool the prebuilt objects. `cxx_modules_header_units` was unblocked
@@ -375,7 +373,7 @@ def _example_plan(example_name: str) -> ExamplePlan:
 #
 # "outside" places the cas root as a sibling of the workspace under the
 # same ``effective_tmp`` — outside the gitroot, but on the same
-# (shared, for slurm) filesystem the workspace lives on. The
+# filesystem the workspace lives on. The
 # inside-vs-outside-different-fs case isn't portable to a CI matrix
 # without baking in host-specific mountpoint knowledge, so it's not
 # parametrized here; the in-tree-default-behavior gap is what we're
@@ -398,8 +396,8 @@ def _matrix_params() -> Iterable[tuple[str, str, str]]:
 
 # Heavy real-subprocess backends whose e2e cells contend under ``-n auto`` and
 # flake intermittently: on this box ``nproc`` is large (~127), so nearly all of
-# a backend's ~90 cells fire their ``sbatch`` submission / bazel server at once,
-# overwhelming the slurm queue / saturating the box. We bound the concurrency by
+# a backend's ~90 cells fire their bazel server at once,
+# saturating the box. We bound the concurrency by
 # pinning each backend's cells across ``_HEAVY_E2E_SHARDS`` xdist load-groups
 # (requires ``--dist loadgroup``, set in pyproject addopts): tests in a group run
 # on one worker, so at most ``_HEAVY_E2E_SHARDS`` of a backend's cells run
@@ -410,7 +408,7 @@ def _matrix_params() -> Iterable[tuple[str, str, str]]:
 # test_test_exe_rebuild_on_upstream_change.py so the bound is global across both
 # heavy-e2e files. Sharding is by a stable content hash (NOT ``hash()``, which is
 # per-process salted and would make workers disagree on grouping).
-_HEAVY_E2E_BACKENDS = frozenset({"slurm", "bazel"})
+_HEAVY_E2E_BACKENDS = frozenset({"bazel"})
 _HEAVY_E2E_SHARDS = 8
 
 

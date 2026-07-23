@@ -46,7 +46,7 @@ from compiletools.testhelper import (
     make_mock_namer,
     make_stub_backend_class,
 )
-from compiletools.trace_backend import ShakeBackend, SlurmBackend
+from compiletools.trace_backend import ShakeBackend
 
 
 def _cmd(rule: BuildRule) -> list[str]:
@@ -399,7 +399,7 @@ class TestUseMtimeFlagPlumbing:
     """Verify ``--use-mtime`` is honored only by Make/Ninja and warns elsewhere.
 
     Pre-fix, ``--use-mtime=True`` was silently ignored on cmake / bazel /
-    shake / slurm — those backends use content-hash or self-managed
+    shake — those backends use content-hash or self-managed
     change detection, so a touched-but-otherwise-unchanged source can't
     force a rebuild. CLAUDE.md claimed every backend honored the flag.
     The fix makes the silent no-op explicit: a stderr warning fires on
@@ -443,11 +443,6 @@ class TestUseMtimeFlagPlumbing:
     def test_shake_backend_does_not_honor_use_mtime(self, tmp_path):
         args = make_backend_args(tmp_path)
         backend = ShakeBackend(args=args, hunter=make_mock_hunter())
-        assert backend._honors_use_mtime() is False
-
-    def test_slurm_backend_does_not_honor_use_mtime(self, tmp_path):
-        args = make_backend_args(tmp_path)
-        backend = SlurmBackend(args=args, hunter=make_mock_hunter())
         assert backend._honors_use_mtime() is False
 
     def test_use_mtime_true_on_non_honoring_backend_hard_fails(self, tmp_path):

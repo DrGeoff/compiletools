@@ -354,11 +354,7 @@ class TestLibrary:
     @uth.requires_backend_tool()
     @pytest.mark.parametrize("backend_name", available_backends())
     def test_build_and_link_static_library(self, backend_name, capfd, capped_parallel_argv):
-        # Slurm submits compile jobs to remote nodes, so the temp dir must
-        # be on a shared filesystem (not node-local scratch) and outside the
-        # git tree to avoid hash registry interference from untracked files.
-        tmpdir_parent = uth._shared_filesystem_tmpdir_parent() if backend_name == "slurm" else None
-        with uth.TempDirContextWithChange(dir=tmpdir_parent) as tmpdir:
+        with uth.TempDirContextWithChange() as tmpdir:
             # Mimic the build.sh and create the library in a 'mylib' subdirectory
             # Copy the sample source files into the test build location
             mylibdir = os.path.join(tmpdir, "mylib")

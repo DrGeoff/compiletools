@@ -485,8 +485,7 @@ class TestChromeTrace:
         """All ingest paths now feed monotonic-aligned timestamps:
         in-Python recorders use ``time.monotonic()`` directly; the
         make recipe ingest converts bash ``$EPOCHREALTIME`` using the
-        wall-to-monotonic offset captured at ``BuildTimer.__init__``;
-        Slurm sacct timestamps are converted the same way.
+        wall-to-monotonic offset captured at ``BuildTimer.__init__``.
 
         ``to_chrome_trace`` therefore just rebases against the root's
         ``start_s``.  Verify the round-trip preserves real start times

@@ -390,9 +390,10 @@ def test_flush_timeout_warns_to_stderr(monkeypatch, capsys):
 
 
 def test_rule_with_default_start_sentinel_is_skipped(monkeypatch):
-    """Slurm rules whose sacct timestamps were unparseable land with
-    ``start_s == 0.0`` (the ``record_rule`` default); emitting those would
-    drag the trace to ~1970.  They should be skipped instead.
+    """Rules ingested from wall-clock sources whose timestamps were
+    unparseable land with ``start_s == 0.0`` (the ``record_rule`` default);
+    emitting those would drag the trace to ~1970.  They should be skipped
+    instead.
     """
     monkeypatch.setattr("compiletools.otel._connection.get_git_commit_sha", lambda cwd=None: "")
     monkeypatch.setattr(
@@ -400,7 +401,7 @@ def test_rule_with_default_start_sentinel_is_skipped(monkeypatch):
         lambda args: "",
     )
 
-    timer = BuildTimer(enabled=True, variant="gcc.debug", backend="slurm")
+    timer = BuildTimer(enabled=True, variant="gcc.debug", backend="make")
     base = timer._root.start_s
     with timer.phase("build_execution"):
         # Good rule (has explicit start/end)
@@ -413,7 +414,7 @@ def test_rule_with_default_start_sentinel_is_skipped(monkeypatch):
             end_s=base + 1.1,
         )
         # Bad rule: omit start/end so record_rule defaults start_s to 0.0
-        # (the Slurm "Unknown sacct timestamp" code path).
+        # (the unparseable-wall-clock-timestamp code path).
         timer.record_rule(
             rule_type="compile",
             target="obj/orphan.o",

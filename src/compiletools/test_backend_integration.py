@@ -91,7 +91,7 @@ def _run_backend_build(
     bazel toolchain-env failure into pytest.skip via skip_if_bazel_env_error.
     """
     effective_tmp = str(effective_tmp)
-    if backend_name in ("shake", "slurm"):
+    if backend_name == "shake":
         backend.generate(graph)
         backend.execute("build")
         return
@@ -425,7 +425,7 @@ class TestBackendBuildHeaderUnits(BaseCompileToolsTestCase):
                 )
 
             # Aux producer artefacts must exist post-build. The prebuild step
-            # creates them on cmake/bazel; on make/ninja/shake/slurm they're
+            # creates them on cmake/bazel; on make/ninja/shake they're
             # part of the per-rule executor's graph.
             missing = [r.output for r in aux_producers if not os.path.isfile(r.output)]
             assert not missing, (

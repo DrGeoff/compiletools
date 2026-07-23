@@ -55,7 +55,7 @@ def _find_gch_marker(stderr_text: str, marker_prefix: str) -> list[str]:
 
 
 @uth.requires_functional_compiler
-@pytest.mark.parametrize("backend_name", ["make", "ninja", "cmake", "bazel", "shake", "slurm"])
+@pytest.mark.parametrize("backend_name", ["make", "ninja", "cmake", "bazel", "shake"])
 def test_consumer_compile_actually_opens_cached_pch(backend_name, tmp_path):
     """ct-cake builds the PCH into ``cas-pchdir``; the consumer compile
     must actually open and consume that ``.gch`` on every backend that
@@ -97,11 +97,6 @@ def test_consumer_compile_actually_opens_cached_pch(backend_name, tmp_path):
     if compiletools.apptools.compiler_kind(cxx) != "gcc":
         pytest.skip(f"PCH `-H` markers are gcc-specific; detected compiler={cxx!r}")
 
-    # Slurm dispatches compile jobs to remote compute nodes, which see
-    # the submit-host's `/tmp` as private node-local scratch. The
-    # workspace must live on a shared filesystem (GPFS/NFS/Lustre/CIFS)
-    # so the compute nodes can open the source files. Other backends
-    # are happy with the pytest-provided node-local tmp_path.
     with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp:
         src = pathlib.Path(example_path("pch_bypass_bug"))
         workspace = pathlib.Path(effective_tmp) / "ws"
@@ -121,14 +116,6 @@ def test_consumer_compile_actually_opens_cached_pch(backend_name, tmp_path):
             "--append-CXXFLAGS=-H",
             "--auto",
         ]
-        if backend_name == "slurm":
-            # The slurm backend deletes its per-job log files at end-of-build
-            # when verbose < 2 (see trace_backend.SlurmBackend._cleanup_slurm_logs).
-            # `-vv` keeps them so we can scan for the consumer compile's `-H`
-            # output, which only lands in those files (the compute-node stderr
-            # never reaches the submit-side captured stderr).
-            argv.append("-vv")
-
         env = os.environ.copy()
         for var in ("CXXFLAGS", "CFLAGS", "LDFLAGS", "CPPFLAGS"):
             env.pop(var, None)
@@ -159,16 +146,8 @@ def test_consumer_compile_actually_opens_cached_pch(backend_name, tmp_path):
         #   ninja            — gcc stderr → ninja's pretty-printer → stdout.
         #   shake            — gcc runs in-process via atomic_compile; its
         #                      stderr is captured to subprocess stderr.
-        #   slurm            — consumer compile dispatched to a remote
-        #                      compute node; its stderr is written to a
-        #                      slurm per-job log file under the
-        #                      diagnostics dir (silent on success).
-        # Pull from all three sources and concatenate.
-        slurm_log_text = ""
-        if diagnostics_dir.exists():
-            for log in diagnostics_dir.rglob("slurm-ct-*-*.out"):
-                slurm_log_text += "\n" + log.read_text(errors="replace")
-        combined_output = result.stdout + "\n" + result.stderr + slurm_log_text
+        # Pull from both streams and concatenate.
+        combined_output = result.stdout + "\n" + result.stderr
         pch_used_lines = _find_gch_marker(combined_output, "! ")
         pch_rejected_lines = _find_gch_marker(combined_output, "x ")
         cache_examined = bool(pch_used_lines or pch_rejected_lines)

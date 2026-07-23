@@ -465,24 +465,24 @@ class TestParserAwareContradictionValidation:
 
     def test_unhashable_canonical_values_merge_when_equal(self, tmp_path):
         # A parsing type= can return a structured (unhashable) value, e.g.
-        # backend_registry._slurm_mem_tiers_arg -> list[tuple]. Equal
-        # canonical values across layers must merge, not crash on dict
-        # insertion (regression: TypeError: unhashable type: 'list').
-        alpha = _layer(tmp_path, "appalpha", "slurm-mem-tiers = 4:8G\n")
-        beta = _layer(tmp_path, "appbeta", "slurm-mem-tiers = 4:8G\n")
+        # list[tuple]. Equal canonical values across layers must merge, not
+        # crash on dict insertion (regression: TypeError: unhashable type:
+        # 'list').
+        alpha = _layer(tmp_path, "appalpha", "mem-tiers = 4:8G\n")
+        beta = _layer(tmp_path, "appbeta", "mem-tiers = 4:8G\n")
         canonicalizer = lambda value: [tuple(entry.split(":")) for entry in value.split(",")]  # noqa: E731
         validate_no_conf_contradictions(
             [alpha, beta],
             [],
             "monovariant",
             ["a", "b"],
-            registered_keys={"slurm_mem_tiers"},
-            value_canonicalizers={"slurm_mem_tiers": canonicalizer},
+            registered_keys={"mem_tiers"},
+            value_canonicalizers={"mem_tiers": canonicalizer},
         )
 
     def test_unhashable_canonical_values_conflict_still_raises(self, tmp_path):
-        alpha = _layer(tmp_path, "appalpha", "slurm-mem-tiers = 4:8G\n")
-        beta = _layer(tmp_path, "appbeta", "slurm-mem-tiers = 8:16G\n")
+        alpha = _layer(tmp_path, "appalpha", "mem-tiers = 4:8G\n")
+        beta = _layer(tmp_path, "appbeta", "mem-tiers = 8:16G\n")
         canonicalizer = lambda value: [tuple(entry.split(":")) for entry in value.split(",")]  # noqa: E731
         with pytest.raises(ConfContradictionError):
             validate_no_conf_contradictions(
@@ -490,8 +490,8 @@ class TestParserAwareContradictionValidation:
                 [],
                 "monovariant",
                 ["a", "b"],
-                registered_keys={"slurm_mem_tiers"},
-                value_canonicalizers={"slurm_mem_tiers": canonicalizer},
+                registered_keys={"mem_tiers"},
+                value_canonicalizers={"mem_tiers": canonicalizer},
             )
 
     def test_variant_carve_out_survives_registered_keys_filter(self, tmp_path):
@@ -1228,15 +1228,6 @@ class TestParseargsTargetAnchoring:
         assert "-DSUB_EXTRA" in args.CXXFLAGS  # round two loaded sub's layer
         err = capsys.readouterr().err
         assert err.count("home directory or above") == 1
-
-    def test_structured_value_conf_key_parses_without_crash(self, monorepo):
-        """A subproject conf key whose parser type= returns an unhashable
-        structured value (slurm-mem-tiers -> list[tuple]) must validate
-        cleanly, not crash on dict insertion (regression: TypeError:
-        unhashable type: 'list')."""
-        (monorepo / "appbeta" / "ct.conf").write_text("slurm-mem-tiers = 4:8G\n")
-        args = _parse_cake_args(monorepo, [*_ARGV_BASE, os.path.join("appbeta", "main.cpp")])
-        assert args.slurm_mem_tiers == [(4, "8G")]
 
     def test_every_parser_canonicalizer_output_is_dict_key_safe(self):
         """Lint: every canonicalizer derived from the assembled ct-cake

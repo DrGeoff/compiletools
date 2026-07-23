@@ -9,7 +9,7 @@ Pre-existing coverage:
   directly (not the ``ct-cake`` -> backend dispatch path).
 
 This module adds the missing matrix: parameterise across every registered
-backend (make / ninja / cmake / bazel / shake / slurm) and assert the
+backend (make / ninja / cmake / bazel / shake) and assert the
 end-to-end ``ct-cake`` -> backend.execute('runtests') flow re-runs a test
 when an upstream header or implied source changes.
 
@@ -37,14 +37,14 @@ ensure_backends_registered()
 
 # Only make and ninja consume the prereq list as a literal mtime comparison,
 # so they are the only backends that honor ``--use-mtime=True``. Every other
-# backend (bazel/cmake/shake/slurm) hard-fails on that flag — see
+# backend (bazel/cmake/shake) hard-fails on that flag — see
 # ``build_backend.BuildBackend.__init__`` and the contract test in
 # ``test_build_backend.py``. The use-mtime arm of this matrix is therefore
 # only meaningful for these two; the rest are skipped (the hard-fail itself
 # is asserted in test_build_backend.py, not re-derived per scenario here).
 _MTIME_HONORING_BACKENDS = frozenset({"make", "ninja"})
 
-# Heavy real-subprocess backends (slurm sbatch / bazel server) contend under
+# Heavy real-subprocess backends (bazel server) contend under
 # ``-n auto`` and flake; bound their concurrency via sharded xdist load-groups
 # (requires ``--dist loadgroup`` in pyproject addopts). Group names
 # (``e2e-<backend>-<shard>``) and shard count match
@@ -52,7 +52,7 @@ _MTIME_HONORING_BACKENDS = frozenset({"make", "ninja"})
 # heavy-e2e files. These ~5-per-backend cells are keyed on the backend alone, so
 # each backend's rebuild cells land in one shard (joining that shard's
 # cross-backend cells) -- negligible imbalance. Other backends are unmarked.
-_HEAVY_E2E_BACKENDS = frozenset({"slurm", "bazel"})
+_HEAVY_E2E_BACKENDS = frozenset({"bazel"})
 _HEAVY_E2E_SHARDS = 8
 
 
@@ -265,8 +265,7 @@ def _build_session(
     use_mtime: bool = False,
 ) -> Iterator[tuple[_RebuildHarness, dict[str, pathlib.Path]]]:
     """Bracket every test with a clean parser/cache state, materialise the
-    chosen scenario into a workdir suitable for the backend (shared FS for
-    slurm, fallback for the rest), and yield a fully-wired harness plus
+    chosen scenario into a workdir, and yield a fully-wired harness plus
     the materialised path map.
     """
     if use_mtime and backend_name not in _MTIME_HONORING_BACKENDS:
