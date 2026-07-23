@@ -2998,22 +2998,6 @@ class BuildBackend(abc.ABC):
         deplist = self.hunter.header_dependencies(filename)
         prerequisites = [filename] + sorted([str(dep) for dep in deplist])
 
-        # Compute include_weight for SLURM memory estimation.
-        # len(quoted_headers) from analyze_file correlates with peak RSS (r=0.85)
-        # because each quoted include transitively pulls in framework templates.
-        # analyze_file is already cached from the header dep walk -- zero cost.
-        try:
-            content_hash = compiletools.global_hash_registry.get_file_hash(filename, self.context)
-            analysis = compiletools.file_analyzer.analyze_file(content_hash, self.context)
-            include_weight = len(analysis.quoted_headers)
-        except (FileNotFoundError, OSError, RuntimeError) as e:
-            print(
-                f"WARNING: could not analyze {filename!r} for include_weight ({type(e).__name__}: {e}); "
-                "SLURM memory estimate will be 0 for this rule.",
-                file=sys.stderr,
-            )
-            include_weight = 0
-
         import stringzilla as sz
 
         magicflags = self.hunter.magicflags(filename)
@@ -3113,7 +3097,6 @@ class BuildBackend(abc.ABC):
             command=compile_cmd,
             rule_type="compile",
             order_only_deps=[bucket_dir],
-            include_weight=include_weight,
         )
 
     def _merge_ldflags_for_sources(self, sources: list[str]) -> list[str]:

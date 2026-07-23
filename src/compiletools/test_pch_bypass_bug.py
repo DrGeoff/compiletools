@@ -97,70 +97,70 @@ def test_consumer_compile_actually_opens_cached_pch(backend_name, tmp_path):
     if compiletools.apptools.compiler_kind(cxx) != "gcc":
         pytest.skip(f"PCH `-H` markers are gcc-specific; detected compiler={cxx!r}")
 
-    with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp:
-        src = pathlib.Path(example_path("pch_bypass_bug"))
-        workspace = pathlib.Path(effective_tmp) / "ws"
-        uth.copy_example_workspace(src, workspace)
-        cas_pchdir = workspace / "cas-pchdir"
+    effective_tmp = str(tmp_path)
+    src = pathlib.Path(example_path("pch_bypass_bug"))
+    workspace = pathlib.Path(effective_tmp) / "ws"
+    uth.copy_example_workspace(src, workspace)
+    cas_pchdir = workspace / "cas-pchdir"
 
-        diagnostics_dir = workspace / "diag"
-        argv = [
-            "ct-cake",
-            f"--backend={backend_name}",
-            f"--cas-objdir={workspace}/cas-objdir",
-            f"--bindir={workspace}/bin",
-            f"--cas-pchdir={cas_pchdir}",
-            f"--cas-pcmdir={workspace}/cas-pcmdir",
-            f"--cas-exedir={workspace}/cas-exedir",
-            f"--diagnostics-dir={diagnostics_dir}",
-            "--append-CXXFLAGS=-H",
-            "--auto",
-        ]
-        env = os.environ.copy()
-        for var in ("CXXFLAGS", "CFLAGS", "LDFLAGS", "CPPFLAGS"):
-            env.pop(var, None)
+    diagnostics_dir = workspace / "diag"
+    argv = [
+        "ct-cake",
+        f"--backend={backend_name}",
+        f"--cas-objdir={workspace}/cas-objdir",
+        f"--bindir={workspace}/bin",
+        f"--cas-pchdir={cas_pchdir}",
+        f"--cas-pcmdir={workspace}/cas-pcmdir",
+        f"--cas-exedir={workspace}/cas-exedir",
+        f"--diagnostics-dir={diagnostics_dir}",
+        "--append-CXXFLAGS=-H",
+        "--auto",
+    ]
+    env = os.environ.copy()
+    for var in ("CXXFLAGS", "CFLAGS", "LDFLAGS", "CPPFLAGS"):
+        env.pop(var, None)
 
-        result = subprocess.run(
-            argv,
-            cwd=workspace,
-            env=env,
-            capture_output=True,
-            text=True,
+    result = subprocess.run(
+        argv,
+        cwd=workspace,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, (
+        f"ct-cake build failed (backend={backend_name} returncode={result.returncode})\n"
+        f"argv: {argv}\n"
+        f"--- stdout ---\n{result.stdout}\n"
+        f"--- stderr (last 80 lines) ---\n" + "\n".join(result.stderr.splitlines()[-80:])
+    )
+
+    gch_files = sorted(cas_pchdir.rglob("*.gch"))
+    assert gch_files, (
+        f"ct-cake did not build any .gch in {cas_pchdir}; the {backend_name} test "
+        f"is not exercising the path it thinks it is."
+    )
+
+    # Where does the consumer compile's `-H` output land?
+    #   make/cmake/bazel — gcc stderr → captured subprocess stderr.
+    #   ninja            — gcc stderr → ninja's pretty-printer → stdout.
+    #   shake            — gcc runs in-process via atomic_compile; its
+    #                      stderr is captured to subprocess stderr.
+    # Pull from both streams and concatenate.
+    combined_output = result.stdout + "\n" + result.stderr
+    pch_used_lines = _find_gch_marker(combined_output, "! ")
+    pch_rejected_lines = _find_gch_marker(combined_output, "x ")
+    cache_examined = bool(pch_used_lines or pch_rejected_lines)
+
+    if not cache_examined:
+        gch_paths = [str(p.relative_to(workspace)) for p in gch_files]
+        pytest.fail(
+            f"Consumer compile did NOT examine the cached PCH ({backend_name}).\n"
+            f"  cas-pchdir contents: {gch_paths}\n"
+            f"  `! …gch` lines (PCH used):     (none)\n"
+            f"  `x …gch` lines (PCH rejected): (none)\n"
+            "  Both empty means GCC's PCH lookup never even reached the\n"
+            "  cache — the source-dir copy of pch.h won the include-search\n"
+            "  race and GCC then searched only beside that resolved path.\n"
+            "  See examples-features/pch_bypass_bug/README.md.\n"
         )
-
-        assert result.returncode == 0, (
-            f"ct-cake build failed (backend={backend_name} returncode={result.returncode})\n"
-            f"argv: {argv}\n"
-            f"--- stdout ---\n{result.stdout}\n"
-            f"--- stderr (last 80 lines) ---\n" + "\n".join(result.stderr.splitlines()[-80:])
-        )
-
-        gch_files = sorted(cas_pchdir.rglob("*.gch"))
-        assert gch_files, (
-            f"ct-cake did not build any .gch in {cas_pchdir}; the {backend_name} test "
-            f"is not exercising the path it thinks it is."
-        )
-
-        # Where does the consumer compile's `-H` output land?
-        #   make/cmake/bazel — gcc stderr → captured subprocess stderr.
-        #   ninja            — gcc stderr → ninja's pretty-printer → stdout.
-        #   shake            — gcc runs in-process via atomic_compile; its
-        #                      stderr is captured to subprocess stderr.
-        # Pull from both streams and concatenate.
-        combined_output = result.stdout + "\n" + result.stderr
-        pch_used_lines = _find_gch_marker(combined_output, "! ")
-        pch_rejected_lines = _find_gch_marker(combined_output, "x ")
-        cache_examined = bool(pch_used_lines or pch_rejected_lines)
-
-        if not cache_examined:
-            gch_paths = [str(p.relative_to(workspace)) for p in gch_files]
-            pytest.fail(
-                f"Consumer compile did NOT examine the cached PCH ({backend_name}).\n"
-                f"  cas-pchdir contents: {gch_paths}\n"
-                f"  `! …gch` lines (PCH used):     (none)\n"
-                f"  `x …gch` lines (PCH rejected): (none)\n"
-                "  Both empty means GCC's PCH lookup never even reached the\n"
-                "  cache — the source-dir copy of pch.h won the include-search\n"
-                "  race and GCC then searched only beside that resolved path.\n"
-                "  See examples-features/pch_bypass_bug/README.md.\n"
-            )

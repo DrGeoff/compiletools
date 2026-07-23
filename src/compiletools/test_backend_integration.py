@@ -158,7 +158,8 @@ class TestBackendBuildApplication(BaseCompileToolsTestCase):
     @pytest.mark.parametrize("backend_name", available_backends())
     def test_build_helloworld(self, backend_name, tmp_path, monkeypatch, capfd, capped_parallel_argv):
         """Build helloworld_cpp.cpp with each registered backend."""
-        with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp, uth.ParserContext():
+        effective_tmp = str(tmp_path)
+        with uth.ParserContext():
             effective_tmp = pathlib.Path(effective_tmp)
             backend, graph, args = _setup_backend_for_source(
                 backend_name, effective_tmp, extra_argv=capped_parallel_argv
@@ -211,7 +212,8 @@ class TestBackendBuildPCH(BaseCompileToolsTestCase):
     @pytest.mark.parametrize("backend_name", available_backends())
     def test_build_pch(self, backend_name, tmp_path, monkeypatch, capfd, capped_parallel_argv):
         """Build pch sample with each registered backend."""
-        with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp, uth.ParserContext():
+        effective_tmp = str(tmp_path)
+        with uth.ParserContext():
             effective_tmp = pathlib.Path(effective_tmp)
             # Copy PCH sample files to temp dir
             pch_sample = uth.example_path("pch")
@@ -365,7 +367,8 @@ class TestBackendBuildHeaderUnits(BaseCompileToolsTestCase):
         else:
             pytest.skip("No compiler on PATH supports C++20 header units")
 
-        with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp, uth.ParserContext():
+        effective_tmp = str(tmp_path)
+        with uth.ParserContext():
             effective_tmp = pathlib.Path(effective_tmp)
             sample = uth.example_path("cxx_modules_header_units")
             for f in os.listdir(sample):

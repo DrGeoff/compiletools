@@ -169,12 +169,12 @@ def _assert_cas_layer_byte_identical(
     suffix matches, and assert their CONTENT SETS match.
 
     Compares the set of distinct content-hashes rather than the
-    filename → hash mapping because some backends (notably slurm)
-    sidecar a per-invocation copy of the artefact under a hash-
-    suffixed name; alice's ``foo_<hashA>.exe`` and bob's
-    ``foo_<hashB>.exe`` carry byte-identical content but the
-    filename hash differs per run. Set comparison sees them as
-    equivalent; mapping comparison would falsely fail.
+    filename → hash mapping because a backend may sidecar a
+    per-invocation copy of the artefact under a hash-suffixed name;
+    alice's ``foo_<hashA>.exe`` and bob's ``foo_<hashB>.exe`` carry
+    byte-identical content but the filename hash differs per run.
+    Set comparison sees them as equivalent; mapping comparison would
+    falsely fail.
 
     Empty hash sets on both sides are treated as a "this sample
     doesn't exercise this CAS layer" skip.
@@ -210,14 +210,14 @@ def test_two_checkouts_produce_byte_identical_cas_objdir(backend_name, tmp_path)
     if not sample.is_dir():
         pytest.skip(f"missing sample dir: {sample}")
 
-    with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp:
-        alice, bob = _build_in_two_checkouts(
-            sample_dir=sample,
-            tmp_root=pathlib.Path(effective_tmp),
-            backend_name=backend_name,
-            main_basename="helloworld_cpp.cpp",
-        )
-        _assert_cas_layer_byte_identical(alice, bob, "cas-objdir", suffixes=(".o",))
+    effective_tmp = str(tmp_path)
+    alice, bob = _build_in_two_checkouts(
+        sample_dir=sample,
+        tmp_root=pathlib.Path(effective_tmp),
+        backend_name=backend_name,
+        main_basename="helloworld_cpp.cpp",
+    )
+    _assert_cas_layer_byte_identical(alice, bob, "cas-objdir", suffixes=(".o",))
 
 
 @uth.requires_backend_tool()
@@ -233,14 +233,14 @@ def test_two_checkouts_produce_byte_identical_cas_exedir(backend_name, tmp_path)
     if not sample.is_dir():
         pytest.skip(f"missing sample dir: {sample}")
 
-    with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp:
-        alice, bob = _build_in_two_checkouts(
-            sample_dir=sample,
-            tmp_root=pathlib.Path(effective_tmp),
-            backend_name=backend_name,
-            main_basename="helloworld_cpp.cpp",
-        )
-        _assert_cas_layer_byte_identical(alice, bob, "cas-exedir", suffixes=(".exe", ".a", ".so"))
+    effective_tmp = str(tmp_path)
+    alice, bob = _build_in_two_checkouts(
+        sample_dir=sample,
+        tmp_root=pathlib.Path(effective_tmp),
+        backend_name=backend_name,
+        main_basename="helloworld_cpp.cpp",
+    )
+    _assert_cas_layer_byte_identical(alice, bob, "cas-exedir", suffixes=(".exe", ".a", ".so"))
 
 
 _PCH_BMI_BYTES_DIVERGE_NOTE = (
@@ -331,15 +331,15 @@ def test_two_checkouts_produce_byte_identical_o_with_shared_cas_pchdir(backend_n
     if not sample.is_dir():
         pytest.skip(f"missing sample dir: {sample}")
 
-    with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp:
-        alice, bob = _build_with_shared_pchdir(
-            sample_dir=sample,
-            tmp_root=pathlib.Path(effective_tmp),
-            backend_name=backend_name,
-            main_basename="pch_user.cpp",
-            shared_cas_layer="shared-pchdir",
-        )
-        _assert_cas_layer_byte_identical(alice, bob, "cas-objdir", suffixes=(".o",))
+    effective_tmp = str(tmp_path)
+    alice, bob = _build_with_shared_pchdir(
+        sample_dir=sample,
+        tmp_root=pathlib.Path(effective_tmp),
+        backend_name=backend_name,
+        main_basename="pch_user.cpp",
+        shared_cas_layer="shared-pchdir",
+    )
+    _assert_cas_layer_byte_identical(alice, bob, "cas-objdir", suffixes=(".o",))
 
 
 @uth.requires_backend_tool()
@@ -376,15 +376,15 @@ def test_two_checkouts_produce_byte_identical_o_with_shared_cas_pcmdir(backend_n
     if not gcc_ok and not _clang_supports_header_units():
         pytest.skip("No compiler on PATH supports C++20 header units")
 
-    with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp:
-        alice, bob = _build_with_shared_pchdir(
-            sample_dir=sample,
-            tmp_root=pathlib.Path(effective_tmp),
-            backend_name=backend_name,
-            main_basename="main.cpp",
-            shared_cas_layer="shared-pcmdir",
-        )
-        _assert_cas_layer_byte_identical(alice, bob, "cas-objdir", suffixes=(".o",))
+    effective_tmp = str(tmp_path)
+    alice, bob = _build_with_shared_pchdir(
+        sample_dir=sample,
+        tmp_root=pathlib.Path(effective_tmp),
+        backend_name=backend_name,
+        main_basename="main.cpp",
+        shared_cas_layer="shared-pcmdir",
+    )
+    _assert_cas_layer_byte_identical(alice, bob, "cas-objdir", suffixes=(".o",))
 
 
 @pytest.mark.xfail(strict=False, reason=_PCH_BMI_BYTES_DIVERGE_NOTE)
@@ -401,14 +401,14 @@ def test_two_checkouts_produce_byte_identical_cas_pchdir(backend_name, tmp_path)
     if not sample.is_dir():
         pytest.skip(f"missing sample dir: {sample}")
 
-    with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp:
-        alice, bob = _build_in_two_checkouts(
-            sample_dir=sample,
-            tmp_root=pathlib.Path(effective_tmp),
-            backend_name=backend_name,
-            main_basename="pch_user.cpp",
-        )
-        _assert_cas_layer_byte_identical(alice, bob, "cas-pchdir", suffixes=(".gch",))
+    effective_tmp = str(tmp_path)
+    alice, bob = _build_in_two_checkouts(
+        sample_dir=sample,
+        tmp_root=pathlib.Path(effective_tmp),
+        backend_name=backend_name,
+        main_basename="pch_user.cpp",
+    )
+    _assert_cas_layer_byte_identical(alice, bob, "cas-pchdir", suffixes=(".gch",))
 
 
 @pytest.mark.xfail(strict=False, reason=_PCH_BMI_BYTES_DIVERGE_NOTE)
@@ -441,11 +441,11 @@ def test_two_checkouts_produce_byte_identical_cas_pcmdir(backend_name, tmp_path)
     if not gcc_ok and not _clang_supports_header_units():
         pytest.skip("No compiler on PATH supports C++20 header units")
 
-    with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp:
-        alice, bob = _build_in_two_checkouts(
-            sample_dir=sample,
-            tmp_root=pathlib.Path(effective_tmp),
-            backend_name=backend_name,
-            main_basename="main.cpp",
-        )
-        _assert_cas_layer_byte_identical(alice, bob, "cas-pcmdir", suffixes=(".pcm", ".gcm"))
+    effective_tmp = str(tmp_path)
+    alice, bob = _build_in_two_checkouts(
+        sample_dir=sample,
+        tmp_root=pathlib.Path(effective_tmp),
+        backend_name=backend_name,
+        main_basename="main.cpp",
+    )
+    _assert_cas_layer_byte_identical(alice, bob, "cas-pcmdir", suffixes=(".pcm", ".gcm"))

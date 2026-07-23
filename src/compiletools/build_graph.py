@@ -90,8 +90,8 @@ class BuildRule:
             ``$VAR``, ...) — side effects like "touch a marker on success"
             belong in ``success_marker``, not in command tokens. Shell-rendered
             backends (Make, Ninja) join with spaces and let the underlying
-            tool run the result through ``/bin/sh -c``; argv-executing
-            backends (Shake, Slurm) hand the list straight to subprocess.
+            tool run the result through ``/bin/sh -c``; the argv-executing
+            backend (Shake) hands the list straight to subprocess.
             Both behaviours agree as long as no token is shell-active.
         rule_type: One of "compile", "link", "test", "phony", "mkdir", "clean",
             "copy", "static_library", "shared_library".
@@ -128,7 +128,6 @@ class BuildRule:
     command: list[str] | None
     rule_type: str
     order_only_deps: list[str] = field(default_factory=list)
-    include_weight: int = 0
     success_marker: str | None = None
     cwd: str | None = None
 

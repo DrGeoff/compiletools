@@ -28,7 +28,6 @@ re-discover them.
 
 from __future__ import annotations
 
-import contextlib
 import dataclasses
 import functools
 import hashlib
@@ -583,26 +582,26 @@ def test_example_builds_with_backend(example_name, backend_name, cas_layout, tmp
             "(Termux/Android Bionic + libc++); stdlib header-unit imports fail"
         )
 
-    with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp:
-        workspace = uth.copy_example_workspace(
-            pathlib.Path(uth.e2e_dir()) / example_name,
-            pathlib.Path(effective_tmp) / "ws",
-        )
-        cas_root = _resolve_cas_root(workspace, cas_layout)
-        result = _run_build(backend_name, workspace, plan, cas_root)
+    effective_tmp = str(tmp_path)
+    workspace = uth.copy_example_workspace(
+        pathlib.Path(uth.e2e_dir()) / example_name,
+        pathlib.Path(effective_tmp) / "ws",
+    )
+    cas_root = _resolve_cas_root(workspace, cas_layout)
+    result = _run_build(backend_name, workspace, plan, cas_root)
 
-        if plan.xfail_reason:
-            if result.returncode == 0:
-                pytest.fail(f"unexpected build success despite xfail policy: {plan.xfail_reason}")
-            return  # expected failure
+    if plan.xfail_reason:
+        if result.returncode == 0:
+            pytest.fail(f"unexpected build success despite xfail policy: {plan.xfail_reason}")
+        return  # expected failure
 
-        assert result.returncode == 0, (
-            f"ct-cake failed for example={example_name!r} backend={backend_name!r} "
-            f"cas_layout={cas_layout!r}\n"
-            f"argv: {_build_argv(workspace, backend_name, plan, cas_root)}\n"
-            f"--- stdout ---\n{result.stdout}\n"
-            f"--- stderr ---\n{result.stderr}\n"
-        )
+    assert result.returncode == 0, (
+        f"ct-cake failed for example={example_name!r} backend={backend_name!r} "
+        f"cas_layout={cas_layout!r}\n"
+        f"argv: {_build_argv(workspace, backend_name, plan, cas_root)}\n"
+        f"--- stdout ---\n{result.stdout}\n"
+        f"--- stderr ---\n{result.stderr}\n"
+    )
 
 
 @uth.requires_functional_compiler
@@ -628,33 +627,33 @@ def test_bazel_outside_layout_regenerates_bmi_after_staging_wipe(tmp_path):
 
     example_name = "cxx_modules"
     plan = _example_plan(example_name)
-    with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp:
-        workspace = uth.copy_example_workspace(
-            pathlib.Path(uth.e2e_dir()) / example_name,
-            pathlib.Path(effective_tmp) / "ws",
-        )
-        # "outside" keeps cas-objdir (and the .o) warm across both builds while
-        # the in-workspace .ct-bazel-pcm/ staging is wiped between them.
-        cas_root = _resolve_cas_root(workspace, "outside")
+    effective_tmp = str(tmp_path)
+    workspace = uth.copy_example_workspace(
+        pathlib.Path(uth.e2e_dir()) / example_name,
+        pathlib.Path(effective_tmp) / "ws",
+    )
+    # "outside" keeps cas-objdir (and the .o) warm across both builds while
+    # the in-workspace .ct-bazel-pcm/ staging is wiped between them.
+    cas_root = _resolve_cas_root(workspace, "outside")
 
-        first = _run_build(backend_name, workspace, plan, cas_root)
-        assert first.returncode == 0, (
-            f"cold outside-layout build failed:\n--- stdout ---\n{first.stdout}\n--- stderr ---\n{first.stderr}"
-        )
+    first = _run_build(backend_name, workspace, plan, cas_root)
+    assert first.returncode == 0, (
+        f"cold outside-layout build failed:\n--- stdout ---\n{first.stdout}\n--- stderr ---\n{first.stderr}"
+    )
 
-        staging = workspace / ".ct-bazel-pcm"
-        assert staging.is_dir(), (
-            "expected <workspace>/.ct-bazel-pcm/ after an outside-layout bazel "
-            "build of a gcc named-module example (the BMI staging dir)"
-        )
-        shutil.rmtree(staging)
+    staging = workspace / ".ct-bazel-pcm"
+    assert staging.is_dir(), (
+        "expected <workspace>/.ct-bazel-pcm/ after an outside-layout bazel "
+        "build of a gcc named-module example (the BMI staging dir)"
+    )
+    shutil.rmtree(staging)
 
-        second = _run_build(backend_name, workspace, plan, cas_root)
-        assert second.returncode == 0, (
-            "rebuild after wiping .ct-bazel-pcm/ failed: the gcc module-interface "
-            "BMI was not regenerated (warm cas-objdir + wiped staging).\n"
-            f"--- stdout ---\n{second.stdout}\n--- stderr ---\n{second.stderr}"
-        )
+    second = _run_build(backend_name, workspace, plan, cas_root)
+    assert second.returncode == 0, (
+        "rebuild after wiping .ct-bazel-pcm/ failed: the gcc module-interface "
+        "BMI was not regenerated (warm cas-objdir + wiped staging).\n"
+        f"--- stdout ---\n{second.stdout}\n--- stderr ---\n{second.stderr}"
+    )
 
 
 def test_xfail_policy_fails_on_unexpected_build_success(monkeypatch, tmp_path):
@@ -662,17 +661,12 @@ def test_xfail_policy_fails_on_unexpected_build_success(monkeypatch, tmp_path):
     module = sys.modules[__name__]
     plan = ExamplePlan(xfail_reason="intentional failure still expected")
 
-    @contextlib.contextmanager
-    def fake_shared_filesystem_tmpdir(backend_name, fallback_path):
-        yield str(fallback_path)
-
     def fake_copy_example_workspace(src, dst):
         dst.mkdir(parents=True, exist_ok=True)
         return dst
 
     monkeypatch.setattr(compiletools.apptools, "get_functional_cxx_compiler", lambda: "/usr/bin/c++")
     monkeypatch.setattr(uth, "_backend_tool_available", lambda backend_name: True)
-    monkeypatch.setattr(uth, "shared_filesystem_tmpdir", fake_shared_filesystem_tmpdir)
     monkeypatch.setattr(uth, "copy_example_workspace", fake_copy_example_workspace)
     monkeypatch.setattr(module, "_example_plan", lambda example_name: plan)
     monkeypatch.setattr(
@@ -744,30 +738,30 @@ def test_terminal_games_links_with_wild(driver, variant, tmp_path):
         if not identity or identity[0] != "gcc" or identity[1] < 16:
             pytest.skip("gcc < 16.1 cannot drive -fuse-ld=wild; covered by wild-B unit tests")
 
-    with uth.shared_filesystem_tmpdir("make", tmp_path) as effective_tmp:
-        workspace = uth.copy_example_workspace(
-            pathlib.Path(uth.e2e_dir()) / "terminal_games",
-            pathlib.Path(effective_tmp) / "ws",
-        )
-        cas_root = workspace
-        argv = [
-            "ct-cake",
-            f"--variant={variant}",
-            "--backend=make",
-            f"--cas-objdir={cas_root}/cas-objdir",
-            f"--cas-pchdir={cas_root}/cas-pchdir",
-            f"--cas-pcmdir={cas_root}/cas-pcmdir",
-            f"--cas-exedir={cas_root}/cas-exedir",
-            f"--bindir={workspace}/bin",
-            "--auto",
-        ]
-        env = os.environ.copy()
-        for var in ("CXXFLAGS", "CFLAGS", "LDFLAGS", "CPPFLAGS"):
-            env.pop(var, None)
-        result = subprocess.run(argv, cwd=workspace, env=env, capture_output=True, text=True)
-        assert result.returncode == 0, (
-            f"ct-cake failed for variant={variant!r}\n"
-            f"argv: {argv}\n"
-            f"--- stdout ---\n{result.stdout}\n"
-            f"--- stderr ---\n{result.stderr}\n"
-        )
+    effective_tmp = str(tmp_path)
+    workspace = uth.copy_example_workspace(
+        pathlib.Path(uth.e2e_dir()) / "terminal_games",
+        pathlib.Path(effective_tmp) / "ws",
+    )
+    cas_root = workspace
+    argv = [
+        "ct-cake",
+        f"--variant={variant}",
+        "--backend=make",
+        f"--cas-objdir={cas_root}/cas-objdir",
+        f"--cas-pchdir={cas_root}/cas-pchdir",
+        f"--cas-pcmdir={cas_root}/cas-pcmdir",
+        f"--cas-exedir={cas_root}/cas-exedir",
+        f"--bindir={workspace}/bin",
+        "--auto",
+    ]
+    env = os.environ.copy()
+    for var in ("CXXFLAGS", "CFLAGS", "LDFLAGS", "CPPFLAGS"):
+        env.pop(var, None)
+    result = subprocess.run(argv, cwd=workspace, env=env, capture_output=True, text=True)
+    assert result.returncode == 0, (
+        f"ct-cake failed for variant={variant!r}\n"
+        f"argv: {argv}\n"
+        f"--- stdout ---\n{result.stdout}\n"
+        f"--- stderr ---\n{result.stderr}\n"
+    )

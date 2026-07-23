@@ -275,20 +275,20 @@ def _build_session(
         )
     uth.reset()
     try:
-        with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as workdir:
-            workdir = pathlib.Path(workdir)
-            monkeypatch.chdir(workdir)
-            paths, marker = _materialise(workdir, scenario)
-            harness = _RebuildHarness(
-                workdir=workdir,
-                backend_name=backend_name,
-                source=paths["test_count.cpp"],
-                marker=marker,
-                capped_parallel_argv=capped_parallel_argv,
-                capfd=capfd,
-                use_mtime=use_mtime,
-            )
-            yield harness, paths
+        workdir = str(tmp_path)
+        workdir = pathlib.Path(workdir)
+        monkeypatch.chdir(workdir)
+        paths, marker = _materialise(workdir, scenario)
+        harness = _RebuildHarness(
+            workdir=workdir,
+            backend_name=backend_name,
+            source=paths["test_count.cpp"],
+            marker=marker,
+            capped_parallel_argv=capped_parallel_argv,
+            capfd=capfd,
+            use_mtime=use_mtime,
+        )
+        yield harness, paths
     finally:
         uth.reset()
 
