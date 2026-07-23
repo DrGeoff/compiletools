@@ -37,7 +37,6 @@ ninja   build.ninja             ninja
 cmake   CMakeLists.txt          cmake
 bazel   BUILD.bazel             bazel
 shake   .ct-traces.json         (builtin)
-slurm   .ct-slurm-traces.json   sbatch
 ======  ======================  ===========
 
 FEATURE MATRIX
@@ -53,7 +52,6 @@ ninja   Y            Y                      Y             Y          Y          
 cmake   N            Y                      Y             Y          Y          Y             N           N
 bazel   N            Y                      Y             Y          Y          Y             N           N
 shake   Y            Y                      Y             Y          Y          Y             Y           Y
-slurm   Y            Y                      Y             Y          Y (local)  Y             Y           Y
 ======  ===========  =====================  ============  =========  =========  ============  ==========  ============
 
 Notes:
@@ -72,17 +70,16 @@ Notes:
   ``--cas-pchdir``; the compile rules carry the per-cmd_hash ``.gch`` paths,
   so all backends produce and consume the cache transparently.
 * **Libraries** — static and dynamic library targets via ``--static`` /
-  ``--dynamic``.  All backends support both; the Slurm backend
-  distributes compile rules but always links locally.
+  ``--dynamic``.  All backends support both.
 * **Test runner** — test execution is part of the build graph: each test
   runs as soon as its executable is linked, in parallel with ongoing
   compiles, links, and other tests. ``--serialise-tests`` forces
-  one-at-a-time execution (graph chaining for make/ninja/shake/slurm,
+  one-at-a-time execution (graph chaining for make/ninja/shake,
   ``--local_test_jobs=1`` for bazel, custom-command ``DEPENDS`` for
   cmake). See ct-cake(1) *Test execution scheduling*.
 * **CA outputs / Early cutoff** — content-addressable filenames and
   build skipping when an output's bytes are unchanged.  Native to the
-  Shake/Slurm builtin engine; Ninja approximates early cutoff via
+  Shake builtin engine; Ninja approximates early cutoff via
   ``restat = 1``.
 
 BACKENDS
@@ -203,68 +200,11 @@ network filesystems where content-addressable outputs prevent stale reuse.
 
 **Requires:** Nothing — builtin to compiletools.
 
-slurm (HPC)
-------------
-
-Extends the Shake backend to distribute compile rules across an HPC cluster
-via Slurm job arrays.  Link and library rules still run locally.
-
-**When to use:** Large codebases on HPC clusters where distributing
-compilation across many nodes dramatically reduces wall-clock time.
-
-**Features:**
-
-- Distributes compile rules via ``sbatch --array``
-- Dynamic memory estimation per rule based on include complexity
-- Memory tiers with automatic OOM retry (doubles memory and resubmits)
-- Job chunking for large submissions (``--slurm-max-array``, default 1000)
-- Polls ``sacct`` for job completion
-- Traces recorded for successfully compiled outputs (incremental rebuilds
-  across cluster jobs)
-- Slurm logs written to ``<diagnostics-dir>/<invocation-id>/slurm-ct-<chunk>-<task>.out``
-  (defaults to ``<bindir>/diagnostics/<invocation-id>/``; cleaned on success)
-
-**Requires:** Slurm (``sbatch`` in PATH).
-
-**Configuration options:**
-
-- ``--slurm-partition`` — Slurm partition name
-- ``--slurm-account`` — Slurm account for billing
-- ``--slurm-time`` — job time limit
-- ``--slurm-mem`` — maximum memory per job (also the OOM retry ceiling)
-- ``--slurm-cpus`` — CPUs per task
-- ``--slurm-poll-interval`` — seconds between ``sacct`` polls
-- ``--slurm-export`` — comma-separated env vars passed via ``sbatch --export=``.
-  Default propagates a curated allowlist
-  (``PATH,HOME,USER,LANG,LC_ALL,CC,CXX,CPATH,LD_LIBRARY_PATH``) instead of the
-  submitter's full environment, so unrelated state does not leak into compute
-  nodes.  ``LD_LIBRARY_PATH`` is included because non-system compilers
-  (Spack, Lmod, custom installs) typically need it to locate their shared libs.
-
-**Overriding the default export list:**
-
-- ``--slurm-export=ALL`` — propagate the full submitter environment (legacy
-  behavior; use sparingly, leaks unrelated state).
-- ``--slurm-export=NONE`` — fully isolated environment.
-- For Lmod/Spack sites, extend the default explicitly, e.g.::
-
-      --slurm-export=PATH,HOME,USER,LANG,LC_ALL,CC,CXX,CPATH,LD_LIBRARY_PATH,MODULEPATH,LMOD_CMD,LMOD_DIR,SPACK_ROOT
-
-**File-locking semantics:** For the slurm backend, "file locking" means
-(a) local link/library steps go through ``FileLock`` + ``atomic_link`` on
-the submitter, and (b) compute-node compiles use atomic temp+rename
-(compile to ``$OUT.$SLURM_JOB_ID.$SLURM_ARRAY_TASK_ID.tmp``, then
-``mv -f`` onto the final ``.o``) -- the same correctness guarantee that
-``atomic_compile`` provides locally, without requiring a cross-node lock
-on the compute path.
-
-**Limitations:** Link rules cannot be distributed and always run locally.
-
 FILE LOCKING
 ============
 
 File locking enables multiple users and build hosts to share compiled object
-files safely.  It is supported by the Make, Ninja, Shake, and Slurm backends.
+files safely.  It is supported by the Make, Ninja, and Shake backends.
 
 Enable with ``--file-locking`` (on by default for Make).  The locking
 strategy is auto-detected based on the target filesystem:
@@ -279,7 +219,7 @@ See ``ct-lock-helper`` (1) and ``ct-cleanup-locks`` (1) for details.
 CONTENT-ADDRESSABLE OUTPUTS
 ============================
 
-The Shake and Slurm backends use content-addressable object file naming::
+The Shake backend uses content-addressable object file naming::
 
     basename_filehash_dephash_macrohash.o
 
@@ -354,7 +294,6 @@ Scenario                           Recommended backend
 General-purpose builds             ``make`` (default)
 Large incremental rebuilds         ``ninja``
 Shared multi-user caches           ``shake`` or ``make --file-locking``
-HPC cluster distribution           ``slurm``
 CMake IDE integration              ``cmake``
 Bazel ecosystem integration        ``bazel``
 Maximum rebuild precision          ``shake``
@@ -370,10 +309,6 @@ Build with Ninja backend::
 Build with Shake backend and file locking::
 
     ct-cake --backend=shake --file-locking
-
-Distribute compilation across a Slurm cluster::
-
-    ct-cake --backend=slurm --slurm-partition=build --slurm-mem=8G
 
 List available backends::
 

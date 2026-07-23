@@ -20,7 +20,7 @@ DESCRIPTION
 ===========
 
 ``ct-cas-publish`` is a small helper invoked from generated build recipes
-(Make, Ninja, Shake, Slurm) to publish a content-addressable linker
+(Make, Ninja, Shake) to publish a content-addressable linker
 artefact at the stable user-facing ``bin/<variant>/<name>`` (or
 ``bin/<variant>/lib<name>.{a,so}``) path. It is not normally run by
 hand.

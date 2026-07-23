@@ -1,6 +1,6 @@
 """Per-invocation diagnostic-output coordination.
 
-Both ct-cake (timing JSON) and the slurm backend (job logs) consume these
+ct-cake (timing JSON) consumes these
 helpers so that all diagnostic artifacts produced by a single ct-cake
 invocation land in one shared, easily-located subdirectory.
 """

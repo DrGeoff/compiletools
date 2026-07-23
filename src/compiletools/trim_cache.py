@@ -63,7 +63,7 @@ _OBJ_FILENAME_RE = re.compile(
 # Object bucket directories are exactly 2 lowercase hex chars (the leading
 # 2 chars of the per-source ``file_hash``). Top-level entries that don't
 # match — ``TraceStore/`` dirs, anything else — are invisible to the
-# scanner.  Diagnostics artifacts (timing JSON and ``slurm-ct-*.out`` logs)
+# scanner.  Diagnostics artifacts (timing JSON)
 # default to ``<bindir>/diagnostics/<invocation>/`` and are not in objdir;
 # if a user overrides ``--diagnostics-dir`` to point back at ``--cas-objdir``
 # they remain invisible here too, by design.
@@ -630,7 +630,7 @@ class CacheTrimmer:
 
         Walks two levels: ``<objdir>/<bucket>/*.o`` where ``<bucket>`` is
         a 2-hex shard derived from the per-source ``file_hash[:2]``.
-        Top-level entries that aren't 2-hex bucket dirs (Slurm ``.out``
+        Top-level entries that aren't 2-hex bucket dirs (stray tool
         logs, ``TraceStore/`` dirs, stray pre-sharding ``.o`` leftovers)
         are skipped — they are outside the sharded cache's world.
 

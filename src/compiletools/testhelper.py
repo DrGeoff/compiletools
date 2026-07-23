@@ -450,7 +450,7 @@ def _rmtree_retry(func, path, exc_or_info):
     """Retry handler for shutil.rmtree on distributed filesystems (GPFS/NFS).
 
     On GPFS, rmtree can fail transiently when files are still being flushed
-    (e.g., Slurm output files). Retry once after a short delay. If the retry
+    (e.g., stray tool output files). Retry once after a short delay. If the retry
     also fails, warn instead of raising so test cleanup failures don't mask
     test results.
 

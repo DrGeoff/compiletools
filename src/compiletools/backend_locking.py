@@ -3,7 +3,7 @@
 These free functions translate a bare compile/link command into a
 lock-wrapped shell command suitable for embedding in a native build file.
 They are the makefile-level counterpart to ``locking.atomic_compile`` /
-``locking.atomic_link`` (the in-Python path used by Shake/Slurm).
+``locking.atomic_link`` (the in-Python path used by Shake).
 
 This module is a deliberately thin lower layer: it imports only stdlib plus
 genuinely-leaf compiletools modules so that ``build_backend`` can re-export

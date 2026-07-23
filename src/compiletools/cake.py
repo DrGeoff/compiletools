@@ -437,7 +437,7 @@ class Cake:
             default=None,
             help=(
                 "Parent directory for per-invocation diagnostic artifacts "
-                "(build timing JSON, slurm job logs). Each ct-cake "
+                "(build timing JSON). Each ct-cake "
                 "invocation gets its own <invocation-id> subdirectory under "
                 "this path so concurrent peers sharing a bindir or objdir "
                 "never collide. Defaults to <bindir>/diagnostics/. "

@@ -557,7 +557,7 @@ key would not change.
 ``--use-mtime`` is honored only by the Make and Ninja backends:
 their rule emitters consume the prereq list as a literal mtime
 comparison, so they can branch on the flag. The cmake / bazel /
-shake / slurm backends use their own change detection
+shake backends use their own change detection
 (cmake's out-of-source incremental tracking, bazel's
 content-addressable action cache, trace_backend's verifying
 traces) and a touched-but-otherwise-unchanged source is invisible
@@ -845,7 +845,7 @@ The flag is **British-spelled only** — ``--serialise-tests`` /
 Per-backend mechanism (all behave identically from the user's point of
 view; documented here in case you read generated build files):
 
-* **make / ninja / shake / slurm** — the build graph chains each test
+* **make / ninja / shake** — the build graph chains each test
   rule on the previous one's output. Under ``--no-use-mtime`` (the CAS
   default) the chain edge goes in ``order_only_deps`` so re-running a
   passed test doesn't cascade re-runs; under ``--use-mtime`` it goes in
@@ -950,8 +950,7 @@ Common Options
 
 **--diagnostics-dir PATH**
     Parent directory for per-invocation diagnostic artifacts -- the
-    ``--timing`` JSON, slurm job logs from the ``slurm`` backend, and
-    future per-build reports.  Each ct-cake invocation gets its own
+    ``--timing`` JSON and future per-build reports.  Each ct-cake invocation gets its own
     ``<invocation-id>`` subdirectory under this path so concurrent peers
     sharing a bindir or objdir never collide.  Default:
     ``<bindir>/diagnostics/<invocation-id>/``.  Also settable via the

@@ -20,7 +20,7 @@ import pytest
 # set in pyproject addopts): at most ``_HEAVY_E2E_POOL`` run at once while the
 # shards still parallelise. Sharding is by a stable content hash of the nodeid
 # (NOT ``hash()``, which is per-process salted and would make xdist workers
-# disagree on grouping). Backend-specific bounding for the slurm/bazel cells of
+# disagree on grouping). Backend-specific bounding for the bazel cells of
 # the cross-backend matrix + the rebuild test is done with per-param marks in
 # those two files; this hook covers the modules whose every test is heavy.
 _HEAVY_E2E_MODULES = frozenset(

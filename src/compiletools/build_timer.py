@@ -56,7 +56,7 @@ class TimingEvent:
         # Persist start_s/end_s for every event (including phases) so the
         # chrome-trace exporter has one shared monotonic-clock origin to
         # rebase against.  All ingest paths feed monotonic timestamps
-        # (in-Python via time.monotonic(); make/slurm wall-clock values
+        # (in-Python via time.monotonic(); make wall-clock values
         # are converted at ingest using the offset captured in
         # BuildTimer.__init__), so these values are directly comparable.
         if self.start_s is not None and self.end_s is not None:
@@ -280,7 +280,7 @@ class BuildTimer:
 
         # Capture the wall-to-monotonic offset once at startup so ingest
         # paths that record wall-clock timestamps (make recipe wrappers
-        # via bash $EPOCHREALTIME, Slurm sacct ISO timestamps) can
+        # via bash $EPOCHREALTIME) can
         # convert their values into the same monotonic clock domain that
         # the in-Python record_rule callers use.  A single calibration is
         # accurate to within a few microseconds for the duration of a
@@ -622,7 +622,7 @@ class BuildTimer:
 
         Every event's ``start_s`` is on the same monotonic clock —
         in-Python recorders use ``time.monotonic()`` directly, and the
-        make/Slurm ingest paths convert wall-clock timestamps using the
+        make ingest path converts wall-clock timestamps using the
         offset captured at ``BuildTimer.__init__``.  Subtract the root's
         ``start_s`` once to rebase the whole trace to ``ts=0``.
         """

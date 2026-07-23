@@ -763,7 +763,7 @@ class TestBuildGraphPopulation:
         """Test rule command must be argv-only — no shell metacharacters.
 
         Touch-on-success is modeled via success_marker, not embedded in command
-        tokens. argv-executing backends (Shake, Slurm) pass command straight to
+        tokens. The argv-executing backend (Shake) passes command straight to
         subprocess.run and would otherwise feed '&&' / 'touch' to the test exe
         as ignored argv parameters.
         """
@@ -1351,7 +1351,7 @@ class TestGccCppmExtensionRecognition:
 
 class TestModuleFlagsAreShellNaive:
     """`_compiler_module_flags_for` returns flag tokens that go straight into
-    ``BuildRule.command``. Argv-executing backends (Shake / Slurm) hand that
+    ``BuildRule.command``. The argv-executing backend (Shake) hands that
     list to ``subprocess.Popen(shell=False)``, so any token must be the
     literal compiler argument — not pre-shell-quoted text. The makefile and
     ninja backends are responsible for shell-quoting at the rendering layer

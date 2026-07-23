@@ -56,7 +56,7 @@ def _emit_event(tracer, event: TimingEvent, parent_ctx, mono_to_wall_offset: flo
     """Recursively emit OTel spans for a TimingEvent subtree.
 
     Rule events whose ``start_s`` is the ``record_rule`` default-sentinel
-    of 0.0 (Slurm jobs with unparseable sacct timestamps land here) would
+    of 0.0 (rules whose wall-clock timestamps failed to parse land here) would
     otherwise emit spans dated decades before the build, dragging the
     trace timeline to boot-time wall clock.  Skip them entirely; the
     rule's elapsed time is still in ``timing.json`` for offline review.

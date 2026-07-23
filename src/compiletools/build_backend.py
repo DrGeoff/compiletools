@@ -416,7 +416,7 @@ class BuildBackend(abc.ABC):
     def _touch_result_marker(self, result_path: str) -> None:
         """Touch a test's success marker. No-op (without error) if result_path
         is empty. Used by backends that run tests in-process and need to record
-        success themselves (shake, slurm, bazel post-hoc)."""
+        success themselves (shake, bazel post-hoc)."""
         if not result_path:
             return
         _touch(result_path)
@@ -473,14 +473,6 @@ class BuildBackend(abc.ABC):
         ``atomic_link`` lets peer ct-cake invocations sharing a CAS dir
         cooperate.
 
-        Slurm submits all compiles as a flat job array with no DAG
-        ordering, so named-module interface compile rules (which write
-        ``.gcm`` / ``.pcm`` as side effects of producing their ``.o``)
-        must also be executed locally in Phase 0 before the flat array
-        is submitted. Without this, importer compiles race with interface
-        compiles in the array and GCC reports "failed to read compiled
-        module".
-
         Execution order for named-module interface rules: we topologically
         sort by ``rule.inputs`` within the interface-rule set so partitions
         are compiled before primary interfaces that import them (clang's
@@ -494,9 +486,9 @@ class BuildBackend(abc.ABC):
         # (`--precompile -xc++-system-header`), not RuleType.HEADER_UNIT --
         # that type is reserved for gcc's shell-pipeline form whose output
         # can't ride on `-o`. Collect them via the artefact registry so
-        # cmake/bazel (whose native tool never sees these rules) and slurm
-        # (flat job array, no DAG ordering) land the .pcm before consumer
-        # TUs compile with `-fmodule-file=<h>=<pcm>`. getattr fallback for
+        # cmake/bazel (whose native tool never sees these rules) land the
+        # .pcm before consumer TUs compile with `-fmodule-file=<h>=<pcm>`.
+        # getattr fallback for
         # test backends that bypass __init__ (same as
         # _header_unit_extra_system_includes below).
         hu_artefacts = set(getattr(self, "_header_unit_artefact", {}).values())
@@ -2055,7 +2047,7 @@ class BuildBackend(abc.ABC):
         silently skip.
 
         For backends that use compiletools' cas-exedir layer (the
-        make/ninja/shake/slurm common case), a missing ``rule.output``
+        make/ninja/shake common case), a missing ``rule.output``
         after the build completed is a SYMPTOM, not normal: either the
         link command silently failed without a non-zero exit, or some
         downstream publish stage moved the file. Either way the next
@@ -2245,7 +2237,7 @@ class BuildBackend(abc.ABC):
             # to /bin/sh) -- but quoting belongs at the recipe-rendering
             # layer (_wrap_compile_cmd uses shlex.join), not here.
             # BuildRule.command is also passed verbatim to subprocess.Popen
-            # by argv-executing backends (Shake, Slurm), which would reject
+            # by the argv-executing backend (Shake), which would reject
             # a pre-shell-quoted token as an unknown flag.
             # Per-TU narrowing (rather than the blanket-all approach
             # used for partitions) is cheap because each TU's
@@ -3193,7 +3185,7 @@ class BuildBackend(abc.ABC):
         with ``<ext>`` ∈ ``{.exe, .a, .so}``, paired with a downstream
         ``symlink`` rule that publishes the user-facing ``bin/<variant>/<name>``
         as a hard link (with symlink fallback) to the cached artefact.
-        This is the case for Make/Ninja/Shake/Slurm.
+        This is the case for Make/Ninja/Shake.
 
         True — backend writes binaries to a tool-managed location
         (cmake's out-of-source build tree, bazel's sandboxed action-
@@ -3221,7 +3213,7 @@ class BuildBackend(abc.ABC):
 
         False (default) — every compile produces a ``.o`` under
         compiletools' cas-objdir (the path-canonical CAS key keyed by
-        file_hash + dep_hash + macro_state_hash). Make/Ninja/Shake/Slurm
+        file_hash + dep_hash + macro_state_hash). Make/Ninja/Shake
         all populate cas-objdir for every TU. CMake also returns False
         here even though ``_self_manages_exe_placement()`` is True:
         cmake uses ``cas-objdir/cmake-build/`` as its out-of-source
@@ -3255,7 +3247,7 @@ class BuildBackend(abc.ABC):
           tracking (cmake-build/) and copies built artefacts to
           ``topbindir`` post-build.
         * **Bazel** uses its content-addressable action cache.
-        * **Shake / Slurm** use verifying traces (content hashes).
+        * **Shake** uses verifying traces (content hashes).
 
         For all three, ``--use-mtime=True`` cannot deliver "touch the
         source to force a rebuild" semantics — a touch without a
@@ -3328,7 +3320,7 @@ class BuildBackend(abc.ABC):
         """Build the link rule(s) for an executable target.
 
         When ``_self_manages_exe_placement()`` returns False (the
-        default for Make/Ninja/Shake/Slurm), returns a two-element list:
+        default for Make/Ninja/Shake), returns a two-element list:
           [0] The link rule whose output is the content-addressable
               ``<cas-exedir>/<shard>/<name>_<linkkey>.exe``. ``linkkey``
               hashes the canonicalized link command and the linker
@@ -3519,7 +3511,7 @@ class BuildBackend(abc.ABC):
         """Build the static-library rule(s) for ``args.static``.
 
         When ``_self_manages_exe_placement()`` returns False (the
-        default for Make/Ninja/Shake/Slurm), returns a two-element list:
+        default for Make/Ninja/Shake), returns a two-element list:
           [0] The ``ar`` rule whose output is the content-addressable
               ``<cas-exedir>/<shard>/lib<name>_<libkey>.a``. ``libkey``
               hashes the canonicalized object set + ar argv, so two

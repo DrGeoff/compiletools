@@ -314,7 +314,7 @@ class TestTrimObjdir:
     def test_skips_non_bucket_top_level_entries(self, objdir):
         """Anything at the top level of ``$objdir/`` whose name is not a
         2-hex bucket directory must be invisible to the scanner.
-        ``TraceStore/`` lives there by design; ``slurm-ct-*.out`` files only
+        ``TraceStore/`` lives there by design; stray ``.out`` files only
         appear here if the user has overridden ``--diagnostics-dir`` to point
         back into ``--cas-objdir`` (the default is
         ``<bindir>/diagnostics/<invocation>/``).  Either way, the scanner
@@ -327,8 +327,8 @@ class TestTrimObjdir:
             f.write(b"\0" * 64)
 
         # Carve-outs that share the objdir root
-        with open(os.path.join(objdir, "slurm-ct-foo-1234.out"), "wb") as f:
-            f.write(b"slurm log")
+        with open(os.path.join(objdir, "stray-tool-log.out"), "wb") as f:
+            f.write(b"stray tool log")
         os.makedirs(os.path.join(objdir, "TraceStore"))
         os.makedirs(os.path.join(objdir, "not-a-hash"))  # 3-char dir, not a bucket
         os.makedirs(os.path.join(objdir, "AA"))  # uppercase, not lowercase hex
@@ -341,7 +341,7 @@ class TestTrimObjdir:
             f"and non-bucket dirs must be invisible. Got total_scanned={stats['total_scanned']}"
         )
         # And the carve-outs must remain on disk untouched.
-        assert os.path.exists(os.path.join(objdir, "slurm-ct-foo-1234.out"))
+        assert os.path.exists(os.path.join(objdir, "stray-tool-log.out"))
         assert os.path.isdir(os.path.join(objdir, "TraceStore"))
         assert os.path.isdir(os.path.join(objdir, "not-a-hash"))
         assert os.path.isdir(os.path.join(objdir, "AA"))

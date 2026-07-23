@@ -210,7 +210,7 @@ has no directory component.  ``ct.target`` / ``ct.source`` remain the
 canonical, fully-qualified query keys.
 
 Rule events that never recorded a real start time (an internal
-``start_s == 0.0`` sentinel — e.g. a Slurm job whose ``sacct``
+``start_s == 0.0`` sentinel — e.g. a wall-clock ingest whose
 timestamps could not be parsed) are omitted from the trace so a
 spurious 1970 span cannot drag the timeline to the epoch; their elapsed
 time is still present in ``timing.json``.
@@ -246,7 +246,7 @@ can ingest.  Today's coverage:
 ================================================  ==============================
 Backend / path                                    ``cas.*`` on spans?
 ================================================  ==============================
-``trace`` backend (Shake / Slurm)                 yes — in-process via
+``trace`` backend (Shake)                         yes — in-process via
                                                   ``BuildTimer.record_rule``
 ``ninja`` / ``make`` via ``ct-lock-helper``       yes — lockdir / fcntl / cifs
 (strategies for NFS / Lustre, GPFS, CIFS / SMB)   strategies write to
