@@ -60,10 +60,9 @@ def test_cake_argument_registration_keeps_backend_modules_cold():
         import compiletools.cake
 
         argv = [
-            "--backend=slurm",
-            "--slurm-mem=4G",
-            "--slurm-time=00:10:00",
-            "--slurm-mem-tiers=1:1G,4:4G",
+            "--backend=shake",
+            "--bazel-jvm-stack-size=512k",
+            "--makefilename=ColdMakefile",
         ]
         cap = compiletools.apptools.create_parser("startup probe", argv=argv)
         compiletools.cake.Cake.add_arguments(cap)
@@ -84,9 +83,8 @@ def test_cake_argument_registration_keeps_backend_modules_cold():
             json.dumps(
                 {
                     "backend_modules": backend_modules,
-                    "slurm_mem": args.slurm_mem,
-                    "slurm_time": args.slurm_time,
-                    "slurm_mem_tiers": args.slurm_mem_tiers,
+                    "bazel_jvm_stack_size": args.bazel_jvm_stack_size,
+                    "makefilename": args.makefilename,
                 }
             )
         )
@@ -106,9 +104,8 @@ def test_cake_argument_registration_keeps_backend_modules_cold():
     data = json.loads(result.stdout)
     assert data == {
         "backend_modules": [],
-        "slurm_mem": "4G",
-        "slurm_time": "00:10:00",
-        "slurm_mem_tiers": [[1, "1G"], [4, "4G"]],
+        "bazel_jvm_stack_size": "512k",
+        "makefilename": "ColdMakefile",
     }
 
 

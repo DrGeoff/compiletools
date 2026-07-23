@@ -32,7 +32,7 @@ else:
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 # Tools whose CLI surface is intentionally minimal because they're invoked
-# from generated build recipes (Makefile / Ninja / Shake / Slurm) with
+# from generated build recipes (Makefile / Ninja / Shake) with
 # pinned argv shapes. Adding the apptools surface to them would break
 # those recipes — they parse argv with a fixed contract. They DO carry
 # ``--version`` (cheap and useful for diagnostics) but NOT the rest.

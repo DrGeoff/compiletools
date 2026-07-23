@@ -5,7 +5,7 @@ import pytest
 
 import compiletools.listbackends
 
-EXPECTED_BACKENDS = {"bazel", "cmake", "make", "ninja", "shake", "slurm"}
+EXPECTED_BACKENDS = {"bazel", "cmake", "make", "ninja", "shake"}
 
 
 def _args(style="pretty", show_all=False):

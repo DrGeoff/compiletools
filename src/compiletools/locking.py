@@ -981,7 +981,7 @@ def atomic_compile(
     HPC nodes and CI runners.
 
     Temp+rename on the producer side fixes this for all readers, in all
-    backends (Make, Shake, Slurm), without any read-side locking. Readers
+    backends (Make, Shake), without any read-side locking. Readers
     always see either the previous good .o (old inode) or the new one
     (new inode) — never the inode-being-written-to. This is the standard
     pattern POSIX storage systems use for the same reason.
@@ -1250,8 +1250,8 @@ def _rewrite_link_cmd_for_temp(link_cmd: list[str], target: str, tempfile_path: 
 # the subprocess spawn (asyncio.create_subprocess_exec instead of Popen) and
 # the lock acquire (non-blocking fast path, then a thread-pool fallback) are
 # different. The sync functions above remain the single source of truth for
-# the invariants; any change to those must be mirrored here. SlurmBackend and
-# the Make/Ninja native flock wrappers keep using the sync path.
+# the invariants; any change to those must be mirrored here. The Make/Ninja
+# native flock wrappers keep using the sync path.
 # ---------------------------------------------------------------------------
 
 

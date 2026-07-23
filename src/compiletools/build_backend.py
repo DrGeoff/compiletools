@@ -140,27 +140,17 @@ from compiletools.backend_pch import (
 # ``ensure_backends_registered`` (also re-exported here) read it back.
 # ``backend_registry`` never imports ``build_backend`` at runtime (it only
 # stores/returns backend classes), so this layering carries no cycle. The
-# slurm arg-validators, the Slurm export/mem-tier defaults, and the make /
-# bazel / slurm CLI registrars are pulled in for ``trace_backend`` /
-# ``bazel_backend`` / ``makefile_backend`` and the slurm test suite. Names
-# re-exported purely for external importers/tests — not referenced by code
-# remaining in this module — carry F401 suppressions.
+# make / bazel CLI registrars are pulled in for ``makefile_backend`` /
+# ``bazel_backend``. Names re-exported purely for external importers/tests —
+# not referenced by code remaining in this module — carry F401 suppressions.
 from compiletools.backend_registry import (
     _ALWAYS_AVAILABLE_BACKENDS,  # noqa: F401
     _BUILTIN_BACKEND_MODULES,  # noqa: F401
-    _DEFAULT_MEM_TIERS_STR,  # noqa: F401
-    _DEFAULT_SLURM_EXPORT,  # noqa: F401
     _REGISTRY,  # noqa: F401
     _BackendT,  # noqa: F401
     _import_builtin_backend,  # noqa: F401
-    _parse_slurm_mem,  # noqa: F401
     _register_bazel_cli_arguments,  # noqa: F401
     _register_make_cli_arguments,  # noqa: F401
-    _register_slurm_cli_arguments,  # noqa: F401
-    _slurm_max_wait_arg,  # noqa: F401
-    _slurm_mem_arg,  # noqa: F401
-    _slurm_mem_tiers_arg,  # noqa: F401
-    _slurm_time_arg,  # noqa: F401
     available_backends,  # noqa: F401
     backend_tool_command,  # noqa: F401
     detect_available_backends,  # noqa: F401
@@ -315,7 +305,7 @@ class BuildBackend(abc.ABC):
         # but this backend can't deliver them. ``--use-mtime`` is a
         # make/ninja-only knob: only those two backends consume the prereq
         # list as a literal mtime comparison. A content-hash backend (bazel,
-        # shake, slurm) or self-managed one (cmake) cannot deliver "touch the
+        # shake) or self-managed one (cmake) cannot deliver "touch the
         # source to force a rebuild" semantics — a touch without a content
         # change is invisible to their rebuild check — so silently ignoring
         # the opt-in would mislead the user about what their flag does.
@@ -325,7 +315,7 @@ class BuildBackend(abc.ABC):
             raise ValueError(
                 f"--use-mtime=True is not supported by the {self.name()!r} backend; only the "
                 "'make' and 'ninja' backends honor it. Other backends use content-hash-based "
-                "(bazel, shake, slurm) or self-managed (cmake) change detection, which cannot "
+                "(bazel, shake) or self-managed (cmake) change detection, which cannot "
                 "deliver mtime-based 'touch the source to force a rebuild' semantics. Drop "
                 "--use-mtime (the CAS-only default) or switch to --backend=make / --backend=ninja."
             )

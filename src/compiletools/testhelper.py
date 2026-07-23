@@ -39,7 +39,7 @@ def _backend_tool_available(backend_name):
         return shutil.which("bazelisk") is not None or shutil.which("bazel") is not None
     if backend_name == "cmake":
         return shutil.which("cmake") is not None
-    tool = {"make": "make", "ninja": "ninja", "slurm": "sbatch"}.get(backend_name)
+    tool = {"make": "make", "ninja": "ninja"}.get(backend_name)
     if tool is None:
         return False
     return shutil.which(tool) is not None
@@ -1133,7 +1133,6 @@ def add_backend_arguments(cap):
     from compiletools import jobs as _jobs
     from compiletools import namer as _namer
     from compiletools.makefile_backend import MakefileBackend
-    from compiletools.trace_backend import SlurmBackend
 
     compiletools.apptools.add_target_arguments_ex(cap)
     compiletools.apptools.add_link_arguments(cap)
@@ -1141,7 +1140,6 @@ def add_backend_arguments(cap):
     _hunter.add_arguments(cap)
     _jobs.add_arguments(cap)
     MakefileBackend.add_arguments(cap)
-    SlurmBackend.add_arguments(cap)
 
 
 def build_real_backend(backend_cls, tmp_path, sources, *, tests=None, extra_argv=None):

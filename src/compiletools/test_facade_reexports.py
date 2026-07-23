@@ -211,18 +211,11 @@ _add(
         "is_backend_available",
         "detect_available_backends",
         "_BUILTIN_BACKEND_MODULES",
-        "_DEFAULT_SLURM_EXPORT",
-        # per-backend CLI registrars + slurm arg parsers: caller-less re-exports
-        # (consumed only through the facade by the backend modules / tests), so
-        # they are exactly the F401-suppressed names ruff --fix would strip.
+        # per-backend CLI registrars: caller-less re-exports (consumed only
+        # through the facade by the backend modules / tests), so they are
+        # exactly the F401-suppressed names ruff --fix would strip.
         "_register_make_cli_arguments",
         "_register_bazel_cli_arguments",
-        "_register_slurm_cli_arguments",
-        "_parse_slurm_mem",
-        "_slurm_mem_arg",
-        "_slurm_time_arg",
-        "_slurm_mem_tiers_arg",
-        "_slurm_max_wait_arg",
     ],
 )
 
