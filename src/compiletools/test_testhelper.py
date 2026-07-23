@@ -1,4 +1,5 @@
 import os
+import subprocess
 
 import pytest
 
@@ -20,6 +21,56 @@ def test_skip_if_bazel_env_error_skips_on_environment_failures(stderr):
 def test_skip_if_bazel_env_error_noop_on_unrelated_stderr():
     uth.skip_if_bazel_env_error("undefined reference to `foo'")
     uth.skip_if_bazel_env_error("")
+
+
+def test_copy_example_workspace_skips_gitignored_build_outputs(tmp_path):
+    """Gitignored build outputs inside an example source dir must not be
+    copied into the e2e workspace.
+
+    Building an example in-tree (the shipped examples double as live demos)
+    leaves gitignored outputs (``bin/``, ``cas-*/``) inside the example
+    source dir. Copying them into a pristine workspace poisons the build:
+    a stale flat-layout ``bin/snake`` *file* blocks creation of the
+    source-mirrored ``bin/snake/`` publish *directory*, failing every
+    backend cell with FileExistsError.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / ".gitignore").write_text("bin/\n")
+    # The example lives below the repo root, like the shipped examples do.
+    src = repo / "example_src"
+    src.mkdir()
+    (src / "main.cpp").write_text("int main() { return 0; }\n")
+    (src / "sub").mkdir()
+    (src / "sub" / "helper.cpp").write_text("int helper() { return 1; }\n")
+    # Stale in-tree build outputs, top-level and nested.
+    (src / "bin").mkdir()
+    (src / "bin" / "snake").write_text("stale flat-layout executable\n")
+    (src / "sub" / "bin").mkdir()
+    (src / "sub" / "bin" / "stale.o").write_text("stale object\n")
+
+    dst = uth.copy_example_workspace(src, tmp_path / "ws")
+
+    assert (dst / "main.cpp").is_file()
+    assert (dst / "sub" / "helper.cpp").is_file()
+    assert (dst / ".git" / "HEAD").is_file()
+    assert not (dst / "bin").exists(), "gitignored top-level bin/ was copied into the workspace"
+    assert not (dst / "sub" / "bin").exists(), "gitignored nested bin/ was copied into the workspace"
+
+
+def test_copy_example_workspace_copies_everything_outside_a_repo(tmp_path):
+    """Without a surrounding git repo there is no ignore information —
+    the copy must fall back to copying everything rather than erroring."""
+    src = tmp_path / "plain_src"
+    (src / "bin").mkdir(parents=True)
+    (src / "main.cpp").write_text("int main() { return 0; }\n")
+    (src / "bin" / "artefact").write_text("kept: no repo, no ignore rules\n")
+
+    dst = uth.copy_example_workspace(src, tmp_path / "ws")
+
+    assert (dst / "main.cpp").is_file()
+    assert (dst / "bin" / "artefact").is_file()
 
 
 @uth.requires_functional_compiler

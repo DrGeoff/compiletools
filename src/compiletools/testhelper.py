@@ -971,19 +971,53 @@ def write_sources(mapping, target_dir=None):
     return paths
 
 
+def _gitignored_under(src: Path) -> set[Path]:
+    """Paths under *src* (relative to it) that git ignores.
+
+    Building an example in-tree leaves gitignored outputs (``bin/``,
+    ``cas-*/``) inside the example source dir; copying those into an e2e
+    workspace poisons the build — e.g. a stale flat-layout ``bin/snake``
+    *file* blocks creation of the source-mirrored ``bin/snake/`` publish
+    *directory*, failing every backend cell with FileExistsError.
+
+    Returns an empty set when *src* is not inside a git work tree (no
+    ignore information exists there, so nothing is filtered).
+    """
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "-o", "-i", "--directory", "--exclude-standard", "-z"],
+            cwd=src,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return set()
+    return {Path(p.rstrip("/")) for p in out.split("\0") if p}
+
+
 def copy_example_workspace(src: Path, dst: Path) -> Path:
     """Copy *src* into a fresh *dst* workspace and plant a ``.git`` marker
     so :func:`compiletools.git_utils.find_git_root` lands on the
     workspace (not on the surrounding pytest tmpdir or the test-runner's
-    cwd). Returns *dst*.
+    cwd). Gitignored entries under *src* (stale in-tree build outputs)
+    are not copied — see :func:`_gitignored_under`. Returns *dst*.
     """
     src = Path(src)
+    ignored = _gitignored_under(src)
+
+    def _skip_ignored(dirpath, names):
+        rel = Path(dirpath).relative_to(src)
+        return {n for n in names if rel / n in ignored}
+
     dst.mkdir(parents=True, exist_ok=True)
     for entry in src.iterdir():
+        if Path(entry.name) in ignored:
+            continue
         if entry.is_file():
             shutil.copy2(entry, dst)
         else:
-            shutil.copytree(entry, dst / entry.name)
+            shutil.copytree(entry, dst / entry.name, ignore=_skip_ignored)
     git_dir = dst / ".git"
     git_dir.mkdir()
     (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
