@@ -9,7 +9,7 @@ Display the git repository root directory
 :Author: drgeoffathome@gmail.com
 :Date:   2017-09-28
 :Copyright: Copyright (C) 2011-2016 Zomojo Pty Ltd
-:Version: 10.3.0
+:Version: 11.0.0
 :Manual section: 1
 :Manual group: developers
 
