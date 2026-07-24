@@ -135,21 +135,17 @@ def test_returns_reason_when_interpreter_exits_nonzero(monkeypatch, tmp_path):
 
 
 def test_returns_reason_when_ct_cake_is_a_directory(monkeypatch, tmp_path):
-    """If something on PATH named ct-cake exists but is a directory,
-    the open() in venv_mismatch_reason raises OSError -- it must be
-    caught and surfaced as a reason rather than crashing the probe."""
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    (bin_dir / "ct-cake").mkdir()  # ct-cake is a directory, not a file
-    # shutil.which only returns executable files, so a bare directory
-    # named ct-cake won't be picked up. Add executable bits + a
-    # subdirectory entry shaped like a file lookup would resolve
-    # against. Skip the test if shutil.which can't see it -- the
-    # OSError-on-open path is genuinely hard to trigger from PATH on
-    # POSIX, and skipping is preferable to a fragile test.
-    monkeypatch.setenv("PATH", str(bin_dir))
-    if shutil.which("ct-cake") is None:
-        pytest.skip("shutil.which doesn't resolve directories on this platform")
+    """If the resolved ct-cake path is a directory, the open() in
+    venv_mismatch_reason raises IsADirectoryError -- it must be caught
+    by the OSError handler and surfaced as a reason rather than
+    crashing the probe. shutil.which itself can never return a
+    directory (CPython's _access_check rejects them on every
+    platform), so patch the lookup to model a resolver that does --
+    this pins the errno-distinct EISDIR flavour of the OSError branch
+    alongside the EACCES flavour in the unreadable-file test below."""
+    fake_cake = tmp_path / "ct-cake"
+    fake_cake.mkdir()
+    monkeypatch.setattr(shutil, "which", lambda _cmd: str(fake_cake))
     reason = check_venv.venv_mismatch_reason("/anywhere")
     assert reason is not None
     assert "can't read ct-cake script" in reason
