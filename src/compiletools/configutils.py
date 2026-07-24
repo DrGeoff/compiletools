@@ -226,8 +226,7 @@ def extract_item_from_ct_conf(
 def removedotconf(config):
     if config[-5:] == ".conf":
         return config[:-5]
-    else:
-        return config
+    return config
 
 
 def extractconfig(argv):
@@ -245,8 +244,7 @@ def impliedvariant(argv):
 
     if config:
         return removedotconf(os.path.basename(config))
-    else:
-        return None
+    return None
 
 
 def split_variant(variant_str):

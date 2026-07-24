@@ -295,9 +295,9 @@ class BazelBackend(BuildBackend):
                 rel_srcs,
                 all_copts,
                 linkopts,
-                includes=includes if includes else None,
+                includes=includes or None,
                 linkshared=linkshared,
-                additional_compiler_inputs=extra_inputs if extra_inputs else None,
+                additional_compiler_inputs=extra_inputs or None,
             )
 
     @staticmethod

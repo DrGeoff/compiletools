@@ -1195,7 +1195,7 @@ class CppMagicFlags(MagicFlagsBase):
                 if paren_idx > 0 and paren_idx == len(macro_name_str) - 1:
                     # Name ends with '(' - this is function-like
                     continue
-                elif "(" in macro_name_str:
+                if "(" in macro_name_str:
                     # '(' is in the middle - function-like macro
                     continue
 

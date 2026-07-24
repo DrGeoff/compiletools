@@ -119,6 +119,11 @@ omit = ["*/test_*.py", "*/testhelper.py", "*/conftest.py"]
 
 [tool.coverage.report]
 show_missing = true
+# Measured line coverage was 86% (2026-07, full `pytest -n auto --cov` run).
+# fail_under is set a few points below that as a regression floor -- it guards
+# against silent coverage rot without being brittle to small legitimate churn.
+# It is NOT a target to chase upward.
+fail_under = 82
 
 [build-system]
 requires = ["uv_build>=0.8.4,<0.9.0"]
@@ -168,6 +173,14 @@ select = [
     "B",    # flake8-bugbear (common bug patterns)
     "SIM",  # flake8-simplify
     "RUF",  # ruff-specific rules
+    "PT",   # flake8-pytest-style (test-suite quality)
+    "S",    # flake8-bandit (security; this codebase shells out heavily)
+    "RET",  # flake8-return (superfluous else after return/continue/break)
+    "FURB", # refurb (modernization; came in fully autofixable + clean)
+    # PERF (flake8-perf) deliberately NOT enabled: its ~40 findings are
+    # PERF203 (try/except-in-loop, not auto-fixable and usually intentional)
+    # and PERF401/403 (manual comprehension rewrites, no safe autofix) -- all
+    # would require hand rewrites of production loops. Deferred as follow-up.
 ]
 ignore = [
     "UP007",  # Union[X, Y] -> X | Y -- deferred to avoid a churn commit
@@ -181,6 +194,31 @@ ignore = [
     "SIM113", # enumerate-for-loop -- manual counter can be clearer in complex loops
     "SIM117", # multiple-with-statements -- explicit nesting is clearer
     "RUF005", # collection-literal-concatenation -- stylistic, existing code is clear
+    "RET504", # unnecessary-assign -- naming a value before `return` is often a
+              # deliberate readability/debuggability choice; not auto-fixable
+    # --- flake8-bandit (S): justified suppressions for a build tool ---
+    "S101",   # assert -- used deliberately as internal invariant checks throughout
+              # production and as the core assertion mechanism in tests; converting
+              # to `raise` would be a semantic change (asserts are `-O`-strippable)
+    "S603",   # subprocess-without-shell-equals-true -- this build tool legitimately
+              # invokes compilers/git/make with fully-controlled argv lists (no shell)
+    "S607",   # start-process-with-partial-path -- invoking `git`/`make`/compilers by
+              # name (PATH-resolved) is intentional and required to honour the user's
+              # PATH / active venv rather than hardcoding absolute tool paths
+    "S324",   # insecure-hash -- md5/sha1 are used for CAS cache keys, NOT security;
+              # collision-resistance-for-crypto is explicitly not required (see the
+              # "single 64-bit hash is safe" cache-key rationale in src/.../CLAUDE.md)
+    "S314",   # xml ElementTree -- only parses JUnit XML this tool itself generated
+              # (bazel test output), never untrusted external documents
+    "S105",   # hardcoded-password-string -- false positives: "token" here means a
+    "S106",   # hardcoded-password-func-arg -- lexical/CLI token, not a secret
+    "S110",   # try-except-pass -- deliberate best-effort suppression in cleanup/scan
+    "S112",   # try-except-continue -- paths; adding logging would change behaviour/noise
+    # --- flake8-pytest-style (PT) that also fires in production code ---
+    "PT018",  # composite-assertion -- splitting `assert a and b` into parts is a
+              # readability/structure change; also fires on production invariant asserts
+    "PT011",  # pytest-raises-too-broad -- adding a match= narrowing is a per-call-site
+              # semantic decision (mirrors the B905 zip(strict=) rationale above)
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -189,6 +227,17 @@ ignore = [
     "B011",   # assert False -- used deliberately in tests
     "F823",   # false positive: module-level `import compiletools.X` makes `compiletools` available
     "SIM103", # returning condition directly can obscure test intent
+    # --- flake8-bandit (S) in tests ---
+    "S108",   # hardcoded-temp-file -- "/tmp/obj/foo.o" etc are fake string paths in
+              # unit tests (arguments, not real file creation)
+    "S103",   # bad-file-permissions -- test fixtures chmod scratch dirs/exes freely
+    # --- flake8-pytest-style (PT): patterns we deliberately keep in tests ---
+    "PT006",  # parametrize-names-wrong-type -- string form "a,b" is used consistently
+    "PT012",  # pytest-raises-with-multiple-statements -- multi-stmt raises blocks are
+              # sometimes the clearest way to set up the failing call
+    "PT015",  # pytest-assert-always-false -- `assert False` sentinels (pairs with B011)
+    "PT017",  # pytest-assert-in-except -- asserting on a caught exception is intentional
+    "PT019",  # fixture-param-without-value -- reworking fixture params is a logic change
 ]
 # `×` (U+00D7) is the intentional rendering of the parallelism factor in build-timer
 # output (e.g. "15.1× cores busy") and the TUI category labels.  The symbol is paired
@@ -208,3 +257,29 @@ venvPath = "."
 venv = ".venv"
 include = ["src/compiletools"]
 pythonVersion = "3.10"
+# typeCheckingMode stays at the default "standard": a trial run at "strict"
+# produced 34k+ errors, overwhelmingly reportUnknown*/reportMissing*Type from
+# this (intentionally) largely-untyped codebase -- not worth a mass-annotation
+# churn. Instead we opt in to the curated set of high-value report* rules below,
+# every one of which comes in CLEAN (zero violations) on top of standard, so
+# they lock in real-bug guardrails without any churn.
+#
+# Deliberately NOT enabled:
+#  - reportUnnecessaryTypeIgnoreComment: would force removal of a *deliberate*,
+#    documented version-conditional `# pyright: ignore[reportDeprecated]` in
+#    testhelper.py (kept for newer interpreters where shutil onerror is
+#    deprecated); the rule can't tell an intentional forward-compat ignore from
+#    a stale one.
+#  - reportCallInDefaultInitializer: its only two hits are idiomatic, safe
+#    `= frozenset()` immutable defaults; the genuinely dangerous mutable-default
+#    (`=[]`/`={}`) footgun is already caught by ruff B006.
+reportAssertAlwaysTrue = "error"           # `assert (x, "msg")` tuple-always-true bug
+reportSelfClsParameterName = "error"       # missing/misnamed self/cls
+reportUnsupportedDunderAll = "error"       # __all__ naming a missing symbol
+reportWildcardImportFromLibrary = "error"  # `from lib import *`
+reportInvalidStringEscapeSequence = "error"
+reportUnnecessaryCast = "error"            # redundant cast()
+reportUnnecessaryContains = "error"        # `in` against a container that can't contain it
+reportTypeCommentUsage = "error"           # prefer annotations over `# type:` comments
+reportInvalidStubStatement = "error"
+reportPropertyTypeMismatch = "error"

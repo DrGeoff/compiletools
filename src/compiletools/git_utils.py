@@ -210,8 +210,7 @@ class Project:
         """Return the project part of the given filename"""
         if self._args.git_root:
             return strip_git_root(filename)
-        else:
-            return compiletools.utils.remove_mount(filename)
+        return compiletools.utils.remove_mount(filename)
 
 
 class NameAdjuster:
@@ -240,8 +239,7 @@ class NameAdjuster:
     def adjust(self, name):
         if self._args.strip_git_root:
             return strip_git_root(name)
-        else:
-            return name
+        return name
 
 
 def main(argv=None):

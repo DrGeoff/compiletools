@@ -90,11 +90,10 @@ class TestHunterModule:
         if precall:
             result = hntr.required_source_files(realpath)
             return result
-        else:
-            for filename in bulkpaths:
-                hntr.required_source_files(filename)
-            result = hntr.required_source_files(realpath)
-            return result
+        for filename in bulkpaths:
+            hntr.required_source_files(filename)
+        result = hntr.required_source_files(realpath)
+        return result
 
     def test_hunter_is_not_order_dependent(self):
         with uth.TempDirContextNoChange():

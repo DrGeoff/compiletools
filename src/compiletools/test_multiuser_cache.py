@@ -106,10 +106,10 @@ def compile_with_umask(source_dir, config_name, umask_value):
         uth.reset()
         result = compiletools.cake.main(argv)
         error_output = stdout_capture.getvalue() + stderr_capture.getvalue()
-        return result if result else 0, error_output if error_output else None
+        return result or 0, error_output or None
     except SystemExit as e:
         error_output = stdout_capture.getvalue() + stderr_capture.getvalue()
-        return e.code if e.code else 0, error_output or f"SystemExit: {e.code}"
+        return e.code or 0, error_output or f"SystemExit: {e.code}"
     except Exception as e:
         return 1, str(e)
     finally:

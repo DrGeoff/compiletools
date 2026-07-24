@@ -153,7 +153,7 @@ class FindTargets:
             if config_file:
                 print(f"  Config file: {config_file}", file=sys.stderr)
             print(f"  exemarkers value: {self._args.exemarkers}", file=sys.stderr)
-            print("", file=sys.stderr)
+            print(file=sys.stderr)
             print("This is unexpected and hints at other issues. Potential solutions:", file=sys.stderr)
             print(f"  1. Configure exemarkers in your {variant}.conf file", file=sys.stderr)
             print("  2. Specify exemarkers on command line: --exemarkers='main('", file=sys.stderr)

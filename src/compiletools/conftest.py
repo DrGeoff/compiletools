@@ -328,7 +328,7 @@ def _hermetic_git_env(_hermetic_git_global_config):
                 os.environ[key] = previous
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture
 def pkgconfig_env(monkeypatch):
     """Set PKG_CONFIG_PATH to shared test pkg-config directory.
 
@@ -355,4 +355,4 @@ def pkgconfig_env(monkeypatch):
     shared_pkgconfig = Path(example_path("pkgs"))
     monkeypatch.setenv("PKG_CONFIG_PATH", str(shared_pkgconfig))
 
-    yield str(shared_pkgconfig)
+    return str(shared_pkgconfig)

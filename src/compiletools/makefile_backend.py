@@ -434,13 +434,11 @@ def main(argv=None):
         if verbose < 2:
             print(f"Error processing {ioe.filename}: {ioe.strerror}")
             return 1
-        else:
-            raise
+        raise
     except Exception as err:
         verbose = getattr(args, "verbose", 0) if args is not None else 0
         if verbose < 2:
             print(err)
             return 1
-        else:
-            raise
+        raise
     return 0

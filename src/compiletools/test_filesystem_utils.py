@@ -27,7 +27,7 @@ from compiletools.filesystem_utils import (
 def _clear_filesystem_type_cache():
     """Reset get_filesystem_type's lru_cache so each test sees a fresh probe."""
     get_filesystem_type.cache_clear()
-    yield
+    return
 
 
 def _patch_proc_mounts_unavailable(monkeypatch, exc):

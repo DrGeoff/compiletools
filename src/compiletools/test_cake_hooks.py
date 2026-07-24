@@ -273,8 +273,7 @@ def _hook_conf_repo(ct_conf_lines, variant_conf_lines, variant="hookvariant"):
             fh.write(f"variant-canonical-order = {variant}\n")
             fh.write("exemarkers = [main]\n")
             fh.write("testmarkers = unit_test.hpp\n")
-            for line in ct_conf_lines:
-                fh.write(line + "\n")
+            fh.writelines(line + "\n" for line in ct_conf_lines)
         with open(os.path.join(conf_d, f"{variant}.conf"), "w") as fh:
             fh.write("\n".join(variant_conf_lines) + "\n")
         yield repo_root

@@ -1338,7 +1338,7 @@ class BuildBackend(abc.ABC):
                 if obj_rule.order_only_deps:
                     compile_bucket_dirs.add(obj_rule.order_only_deps[0])
                 continue
-            elif self._module_pcm_dir is not None and len(module_exports) > 1:
+            if self._module_pcm_dir is not None and len(module_exports) > 1:
                 # A single TU exporting multiple module names is rare and
                 # the build graph above only records the first .pcm path
                 # anyway. Treat this as an error rather than silently
@@ -1790,7 +1790,7 @@ class BuildBackend(abc.ABC):
                         print(f"Regenerating {path}.")
                         print(f"mtime {dep_mtime} for {dep} is newer than mtime for {path}")
                     return False
-                elif self.args.verbose > 9:
+                if self.args.verbose > 9:
                     print(
                         f"mtime {dep_mtime} for {dep} is older than mtime for {path}. This wont trigger regeneration."
                     )

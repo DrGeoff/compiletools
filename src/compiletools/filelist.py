@@ -121,7 +121,7 @@ class Filelist:
         if self.args.extrafilelist:
             for fname in self.args.extrafilelist:
                 with open(fname) as ff:
-                    extras.update([line.strip() for line in ff.readlines()])
+                    extras.update([line.strip() for line in ff])
 
         # Add all the files in the same directory as test files
         if self.args.tests:

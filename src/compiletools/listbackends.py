@@ -41,10 +41,10 @@ def list_backends(args=None):
             available = "yes" if (not show_all or is_backend_available(name)) else "no"
             lines.append(f"{name:<10} {cls.build_filename():<18} {tool:<18} {available}")
         return "\n".join(lines) + "\n"
-    elif style == "flat":
+    if style == "flat":
         return " ".join(names) + (" " if names else "")
-    else:  # filelist
-        return "\n".join(names) + ("\n" if names else "")
+    # filelist
+    return "\n".join(names) + ("\n" if names else "")
 
 
 def main(argv=None):

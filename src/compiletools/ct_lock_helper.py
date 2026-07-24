@@ -82,14 +82,13 @@ def create_lock(strategy, target_file, args):
 
     if strategy == "lockdir":
         return LockdirLock(target_file, args)
-    elif strategy == "cifs":
+    if strategy == "cifs":
         return CIFSLock(target_file, args)
-    elif strategy == "flock":
+    if strategy == "flock":
         return FlockLock(target_file, args)
-    elif strategy == "fcntl":
+    if strategy == "fcntl":
         return FcntlLock(target_file, args)
-    else:
-        raise ValueError(f"Unknown strategy: {strategy}")
+    raise ValueError(f"Unknown strategy: {strategy}")
 
 
 def _record_rule_outcome(target: str, cas_kind: str, result_was_skip: bool) -> None:

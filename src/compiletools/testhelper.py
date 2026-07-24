@@ -264,9 +264,8 @@ def with_group_writable_umask(cls_or_func):
                 if callable(attr):
                     setattr(cls_or_func, attr_name, with_umask(attr))
         return cls_or_func
-    else:
-        # Decorating a function
-        return with_umask(cls_or_func)
+    # Decorating a function
+    return with_umask(cls_or_func)
 
 
 def requires_pkg_config(*packages):
@@ -420,8 +419,7 @@ def create_temp_config(tempdir=None, filename=None, extralines=None):
         ff.write(f"CC={CC}\n")
         ff.write(f"CXX={CXX}\n")
         ff.write('CPPFLAGS="-std=c++20"\n')
-        for line in extralines:
-            ff.write(f"{line}\n")
+        ff.writelines(f"{line}\n" for line in extralines)
 
     return filename
 
@@ -442,8 +440,7 @@ def create_temp_ct_conf(tempdir, defaultvariant="gcc.cxx26.debug", extralines=No
         ff.write(f"variant = {defaultvariant}\n")
         ff.write("exemarkers = [main]\n")
         ff.write("testmarkers = unit_test.hpp\n")
-        for line in extralines:
-            ff.write(f"{line}\n")
+        ff.writelines(f"{line}\n" for line in extralines)
 
 
 def _rmtree_retry(func, path, exc_or_info):

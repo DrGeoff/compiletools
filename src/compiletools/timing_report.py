@@ -75,12 +75,11 @@ def main(argv=None) -> int:
 
     if args.chrome_trace:
         return _export_chrome_trace(args)
-    elif args.compare:
+    if args.compare:
         return _run_comparison(args)
-    elif args.summary:
+    if args.summary:
         return _print_summary(args)
-    else:
-        return _run_tui(args)
+    return _run_tui(args)
 
 
 # -------------------------------------------------------- file loading

@@ -1489,7 +1489,6 @@ def create_parser(description, argv=None, include_config=True, include_write_con
         if include_write_config:
             kwargs["args_for_writing_out_config_file"] = ["-w", "--write-out-config-file"]
         return _ComposingArgumentParser(**kwargs)
-    else:
-        cap = configargparse.ArgumentParser(description=description, conflict_handler="resolve")
-        add_base_arguments(cap, argv=argv)
-        return cap
+    cap = configargparse.ArgumentParser(description=description, conflict_handler="resolve")
+    add_base_arguments(cap, argv=argv)
+    return cap

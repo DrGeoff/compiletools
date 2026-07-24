@@ -26,7 +26,7 @@ from compiletools.build_context import BuildContext
 def _reset_parser_state():
     """Wipe global configargparse parser cache before every test."""
     uth.reset()
-    yield
+    return
 
 
 @contextlib.contextmanager

@@ -212,8 +212,7 @@ def derive_name(url: str) -> str:
     """
     sep = max(url.rfind("/"), url.rfind(":"))
     basename = url[sep + 1 :]
-    if basename.endswith(".git"):
-        basename = basename[: -len(".git")]
+    basename = basename.removesuffix(".git")
     if not basename:
         raise ValueError(f"Cannot derive a name from URL '{url}': the basename is empty")
     # Reject names that would escape externals_dir or resolve to it: '.'/'..',
@@ -675,8 +674,7 @@ def _normalize_remote_url(url: str) -> str:
     else:
         u = u[:first_slash].lower() + u[first_slash:]
     u = u.rstrip("/")
-    if u.endswith(".git"):
-        u = u[: -len(".git")]
+    u = u.removesuffix(".git")
     return u
 
 
