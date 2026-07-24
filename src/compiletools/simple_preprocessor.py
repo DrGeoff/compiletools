@@ -1,6 +1,7 @@
 """Simple C preprocessor for handling conditional compilation directives."""
 
 import re
+import sys
 from collections import Counter
 from typing import TYPE_CHECKING, Any
 
@@ -10,6 +11,22 @@ from compiletools.stringzilla_utils import is_alnum_or_underscore_sz, is_alpha_o
 
 if TYPE_CHECKING:
     from compiletools.file_analyzer import FileAnalysisResult, PreprocessorDirective
+
+
+class PreprocessorExpressionError(Exception):
+    """Raised for a genuine internal failure while evaluating a ``#if``/``#elif``
+    controlling expression -- as opposed to a merely malformed/garbage user
+    expression, which is handled gracefully as false.
+
+    The distinction is load-bearing: the blanket ``except Exception: return 0``
+    that used to guard expression evaluation could not tell a real evaluation
+    failure (e.g. a ``RecursionError`` from a deeply-nested-but-VALID
+    expression) apart from "the expression is false", so a true ``#if`` branch
+    was silently dropped from compilation -- a silent-miscompile class bug.
+    This exception is deliberately NOT swallowed by the false-degrading paths so
+    such failures surface loudly instead of quietly excluding source.
+    """
+
 
 # Precompiled regex patterns for _safe_eval
 _RE_BACKSLASH_WHITESPACE = re.compile(r"\\\s*")
@@ -82,15 +99,59 @@ _CExprToken = int | str
 class _CExpressionParser:
     """Evaluate the integer subset used by C preprocessor expressions."""
 
+    # Maximum recursive-descent depth. The parser is a precedence-climbing
+    # recursive descent, so nested parentheses (and, to a lesser extent, nested
+    # ternaries and stacked unary operators) drive it deeper. Each level of
+    # parenthesis re-enters through both ``_parse_conditional`` and
+    # ``_parse_unary``, so this bound of 300 permits ~150 levels of nesting --
+    # orders of magnitude beyond any real-world ``#if`` (which rarely nests past
+    # a handful) while capping actual stack usage well within a thread's C
+    # stack. Exceeding it raises ``PreprocessorExpressionError`` loudly rather
+    # than letting a ``RecursionError`` be silently degraded to a false ``#if``.
+    _MAX_DEPTH = 300
+
+    # Python frames consumed per unit of ``self._depth`` (the full precedence
+    # chain is ~13 frames per parenthesis level, split across the two counted
+    # re-entry points, i.e. ~7 frames per depth unit). 12 is a safe upper bound
+    # used only to size the temporary recursion-limit headroom so the explicit
+    # ``_MAX_DEPTH`` guard trips deterministically BEFORE CPython's own
+    # ``RecursionError`` -- never a "blind" ``setrecursionlimit`` widening.
+    _FRAMES_PER_DEPTH = 12
+    _RECURSION_MARGIN = 128
+
     def __init__(self, tokens: list[_CExprToken]) -> None:
         self.tokens = tokens
         self.pos = 0
+        self._depth = 0
 
     def parse(self) -> int:
-        value = self._parse_conditional(evaluate=True)
-        if self._peek() != "EOF":
-            raise SyntaxError("trailing tokens")
-        return value
+        # Provision enough recursion headroom that the explicit ``_MAX_DEPTH``
+        # guard is the thing that fires for a pathological expression, not
+        # CPython's interpreter limit (whose swallowed RecursionError was the
+        # original silent-false bug). The raise is bounded by ``_MAX_DEPTH`` and
+        # restored unconditionally, so it cannot leak to unrelated code.
+        old_limit = sys.getrecursionlimit()
+        needed = old_limit + self._MAX_DEPTH * self._FRAMES_PER_DEPTH + self._RECURSION_MARGIN
+        sys.setrecursionlimit(needed)
+        try:
+            value = self._parse_conditional(evaluate=True)
+            if self._peek() != "EOF":
+                raise SyntaxError("trailing tokens")
+            return value
+        except RecursionError as e:
+            # Defence in depth: should be unreachable because the ``_MAX_DEPTH``
+            # guard trips first, but if some other recursion path overflows,
+            # surface it loudly rather than let the caller degrade it to false.
+            raise PreprocessorExpressionError(f"expression too deeply nested to evaluate: {e}") from e
+        finally:
+            sys.setrecursionlimit(old_limit)
+
+    def _enter(self) -> None:
+        self._depth += 1
+        if self._depth > self._MAX_DEPTH:
+            raise PreprocessorExpressionError(
+                f"expression nesting exceeds the maximum supported depth of {self._MAX_DEPTH}"
+            )
 
     # Short-circuit mechanism (A6/A7): every recursive method takes an
     # ``evaluate`` flag. When False the subtree is still fully *parsed* (so the
@@ -116,15 +177,22 @@ class _CExpressionParser:
         # conditional )?  — lower precedence than ``||``, right-associative.
         # Only the taken branch is evaluated; the untaken branch is parsed with
         # ``evaluate=False`` so its arithmetic never raises.
-        condition = self._parse_logical_or(evaluate)
-        if not self._match("?"):
-            return condition
-        take_true = evaluate and condition != 0
-        true_value = self._parse_conditional(evaluate=take_true)
-        if not self._match(":"):
-            raise SyntaxError("expected ':' in conditional expression")
-        false_value = self._parse_conditional(evaluate=evaluate and condition == 0)
-        return true_value if condition != 0 else false_value
+        # Depth is tracked here (the re-entry point for both parentheses, via
+        # ``_parse_primary``, and ternaries) and decremented on exit so sibling
+        # sub-expressions do not accumulate depth against the guard.
+        self._enter()
+        try:
+            condition = self._parse_logical_or(evaluate)
+            if not self._match("?"):
+                return condition
+            take_true = evaluate and condition != 0
+            true_value = self._parse_conditional(evaluate=take_true)
+            if not self._match(":"):
+                raise SyntaxError("expected ':' in conditional expression")
+            false_value = self._parse_conditional(evaluate=evaluate and condition == 0)
+            return true_value if condition != 0 else false_value
+        finally:
+            self._depth -= 1
 
     def _parse_logical_or(self, evaluate: bool) -> int:
         value = self._parse_logical_and(evaluate)
@@ -227,15 +295,22 @@ class _CExpressionParser:
         return value
 
     def _parse_unary(self, evaluate: bool) -> int:
-        if self._match("+"):
-            return +self._parse_unary(evaluate)
-        if self._match("-"):
-            return -self._parse_unary(evaluate)
-        if self._match("!"):
-            return 0 if self._parse_unary(evaluate) else 1
-        if self._match("~"):
-            return ~self._parse_unary(evaluate)
-        return self._parse_primary(evaluate)
+        # Track depth here too: stacked prefix operators (``!!!...``) recurse
+        # through ``_parse_unary`` without passing ``_parse_conditional``, so
+        # this is the other unbounded-recursion vector.
+        self._enter()
+        try:
+            if self._match("+"):
+                return +self._parse_unary(evaluate)
+            if self._match("-"):
+                return -self._parse_unary(evaluate)
+            if self._match("!"):
+                return 0 if self._parse_unary(evaluate) else 1
+            if self._match("~"):
+                return ~self._parse_unary(evaluate)
+            return self._parse_primary(evaluate)
+        finally:
+            self._depth -= 1
 
     def _parse_primary(self, evaluate: bool) -> int:
         token = self._peek()
@@ -959,8 +1034,13 @@ class SimplePreprocessor:
                 condition_stack.append((is_active, False, is_active))
                 if self.verbose >= 9:
                     print(f"SimplePreprocessor: #if {directive.condition} -> {result} ({is_active})")
+            except PreprocessorExpressionError:
+                # A genuine internal evaluation failure (e.g. an over-deep but
+                # VALID expression) must NOT be degraded to a false branch --
+                # that would silently drop true source. Surface it loudly.
+                raise
             except Exception as e:
-                # If evaluation fails, assume false
+                # A malformed/garbage user expression: assume false.
                 if self.verbose >= 8:
                     print(f"SimplePreprocessor: #if evaluation failed for '{directive.condition}': {e}")
                 condition_stack.append((False, False, False))
@@ -993,6 +1073,10 @@ class SimplePreprocessor:
                 condition_stack.append((new_active, False, new_any_condition_met))
                 if self.verbose >= 9:
                     print(f"SimplePreprocessor: #elif {directive.condition} -> {result} ({new_active})")
+            except PreprocessorExpressionError:
+                # A genuine internal evaluation failure must NOT be degraded to
+                # a false branch (see the matching note in the #if handler).
+                raise
             except Exception as e:
                 if self.verbose >= 8:
                     print(f"SimplePreprocessor: #elif evaluation failed for '{directive.condition}': {e}")
@@ -1029,11 +1113,17 @@ class SimplePreprocessor:
             # ValueError from _tokenize_c_expression signals an unsafe
             # expression (unrecognized identifier or non-arithmetic character).
             # The legacy contract surfaces it to the #if/#elif caller so the
-            # verbose-8 log identifies which directive failed; other failures
-            # (SyntaxError, ZeroDivisionError) degrade to 0 silently.
+            # verbose-8 log identifies which directive failed; genuinely
+            # malformed expressions (SyntaxError, ZeroDivisionError) degrade to
+            # 0 silently below.
             raise
-        except Exception as e:
-            # If evaluation fails, return 0
+        except (SyntaxError, ZeroDivisionError) as e:
+            # A genuinely malformed / garbage user expression: degrade to 0
+            # (documented behaviour). This is DELIBERATELY narrow -- it must not
+            # catch PreprocessorExpressionError (a real internal failure such as
+            # an over-deep-but-valid expression) or any other unexpected
+            # exception (a programming bug), because degrading those to 0 would
+            # silently drop a possibly-true #if branch from compilation.
             if self.verbose >= 8:
                 print(f"SimplePreprocessor: Expression evaluation failed for '{expr}': {e}")
             return 0

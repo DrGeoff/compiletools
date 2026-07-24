@@ -1331,6 +1331,49 @@ class TestSimplePreprocessorEdgeCases:
         result = self.processor._safe_eval("1 2")
         assert result == 0
 
+    def test_deeply_nested_valid_expression_evaluates_correctly(self):
+        """A deeply-but-validly parenthesised #if expression must evaluate to
+        its true value, not be silently dropped.
+
+        Regression: the recursive-descent parser overflowed Python's recursion
+        limit on ~75+ nested parentheses, raising RecursionError which the
+        blanket ``except Exception: return 0`` in _safe_eval swallowed into a
+        false result -- a silent-miscompile class bug (a TRUE #if branch gets
+        dropped from compilation). 100 levels comfortably exceeds every
+        real-world #if yet must still evaluate correctly.
+        """
+        for depth in (50, 75, 100):
+            expr = "(" * depth + "1" + ")" * depth
+            assert self.processor._safe_eval(expr) == 1, f"depth={depth} regressed"
+            # And in an operator context so the value actually matters.
+            expr2 = "(" * depth + "2 + 3" + ")" * depth
+            assert self.processor._safe_eval(expr2) == 5, f"depth={depth} regressed"
+
+    def test_deeply_nested_if_branch_is_taken(self):
+        """End-to-end: a #if guarding a deeply-nested-but-true condition keeps
+        its body active (the branch is not silently dropped)."""
+        depth = 100
+        condition = "(" * depth + "1" + ")" * depth
+        text = f"#if {condition}\nincluded\n#endif"
+        file_result = _make_file_analysis_result(text)
+        active_lines = self.processor.process_structured(file_result, self.ctx)
+        assert 1 in active_lines  # 'included' must be active (condition is true)
+
+    def test_pathological_recursion_is_loud_not_silently_false(self):
+        """An expression nested far beyond the documented depth bound must raise
+        a clean, catchable error rather than be swallowed into a silent 0.
+
+        The whole hazard of the original bug was that a genuine internal
+        failure (RecursionError) was indistinguishable from 'expression is
+        false'. Exceeding the guard must therefore be a loud, testable
+        condition -- never a quiet 0."""
+        from compiletools.simple_preprocessor import PreprocessorExpressionError
+
+        depth = 5000  # orders of magnitude past any real #if and past the guard
+        expr = "(" * depth + "1" + ")" * depth
+        with pytest.raises(PreprocessorExpressionError):
+            self.processor._safe_eval(expr)
+
     def test_verbose_debug_output(self, capsys):
         """Verbose mode prints debug info for directive handling."""
         verbose_proc = SimplePreprocessor({sz.Str("X"): sz.Str("1")}, verbose=9)
