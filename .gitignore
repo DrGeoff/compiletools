@@ -35,6 +35,7 @@ deps/
 !.github
 !.pre-commit-config.yaml
 !.secrets.baseline
+!.importlinter
 
 # Ignore auto-generated files
 vgcore.*

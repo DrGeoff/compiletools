@@ -30,6 +30,21 @@ repos:
         # ``uv pip install -e .[dev]`` resolves.
         pass_filenames: false
 
+  - repo: local
+    hooks:
+      - id: import-linter
+        name: import-linter (architecture contracts)
+        # Run the .importlinter contracts on every commit. import-linter
+        # builds the whole import graph from the installed package, so it
+        # needs the worktree's mandatory ``.venv/`` (see CLAUDE.md
+        # "Worktree-Based Development") — ``uv run`` targets it. Fast
+        # (~1s) and file-independent, so it runs once per commit, not
+        # per-file.
+        entry: uv run lint-imports
+        language: system
+        pass_filenames: false
+        always_run: true
+
   - repo: https://github.com/Yelp/detect-secrets
     rev: v1.5.0
     hooks:
