@@ -117,7 +117,7 @@ _WRAPPEDOS_EXEMPT: frozenset[tuple[str, str]] = frozenset(
             "expected = os.path.dirname(os.path.dirname(os.path.realpath(compiletools.__file__)))",
         ),  # abs: realpath(compiletools.__file__) one-off venv check
         (
-            "git_sha_report.py",
+            "git_sha.py",
             "if os.path.realpath(joined) != joined:",
         ),  # #3-adjacent: realpath MUST stay uncached -- the check (realpath(joined) != joined) IS the symlink-divergence detector; cold one-off sample
         (

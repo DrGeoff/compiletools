@@ -1,11 +1,12 @@
-"""Tests for git_sha_report module."""
+"""Tests for the git_sha hashing library and its ct-git-sha-report CLI."""
 
 import subprocess
 from pathlib import Path
 
 import pytest
 
-import compiletools.git_sha_report as gsr
+import compiletools.git_sha as gsr
+import compiletools.git_sha_report as gsr_cli
 from compiletools.build_context import BuildContext
 
 
@@ -26,7 +27,7 @@ def tmp_git_repo(tmp_path, monkeypatch):
     git("add", "hello.txt")
     git("commit", "-m", "init")
 
-    monkeypatch.setattr("compiletools.git_sha_report.find_git_root", lambda *a, **kw: str(repo))
+    monkeypatch.setattr("compiletools.git_sha.find_git_root", lambda *a, **kw: str(repo))
     monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda *a, **kw: str(repo))
     monkeypatch.chdir(repo)
     return repo
@@ -93,7 +94,7 @@ def test_main_tracked_only(tmp_git_repo, capsys):
     original_argv = sys.argv
     sys.argv = ["ct-git-sha-report"]
     try:
-        gsr.main()
+        gsr_cli.main()
     finally:
         sys.argv = original_argv
     out = capsys.readouterr().out

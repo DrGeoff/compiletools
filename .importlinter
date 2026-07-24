@@ -102,11 +102,14 @@ forbidden_modules =
 # report tools.
 #
 # These entry-point-only tools (ct-cache-report, ct-trim-cache,
-# ct-list-backends, ct-list-variants, ct-debug-pcm-hash-inputs, ct-doc) sit
-# at the top of the stack. A core library module importing one would drag a
-# reporting/CLI tool into the hot build path. (git_sha_report is
-# deliberately excluded: it is a dual-role module — an entry point AND a
-# library helper that global_hash_registry lazily imports.)
+# ct-list-backends, ct-list-variants, ct-debug-pcm-hash-inputs, ct-doc,
+# ct-git-sha-report) sit at the top of the stack. A core library module
+# importing one would drag a reporting/CLI tool into the hot build path.
+#
+# git_sha_report is now a strict leaf entry point: its git-hashing library was
+# extracted to the pure-library compiletools.git_sha, which global_hash_registry
+# imports directly. So git_sha_report can join the forbidden list below — the
+# former dual-role exemption is gone.
 # ---------------------------------------------------------------------------
 [importlinter:contract:core-not-import-cli-tools]
 name = Core library modules must not import CLI / diagnostic report tools
@@ -130,6 +133,7 @@ forbidden_modules =
     compiletools.listvariants
     compiletools.debug_pcm_hash_inputs
     compiletools.doc
+    compiletools.git_sha_report
 
 # ---------------------------------------------------------------------------
 # Contract 5: the concrete backends are independent of one another.

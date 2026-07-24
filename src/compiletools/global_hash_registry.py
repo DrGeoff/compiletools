@@ -59,7 +59,7 @@ def _compute_external_file_hash(filepath: str, hash_ops: dict[str, int]) -> str 
 def _load_hashes(verbose: int = 0, *, context: BuildContext) -> tuple[dict[str, str], dict[str, list[str]]]:
     """Load file hashes from git and build forward/reverse lookup dicts."""
     try:
-        from compiletools.git_sha_report import get_complete_working_directory_hashes
+        from compiletools.git_sha import get_complete_working_directory_hashes
 
         all_hashes = get_complete_working_directory_hashes(context)
         hashes = {str(path): sha for path, sha in all_hashes.items()}
