@@ -100,6 +100,18 @@ Because externals live OUTSIDE the gitroot, they are not part of the
 project's own content-addressable cache identity — consistent with
 compiletools' per-workspace caching model.
 
+One backend cannot consume the sibling default: **bazel**. Its hermetic
+sandbox rejects include paths outside the workspace, so a
+``ct-cake --backend=bazel`` build cannot see an external cloned at
+``../<name>`` and the consumer compile fails with
+``<name>/...: No such file or directory``. For bazel builds, point
+``--externals-dir`` (or ``CT_EXTERNALS_DIR``) at a directory INSIDE the
+gitroot — e.g. ``--externals-dir=externals`` run from the gitroot (a
+relative value resolves against the current directory) — so the clone
+becomes part of the workspace bazel sandboxes. All other backends
+(make, ninja, cmake, shake) work with the sibling default. See
+ct-backends(7).
+
 Authentication (private and enterprise hosts)
 ---------------------------------------------
 compiletools performs no authentication of its own: it runs plain ``git``

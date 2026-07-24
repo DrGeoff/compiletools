@@ -171,7 +171,12 @@ or remote execution capabilities.
 **Requires:** Bazel or Bazelisk (``bazel`` or ``bazelisk`` in PATH).
 
 **Limitations:** File locking is disabled — Bazel manages its own
-sandboxing and caching.
+sandboxing and caching.  ``//#GIT=`` externals cloned to the sibling
+default (``../<name>``, outside the gitroot) are invisible to Bazel's
+hermetic sandbox and the build fails to resolve their headers; pass
+``--externals-dir`` pointing inside the workspace instead (see
+ct-fetch(1), "Externals directory").  ``-isystem`` paths outside the
+workspace are rejected for the same reason.
 
 shake (builtin)
 ---------------

@@ -76,10 +76,17 @@ bin/*/sudoku_tui my_puzzle.txt
   fails with a `FetchError` naming the external and URL.
 - **Different clone location?** `--externals-dir DIR` / `CT_EXTERNALS_DIR`
   override the ct.conf setting.
+- **Building with `--backend=bazel`?** Point `--externals-dir` *inside* the
+  gitroot (e.g. `--externals-dir=externals` from the project root) — bazel's
+  hermetic sandbox cannot see include paths outside the workspace, so the
+  sibling/`/tmp` clone locations fail to resolve `sudoku/src/*.hpp`. See
+  ct-backends(7).
 
 ## Testing note
 
-This example is *deliberately excluded* from the hermetic cross-backend
-matrix (its whole point is a real network fetch); its end-to-end coverage is
-`test_e2e_sudoku_tui.py`, which drives the full clone → resolve → widen →
-build → run pipeline against the real GitHub URL and skips when offline.
+The cross-backend matrix (`test_examples_end_to_end_cross_backend.py`) builds
+this example on every backend, cloning the real GitHub URL into each cell's
+tmpdir and skipping when offline — the only network-touching cells in the
+matrix. The deeper behavioural assertions (auto-demo output, clone reuse, CAS
+stability across re-runs) live in `test_e2e_sudoku_tui.py`, which drives the
+full clone → resolve → widen → build → run pipeline.
