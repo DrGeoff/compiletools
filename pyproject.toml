@@ -50,7 +50,7 @@ dev = [
     # still install it ad-hoc (``uv tool install pre-commit``) since the
     # config file is portable.
     "prek>=0.3.13",
-    "hypothesis>=6",
+    "import-linter>=2",
     "pytest-cov>=6.0",
     "textual>=0.40.0",
     "tomli; python_version < '3.11'",

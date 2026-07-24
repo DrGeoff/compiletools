@@ -1,0 +1,150 @@
+# import-linter contracts — machine-checkable encoding of the module
+# architecture documented in CLAUDE.md ("Architecture / Build flow").
+#
+# These contracts describe the layering that holds TODAY. They exist to
+# make a future accidental layering violation (a leaf module reaching up
+# into a backend, config importing a backend, etc.) fail loudly in CI via
+# `lint-imports` and the drift-guard test_import_contracts.py, instead of
+# rotting silently.
+#
+# Run locally with:  uv run lint-imports
+#
+# NOTE for maintainers: if a genuinely-intended new edge trips a contract,
+# fix the layering — do NOT loosen a contract without understanding why the
+# edge is sound. Exemptions live in `ignore_imports` with a comment naming
+# the debt.
+
+[importlinter]
+root_package = compiletools
+
+# ---------------------------------------------------------------------------
+# Contract 1: the documented build pipeline spine is a one-way stack.
+#
+# High to low: orchestrator (cake) > concrete backends > backend base
+# (build_backend) > deps (hunter > magicflags > headerdeps) > targets
+# (findtargets). A lower layer importing a higher one is forbidden (checked
+# transitively, so no laundering the edge through a helper module).
+#
+# The concrete backends share a single layer line: they are independent of
+# each other (none imports a sibling backend) but all sit above the base.
+#
+# Deliberately NOT layered here: the foundation cluster (apptools,
+# configutils, flags, git_utils, apptools_argparse, namer, file_analyzer,
+# global_hash_registry, build_context). Those modules are a tightly
+# cross-referencing bootstrap cluster with real transitive back-edges
+# (e.g. configutils -> apptools_argparse -> apptools; flags -> git_utils ->
+# apptools; namer -> global_hash_registry -> build_context -> file_analyzer),
+# so no strict linear order holds without a refactor. Their one invariant
+# that DOES hold today — "never import a backend or a CLI/report tool" — is
+# enforced by the forbidden contracts below instead.
+# ---------------------------------------------------------------------------
+[importlinter:contract:pipeline-layers]
+name = Build pipeline spine (targets -> deps -> backends -> orchestrator)
+type = layers
+layers =
+    compiletools.cake
+    compiletools.makefile_backend | compiletools.ninja_backend | compiletools.cmake_backend | compiletools.bazel_backend | compiletools.trace_backend
+    compiletools.build_backend
+    compiletools.hunter
+    compiletools.magicflags
+    compiletools.headerdeps
+    compiletools.findtargets
+
+# ---------------------------------------------------------------------------
+# Contract 2: foundational / config modules must never import a backend.
+#
+# flags, apptools, utils, configutils and file_analyzer are the load-bearing
+# leaves the whole tree depends on. If any of them reached into the heavy
+# `*_backend` / build_backend modules it would create an import cycle risk
+# and invert the documented "config does not know about backends" rule.
+# ---------------------------------------------------------------------------
+[importlinter:contract:foundation-no-backends]
+name = Foundation and config modules must not import any backend
+type = forbidden
+source_modules =
+    compiletools.flags
+    compiletools.apptools
+    compiletools.utils
+    compiletools.configutils
+    compiletools.file_analyzer
+forbidden_modules =
+    compiletools.build_backend
+    compiletools.makefile_backend
+    compiletools.ninja_backend
+    compiletools.cmake_backend
+    compiletools.bazel_backend
+    compiletools.trace_backend
+
+# ---------------------------------------------------------------------------
+# Contract 3: the dependency-analysis layer must not import backends.
+#
+# hunter / headerdeps / magicflags implement the #include-graph walk and
+# magic-flag extraction. Backends consume them, never the reverse — keeping
+# the deps layer backend-agnostic is what lets any backend reuse it.
+# ---------------------------------------------------------------------------
+[importlinter:contract:deps-no-backends]
+name = Dependency-analysis modules must not import any backend
+type = forbidden
+source_modules =
+    compiletools.hunter
+    compiletools.headerdeps
+    compiletools.magicflags
+forbidden_modules =
+    compiletools.build_backend
+    compiletools.makefile_backend
+    compiletools.ninja_backend
+    compiletools.cmake_backend
+    compiletools.bazel_backend
+    compiletools.trace_backend
+
+# ---------------------------------------------------------------------------
+# Contract 4: core library modules must not import the CLI / diagnostic
+# report tools.
+#
+# These entry-point-only tools (ct-cache-report, ct-trim-cache,
+# ct-list-backends, ct-list-variants, ct-debug-pcm-hash-inputs, ct-doc) sit
+# at the top of the stack. A core library module importing one would drag a
+# reporting/CLI tool into the hot build path. (git_sha_report is
+# deliberately excluded: it is a dual-role module — an entry point AND a
+# library helper that global_hash_registry lazily imports.)
+# ---------------------------------------------------------------------------
+[importlinter:contract:core-not-import-cli-tools]
+name = Core library modules must not import CLI / diagnostic report tools
+type = forbidden
+source_modules =
+    compiletools.flags
+    compiletools.apptools
+    compiletools.utils
+    compiletools.configutils
+    compiletools.file_analyzer
+    compiletools.namer
+    compiletools.headerdeps
+    compiletools.magicflags
+    compiletools.hunter
+    compiletools.findtargets
+    compiletools.build_backend
+forbidden_modules =
+    compiletools.cache_report
+    compiletools.trim_cache
+    compiletools.listbackends
+    compiletools.listvariants
+    compiletools.debug_pcm_hash_inputs
+    compiletools.doc
+
+# ---------------------------------------------------------------------------
+# Contract 5: the concrete backends are independent of one another.
+#
+# Each backend (make / ninja / cmake / bazel / shake-trace) is a peer plugin
+# resolved through backend_registry; none may import another directly. This
+# keeps the registry the single dispatch point and prevents a backend from
+# accidentally coupling to a sibling's internals.
+# ---------------------------------------------------------------------------
+[importlinter:contract:backends-independent]
+name = Concrete backends are independent of one another
+type = independence
+modules =
+    compiletools.makefile_backend
+    compiletools.ninja_backend
+    compiletools.cmake_backend
+    compiletools.bazel_backend
+    compiletools.trace_backend
