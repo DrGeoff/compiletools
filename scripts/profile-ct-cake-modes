@@ -225,7 +225,7 @@ def cleanup_all_worktrees():
             if line.startswith("worktree "):
                 worktree_path = line[9:]  # Remove 'worktree ' prefix
                 # Check if this is a temporary worktree (contains 'worktree_' in path)
-                if "worktree_" in worktree_path and "/tmp/" in worktree_path:
+                if "worktree_" in worktree_path and "/tmp/" in worktree_path:  # noqa: S108 (substring check on an existing path, not temp-file creation)
                     worktrees_to_remove.append(worktree_path)
 
         for wt_path in worktrees_to_remove:
