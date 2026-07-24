@@ -432,18 +432,11 @@ _KNOWN_DIVERGENCES = [
             "keeps the line.",
         ),
     ),
-    pytest.param(
-        "(" * 120 + "1" + ")" * 120,
-        True,
-        id="deep-nesting-recursionerror",
-        marks=pytest.mark.xfail(
-            strict=True,
-            reason="Deeply-nested expressions overflow Python's recursion limit; "
-            "SimplePreprocessor catches the RecursionError and treats the #if as "
-            "false, dropping a line C keeps. A separate bugfix branch addresses "
-            "the RecursionError->false case.",
-        ),
-    ),
+    # NOTE: the former "deep-nesting-recursionerror" divergence was fixed by the
+    # preprocessor-bugfix change (explicit _MAX_DEPTH guard + PreprocessorExpressionError
+    # instead of a swallowed RecursionError->false). Deeply-nested valid expressions now
+    # evaluate correctly, so the case is no longer a known divergence and has been
+    # removed from this list. See test_simple_preprocessor.py for its regression tests.
 ]
 
 
