@@ -72,6 +72,13 @@ otel = [
     "opentelemetry-exporter-otlp-proto-grpc>=1.27",
     "opentelemetry-exporter-otlp-proto-http>=1.27",
 ]
+# Mutation testing (per-module, periodic CI job -- see docs/mutation-testing.md).
+# Kept as its own extra so the common ``uv sync --extra dev`` stays lean; the
+# scheduled workflow and the scripts/mutmut_module.sh driver pull it in with
+# ``uv sync --extra mutation``.
+mutation = [
+    "mutmut>=3",
+]
 
 [project.urls]
 Homepage = "http://drgeoff.github.io/compiletools/"

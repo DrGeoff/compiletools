@@ -1,0 +1,112 @@
+name: Mutation testing
+
+# Per-module mutation testing (mutmut). This is the empirical detector of tests
+# that run but don't actually pin behaviour. It is deliberately NOT run on every
+# push -- even one module takes a couple of minutes, and the design scopes each
+# run to a single module + its focused test file (see docs/mutation-testing.md).
+#
+# Runs weekly and on demand. Each pilot module has a documented mutation-score
+# floor; the job fails if a module drops below its floor. Floors start lenient
+# (well below the captured baseline) and are ratcheted up over time.
+
+on:
+  schedule:
+    # 06:17 UTC every Monday (odd minute to avoid the top-of-hour stampede).
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      module:
+        description: "Single module to mutate (bare name, e.g. utils). Blank = run the full pilot matrix."
+        required: false
+        default: ""
+      floor:
+        description: "Override mutation-score floor percentage for the single-module run."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  # Full pilot matrix -- scheduled runs, and manual runs that leave `module` blank.
+  pilot:
+    if: github.event_name == 'schedule' || github.event.inputs.module == ''
+    runs-on: ubuntu-latest
+    strategy:
+      # Don't let one weak module cancel the others -- we want every score.
+      fail-fast: false
+      matrix:
+        include:
+          # module : focused-test source module under src/compiletools
+          # floor  : minimum mutation score %; job fails below it.
+          #
+          # Baselines captured 2026-07 (mutmut 3.6, see docs/mutation-testing.md):
+          #   utils  -> 78.9% (290 killed + 16 timeout / 388 assessed), 82 survivors
+          #   flags  -> N/A (pure frozen dataclass, 0 mutants; logic lives in flag_ops)
+          - module: utils
+            floor: "65"
+          - module: flags
+            floor: "0"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Cache uv/pip caches
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/uv
+            ~/.cache/pip
+          key: ${{ runner.os }}-mutation-uvcache-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-mutation-uvcache-
+
+      - name: Install dependencies
+        run: uv sync --extra dev --extra mutation
+
+      - name: Mutate ${{ matrix.module }} (floor ${{ matrix.floor }}%)
+        env:
+          MUTMUT_FLOOR: ${{ matrix.floor }}
+        run: ./scripts/mutmut_module.sh ${{ matrix.module }}
+
+  # Single-module on-demand run (workflow_dispatch with a `module` filled in).
+  single:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.module != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Cache uv/pip caches
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/uv
+            ~/.cache/pip
+          key: ${{ runner.os }}-mutation-uvcache-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-mutation-uvcache-
+
+      - name: Install dependencies
+        run: uv sync --extra dev --extra mutation
+
+      - name: Mutate ${{ github.event.inputs.module }}
+        env:
+          MUTMUT_FLOOR: ${{ github.event.inputs.floor }}
+        run: ./scripts/mutmut_module.sh ${{ github.event.inputs.module }}

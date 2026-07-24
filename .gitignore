@@ -65,3 +65,8 @@ tmp4zhl2bgr/
 tmp9kjntfb5/
 tmpfx0ejao_/
 tmpwzmt13xj/
+
+# Mutation testing (mutmut): scratch mutants tree + driver-generated config
+/mutants/
+/setup.cfg
+/mutants.lock
