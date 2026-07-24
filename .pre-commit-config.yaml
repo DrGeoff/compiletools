@@ -35,3 +35,17 @@ repos:
     hooks:
       - id: detect-secrets
         args: ['--baseline', '.secrets.baseline']
+
+  - repo: local
+    hooks:
+      # Drift-guard: block new "slop" tests (no verification / tautology /
+      # bare-except) at authorship. The linter walks the whole test tree via
+      # ``ast`` regardless of which files changed, so ``pass_filenames`` is
+      # false; ``files`` merely gates it to run only when a test file is
+      # touched. Runs in well under a second.
+      - id: no-slop-tests
+        name: no-slop test linter
+        entry: uv run pytest -q src/compiletools/test_no_slop_tests.py
+        language: system
+        pass_filenames: false
+        files: ^src/compiletools/test_.*\.py$
