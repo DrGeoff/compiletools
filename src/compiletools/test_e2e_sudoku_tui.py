@@ -1,17 +1,18 @@
 """End-to-end test for the ``sudoku_tui`` example -- the ``//#GIT=`` showcase.
 
-DELIBERATELY NETWORK-TOUCHING (the only such test in the suite): the example's
-whole point is a real remote declaration
-(``//#GIT=https://github.com/DrGeoff/sudoku.git@master``), so this test drives
-``ct-cake`` through a REAL clone of the real URL -- no ``CT_GIT_PATH_SUDOKU``
-shortcut, because exercising clone -> resolve -> include-widening IS the test.
-When github.com is unreachable the test skips at runtime (reachability is
-probed inside the test, not at collection, so offline full-suite runs pay the
-probe only in the worker that reaches this test).
+DELIBERATELY NETWORK-TOUCHING: the example's whole point is a real remote
+declaration (``//#GIT=https://github.com/DrGeoff/sudoku.git@master``), so this
+test drives ``ct-cake`` through a REAL clone of the real URL -- no
+``CT_GIT_PATH_SUDOKU`` shortcut, because exercising clone -> resolve ->
+include-widening IS the test. When github.com is unreachable the test skips at
+runtime (reachability is probed inside the test, not at collection, so offline
+full-suite runs pay the probe only in the worker that reaches this test).
 
 The hermetic fetch coverage lives in test_fetch.py / test_cake_fetch.py /
-test_e2e_git_fetch.py; the cross-backend matrix skips this example via its
-ExamplePlan.skip_reason.
+test_e2e_git_fetch.py. The cross-backend matrix also builds this example per
+backend (``ExamplePlan.needs_network_clone`` reuses this module's
+``_github_sudoku_reachable`` probe); this test keeps the deeper behavioural
+assertions (auto-demo output, clone reuse, CAS stability).
 
 What one passing run proves end-to-end: the declaration in stepper.hpp (a
 transitive header) is found, the external is cloned at the declared ref, the

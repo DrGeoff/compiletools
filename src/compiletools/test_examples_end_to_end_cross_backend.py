@@ -36,15 +36,14 @@ import pathlib
 import shutil
 import subprocess
 import sys
-import tempfile
 from collections.abc import Iterable
 
 import pytest
 
 import compiletools.apptools
 import compiletools.testhelper as uth
-import compiletools.utils
 from compiletools.build_backend import available_backends, ensure_backends_registered
+from compiletools.test_e2e_sudoku_tui import _SUDOKU_URL, _github_sudoku_reachable
 
 ensure_backends_registered()
 
@@ -67,7 +66,7 @@ def _toolchain_supports_import_std() -> bool:
 
 @functools.lru_cache(maxsize=1)
 def _toolchain_supports_stdlib_header_units() -> bool:
-    """True iff the local C++ toolchain can build a header unit from libc++/libstdc++.
+    """True iff the local C++ toolchain can build AND consume a stdlib header unit.
 
     ``import <vector>;`` requires the system standard library headers to be
     *modules-clean*. Termux/Android ships libc++ on top of Bionic, and
@@ -77,31 +76,28 @@ def _toolchain_supports_stdlib_header_units() -> bool:
     builder, which compiles each header unit in isolation. Distros that
     use glibc are unaffected.
 
-    Probes the live toolchain with a one-shot ``import <vector>;`` compile;
-    the result is cached so the probe runs at most once per process. A
-    ``False`` return skips the cxx_modules header-unit examples; this is a
-    Bionic/libc++ packaging defect, not a ct-cake regression.
+    The probe must mirror what ct-cake actually does: precompile the
+    header unit FIRST, then consume it. A one-shot ``import <vector>;``
+    ``-fsyntax-only`` compile is the wrong probe -- gcc can never pass it
+    ("imports must be built before being imported" without a prebuilt
+    ``.gcm``), so it silently skipped every header-unit matrix cell on
+    gcc-primary machines even though the toolchain fully supports header
+    units. Delegates to the per-compiler two-step probes in
+    test_cxx_modules: the gcc precompile probe, and the clang
+    precompile-plus-consume round-trip (the leg that actually catches the
+    Termux/Bionic defect this gate exists for).
     """
+    from compiletools.test_cxx_modules import (
+        _clang_supports_header_units,
+        _gcc_supports_header_units,
+    )
+
     cxx = compiletools.apptools.get_functional_cxx_compiler()
     if not cxx:
         return False
-    with tempfile.TemporaryDirectory() as tmp:
-        src = os.path.join(tmp, "probe.cpp")
-        with open(src, "w") as f:
-            f.write("import <vector>;\nint main() { return 0; }\n")
-        argv = compiletools.utils.split_command_cached(cxx) + [
-            "-std=c++26",
-            "-fmodules",
-            "-fsyntax-only",
-            "-x",
-            "c++",
-            src,
-        ]
-        try:
-            proc = subprocess.run(argv, capture_output=True, timeout=30)
-        except (OSError, subprocess.TimeoutExpired):
-            return False
-        return proc.returncode == 0
+    if compiletools.apptools.compiler_kind(cxx) == "gcc":
+        return _gcc_supports_header_units()
+    return _clang_supports_header_units()
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +121,10 @@ class ExamplePlan:
         skip_for_backends: Per-backend skip overrides (example-side
             opt-out, e.g. C++20 modules on backends whose rule emitter
             doesn't yet wire the BMI plumbing).
+        needs_network_clone: When True, the build clones a real remote
+            (``//#GIT=``); the cell probes github reachability and skips
+            offline, and ``--externals-dir`` is pinned into the cell's
+            tmpdir so clones never share or pollute global state.
         extra_args: Additional argv tokens appended after ``--backend``.
         extra_env: Environment variables to set for the subprocess.
     """
@@ -134,6 +134,7 @@ class ExamplePlan:
     skip_reason: str = ""
     xfail_reason: str = ""
     skip_for_backends: frozenset[str] = frozenset()
+    needs_network_clone: bool = False
     extra_args: tuple[str, ...] = ()
     extra_env: dict[str, str] = dataclasses.field(default_factory=dict)
 
@@ -204,13 +205,14 @@ _EXAMPLE_PLANS: dict[str, ExamplePlan] = {
     "platform_has_include": _VANILLA,
     "separate_cpp_cxx": _VANILLA,
     "simple": _VANILLA,
-    "sudoku_tui": ExamplePlan(
-        skip_reason=(
-            "//#GIT= external-fetch example: needs a network clone of "
-            "github.com/DrGeoff/sudoku, but this matrix is hermetic. "
-            "Covered by test_e2e_sudoku_tui.py (skips when offline)."
-        ),
-    ),
+    # //#GIT= external-fetch showcase: the ONLY network-touching cells in
+    # the matrix. Each cell really clones github.com/DrGeoff/sudoku (a
+    # public repo) into its own tmpdir via --externals-dir, proving the
+    # clone -> resolve -> include-widening flow works on every backend.
+    # Skips at runtime when github is unreachable; the richer behavioural
+    # assertions (auto-demo output, clone reuse) live in
+    # test_e2e_sudoku_tui.py.
+    "sudoku_tui": ExamplePlan(needs_network_clone=True),
     "unit_test_marker": _VANILLA,
     "version_dependent_api": _VANILLA,
     "cli_features": _VANILLA,
@@ -305,7 +307,8 @@ _EXAMPLE_PLANS: dict[str, ExamplePlan] = {
     # (clang) when the import is transitive-only. Builds with the
     # matrix's default compiler here; the gcc-vs-clang asymmetry is
     # exercised explicitly by
-    # test_transitive_header_unit_builds_on_gcc_and_clang below.
+    # test_cxx_modules_transitive_header_unit_builds_with_{gcc,clang}
+    # in test_cxx_modules.py.
     "cxx_modules_transitive_header_unit": _VANILLA,
     # The canonical CAS showcase: four terminal games (moonlander, snake,
     # invaders, breakout) plus a controls-free ASCII aquarium artwork, all
@@ -484,6 +487,16 @@ def _build_argv(
         f"--cas-exedir={cas_root}/cas-exedir",
         f"--diagnostics-dir={workspace}/diagnostics",
     ]
+    if plan.needs_network_clone:
+        # Overrides the example ct.conf's fixed /tmp externals dir so each
+        # cell's clone lands in (and is cleaned up with) its own tmpdir.
+        # The sibling-of-workspace location mirrors the production default
+        # (externals clone as gitroot siblings) — except under bazel, whose
+        # hermetic sandbox rejects include paths outside the workspace
+        # (same restriction as the cxx_modules_header_unit_isystem
+        # opt-outs), so its clone goes INSIDE the workspace instead.
+        externals = workspace / "externals" if backend_name == "bazel" else workspace.parent / "externals"
+        argv.append(f"--externals-dir={externals}")
     argv.extend(plan.extra_args)
     if plan.targets:
         argv.extend(str(workspace / t) for t in plan.targets)
@@ -568,18 +581,20 @@ def test_example_builds_with_backend(example_name, backend_name, cas_layout, tmp
         pytest.skip(f"example {example_name} opted out of backend {backend_name}")
     if not uth._backend_tool_available(backend_name):
         pytest.skip(f"{backend_name} build tool not on PATH")
+    if plan.needs_network_clone and not _github_sudoku_reachable():
+        pytest.skip(f"cannot reach {_SUDOKU_URL} (offline or blocked)")
     if example_name == "cxx_modules_import_std" and not _toolchain_supports_import_std():
         pytest.skip(
             "toolchain does not ship a std-module source (needs gcc 15+ for bits/std.cc, or clang+libc++ for std.cppm)"
         )
     # Examples that pull stdlib symbols through a header-unit import need
-    # the local libc++/libstdc++ to be modules-clean. Termux/Android's
-    # libc++ over Bionic is not (Bionic stdlib.h/sched.h declare
-    # locale_t/pid_t before their canonical headers); probe and skip.
+    # the toolchain to precompile-and-consume a stdlib header unit (the
+    # realistic failure is Termux/Android's Bionic-based libc++ not being
+    # modules-clean); probe with the same two-step dance the build uses.
     if example_name in _EXAMPLES_REQUIRING_STDLIB_HEADER_UNITS and not _toolchain_supports_stdlib_header_units():
         pytest.skip(
-            "toolchain's standard library headers are not modules-clean "
-            "(Termux/Android Bionic + libc++); stdlib header-unit imports fail"
+            "toolchain cannot precompile-and-consume a stdlib header unit "
+            "(e.g. Termux/Android Bionic libc++ is not modules-clean)"
         )
 
     effective_tmp = str(tmp_path)
