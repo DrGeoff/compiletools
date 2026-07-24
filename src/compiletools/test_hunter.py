@@ -143,9 +143,22 @@ class TestHunterClearCache:
     """Tests for cache clearing methods."""
 
     def test_clear_cache_static(self):
-        """Test Hunter.clear_cache() clears module-level caches (lines 157-159)."""
+        """Test Hunter.clear_cache() actually empties the shared module-level caches.
+
+        ``Hunter.clear_cache`` delegates to ``MagicFlagsBase.clear_cache``,
+        which clears the shared ``split_command_cached_sz`` LRU. Assert the
+        observable postcondition (cache empty) rather than merely that the
+        call returns.
+        """
+        import stringzilla as sz
+
+        compiletools.utils.split_command_cached_sz.cache_clear()
+        compiletools.utils.split_command_cached_sz(sz.Str("-DFOO=1 -DBAR=2"))
+        assert compiletools.utils.split_command_cached_sz.cache_info().currsize > 0
+
         compiletools.hunter.Hunter.clear_cache()
-        # Should not raise; verifies the static method runs the three clear calls
+
+        assert compiletools.utils.split_command_cached_sz.cache_info().currsize == 0
 
     def test_clear_instance_cache(self, hunter_factory):
         """Test clear_instance_cache clears functools.cache and dynamic attrs (lines 167-175)."""

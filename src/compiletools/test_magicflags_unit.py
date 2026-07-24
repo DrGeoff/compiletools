@@ -78,17 +78,24 @@ class TestExtractMacrosFromMagicFlags:
     """Test DirectMagicFlags._extract_macros_from_magic_flags()."""
 
     def test_extract_macros_from_cppflags(self):
+        from compiletools.preprocessing_cache import MacroState
+
         obj = _make_partial("DirectMagicFlags")
-        # Create a mock MacroState that supports with_updates
-        mock_macro_state = MagicMock()
-        mock_macro_state.with_updates.return_value = mock_macro_state
-        obj.defined_macros = mock_macro_state
+        # Start from a real, empty MacroState so we can assert the ACTUAL
+        # parsed macros end up in the resulting variable dict (not merely
+        # that some method was invoked on a mock).
+        obj.defined_macros = MacroState(core={}, variable={}, anchor_root="")
 
         magic_flags_result = {
             sz.Str("CPPFLAGS"): [sz.Str("-DFOO=1"), sz.Str("-DBAR=2")],
         }
         obj._extract_macros_from_magic_flags(magic_flags_result)
-        mock_macro_state.with_updates.assert_called_once()
+
+        variable = obj.defined_macros.variable
+        assert sz.Str("FOO") in variable
+        assert sz.Str("BAR") in variable
+        assert str(variable[sz.Str("FOO")]) == "1"
+        assert str(variable[sz.Str("BAR")]) == "2"
 
 
 class TestGetFinalMacroStateKey:
@@ -254,22 +261,56 @@ class TestExtractMacrosFromPreprocessor:
 
 
 class TestDirectMagicFlagsClearCache:
-    """Test DirectMagicFlags.clear_cache() handles missing cache gracefully."""
+    """Test DirectMagicFlags.clear_cache() is a documented no-op.
 
-    def test_clear_cache_no_error(self):
+    The subclass ``clear_cache`` is a genuine no-op ("Instance caches are
+    per-instance; nothing class-level to clear"). The shared module-level
+    caches are cleared by the *base* ``MagicFlagsBase.clear_cache`` (the
+    aggregator), not the subclass. These tests assert that division of
+    responsibility observably: the subclass leaves shared cache state
+    intact, and the base aggregator is what actually empties it.
+    """
+
+    def test_clear_cache_is_a_noop_leaving_shared_caches_intact(self):
+        import compiletools.utils
         from compiletools.magicflags import DirectMagicFlags
 
-        # Should not raise even if _compute_file_processing_result hasn't been called
+        compiletools.utils.split_command_cached_sz.cache_clear()
+        # Populate the shared LRU cache so we have an observable postcondition.
+        compiletools.utils.split_command_cached_sz(sz.Str("-DFOO=1 -DBAR=2"))
+        assert compiletools.utils.split_command_cached_sz.cache_info().currsize > 0
+
+        # Subclass no-op MUST NOT touch the shared cache.
         DirectMagicFlags.clear_cache()
+        assert compiletools.utils.split_command_cached_sz.cache_info().currsize > 0
 
 
 class TestCppMagicFlagsClearCache:
-    """Test CppMagicFlags.clear_cache() is a no-op."""
+    """Test CppMagicFlags.clear_cache() is a documented no-op."""
 
-    def test_clear_cache(self):
+    def test_clear_cache_is_a_noop_leaving_shared_caches_intact(self):
+        import compiletools.utils
         from compiletools.magicflags import CppMagicFlags
 
+        compiletools.utils.split_command_cached_sz.cache_clear()
+        compiletools.utils.split_command_cached_sz(sz.Str("-DFOO=1 -DBAR=2"))
+        assert compiletools.utils.split_command_cached_sz.cache_info().currsize > 0
+
+        # Subclass no-op MUST NOT touch the shared cache.
         CppMagicFlags.clear_cache()
+        assert compiletools.utils.split_command_cached_sz.cache_info().currsize > 0
+
+    def test_base_aggregator_actually_clears_shared_caches(self):
+        import compiletools.utils
+        from compiletools.magicflags import MagicFlagsBase
+
+        compiletools.utils.split_command_cached_sz.cache_clear()
+        compiletools.utils.split_command_cached_sz(sz.Str("-DFOO=1 -DBAR=2"))
+        assert compiletools.utils.split_command_cached_sz.cache_info().currsize > 0
+
+        # The base aggregator IS what empties the shared LRU caches.
+        MagicFlagsBase.clear_cache()
+        assert compiletools.utils.split_command_cached_sz.cache_info().currsize == 0
 
 
 class TestProcessMagicFlag:

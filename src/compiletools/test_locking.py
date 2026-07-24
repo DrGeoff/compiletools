@@ -480,7 +480,10 @@ class TestFlockLock:
 
     def test_acquire_and_release(self, lock):
         lock.acquire()
+        assert lock.fd is not None, "acquire must open and hold the lock fd"
+        assert os.path.exists(lock.lockfile), "acquire must create the sidecar lockfile"
         lock.release()
+        assert lock.fd is None, "release must close and clear the lock fd"
 
     def test_flock_no_fallback_attributes(self, lock):
         """FlockLock should not have O_EXCL fallback attributes."""
@@ -567,7 +570,11 @@ class TestCIFSLock:
         args = _make_lock_args()
         lock = CIFSLock(target, args)
         lock.acquire()
-        lock.release()
+        try:
+            assert os.path.isdir(os.path.join(tmpdir, "subdir")), "acquire must create the target's parent directory"
+            assert os.path.exists(lock.lockfile_excl), "acquire must create the exclusive lock marker"
+        finally:
+            lock.release()
 
     def test_release_oserror_verbose(self, capsys, make_lock):
         lock = make_lock(verbose=2)
@@ -669,7 +676,11 @@ class TestFlockLockRelease:
         args = _make_lock_args()
         lock = FlockLock(target, args)
         lock.acquire()
-        lock.release()
+        try:
+            assert os.path.isdir(os.path.join(tmpdir, "subdir")), "acquire must create the target's parent directory"
+            assert lock.fd is not None, "acquire must hold the lock fd"
+        finally:
+            lock.release()
 
 
 class TestDirectCompileProperty:
