@@ -9,7 +9,7 @@ import compiletools.git_sha_report as gsr
 from compiletools.build_context import BuildContext
 
 
-@pytest.fixture()
+@pytest.fixture
 def tmp_git_repo(tmp_path, monkeypatch):
     """Create a temporary git repository with a committed file."""
     repo = tmp_path / "repo"

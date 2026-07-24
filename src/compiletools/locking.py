@@ -238,7 +238,9 @@ class LockdirLock:
         """
         try:
             # Set directory to 775 (rwxrwxr-x) - group-writable
-            os.chmod(self.lockdir, 0o775)
+            # 0o775 is required for multi-user file-locking: peer processes owned
+            # by other users must be able to create/remove lock entries here.
+            os.chmod(self.lockdir, 0o775)  # noqa: S103
 
             # Set group to match target file (if it exists)
             # Shell: chgrp --reference="$@" "$$lockdir"

@@ -48,8 +48,7 @@ class Namer:
         """
         if not os.path.isabs(self.args.bindir) and os.sep in self.args.bindir:
             return self.args.bindir.split(os.sep)[0] + os.sep
-        else:
-            return self.args.bindir
+        return self.args.bindir
 
     @functools.cached_property
     def _mirror_anchor(self):
@@ -425,13 +424,11 @@ class Namer:
             # If user provided a path, use it (could be relative or absolute)
             if os.path.isabs(self.args.compilation_database_output):
                 return self.args.compilation_database_output
-            else:
-                # Relative path - resolve from current directory
-                return compiletools.wrappedos.realpath(self.args.compilation_database_output)
-        else:
-            gitroot = compiletools.git_utils.find_git_root()
-            variant = getattr(self.args, "variant", None) or "unknown"
-            return os.path.join(gitroot, f"compile_commands.{variant}.json")
+            # Relative path - resolve from current directory
+            return compiletools.wrappedos.realpath(self.args.compilation_database_output)
+        gitroot = compiletools.git_utils.find_git_root()
+        variant = getattr(self.args, "variant", None) or "unknown"
+        return os.path.join(gitroot, f"compile_commands.{variant}.json")
 
     def compilation_database_symlink_pathname(self):
         """Return the bare compile_commands.json path that should symlink to the

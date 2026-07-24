@@ -258,10 +258,10 @@ def get_lockdir_sleep_interval(fstype: str) -> float:
 
     if "lustre" in fstype_lower:
         return 0.01  # Lustre is fast parallel filesystem
-    elif "nfs" in fstype_lower:
+    if "nfs" in fstype_lower:
         return 0.1  # NFS has network latency
-    else:  # Other filesystems (GPFS uses fcntl, not lockdir polling)
-        return 0.05  # Default middle ground
+    # Other filesystems (GPFS uses fcntl, not lockdir polling)
+    return 0.05  # Default middle ground
 
 
 def atomic_write(target_path, content, binary=False, preserve_permissions=True):

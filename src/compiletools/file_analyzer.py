@@ -1384,7 +1384,7 @@ def _extract_defines(
                 "byte_pos": pos,
                 "lines": define_lines,
                 "name": name,
-                "value": value if value else None,
+                "value": value or None,
                 "is_function_like": is_function_like,
                 "params": params,
             }

@@ -1769,8 +1769,7 @@ def _safely_unquote_string(value):
             ):
                 return _safely_unquote_string(unquoted)
             return unquoted
-        else:
-            return value
+        return value
     except ValueError:
         # Malformed quoting that shlex rejects: strip only a matching
         # enclosing quote pair rather than failing the whole parse.

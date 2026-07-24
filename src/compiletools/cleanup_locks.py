@@ -112,18 +112,15 @@ class LockCleaner:
             # Local lock - pid liveness + start_time match (PID-reuse safe)
             if self._is_process_alive_local(lock_pid, lock_start_time):
                 return False, "ACTIVE (local process running)"
-            else:
-                return True, "STALE (local process not running)"
-        else:
-            # Remote lock - SSH check
-            is_alive, ssh_error = self._is_process_alive_remote(lock_host, lock_pid)
+            return True, "STALE (local process not running)"
+        # Remote lock - SSH check
+        is_alive, ssh_error = self._is_process_alive_remote(lock_host, lock_pid)
 
-            if ssh_error:
-                return False, "UNKNOWN (SSH connection failed)"
-            elif is_alive:
-                return False, "ACTIVE (remote process running)"
-            else:
-                return True, "STALE (remote process not running)"
+        if ssh_error:
+            return False, "UNKNOWN (SSH connection failed)"
+        if is_alive:
+            return False, "ACTIVE (remote process running)"
+        return True, "STALE (remote process not running)"
 
     def _remove_lockdir(self, lockdir):
         """Remove lockdir.

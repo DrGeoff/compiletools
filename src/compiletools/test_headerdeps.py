@@ -42,7 +42,7 @@ def _clean_cppflags(cppflags):
     # Remove the include path part since --include handles it
     include_pattern = f"-I{uth.e2e_dir()}"
     cleaned = cppflags.replace(include_pattern, "").strip()
-    return cleaned if cleaned else None
+    return cleaned or None
 
 
 def _run_scenario_test(filename, scenarios):

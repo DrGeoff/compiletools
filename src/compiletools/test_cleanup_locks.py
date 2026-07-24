@@ -338,7 +338,7 @@ class TestLockCleanerIntegration:
                 cmd_str = " ".join(cmd)
                 if "remote1" in cmd_str:  # remote-active
                     return Mock(returncode=0)  # process exists
-                elif "remote2" in cmd_str:  # remote-stale
+                if "remote2" in cmd_str:  # remote-stale
                     return Mock(returncode=1)  # process not found
                 return Mock(returncode=255)  # unexpected
 

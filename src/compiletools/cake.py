@@ -650,7 +650,9 @@ class Cake:
         for script in scripts:
             if self.args.verbose >= 1:
                 print(f"[{phase}] {script}")
-            result = subprocess.run(script, shell=True, cwd=invocation_cwd)
+            # shell=True is intentional: prebuild/postbuild hooks are user-authored
+            # shell command strings meant to run via /bin/sh (see docstring above).
+            result = subprocess.run(script, shell=True, cwd=invocation_cwd)  # noqa: S602
             if result.returncode != 0:
                 raise SystemExit(f"ct-cake {phase} script failed (exit {result.returncode}): {script}")
 

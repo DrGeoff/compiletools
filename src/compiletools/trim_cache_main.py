@@ -538,15 +538,13 @@ def main(argv=None):
         if verbose < 2:
             print(f"Error: {ioe.strerror}: {ioe.filename}", file=sys.stderr)
             return 1
-        else:
-            raise
+        raise
     except Exception as err:
         verbose = getattr(args, "verbose", 0) if args is not None else 0
         if verbose < 2:
             print(f"Error: {err}", file=sys.stderr)
             return 1
-        else:
-            raise
+        raise
 
 
 if __name__ == "__main__":

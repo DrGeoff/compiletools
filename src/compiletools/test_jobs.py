@@ -9,7 +9,7 @@ import compiletools.testhelper as uth
 def clean_parsers():
     """Reset module-level argparse state before exercising jobs.main()."""
     uth.delete_existing_parsers()
-    yield
+    return
 
 
 def test_cpu_count_uses_process_cpu_count_when_available(monkeypatch):

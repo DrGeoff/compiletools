@@ -513,7 +513,7 @@ def _find_cycle(graph: dict[str, set[str]], remaining: set[str]) -> list[str]:
                     stack.append(succ)
                     pushed = True
                     break
-                elif succ in on_stack:
+                if succ in on_stack:
                     # Found a cycle — reconstruct the path
                     cycle = [succ, node]
                     cur = node

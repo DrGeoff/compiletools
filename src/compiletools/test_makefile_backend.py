@@ -842,8 +842,7 @@ class TestTimingWrapBSDDate:
         # because we'll feed it directly to bash.
         shell_recipe = wrapped.replace("$$", "$")
         # Strip the leading "@" Make convention (silent recipe)
-        if shell_recipe.startswith("@"):
-            shell_recipe = shell_recipe[1:]
+        shell_recipe = shell_recipe.removeprefix("@")
 
         # Write a fake `date` that mimics BSD: prints "<seconds>N" for +%s%N.
         fake_bin = tmp_path / "bin"
