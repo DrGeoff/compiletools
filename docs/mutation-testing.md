@@ -88,16 +88,27 @@ to see the diff. Survivors usually fall into three buckets:
 
 Captured 2026-07 with mutmut 3.6:
 
-| Module   | Total | Killed | Timeout | Survived | no_tests | Score   | Floor |
-|----------|-------|--------|---------|----------|----------|---------|-------|
-| `utils`  | 556   | 290    | 16      | 82       | 168      | 78.9%   | 65%   |
-| `flags`  | 0     | -      | -       | -        | -        | N/A     | 0%    |
+| Module     | Total | Killed | Timeout | Survived | no_tests | Score   | Floor |
+|------------|-------|--------|---------|----------|----------|---------|-------|
+| `utils`    | 556   | 290    | 16      | 82       | 168      | 78.9%   | 65%   |
+| `flags`    | 0     | -      | -       | -        | -        | N/A     | 0%    |
+| `flag_ops` | 104   | 48     | 12      | 2        | 42       | 96.8%   | 85%   |
 
 `flags.py` is a frozen `dataclass` that delegates all real logic to
 `flag_ops.py`; it has no mutable literals/operators, so mutmut generates zero
 mutants. Its focused test file still passes but there is nothing to mutate --
-the interesting mutation target is `flag_ops.py`, a good candidate to add to
-the pilot later.
+the real mutation target is **`flag_ops.py`**, now in the pilot.
+
+`flag_ops.py` scores 96.8% (60 of 62 assessed mutants detected, 2 survivors)
+against its property tests (`test_flag_ops_properties.py`). The 42 `no_tests`
+mutants are all in `filter_hash_irrelevant_tokens`, which is exercised by the
+dedicated `test_hash_irrelevant_tokens.py`. mutmut 3.6 passes its test-selection
+value to pytest as a **single argument**, so a per-module run can point at only
+**one** focused test file -- the two cannot be combined in one scoped run. We
+select the property-test file because it assesses the most mutants (62 vs 42);
+the `filter_hash_irrelevant_tokens` mutants are genuinely covered in the full
+suite, they just surface as `no_tests` in this narrowed mutation scope (and are
+excluded from the score, per the score definition above).
 
 The `utils.py` survivors cluster in the LDFLAGS topo-sort internals and cycle
 error formatting (`_format_cycle_error`, `_ldflags_cancel_mutual_soft_edges`,

@@ -37,16 +37,27 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # module : focused-test source module under src/compiletools
-          # floor  : minimum mutation score %; job fails below it.
+          # module    : source module under src/compiletools to mutate
+          # floor     : minimum mutation score %; job fails below it.
+          # test_file : focused test file (mutmut allows exactly ONE per module);
+          #             omit to default to test_<module>.py.
           #
           # Baselines captured 2026-07 (mutmut 3.6, see docs/mutation-testing.md):
-          #   utils  -> 78.9% (290 killed + 16 timeout / 388 assessed), 82 survivors
-          #   flags  -> N/A (pure frozen dataclass, 0 mutants; logic lives in flag_ops)
+          #   utils    -> 78.9% (290 killed + 16 timeout / 388 assessed), 82 survivors
+          #   flags    -> N/A (pure frozen dataclass, 0 mutants; logic lives in flag_ops)
+          #   flag_ops -> 96.8% (48 killed + 12 timeout / 62 assessed), 2 survivors;
+          #               42 filter_hash_irrelevant_tokens mutants are no_tests here
+          #               (covered by test_hash_irrelevant_tokens.py, which mutmut's
+          #               single-file selection can't combine with the property tests).
           - module: utils
             floor: "65"
+            test_file: ""
           - module: flags
             floor: "0"
+            test_file: ""
+          - module: flag_ops
+            floor: "85"
+            test_file: "src/compiletools/test_flag_ops_properties.py"
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -75,7 +86,9 @@ jobs:
       - name: Mutate ${{ matrix.module }} (floor ${{ matrix.floor }}%)
         env:
           MUTMUT_FLOOR: ${{ matrix.floor }}
-        run: ./scripts/mutmut_module.sh ${{ matrix.module }}
+        # ${{ matrix.test_file }} is empty for modules using the default
+        # test_<module>.py; the unquoted expansion then drops to zero args.
+        run: ./scripts/mutmut_module.sh ${{ matrix.module }} ${{ matrix.test_file }}
 
   # Single-module on-demand run (workflow_dispatch with a `module` filled in).
   single:

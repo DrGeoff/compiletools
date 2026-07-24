@@ -41,6 +41,11 @@
 #
 set -euo pipefail
 
+# A caller with CDPATH set (common in interactive shells) makes `cd <relpath>`
+# echo the resolved directory, which would corrupt the command-substitution
+# below (REPO_ROOT would gain a duplicated line). Neutralise it for this script.
+unset CDPATH
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
@@ -55,6 +60,13 @@ module="$(basename "$raw")"
 module="${module%.py}"
 
 source_path="src/compiletools/${module}.py"
+
+# Focused test file: the second argument, else the conventionally-named
+# test_<module>.py. NOTE: mutmut 3.x passes its test-selection value to pytest
+# as a SINGLE argument, so it cannot be a space-separated list of files -- one
+# focused test file per module only. A module whose coverage is genuinely split
+# across files (e.g. flag_ops) picks the file that assesses the most mutants;
+# the rest surface as `no_tests` in the scoped run and are noted in the docs.
 test_file="${2:-src/compiletools/test_${module}.py}"
 
 if [[ ! -f "$source_path" ]]; then
