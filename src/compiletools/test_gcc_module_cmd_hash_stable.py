@@ -78,9 +78,9 @@ def _cmd_hash_subdirs(pcmdir_root) -> list[str]:
     for variant_dir in sorted(pcmdir_root.iterdir()):
         if not variant_dir.is_dir():
             continue
-        for child in sorted(variant_dir.iterdir()):
-            if child.is_dir() and _CMD_HASH_RE.match(child.name):
-                out.append(child.name)
+        out.extend(
+            child.name for child in sorted(variant_dir.iterdir()) if child.is_dir() and _CMD_HASH_RE.match(child.name)
+        )
     return out
 
 

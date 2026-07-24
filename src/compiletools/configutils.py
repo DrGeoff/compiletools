@@ -743,8 +743,7 @@ def validate_no_conf_contradictions(
     tier = []
     if cwd_layer_paths:
         tier.append(("current working directory", _effective_layer_values(cwd_layer_paths), True))
-    for layer in layers:
-        tier.append((layer.subproject_dir, _effective_layer_values(layer.conf_paths), False))
+    tier.extend((layer.subproject_dir, _effective_layer_values(layer.conf_paths), False) for layer in layers)
 
     def canonicalize_value(normalized, value):
         canonicalizer = (value_canonicalizers or {}).get(normalized)
@@ -799,8 +798,7 @@ def validate_no_conf_contradictions(
     )
     lines.append("Choose one:")
     lines.append("  1) Build separately:")
-    for command in remedy_commands:
-        lines.append(f"       {command}")
+    lines.extend(f"       {command}" for command in remedy_commands)
     lines.append("  2) Make the conflicting values identical in the files above, then re-run.")
     raise ConfContradictionError("\n".join(lines))
 
@@ -1422,8 +1420,7 @@ def format_variant_resolution(resolution):
     if not resolution.base_ct_conf_files:
         lines.append("  (none found)")
     else:
-        for p in resolution.base_ct_conf_files:
-            lines.append(f"  {p}")
+        lines.extend(f"  {p}" for p in resolution.base_ct_conf_files)
     lines.append("")
 
     lines.append("Axes (each axis lists its conf files low -> high priority):")
@@ -1433,8 +1430,7 @@ def format_variant_resolution(resolution):
         for axis in resolution.axes:
             ext = f"  extends = {', '.join(axis.extends)}" if axis.extends else ""
             lines.append(f"  [{axis.name}]{ext}")
-            for p in axis.conf_paths:
-                lines.append(f"      {p}")
+            lines.extend(f"      {p}" for p in axis.conf_paths)
     lines.append("")
 
     if resolution.composite_override:

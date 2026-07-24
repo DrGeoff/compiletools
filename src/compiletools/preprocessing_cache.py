@@ -637,10 +637,7 @@ def get_or_compute_preprocessing(
     active_line_set = set(active_lines)
 
     # Extract active includes
-    active_includes = []
-    for inc in file_result.includes:
-        if inc["line_num"] in active_line_set:
-            active_includes.append(inc)
+    active_includes = [inc for inc in file_result.includes if inc["line_num"] in active_line_set]
 
     # Resolve computed includes from directives
     for directive in file_result.directives:
@@ -657,24 +654,15 @@ def get_or_compute_preprocessing(
                 )
 
     # Extract active magic flags
-    active_magic_flags = []
-    for magic in file_result.magic_flags:
-        if magic["line_num"] in active_line_set:
-            active_magic_flags.append(magic)
+    active_magic_flags = [magic for magic in file_result.magic_flags if magic["line_num"] in active_line_set]
 
     # Extract active defines
-    active_defines = []
-    for define in file_result.defines:
-        if define["line_num"] in active_line_set:
-            active_defines.append(define)
+    active_defines = [define for define in file_result.defines if define["line_num"] in active_line_set]
 
     # Build updated MacroState from preprocessor results
     # Core stays the same, variable gets new defines from this file
-    new_variable_macros = {}
-    for k, v in preprocessor.macros.items():
-        # Only add to variable if not in core
-        if k not in input_macros.core:
-            new_variable_macros[k] = v
+    # Only add to variable if not in core
+    new_variable_macros = {k: v for k, v in preprocessor.macros.items() if k not in input_macros.core}
 
     # Store file-specific defines for cache reconstruction
     # file_defines should ONLY contain macros defined BY this file (not inherited from input)

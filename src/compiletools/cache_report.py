@@ -772,8 +772,9 @@ def _render_cas_objdir_text(rep: CacheReport, top_n: int) -> str:
         lines.append(sub)
         lines.append("-" * len(sub))
         bn_width = max(len(b.basename) for b in top)
-        for b in top:
-            lines.append(f"{b.basename:<{bn_width}}  {b.variants} variants  {_format_bytes(b.wasted_bytes)} wasted")
+        lines.extend(
+            f"{b.basename:<{bn_width}}  {b.variants} variants  {_format_bytes(b.wasted_bytes)} wasted" for b in top
+        )
 
     return "\n".join(lines) + "\n"
 

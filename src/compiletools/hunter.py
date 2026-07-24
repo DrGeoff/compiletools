@@ -306,9 +306,11 @@ class Hunter:
         include_dirs = getattr(self.args, "INCLUDE", None) or getattr(self.args, "include", None) or []
         if isinstance(include_dirs, str):
             include_dirs = [include_dirs]
-        for inc in include_dirs:
-            if isinstance(inc, str) and compiletools.wrappedos.isdir(inc):
-                roots.append(compiletools.wrappedos.realpath(inc))
+        roots.extend(
+            compiletools.wrappedos.realpath(inc)
+            for inc in include_dirs
+            if isinstance(inc, str) and compiletools.wrappedos.isdir(inc)
+        )
         # ``.`` is the last-resort fallback for non-git builds with no
         # ``--include``. Skip it when the git registry already has
         # something to say -- avoids walking the entire cwd subtree

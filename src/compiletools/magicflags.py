@@ -813,10 +813,8 @@ class DirectMagicFlags(MagicFlagsBase):
         self._stored_active_magic_flags[fname] = active_magic_flags
 
         # Collect updates
-        updates = {}
         # Apply extracted macros from magic flags to state
-        for macro_name, macro_value in cppflags_macros + cxxflags_macros:
-            updates[macro_name] = macro_value
+        updates = dict(cppflags_macros + cxxflags_macros)
 
         # Apply extracted variable macros to state
         updates.update(extracted_variable_macros)

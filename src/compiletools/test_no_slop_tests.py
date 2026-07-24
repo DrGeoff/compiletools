@@ -202,9 +202,11 @@ def _build_verifying_helper_names() -> frozenset[str]:
     for path in _test_python_files():
         with open(path, encoding="utf-8") as fh:
             tree = ast.parse(fh.read(), filename=path)
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("test_"):
-                helpers.append((node.name, node))
+        helpers.extend(
+            (node.name, node)
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("test_")
+        )
 
     verifying: set[str] = set()
     changed = True

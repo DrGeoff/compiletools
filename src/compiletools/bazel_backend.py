@@ -174,10 +174,8 @@ class BazelBackend(BuildBackend):
 
         # Classify each rule by Bazel target kind in one pass.
         plan: list[tuple[str, BuildRule, bool]] = []  # (kind, rule, linkshared)
-        for rule in graph.rules_by_type(RuleType.STATIC_LIBRARY):
-            plan.append(("cc_library", rule, False))
-        for rule in graph.rules_by_type(RuleType.SHARED_LIBRARY):
-            plan.append(("cc_binary", rule, True))
+        plan.extend(("cc_library", rule, False) for rule in graph.rules_by_type(RuleType.STATIC_LIBRARY))
+        plan.extend(("cc_binary", rule, True) for rule in graph.rules_by_type(RuleType.SHARED_LIBRARY))
         for rule in graph.rules_by_type(RuleType.LINK):
             kind = "cc_test" if rule.output in test_exe_paths else "cc_binary"
             plan.append((kind, rule, False))
@@ -940,9 +938,7 @@ class BazelBackend(BuildBackend):
             rel = self._bazel_pcm_workspace_relative(gcm_path, base_dir)
             if rel is None:
                 continue
-            for abs_path in abs_paths:
-                if abs_path:
-                    lines.append(f"{abs_path} {rel}")
+            lines.extend(f"{abs_path} {rel}" for abs_path in abs_paths if abs_path)
         if not lines:
             return
         path = os.path.join(base_dir, self._BAZEL_MODULE_MAPPER_BASENAME)

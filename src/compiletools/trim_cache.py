@@ -620,7 +620,7 @@ class CacheTrimmer:
             return stats
 
         now = time.time()
-        for _basename, group in groups.items():
+        for group in groups.values():
             self._process_basename_group(group["current"], group["noncurrent"], now, stats)
 
         return stats
@@ -917,7 +917,7 @@ class CacheTrimmer:
             stats[spec.found_key] = sum(1 for k in buckets if k != "__legacy__")
 
         needed_dirs: set[str] = set()
-        for _bucket_key, hashes in buckets.items():
+        for hashes in buckets.values():
             sorted_hashes = sorted(hashes, key=lambda ch: dir_info[ch][1], reverse=True)
             needed_dirs.update(sorted_hashes[: self.keep_count])
 
@@ -2220,9 +2220,9 @@ def _safe_locked_rmtree(dir_path):
 
     files_to_lock = []
     try:
-        for entry in os.scandir(dir_path):
-            if entry.is_file() and _is_build_artifact(entry.name):
-                files_to_lock.append(entry.path)
+        files_to_lock.extend(
+            entry.path for entry in os.scandir(dir_path) if entry.is_file() and _is_build_artifact(entry.name)
+        )
     except OSError:
         # Dir vanished — nothing to do
         return True

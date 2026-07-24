@@ -186,16 +186,17 @@ select = [
     "S",    # flake8-bandit (security; this codebase shells out heavily)
     "RET",  # flake8-return (superfluous else after return/continue/break)
     "FURB", # refurb (modernization; came in fully autofixable + clean)
-    # PERF (flake8-perf) deliberately NOT enabled: its ~40 findings are
-    # PERF203 (try/except-in-loop, not auto-fixable and usually intentional)
-    # and PERF401/403 (manual comprehension rewrites, no safe autofix) -- all
-    # would require hand rewrites of production loops. Deferred as follow-up.
+    "PERF", # flake8-perf (performance anti-patterns)
 ]
 ignore = [
     "UP007",  # Union[X, Y] -> X | Y -- deferred to avoid a churn commit
     "UP045",  # Optional[X] -> X | None -- deferred with UP007 (single modernization pass)
     "B905",   # zip(strict=) -- deferred; adding strict= is a semantic decision per call-site
     "B019",   # cached-instance-method -- deliberate design choice in this codebase
+    "PERF203", # try-except-in-loop -- the loop-body try/except is the intended
+               # per-iteration error-tolerance pattern here (tolerate one bad
+               # file/entry and continue); hoisting it out of the loop would
+               # change semantics (abort the whole scan on first error).
     "SIM102", # collapsible-if -- nested ifs are often clearer
     "SIM103", # needless-bool -- explicit if/return can be clearer with comments
     "SIM105", # contextlib.suppress -- often less readable than try/except/pass

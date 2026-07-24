@@ -29,8 +29,7 @@ _REEXPORTS: list[tuple[str, str, str]] = []
 
 
 def _add(facade: str, source: str, names: list[str]) -> None:
-    for name in names:
-        _REEXPORTS.append((facade, name, source))
+    _REEXPORTS.extend((facade, name, source) for name in names)
 
 
 # --- apptools facade --------------------------------------------------------

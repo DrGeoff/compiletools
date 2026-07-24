@@ -2771,8 +2771,7 @@ class BuildBackend(abc.ABC):
         assert mapper_path is not None  # invariant: gcc + cache => path was set
         os.makedirs(os.path.dirname(mapper_path), exist_ok=True)
         lines: list[str] = []
-        for name in sorted(self._module_iface_gcm):
-            lines.append(f"{name} {self._module_iface_gcm[name]}")
+        lines.extend(f"{name} {self._module_iface_gcm[name]}" for name in sorted(self._module_iface_gcm))
         for token in sorted(self._gcc_header_unit_resolved):
             abs_paths = self._gcc_header_unit_resolved[token]
             gcm_path = self._header_unit_artefact.get(token)
@@ -2784,9 +2783,7 @@ class BuildBackend(abc.ABC):
             # ``-fno-canonical-system-headers`` after our cxxopts, so the
             # importer's lookup may use either form depending on whose
             # flag won the ordering race.
-            for abs_path in abs_paths:
-                if abs_path:
-                    lines.append(f"{abs_path} {gcm_path}")
+            lines.extend(f"{abs_path} {gcm_path}" for abs_path in abs_paths if abs_path)
         # Atomic write so concurrent ct-cake invocations don't see a
         # partial mapper. We don't need a lock here -- worst case two
         # invocations write the same content and one rename wins.

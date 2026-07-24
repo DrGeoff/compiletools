@@ -753,9 +753,7 @@ int main() {
                 # Verify the .gch was produced
                 gch_files = []
                 for root, _dirs, files in os.walk(tempdir):
-                    for ff in files:
-                        if ff.endswith(".gch"):
-                            gch_files.append(os.path.join(root, ff))
+                    gch_files.extend(os.path.join(root, ff) for ff in files if ff.endswith(".gch"))
                 assert gch_files, "Build should have produced a .gch file"
 
                 # Verify the executable was produced and runs

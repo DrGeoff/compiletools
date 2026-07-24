@@ -903,9 +903,7 @@ class SimplePreprocessor:
                     if directive.directive_type in ("define", "undef") or handled is False:
                         active_lines.append(i)
                         # Add continuation lines too
-                        for j in range(continuation_lines):
-                            if i + j + 1 < line_count:
-                                active_lines.append(i + j + 1)
+                        active_lines.extend(i + j + 1 for j in range(continuation_lines) if i + j + 1 < line_count)
 
                 # Skip the continuation lines we've already processed
                 i += continuation_lines + 1
