@@ -1416,6 +1416,23 @@ def CakeTestContext(backend_name="make", **arg_overrides):
 
     ensure_backends_registered()
 
+    # Clear filesystem/path caches so cake.process()'s target-collection and
+    # externals scan (fetch.collect_target_files -> wrappedos.isfile(<relative
+    # path>)) see real on-disk state. A sibling test in the same xdist worker
+    # can leave a stale relative-path answer cached (e.g. isfile("main.cpp")=True
+    # from its own tmpdir); without this clear it leaks in and flips control flow
+    # down the externals path, which builds a real headerdeps and crashes on the
+    # mocked args -- the intermittent test_auto_discovery... CI failure. This is
+    # exactly the "test harness clears the cache between runs" contract that
+    # fetch.collect_target_files (A13) and testhelper.reset() rely on.
+    import compiletools.configutils as _configutils
+    import compiletools.git_utils as _git_utils
+    import compiletools.wrappedos as _wrappedos
+
+    _wrappedos.clear_cache()
+    _git_utils.clear_cache()
+    _configutils.clear_cache()
+
     with TempDirContextNoChange() as tmpdir:
         # Cake needs extra fields beyond the basic backend args
         cake_defaults = dict(
