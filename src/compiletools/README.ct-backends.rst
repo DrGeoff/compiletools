@@ -26,6 +26,18 @@ Select a backend with::
 
 Use ``ct-list-backends`` to discover which backends are installed and available.
 
+REMOVED BACKENDS
+================
+
+**slurm** — the Slurm build backend (``--backend=slurm``), which distributed
+compilation across an HPC cluster by submitting ``sbatch`` jobs, was **removed
+in 12.0.0**.  The last release to include the Slurm backend was **11.0.0**; pin
+``compiletools==11.0.0`` if you still require it.
+
+Running compiletools *inside* a Slurm allocation is unaffected: every ``ct-*``
+tool still honours Slurm CPU affinity and cgroup limits when choosing default
+parallelism.  Only the backend that *submitted* Slurm jobs was removed.
+
 BACKEND SUMMARY
 ===============
 

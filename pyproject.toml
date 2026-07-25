@@ -165,8 +165,16 @@ filename = "pyproject.toml"
 # Match every man-page README so newly-added docs are picked up automatically.
 # Every matched file MUST contain a ``:Version: {current_version}`` line; a
 # missing one is a release-blocker so stale or unstamped docs cannot ship.
+# The search/replace is scoped to the ``:Version:`` field line (overriding the
+# global whole-file ``{current_version}`` search) so prose that legitimately
+# cites an older release version -- e.g. the ct-backends "last release with the
+# Slurm backend" note -- is not silently rewritten on a bump. (This comment
+# deliberately carries no bare version literal, since pyproject.toml itself
+# still uses the global whole-file replace.)
 [[tool.bumpversion.files]]
 glob = "src/compiletools/README.*.rst"
+search = ":Version: {current_version}"
+replace = ":Version: {new_version}"
 
 [tool.ruff]
 target-version = "py310"
