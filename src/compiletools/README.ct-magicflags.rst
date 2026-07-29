@@ -89,6 +89,47 @@ preferred over manual ``LDFLAGS`` because:
 The PKG-CONFIG magic flag works with any library that provides a .pc file,
 including common libraries like gtk+-3.0, libpng, libcurl, openssl, and many more.
 
+Version Constraints
+-------------------
+A package may carry a version constraint (``=``, ``==``, ``!=``, ``<``,
+``<=``, ``>``, ``>=``). The operator and version stay attached to the
+package they qualify, so a constrained package is still *one* package and
+is passed to pkg-config intact:
+
+.. code-block:: cpp
+
+    //#PKG-CONFIG=zlib >= 1.2
+
+**Spaces are required on both sides of the operator.** Package, operator
+and version must be three whitespace-separated words. Omitting either
+space changes what pkg-config resolves, and in one case does so without
+saying anything, so those spellings are rejected as a malformed package
+specification before pkg-config is ever invoked:
+
+.. code-block:: cpp
+
+    //#PKG-CONFIG=zlib >= 1.2   // the only spelling that enforces what you wrote
+    //#PKG-CONFIG=zlib >=1.2    // rejected: pkg-config would eat the "1" into
+                                // the operator and enforce ">= .2"
+    //#PKG-CONFIG=zlib>= 1.2    // rejected: pkg-config would read two packages,
+                                // "zlib>=" and "1.2"
+    //#PKG-CONFIG=>= 1.2        // rejected: operator with no package
+    //#PKG-CONFIG=zlib >=       // rejected: operator with no version
+
+The fully attached form is not a constraint and is not malformed:
+``//#PKG-CONFIG=zlib>=1.2`` asks for one package literally named
+``zlib>=1.2``, which pkg-config reports as missing.
+
+Commas separate packages here just as whitespace does, so
+``//#PKG-CONFIG=zlib >= 1.2, libpng`` is two packages. A specification
+never reaches across a comma to find a missing operand:
+``//#PKG-CONFIG=zlib >=, libpng`` is a malformed ``zlib >=`` plus an
+ordinary ``libpng``.
+
+This is the same tokenizer the conf-file ``pkg-config = ...`` key uses, so
+the two surfaces agree on what counts as one package. See
+ct-config(1) for the conf-file side.
+
 Project-Level PKG-CONFIG Overrides
 ----------------------------------
 If your project needs custom or patched ``.pc`` files (e.g., to pin a library
@@ -167,6 +208,9 @@ The known magic flags are::
     PKG-CONFIG   Extract the cflags and libs using pkg-config.
                  Multiple packages on one line (``PKG-CONFIG=a b``)
                  create hard link-order constraints between them.
+                 Whitespace and commas both separate packages; a
+                 package may carry a version constraint written as
+                 three spaced words (``zlib >= 1.2``).
     PCH          Precompiled header. Specifies a header to precompile into a
                  .gch file. The path is resolved relative to the source file.
     READMACROS   Read macro definitions from specified file before evaluating
@@ -194,6 +238,12 @@ This tells compiletools that ``libssh2`` must be linked **before** ``numa``.
 The ordering is treated as a **hard constraint** — it will never be
 silently discarded, and contradictory hard constraints between files
 are reported as a cyclic-dependency error.
+
+"Multiple packages" is counted *after* version constraints are parsed, not
+by counting whitespace-separated words. ``//#PKG-CONFIG=zlib >= 1.2 numa``
+is two packages and yields the single hard edge zlib → numa; the ``>=``
+and the ``1.2`` are part of the zlib specification and never become
+orderable packages of their own.
 
 Compare this with two separate single-package annotations:
 

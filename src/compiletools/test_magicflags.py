@@ -1,4 +1,5 @@
 import os
+import warnings
 
 import pytest
 import stringzilla as sz
@@ -299,6 +300,77 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         pred, succ = orderings[0]
         assert pred == "mylib-g", f"Hard ordering should use expanded name 'mylib-g', got '{pred}'"
         assert succ == "testpkg", f"Expected 'testpkg', got '{succ}'"
+
+    def _magic_pkg_config(self, name, annotation):
+        """Parse a one-line source carrying *annotation*, returning
+        ``(result, warning_messages)``."""
+        files = uth.write_sources({name: f"//#PKG-CONFIG={annotation}\nint main() {{ return 0; }}\n"})
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = self._parse_with_magic("direct", str(files[name]))
+        return result, [str(w.message) for w in caught]
+
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_readme_version_constraint_is_one_package(self):
+        """README.ct-magicflags.rst "Version Constraints": the operator and
+        version stay attached, so the annotation is ONE package.
+
+        A tokenizer that split on whitespace would query three packages —
+        ``nested``, ``>=`` and ``1.0.0`` — and the two invented ones would
+        warn. Pinning the absence of those warnings is what catches a
+        regression to ``str(flag).split()``.
+        """
+        result, messages = self._magic_pkg_config("test_readme_constraint.cpp", "nested >= 1.0.0")
+        assert self._check_flags(result, "LDFLAGS", ["-ltestpkg1"], []), (
+            f"constrained package did not resolve; LDFLAGS={result.get(sz.Str('LDFLAGS'))!r}"
+        )
+        assert not messages, f"a satisfied constraint must not warn, got: {messages!r}"
+
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_readme_constrained_package_yields_one_hard_edge(self):
+        """README.ct-magicflags.rst "Multi-Package PKG-CONFIG": packages are
+        counted after constraints are parsed, so ``nested >= 1.0.0 conditional``
+        is two packages and one hard edge — not four words and three edges."""
+        result, messages = self._magic_pkg_config("test_readme_constraint_ordering.cpp", "nested >= 1.0.0 conditional")
+        orderings = result.get(_HARD_ORDERINGS_KEY, [])
+        assert orderings == [("testpkg1", "testpkg")], (
+            f"expected the single edge testpkg1 -> testpkg, got {orderings!r}"
+        )
+        # The edge count alone does not pin this: split-on-whitespace also
+        # yields one edge, because the invented ">=" and "1.0.0" packages
+        # resolve to nothing and contribute no -l to order. What separates the
+        # two behaviours is whether they were queried as packages at all.
+        assert not messages, f"the constraint words must never be queried as packages, got: {messages!r}"
+
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_readme_comma_separates_magic_flag_packages(self):
+        """README.ct-magicflags.rst: commas separate packages here just as
+        whitespace does, so both spellings are the same two packages."""
+        comma, comma_messages = self._magic_pkg_config("test_readme_comma.cpp", "nested >= 1.0.0, conditional")
+        space, space_messages = self._magic_pkg_config("test_readme_space.cpp", "nested >= 1.0.0 conditional")
+        assert comma.get(_HARD_ORDERINGS_KEY, []) == space.get(_HARD_ORDERINGS_KEY, [])
+        assert str(comma[sz.Str("LDFLAGS")]) == str(space[sz.Str("LDFLAGS")]), (
+            f"comma form produced different LDFLAGS: {comma[sz.Str('LDFLAGS')]!r} vs {space[sz.Str('LDFLAGS')]!r}"
+        )
+        # Equality alone is satisfied even when both forms invent the same
+        # bogus packages, so pin that neither form queried one. The comma
+        # must be consumed as a separator, never carried into a package name.
+        assert not comma_messages and not space_messages, (
+            f"neither form may query an invented package; comma={comma_messages!r} space={space_messages!r}"
+        )
+
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_readme_half_spaced_constraint_is_rejected(self):
+        """README.ct-magicflags.rst: ``nested >=1.0.0`` is rejected as malformed
+        rather than passed to pkg-config, which would silently consume the ``1``
+        into the operator and enforce ``>= .0.0``."""
+        result, messages = self._magic_pkg_config("test_readme_half_spaced.cpp", "nested >=1.0.0")
+        assert any("malformed package specification" in m for m in messages), (
+            f"half-spaced constraint must warn as malformed, got: {messages!r}"
+        )
+        assert self._check_flags(result, "LDFLAGS", [], ["-ltestpkg1"]), (
+            "a malformed specification must not contribute link flags"
+        )
 
     @pytest.mark.usefixtures("pkgconfig_env")
     def test_gcc_linux_macro_not_expanded_in_pkg_config_paths(self):
