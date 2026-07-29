@@ -488,7 +488,13 @@ def _setup_pkg_config_overrides_locked(context, verbose, prepend_paths, append_p
 
 
 def _add_flags_from_pkg_config(args):
-    packages = tokenize_pkg_config_specs(list(args.pkg_config))
+    """Add flags for the package specs already canonicalized on ``args``.
+
+    ``_tier_one_modifications`` tokenizes ``args.pkg_config`` before this
+    function runs; ``_commonsubstitutions`` calls the two unconditionally in
+    that order.
+    """
+    packages = list(args.pkg_config)
     if not packages:
         return
 
