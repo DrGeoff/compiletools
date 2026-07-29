@@ -2275,11 +2275,17 @@ class TestPkgConfigConfValueSplitting:
         """``pkg-config = conditional >= 1.0.0, nested`` — the form
         README.ct-config.rst gives as equivalent to the bracket spelling.
 
-        Constraint and comma interact: the comma has to end the spec without
-        being read as part of the version, and the space inside the
-        constraint has to not end it. Splitting on either character alone
-        gets one of the two wrong, so the combined form is the one worth
-        pinning rather than each separator on its own.
+        What this pins is the space inside the constraint: a tokenizer that
+        split on whitespace turns ``conditional >= 1.0.0`` into three bogus
+        package names, and both markers disappear.
+
+        It does not pin the comma, despite the name. With the version
+        operand present, collapsing the comma to a space leaves the scanner
+        with the same four tokens and the same two specs, so the assertions
+        below pass either way. The comma only becomes load-bearing when the
+        operand is missing and a dangling operator can reach across it —
+        that case is
+        :meth:`test_dangling_operator_does_not_reach_across_a_comma`.
         """
         bare = _parseargs_with_pkg_config_conf("pkg-config = conditional >= 1.0.0, nested")
         bracket = _parseargs_with_pkg_config_conf("pkg-config = [conditional >= 1.0.0, nested]")
