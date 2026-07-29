@@ -977,12 +977,17 @@ def _gitignored_under(src: Path) -> set[Path]:
     *file* blocks creation of the source-mirrored ``bin/snake/`` publish
     *directory*, failing every backend cell with FileExistsError.
 
+    ``ls-files`` reports ignored *files*; wholly-ignored directories are
+    folded in bottom-up so a caller can prune a subtree with one lookup.
+    Git's own ``--directory`` does that fold, but silently reports
+    nothing before git 2.32, which turns this helper into a no-op.
+
     Returns an empty set when *src* is not inside a git work tree (no
     ignore information exists there, so nothing is filtered).
     """
     try:
         out = subprocess.run(
-            ["git", "ls-files", "-o", "-i", "--directory", "--exclude-standard", "-z"],
+            ["git", "ls-files", "-o", "-i", "--exclude-standard", "-z"],
             cwd=src,
             capture_output=True,
             text=True,
@@ -990,7 +995,17 @@ def _gitignored_under(src: Path) -> set[Path]:
         ).stdout
     except (subprocess.CalledProcessError, FileNotFoundError):
         return set()
-    return {Path(p.rstrip("/")) for p in out.split("\0") if p}
+    ignored = {Path(p) for p in out.split("\0") if p}
+    if not ignored:
+        return ignored
+    for dirpath, dirnames, filenames in os.walk(src, topdown=False):
+        reldir = Path(dirpath).relative_to(src)
+        if reldir == Path("."):
+            continue
+        entries = [reldir / name for name in (*dirnames, *filenames)]
+        if entries and all(entry in ignored for entry in entries):
+            ignored.add(reldir)
+    return ignored
 
 
 def copy_example_workspace(src: Path, dst: Path) -> Path:
