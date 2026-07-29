@@ -43,8 +43,8 @@ module stays decoupled from the parser machinery still living in
 ``apptools.<name>`` call sites, ``from compiletools.apptools import ...``
 importers, and test/patch targets keep working with identical object
 identity. ``apptools.clear_cache`` fans out to
-:func:`clear_cache` here to clear the moved ``cached_pkg_config`` memo so the
-net set of cleared caches is identical to the pre-split implementation.
+:func:`clear_cache` here to clear both the result memo and the package-spec
+existence/diagnostic memo.
 """
 
 import functools
