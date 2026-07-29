@@ -2438,32 +2438,40 @@ class TestPkgConfigConfValueSplitting:
             f"the dangling operator was not reported as malformed: {categories!r}"
         )
 
-    def test_space_after_the_operator_is_optional(self, pkgconfig_env):
-        """``pkg-config = conditional >=1.0.0`` resolves.
+    def test_missing_space_after_the_operator_never_silently_drops_the_floor(self, pkgconfig_env):
+        """``pkg-config = conditional >=2.0.0`` against the 1.0.0 fixture
+        must not resolve.
 
-        pkg-config ends a package name at whitespace and then reads the
-        operator, which runs straight into the version — so only the space
-        *before* the operator is load-bearing. An earlier draft of the docs
-        claimed spaces on both sides were required and the tokenizer's own
-        docstring called this form invalid; tightening the tokenizer to
-        match that claim would reject a spec pkg-config resolves and
-        silently drop the version floor with it.
+        This is the sharpest case in the module and the reason the
+        half-spaced form is rejected rather than passed through. pkg-config
+        swallows the version's first character into the operator token, so
+        it enforces ``>= .0.0`` — which 1.0.0 satisfies — and exits 0.
+        Measured on pkgconf 1.4.2::
 
-        Its mirror image, ``conditional>= 1.0.0``, is the malformed one and
-        is pinned in test_apptools_pkgconfig.py.
+            conditional >= 2.0.0    rc=1   required version is '>= 2.0.0'
+            conditional >=2.0.0     rc=0   floor decayed to '>= .0.0'
+            conditional >=0.5       rc=1   required version is '>= .5'
+
+        So the failure is not an invented package name that someone
+        eventually notices in a warning. It is a build that links 1.0.0
+        while its conf file asks for 2.0.0 or newer, with an empty warning
+        list. The sibling assertion is the one that fails loudly if the
+        classifier ever lets this spelling reach a probe again.
+
+        A version-floor test needs a floor the fixture does NOT meet:
+        ``conditional >=1.0.0`` passes either way, because 1.0.0 satisfies
+        both the requested floor and the corrupted one.
         """
-        result = _parseargs_with_pkg_config_conf("pkg-config = conditional >=1.0.0")
+        result = _parseargs_with_pkg_config_conf("pkg-config = conditional >=2.0.0")
 
-        assert list(result.args.pkg_config) == ["conditional >=1.0.0"], (
-            f"the constraint was not kept as one spec: {result.args.pkg_config!r}"
+        assert "-DTEST_PKG_ENABLED" not in result.args.CPPFLAGS, (
+            f"a 2.0.0 floor resolved against the 1.0.0 fixture — the floor was dropped. "
+            f"args.pkg_config={result.args.pkg_config!r}, CPPFLAGS={result.args.CPPFLAGS!r}"
         )
-        assert "-DTEST_PKG_ENABLED" in result.args.CPPFLAGS, (
-            f"a valid constraint did not resolve: CPPFLAGS={result.args.CPPFLAGS!r}"
-        )
-        assert "-ltestpkg" in result.args.LDFLAGS, (
-            f"a valid constraint did not resolve: LDFLAGS={result.args.LDFLAGS!r}"
-        )
-        assert not result.warnings, f"a valid constraint must warn about nothing, got {result.warnings!r}"
+        assert result.warnings, "an unmet version floor produced no diagnostic at all"
+        assert "pkg-config malformed package specification 'conditional >=2.0.0'" in self._categories(
+            result.warnings
+        ), f"the half-spaced constraint was not rejected before the probe: {result.warnings!r}"
 
     def test_absent_package_carrying_a_constraint_reported_as_absent(self, pkgconfig_env):
         """``<absent> >= 1.0`` is a missing package, not an unsatisfied floor.
