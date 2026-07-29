@@ -1544,7 +1544,7 @@ def _do_xxpend(args, name):
             setattr(args, name, attr)
 
 
-def _do_xxpend_list(args, name, destname=None, normalise=None):
+def _do_xxpend_list(args, name, destname=None):
     """List-typed sibling of ``_do_xxpend`` for attrs whose canonical form
     is a Python list (e.g. ``args.pkg_config``), not a flag string. The
     base attr is read from ``args.<destname or name.replace('-','_')>``,
@@ -1559,22 +1559,15 @@ def _do_xxpend_list(args, name, destname=None, normalise=None):
     so consumers of ``--prepend-PKG-CONFIG`` / ``--append-PKG-CONFIG``
     get the same composition semantics that compiler-flag slots have.
 
-    *normalise* is an optional ``list[str] -> list[str]`` callable applied
-    to the base and to each xxpend group before the dedup pass, so that
-    dedup compares canonical elements rather than whatever shape the conf
-    file happened to spell (a conf-file value is one string no matter how
-    much whitespace it contains: ``pkg-config = zlib libxml-2.0`` arrives
-    as the single element ``"zlib libxml-2.0"``). It must be idempotent —
-    ``substitutions()`` re-runs tier-one after external fetches widen
-    INCLUDE, so this function runs more than once over the same attrs.
-    Callers that pass nothing keep identity behaviour.
+    Dedup compares elements verbatim, so a caller whose conf surface can
+    spell one logical entry more than one way normalises the three attrs
+    before calling (see the pkg-config call site).
     """
     dest = (destname or name).lower().replace("-", "_")
-    normalise_fn = normalise if normalise is not None else list
-    base = normalise_fn(list(getattr(args, dest, []) or []))
+    base = list(getattr(args, dest, []) or [])
     for xx in ("prepend", "append"):
         xxpendname = f"{xx}_{dest}"
-        xxpendattr = normalise_fn(list(getattr(args, xxpendname, None) or []))
+        xxpendattr = getattr(args, xxpendname, None) or []
         extras = [v for v in xxpendattr if v not in base]
         if not extras:
             continue
@@ -1705,10 +1698,14 @@ def _tier_one_modifications(args):
     # args.pkg_config is a list of package specs (not a flag string), so
     # it needs the list-typed merge — _do_xxpend would " ".join() it into
     # a single space-separated string and break downstream consumers.
-    # The tokenizer makes args.pkg_config one spec per element regardless
-    # of how the conf file spelled it, which is both what the dedup pass
-    # needs and what any consumer inspecting args.pkg_config expects.
-    _do_xxpend_list(args, "pkg-config", normalise=tokenize_pkg_config_specs)
+    # Tokenizing all three attrs first makes one element one spec however
+    # the conf file spelled it, which is both what the dedup pass needs
+    # and what any consumer inspecting them expects. The tokenizer is
+    # idempotent, so the re-run of tier one that substitutions() does
+    # after external fetches widen INCLUDE is a no-op here.
+    for pkg_config_attr in ("pkg_config", "prepend_pkg_config", "append_pkg_config"):
+        setattr(args, pkg_config_attr, tokenize_pkg_config_specs(getattr(args, pkg_config_attr, None) or []))
+    _do_xxpend_list(args, "pkg-config")
 
     # ct-cake's hook lists get the same treatment. The bare
     # prebuild-script / postbuild-script conf keys are last-writer-wins

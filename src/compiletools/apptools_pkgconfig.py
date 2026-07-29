@@ -43,8 +43,8 @@ module stays decoupled from the parser machinery still living in
 ``apptools.<name>`` call sites, ``from compiletools.apptools import ...``
 importers, and test/patch targets keep working with identical object
 identity. ``apptools.clear_cache`` fans out to
-:func:`clear_cache` here to clear the moved ``cached_pkg_config`` memo so the
-net set of cleared caches is identical to the pre-split implementation.
+:func:`clear_cache` here to clear both the result memo and the package-spec
+existence/diagnostic memo.
 """
 
 import functools
@@ -60,7 +60,7 @@ from typing import Literal
 import compiletools.wrappedos
 from compiletools.utils import split_command_cached
 
-_PKG_CONFIG_COMPARISON_RE = re.compile(r"^(==|>=|<=|!=|=|<|>)(.*)$")
+_PKG_CONFIG_COMPARISON_RE = re.compile(r"^(?:==|>=|<=|!=|=|<|>)(?P<operand>.*)$")
 _PKG_CONFIG_TRAILING_COMPARISON_RE = re.compile(r"^.+?(?:==|>=|<=|!=|=|<|>)$")
 
 
@@ -71,52 +71,42 @@ def tokenize_pkg_config_specs(values: list[str]) -> list[str]:
     whitespace-separated conf value in one list element (``["a b c"]``),
     while repeated CLI options normally arrive as separate elements.  Magic
     ``//#PKG-CONFIG=`` values have the former shape as well. Normalize each
-    element independently, then concatenate the specs: an element boundary is
-    a real separator and must never supply a missing version operand to its
+    element and comma-delimited fragment independently, then concatenate the
+    specs: neither boundary may supply a missing version operand to its
     predecessor. Join a package name to an adjacent comparison and version
-    within each element so the per-package fallback never mistakes ``>=`` or
-    ``1.2`` for package names. Commas are package separators too, matching
-    pkg-config's accepted input grammar.
+    within each fragment so the per-package fallback never mistakes ``>=`` or
+    ``1.2`` for package names.
 
     Attached forms such as ``zlib>=1.2`` are already one token and remain so.
-    Invalid half-spaced forms (``zlib >=1.2`` and ``zlib>= 1.2``) are kept
-    together so they produce one diagnostic rather than an invented package
-    named ``>=1.2`` or ``1.2``. A trailing comparison without a version also
-    remains attached to its package for the same reason.
+    Half-spaced forms remain one diagnostic unit but are rejected before a
+    probe: pkgconf can accept ``zlib >=1.2`` after silently consuming the
+    first version character into the operator, while ``zlib>= 1.2`` becomes
+    two invented package names. A trailing comparison without a version also
+    remains attached so it produces one malformed diagnostic.
     """
     specs: list[str] = []
     for value in values:
-        try:
-            tokens = shlex.split(value.replace(",", " "))
-        except ValueError:
-            tokens = value.replace(",", " ").split()
+        for fragment in value.split(","):
+            try:
+                tokens = shlex.split(fragment)
+            except ValueError:
+                tokens = fragment.split()
 
-        i = 0
-        while i < len(tokens):
-            package = tokens[i]
+            i = 0
+            while i < len(tokens):
+                package = tokens[i]
+                spec_length = 1
+                if _PKG_CONFIG_TRAILING_COMPARISON_RE.fullmatch(package) and i + 1 < len(tokens):
+                    spec_length = 2
+                elif i + 1 < len(tokens):
+                    comparison = _PKG_CONFIG_COMPARISON_RE.fullmatch(tokens[i + 1])
+                    if comparison is not None:
+                        spec_length = 2
+                        if not comparison.group("operand") and i + 2 < len(tokens):
+                            spec_length = 3
 
-            if _PKG_CONFIG_TRAILING_COMPARISON_RE.fullmatch(package) and i + 1 < len(tokens):
-                specs.append(f"{package} {tokens[i + 1]}")
-                i += 2
-                continue
-
-            if i + 1 < len(tokens):
-                comparison = _PKG_CONFIG_COMPARISON_RE.fullmatch(tokens[i + 1])
-                if comparison is not None:
-                    if comparison.group(2):
-                        specs.append(f"{package} {tokens[i + 1]}")
-                        i += 2
-                        continue
-                    if i + 2 < len(tokens):
-                        specs.append(f"{package} {tokens[i + 1]} {tokens[i + 2]}")
-                        i += 3
-                        continue
-                    specs.append(f"{package} {tokens[i + 1]}")
-                    i += 2
-                    continue
-
-            specs.append(package)
-            i += 1
+                specs.append(" ".join(tokens[i : i + spec_length]))
+                i += spec_length
 
     return specs
 
@@ -148,7 +138,7 @@ def _pkg_config_constraint_package(spec: str) -> tuple[str | None, bool]:
     comparison = _PKG_CONFIG_COMPARISON_RE.fullmatch(tokens[1])
     if comparison is None:
         return None, False
-    if not comparison.group(2) and len(tokens) < 3:
+    if comparison.group("operand") or len(tokens) < 3:
         return None, True
     return tokens[0], False
 
@@ -171,7 +161,11 @@ def _cached_pkg_config_exists(package: str) -> bool:
     """Check one package spec once and emit a stable failure category."""
     bare_package, malformed = _pkg_config_constraint_package(package)
     if malformed:
-        _warn_pkg_config(f"pkg-config malformed package specification {package!r}")
+        _warn_pkg_config(
+            f"pkg-config malformed package specification {package!r}",
+            "comparison operators require a package and version separated by spaces; "
+            "otherwise pkg-config may invent package names or silently corrupt the version requirement",
+        )
         return False
 
     exists_result = subprocess.run(
@@ -494,7 +488,13 @@ def _setup_pkg_config_overrides_locked(context, verbose, prepend_paths, append_p
 
 
 def _add_flags_from_pkg_config(args):
-    packages = tokenize_pkg_config_specs(list(args.pkg_config))
+    """Add flags for the package specs already canonicalized on ``args``.
+
+    ``_tier_one_modifications`` tokenizes ``args.pkg_config`` before this
+    function runs; ``_commonsubstitutions`` calls the two unconditionally in
+    that order.
+    """
+    packages = list(args.pkg_config)
     if not packages:
         return
 

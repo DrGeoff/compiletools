@@ -69,6 +69,28 @@ def test_executable_pathname(tmp_path, monkeypatch):
     assert exename == "bin/gcc.debug/" + outside.removeprefix("/") + "/my"
 
 
+def test_executable_pathname_resolves_a_symlinked_source_dir(tmp_path, monkeypatch):
+    """Two spellings of one source share one output path: the mirror is
+    derived from the realpath, not from the path as written.
+
+    The sibling tests all hand ``executable_pathname`` an already-resolved
+    path, so none of them can see the resolution step disappear. This one
+    reaches it by construction — it is the only test in this module that
+    passes a source whose directory is a symlink.
+    """
+    real_dir = os.path.join(os.path.realpath(str(tmp_path)), "code")
+    os.mkdir(real_dir)
+    linked_dir = os.path.join(os.path.realpath(str(tmp_path)), "link")
+    os.symlink(real_dir, linked_dir)
+    anchor = tmp_path / "anchor"
+    anchor.mkdir()
+    monkeypatch.chdir(anchor)
+    _args, namer = _make_namer("TestNamerSymlink")
+    via_link = namer.executable_pathname(os.path.join(linked_dir, "my.cpp"))
+    assert via_link == namer.executable_pathname(os.path.join(real_dir, "my.cpp"))
+    assert via_link == "bin/gcc.debug/" + real_dir.removeprefix("/") + "/my"
+
+
 def test_executable_pathname_at_anchor_root_stays_flat(tmp_path, monkeypatch):
     """A source directly at the anchor root keeps today's flat path —
     the mirror subdir is empty, so single-dir projects see no churn."""

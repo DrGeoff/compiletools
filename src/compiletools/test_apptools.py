@@ -2181,33 +2181,54 @@ class TestPkgConfigConfValueSplitting:
             )
 
     @pytest.mark.parametrize(
-        ("ct_conf_line", "axis_conf_line", "expected"),
+        ("ct_conf_line", "axis_conf_line", "expected", "expected_source_attrs"),
         [
-            ("pkg-config = conditional nested", "", ["conditional", "nested"]),
-            ("pkg-config = conditional, nested", "", ["conditional", "nested"]),
-            ("pkg-config = [conditional, nested]", "", ["conditional", "nested"]),
-            ("pkg-config = conditional >= 1.0.0, nested", "", ["conditional >= 1.0.0", "nested"]),
-            ("", "append-PKG-CONFIG = conditional nested", ["conditional", "nested"]),
-            ("", "prepend-PKG-CONFIG = conditional nested", ["conditional", "nested"]),
+            ("pkg-config = conditional nested", "", ["conditional", "nested"], {}),
+            ("pkg-config = conditional, nested", "", ["conditional", "nested"], {}),
+            ("pkg-config = [conditional, nested]", "", ["conditional", "nested"], {}),
+            ("pkg-config = conditional >= 1.0.0, nested", "", ["conditional >= 1.0.0", "nested"], {}),
+            (
+                "",
+                "append-PKG-CONFIG = conditional nested",
+                ["conditional", "nested"],
+                {"append_pkg_config": ["conditional", "nested"]},
+            ),
+            (
+                "",
+                "prepend-PKG-CONFIG = conditional nested",
+                ["conditional", "nested"],
+                {"prepend_pkg_config": ["conditional", "nested"]},
+            ),
         ],
     )
     def test_namespace_carries_one_element_per_spec_after_parseargs(
-        self, pkgconfig_env, ct_conf_line, axis_conf_line, expected
+        self, pkgconfig_env, ct_conf_line, axis_conf_line, expected, expected_source_attrs
     ):
-        """``args.pkg_config`` holds one element per specification once
-        ``parseargs`` has returned, on every surface that feeds it.
+        """All three pkg-config namespace attrs hold one element per
+        specification once ``parseargs`` has returned, on every surface that
+        feeds them.
 
-        The tokenizer runs at point-of-use inside
-        ``_add_flags_from_pkg_config``, so the flags come out right whether or
-        not the namespace was normalised — which is exactly why the sibling
-        tests here assert on flags and would stay green if the in-place
-        normalisation in ``_do_xxpend_list`` were removed. This is the one
-        assertion that holds the namespace shape itself, for the benefit of
-        any consumer that reads ``args.pkg_config`` without going through
-        ``_add_flags_from_pkg_config``.
+        ``_tier_one_modifications`` is the sole owner of this normalization —
+        ``_add_flags_from_pkg_config`` trusts the shape and does not
+        re-tokenize. That makes the shape a contract rather than a
+        convenience, and this is the only test that holds it. Its siblings
+        here all assert on the resulting flags, so every one of them would
+        stay green if the normalization moved or disappeared.
+
+        Asserting the merged ``args.pkg_config`` alone is not enough. The
+        accumulators are normalized *before* the merge, so a refactor that
+        normalized only the merged result would leave
+        ``args.append_pkg_config`` holding the raw conf shape
+        ``['conditional nested']`` while every existing assertion in this
+        class still passed. Any consumer reading the accumulator attrs
+        directly would then see a whitespace-joined string where the bare key
+        gives it a list.
 
         A version constraint keeps its internal space: ``conditional >=
-        1.0.0`` is one specification, not three.
+        1.0.0`` is one specification, not three. Constraint *spelling* is
+        deliberately not asserted here — that boundary belongs to
+        ``apptools_pkgconfig``'s classifier and is pinned in
+        test_apptools_pkgconfig.py. This test is about list shape only.
         """
         result = _parseargs_with_pkg_config_conf(ct_conf_line, axis_conf_line=axis_conf_line)
 
@@ -2215,6 +2236,13 @@ class TestPkgConfigConfValueSplitting:
             f"args.pkg_config was not one element per specification: "
             f"got {result.args.pkg_config!r}, expected {expected!r}"
         )
+        for attr, attr_expected in expected_source_attrs.items():
+            assert list(getattr(result.args, attr)) == attr_expected, (
+                f"args.{attr} kept the raw conf shape instead of one element per "
+                f"specification: got {getattr(result.args, attr, '<unset>')!r}, "
+                f"expected {attr_expected!r}. The merged args.pkg_config is correct, "
+                f"so only an assertion on the accumulator itself catches this."
+            )
 
     def test_comma_separated_bare_conf_value_is_equivalent(self, pkgconfig_env):
         """``pkg-config = conditional, nested`` is the third of the three
@@ -2247,11 +2275,17 @@ class TestPkgConfigConfValueSplitting:
         """``pkg-config = conditional >= 1.0.0, nested`` — the form
         README.ct-config.rst gives as equivalent to the bracket spelling.
 
-        Constraint and comma interact: the comma has to end the spec without
-        being read as part of the version, and the space inside the
-        constraint has to not end it. Splitting on either character alone
-        gets one of the two wrong, so the combined form is the one worth
-        pinning rather than each separator on its own.
+        What this pins is the space inside the constraint: a tokenizer that
+        split on whitespace turns ``conditional >= 1.0.0`` into three bogus
+        package names, and both markers disappear.
+
+        It does not pin the comma, despite the name. With the version
+        operand present, collapsing the comma to a space leaves the scanner
+        with the same four tokens and the same two specs, so the assertions
+        below pass either way. The comma only becomes load-bearing when the
+        operand is missing and a dangling operator can reach across it —
+        that case is
+        :meth:`test_dangling_operator_does_not_reach_across_a_comma`.
         """
         bare = _parseargs_with_pkg_config_conf("pkg-config = conditional >= 1.0.0, nested")
         bracket = _parseargs_with_pkg_config_conf("pkg-config = [conditional >= 1.0.0, nested]")
@@ -2414,6 +2448,64 @@ class TestPkgConfigConfValueSplitting:
         assert not [c for c in categories if "nested" in c], (
             f"'nested' was queried as part of another spec: {categories!r}"
         )
+
+    def test_dangling_operator_does_not_reach_across_a_comma(self, pkgconfig_env):
+        """A comma ends a spec, so a trailing operator cannot take the next
+        package as its version operand.
+
+        This is the element-boundary case one line further in: both are
+        documented separators, but only the element boundary was guarded.
+        It is the worst-behaved member of the family — pkg-config compares
+        ``conditional``'s version against the literal string ``nested`` and
+        answers success, so the build loses ``nested``'s cflags and libs
+        with no diagnostic of any kind. The dangling operator must instead
+        be named malformed and ``nested`` must resolve on its own.
+        """
+        result = _parseargs_with_pkg_config_conf("pkg-config = conditional >=, nested")
+
+        categories = self._categories(result.warnings)
+        assert "-DTEST_PKG1_ENABLED" in result.args.CPPFLAGS, (
+            f"'nested' was swallowed as a version operand across the comma. "
+            f"args.pkg_config={result.args.pkg_config!r}, CPPFLAGS={result.args.CPPFLAGS!r}"
+        )
+        assert "pkg-config malformed package specification 'conditional >='" in categories, (
+            f"the dangling operator was not reported as malformed: {categories!r}"
+        )
+
+    def test_missing_space_after_the_operator_never_silently_drops_the_floor(self, pkgconfig_env):
+        """``pkg-config = conditional >=2.0.0`` against the 1.0.0 fixture
+        must not resolve.
+
+        This is the sharpest case in the module and the reason the
+        half-spaced form is rejected rather than passed through. pkg-config
+        swallows the version's first character into the operator token, so
+        it enforces ``>= .0.0`` — which 1.0.0 satisfies — and exits 0.
+        Measured on pkgconf 1.4.2::
+
+            conditional >= 2.0.0    rc=1   required version is '>= 2.0.0'
+            conditional >=2.0.0     rc=0   floor decayed to '>= .0.0'
+            conditional >=0.5       rc=1   required version is '>= .5'
+
+        So the failure is not an invented package name that someone
+        eventually notices in a warning. It is a build that links 1.0.0
+        while its conf file asks for 2.0.0 or newer, with an empty warning
+        list. The sibling assertion is the one that fails loudly if the
+        classifier ever lets this spelling reach a probe again.
+
+        A version-floor test needs a floor the fixture does NOT meet:
+        ``conditional >=1.0.0`` passes either way, because 1.0.0 satisfies
+        both the requested floor and the corrupted one.
+        """
+        result = _parseargs_with_pkg_config_conf("pkg-config = conditional >=2.0.0")
+
+        assert "-DTEST_PKG_ENABLED" not in result.args.CPPFLAGS, (
+            f"a 2.0.0 floor resolved against the 1.0.0 fixture — the floor was dropped. "
+            f"args.pkg_config={result.args.pkg_config!r}, CPPFLAGS={result.args.CPPFLAGS!r}"
+        )
+        assert result.warnings, "an unmet version floor produced no diagnostic at all"
+        assert "pkg-config malformed package specification 'conditional >=2.0.0'" in self._categories(
+            result.warnings
+        ), f"the half-spaced constraint was not rejected before the probe: {result.warnings!r}"
 
     def test_absent_package_carrying_a_constraint_reported_as_absent(self, pkgconfig_env):
         """``<absent> >= 1.0`` is a missing package, not an unsatisfied floor.
