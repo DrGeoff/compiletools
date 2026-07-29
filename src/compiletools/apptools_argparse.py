@@ -308,11 +308,11 @@ def add_common_arguments(cap, argv=None, variant=None):
         dest="pkg_config",
         help=(
             "Query pkg-config to obtain libs and flags for these packages. "
-            "In a conf file this key does not split on whitespace: use the "
-            "[a, b, c] list form for more than one package, e.g. "
-            "pkg-config = [zlib, libxml-2.0]. A package may carry a "
-            "version constraint, e.g. 'zlib >= 1.2' (spaces around the "
-            "operator required)."
+            "In a conf file, whitespace and commas both separate multiple "
+            "packages in one value (pkg-config = zlib libxml-2.0), same as "
+            "the [a, b, c] list form (pkg-config = [zlib, libxml-2.0]). A "
+            "package may carry a version constraint, e.g. 'zlib >= 1.2' "
+            "(spaces around the operator required)."
         ),
         action="append",
         default=[],
