@@ -583,6 +583,13 @@ the following are equivalent:
     pkg-config = zlib, libxml-2.0
     pkg-config = [zlib, libxml-2.0]
 
+The comma means two different things depending on which form is used.
+In the bare (non-bracket) form, the comma is pkg-config's own package
+separator, split out by the tokenizer. In the ``[a, b, c]`` list form,
+the comma is the conf-file list-literal separator, split out by
+``ast.literal_eval()`` before the tokenizer ever sees the values. Both
+land on the same two packages, by different mechanisms.
+
 A ``pkg-config`` entry may carry a version constraint (``=``, ``==``,
 ``!=``, ``<``, ``<=``, ``>``, ``>=``), e.g. ``zlib >= 1.2``. Spaces
 around the operator are required — this matches pkg-config's own
@@ -597,6 +604,11 @@ above:
     pkg-config = zlib >= 1.2 libxml-2.0
     pkg-config = zlib >= 1.2, libxml-2.0
     pkg-config = [zlib >= 1.2, libxml-2.0]
+
+A version constraint with no package to qualify — an operator with
+nothing before it (``pkg-config = >= 1.2``) or nothing after it
+(``pkg-config = zlib >=`` with no version) — is rejected as a
+malformed package specification before pkg-config is ever invoked.
 
 **Environment Variable Mapping**
 
