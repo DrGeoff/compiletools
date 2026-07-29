@@ -60,7 +60,7 @@ from typing import Literal
 import compiletools.wrappedos
 from compiletools.utils import split_command_cached
 
-_PKG_CONFIG_COMPARISON_RE = re.compile(r"^(==|>=|<=|!=|=|<|>)(.*)$")
+_PKG_CONFIG_COMPARISON_RE = re.compile(r"^(?:==|>=|<=|!=|=|<|>)(?P<operand>.*)$")
 _PKG_CONFIG_TRAILING_COMPARISON_RE = re.compile(r"^.+?(?:==|>=|<=|!=|=|<|>)$")
 
 
@@ -71,12 +71,11 @@ def tokenize_pkg_config_specs(values: list[str]) -> list[str]:
     whitespace-separated conf value in one list element (``["a b c"]``),
     while repeated CLI options normally arrive as separate elements.  Magic
     ``//#PKG-CONFIG=`` values have the former shape as well. Normalize each
-    element independently, then concatenate the specs: an element boundary is
-    a real separator and must never supply a missing version operand to its
+    element and comma-delimited fragment independently, then concatenate the
+    specs: neither boundary may supply a missing version operand to its
     predecessor. Join a package name to an adjacent comparison and version
-    within each element so the per-package fallback never mistakes ``>=`` or
-    ``1.2`` for package names. Commas are package separators too, matching
-    pkg-config's accepted input grammar.
+    within each fragment so the per-package fallback never mistakes ``>=`` or
+    ``1.2`` for package names.
 
     Attached forms such as ``zlib>=1.2`` are already one token and remain so.
     Invalid half-spaced forms (``zlib >=1.2`` and ``zlib>= 1.2``) are kept
@@ -86,37 +85,27 @@ def tokenize_pkg_config_specs(values: list[str]) -> list[str]:
     """
     specs: list[str] = []
     for value in values:
-        try:
-            tokens = shlex.split(value.replace(",", " "))
-        except ValueError:
-            tokens = value.replace(",", " ").split()
+        for fragment in value.split(","):
+            try:
+                tokens = shlex.split(fragment)
+            except ValueError:
+                tokens = fragment.split()
 
-        i = 0
-        while i < len(tokens):
-            package = tokens[i]
+            i = 0
+            while i < len(tokens):
+                package = tokens[i]
+                spec_length = 1
+                if _PKG_CONFIG_TRAILING_COMPARISON_RE.fullmatch(package) and i + 1 < len(tokens):
+                    spec_length = 2
+                elif i + 1 < len(tokens):
+                    comparison = _PKG_CONFIG_COMPARISON_RE.fullmatch(tokens[i + 1])
+                    if comparison is not None:
+                        spec_length = 2
+                        if not comparison.group("operand") and i + 2 < len(tokens):
+                            spec_length = 3
 
-            if _PKG_CONFIG_TRAILING_COMPARISON_RE.fullmatch(package) and i + 1 < len(tokens):
-                specs.append(f"{package} {tokens[i + 1]}")
-                i += 2
-                continue
-
-            if i + 1 < len(tokens):
-                comparison = _PKG_CONFIG_COMPARISON_RE.fullmatch(tokens[i + 1])
-                if comparison is not None:
-                    if comparison.group(2):
-                        specs.append(f"{package} {tokens[i + 1]}")
-                        i += 2
-                        continue
-                    if i + 2 < len(tokens):
-                        specs.append(f"{package} {tokens[i + 1]} {tokens[i + 2]}")
-                        i += 3
-                        continue
-                    specs.append(f"{package} {tokens[i + 1]}")
-                    i += 2
-                    continue
-
-            specs.append(package)
-            i += 1
+                specs.append(" ".join(tokens[i : i + spec_length]))
+                i += spec_length
 
     return specs
 
@@ -148,7 +137,7 @@ def _pkg_config_constraint_package(spec: str) -> tuple[str | None, bool]:
     comparison = _PKG_CONFIG_COMPARISON_RE.fullmatch(tokens[1])
     if comparison is None:
         return None, False
-    if not comparison.group(2) and len(tokens) < 3:
+    if comparison.group("operand") or len(tokens) < 3:
         return None, True
     return tokens[0], False
 
