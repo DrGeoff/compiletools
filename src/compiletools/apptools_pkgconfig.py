@@ -19,6 +19,8 @@ process-wide ``PKG_CONFIG_PATH`` override state:
 
 * :func:`cached_pkg_config` -- ``@functools.cache``-memoised single-package
   ``pkg-config --cflags`` / ``--libs`` probe.
+* :func:`tokenize_pkg_config_specs` -- normalize conf, CLI, and magic-marker
+  values into individual package specs without splitting version constraints.
 * :func:`filter_pkg_config_cflags` -- rewrite ``-I`` to ``-isystem`` and drop
   default system include paths.
 * :func:`_batch_pkg_config` -- batched multi-package query with per-package
@@ -68,52 +70,53 @@ def tokenize_pkg_config_specs(values: list[str]) -> list[str]:
     Configargparse's ``action='append'`` representation can contain a whole
     whitespace-separated conf value in one list element (``["a b c"]``),
     while repeated CLI options normally arrive as separate elements.  Magic
-    ``//#PKG-CONFIG=`` values have the former shape as well.  Flatten both
-    representations, then join a package name to an adjacent comparison and
-    version so the per-package fallback never mistakes ``>=`` or ``1.2`` for
-    package names. Commas are package separators too, matching pkg-config's
-    accepted input grammar.
+    ``//#PKG-CONFIG=`` values have the former shape as well. Normalize each
+    element independently, then concatenate the specs: an element boundary is
+    a real separator and must never supply a missing version operand to its
+    predecessor. Join a package name to an adjacent comparison and version
+    within each element so the per-package fallback never mistakes ``>=`` or
+    ``1.2`` for package names. Commas are package separators too, matching
+    pkg-config's accepted input grammar.
 
     Attached forms such as ``zlib>=1.2`` are already one token and remain so.
-    Partly attached forms (``zlib >=1.2`` and ``zlib>= 1.2``) are joined too.
-    A trailing comparison without a version remains attached to its package,
-    allowing pkg-config's failure and our warning to name the malformed spec
-    rather than inventing a package named ``>=``.
+    Invalid half-spaced forms (``zlib >=1.2`` and ``zlib>= 1.2``) are kept
+    together so they produce one diagnostic rather than an invented package
+    named ``>=1.2`` or ``1.2``. A trailing comparison without a version also
+    remains attached to its package for the same reason.
     """
-    tokens: list[str] = []
+    specs: list[str] = []
     for value in values:
         try:
-            tokens.extend(shlex.split(value.replace(",", " ")))
+            tokens = shlex.split(value.replace(",", " "))
         except ValueError:
-            tokens.extend(value.replace(",", " ").split())
+            tokens = value.replace(",", " ").split()
 
-    specs: list[str] = []
-    i = 0
-    while i < len(tokens):
-        package = tokens[i]
+        i = 0
+        while i < len(tokens):
+            package = tokens[i]
 
-        if _PKG_CONFIG_TRAILING_COMPARISON_RE.fullmatch(package) and i + 1 < len(tokens):
-            specs.append(f"{package} {tokens[i + 1]}")
-            i += 2
-            continue
-
-        if i + 1 < len(tokens):
-            comparison = _PKG_CONFIG_COMPARISON_RE.fullmatch(tokens[i + 1])
-            if comparison is not None:
-                if comparison.group(2):
-                    specs.append(f"{package} {tokens[i + 1]}")
-                    i += 2
-                    continue
-                if i + 2 < len(tokens):
-                    specs.append(f"{package} {tokens[i + 1]} {tokens[i + 2]}")
-                    i += 3
-                    continue
+            if _PKG_CONFIG_TRAILING_COMPARISON_RE.fullmatch(package) and i + 1 < len(tokens):
                 specs.append(f"{package} {tokens[i + 1]}")
                 i += 2
                 continue
 
-        specs.append(package)
-        i += 1
+            if i + 1 < len(tokens):
+                comparison = _PKG_CONFIG_COMPARISON_RE.fullmatch(tokens[i + 1])
+                if comparison is not None:
+                    if comparison.group(2):
+                        specs.append(f"{package} {tokens[i + 1]}")
+                        i += 2
+                        continue
+                    if i + 2 < len(tokens):
+                        specs.append(f"{package} {tokens[i + 1]} {tokens[i + 2]}")
+                        i += 3
+                        continue
+                    specs.append(f"{package} {tokens[i + 1]}")
+                    i += 2
+                    continue
+
+            specs.append(package)
+            i += 1
 
     return specs
 
@@ -203,7 +206,7 @@ def _cached_pkg_config_exists(package: str) -> bool:
 
 @functools.cache
 def cached_pkg_config(package, option):
-    """Cache pkg-config results for package and option (--cflags or --libs)"""
+    """Cache pkg-config results for one package spec and output option."""
     if not _cached_pkg_config_exists(package):
         return ""
 
@@ -523,7 +526,7 @@ def _add_flags_from_pkg_config(args):
 
 
 def _batch_pkg_config(packages: list[str], option: str) -> dict[str, str]:
-    """Query pkg-config for all *packages* at once, returning {pkg: output}.
+    """Query pkg-config for all package specs, returning ``{spec: output}``.
 
     Fast path: validate all packages with a single ``--exists`` call, then
     query each with *option* (skipping the per-package ``--exists``).
