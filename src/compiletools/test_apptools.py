@@ -112,6 +112,45 @@ def _parseargs_for_variant(repo_root, argv, *, add_link=False):
             return apptools.parseargs(cap, argv, context=BuildContext())
 
 
+class _PkgConfigParseResult(SimpleNamespace):
+    """``args`` from a ``parseargs`` run plus the ``UserWarning`` texts it
+    emitted. Returned by :func:`_parseargs_with_pkg_config_conf`."""
+
+
+def _parseargs_with_pkg_config_conf(ct_conf_line, *, axis_conf_line=""):
+    """Run the full ``parseargs`` pipeline over a one-axis temp repo carrying
+    ``ct_conf_line`` in its project ``ct.conf`` and ``axis_conf_line`` in
+    ``ct.conf.d/gcc.conf``, capturing every warning raised along the way.
+
+    ``clear_cache()`` runs first because ``cached_pkg_config`` memoises on
+    ``(package, option)`` and the warning is raised inside it — a cache hit
+    from an earlier test would return the empty string silently and the
+    warning assertions would see nothing. ``simplefilter('always')`` defeats
+    the per-location ``__warningregistry__`` dedup for the same reason.
+
+    Link arguments are added so ``args.LDFLAGS`` exists and
+    ``_add_flags_from_pkg_config`` takes its ``want_libs`` branch.
+    """
+    with _temp_repo_with_ct_conf("gcc", "gcc") as (repo_root, conf_d):
+        with open(os.path.join(repo_root, "ct.conf"), "a") as fh:
+            if ct_conf_line:
+                fh.write(ct_conf_line + "\n")
+        with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+            fh.write("CC = gcc\nCXX = g++\nLD = g++\n")
+            if axis_conf_line:
+                fh.write(axis_conf_line + "\n")
+
+        clear_cache()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            args = _parseargs_for_variant(repo_root, ["--variant=gcc", "--no-git-root"], add_link=True)
+
+    return _PkgConfigParseResult(
+        args=args,
+        warnings=[str(entry.message) for entry in caught],
+    )
+
+
 def _stub_gitroot_and_chdir(monkeypatch, target):
     """Stub git_utils.find_git_root to return str(target) and chdir into target."""
     monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: str(target))
@@ -1958,7 +1997,7 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
             f"{sorted(o for o in opts if 'PKG-CONFIG' in o)!r}"
         )
 
-    @pytest.mark.filterwarnings("ignore:pkg-config package .* not found:UserWarning")
+    @pytest.mark.filterwarnings("ignore:.*'(pkg_gcc_axis|pkg_release_axis|pkg_extras_axis)'.*:UserWarning")
     def test_three_axis_append_pkg_config_all_present(self):
         """``append-PKG-CONFIG = <pkg>`` in three layered axis confs must
         accumulate into ``args.pkg_config`` end-to-end — same accumulation
@@ -1968,6 +2007,13 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
         in conf files is last-writer-wins, so per-axis pkg-config additions
         (think: ``release.conf`` adding a runtime tracing lib, ``debug.conf``
         adding a leak checker) get silently dropped.
+
+        The suppression is scoped to the three names this test deliberately
+        invents. It used to read ``pkg-config package .* not found``, which
+        also swallowed a warning naming the *joined* value
+        ``'pkg_gcc_axis pkg_release_axis pkg_extras_axis'`` — the fingerprint
+        of the conf whitespace collapse. Keep the names quoted in the pattern:
+        the quotes are what stop a joined value from matching.
         """
         with _temp_repo_with_ct_conf("gcc.release.extras", "gcc, release, extras") as (repo_root, conf_d):
             with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
@@ -1988,13 +2034,17 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
                     f"args.append_pkg_config={getattr(args, 'append_pkg_config', '<unset>')!r}"
                 )
 
-    @pytest.mark.filterwarnings("ignore:pkg-config package .* not found:UserWarning")
+    @pytest.mark.filterwarnings("ignore:.*'(pkg_from_gcc|pkg_from_release|pkg_from_cli)'.*:UserWarning")
     def test_cli_append_pkg_config_combines_with_conf(self):
         """A CLI ``--append-PKG-CONFIG=<pkg>`` token must combine with conf-file
         ``append-PKG-CONFIG = ...`` values rather than suppressing them via
         configargparse's ``already_on_command_line`` check. Mirrors the
         existing ``test_cli_append_combines_with_conf_append`` regression
         for the CXXFLAGS slot.
+
+        Suppression narrowed from ``pkg-config package .* not found`` to the
+        three invented names, for the reason given in
+        ``test_three_axis_append_pkg_config_all_present``.
         """
         with _temp_repo_with_ct_conf("gcc.release", "gcc, release") as (repo_root, conf_d):
             with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
@@ -2018,7 +2068,7 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
                     f"args.append_pkg_config={getattr(args, 'append_pkg_config', '<unset>')!r}"
                 )
 
-    @pytest.mark.filterwarnings("ignore:pkg-config package .* not found:UserWarning")
+    @pytest.mark.filterwarnings("ignore:.*'(pkg_base|pkg_prepended|pkg_appended)'.*:UserWarning")
     def test_prepend_pkg_config_lands_before_existing(self):
         """``--prepend-PKG-CONFIG=foo`` must land ahead of any existing
         ``--pkg-config`` / ``append-PKG-CONFIG`` entries in
@@ -2049,6 +2099,206 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
             assert pkgs.index("pkg_base") < pkgs.index("pkg_appended"), (
                 f"append should land after base --pkg-config: {pkgs!r}"
             )
+
+
+@pytest.mark.usefixtures("parsers_reset")
+class TestPkgConfigConfValueSplitting:
+    """Regression coverage for the conf-surface pkg-config whitespace collapse.
+
+    Whitespace is not a value separator for list-valued conf keys: a
+    ``pkg-config = a b c`` line arrives at ``args.pkg_config`` as the single
+    element ``'a b c'``. That shape survived review because the batch fast
+    path in ``_batch_pkg_config`` hands the element to pkg-config as one argv
+    token and pkg-config splits it itself. The per-package fallback — taken
+    whenever *any* listed package is missing — instead queries a package
+    literally named ``'a b c'``, so every co-listed present package loses its
+    cflags and libs and the warning names a package the user never wrote.
+
+    The naive repair (``entry.split()``) is wrong: pkg-config specs carry
+    whitespace-bearing version constraints, so ``'zlib >= 1.2'`` would become
+    three bogus package names and the version floor would be dropped on both
+    paths. ``tokenize_pkg_config_specs`` is the spec-aware split these tests
+    exercise end-to-end through ``parseargs``.
+
+    Every test drives the real conf hierarchy and the real ``pkg-config``
+    binary against the in-repo ``examples-features/pkgs/*.pc`` fixtures
+    (``conditional`` 1.0.0, ``nested`` 1.0.0, ``modified`` 2.0.0), so nothing
+    depends on which packages the host happens to have installed.
+    """
+
+    MISSING = "ct_bogus_absent_pkg"
+
+    def test_whitespace_and_list_literal_conf_forms_yield_the_same_packages(self, pkgconfig_env):
+        """``pkg-config = conditional nested`` and ``pkg-config =
+        [conditional, nested]`` must contribute identical flags.
+
+        The list literal is the only form that splits at the configargparse
+        layer — whitespace is not a value separator, so the first form arrives
+        as the single element ``'conditional nested'``. Users write both, and
+        the batch path happens to make them agree while the fallback path does
+        not, so the equivalence is asserted on the flags rather than on the
+        raw namespace shape.
+
+        This is the whole-list form of the collapse; the missing-package tests
+        below are the per-package form.
+        """
+        whitespace = _parseargs_with_pkg_config_conf(f"pkg-config = conditional nested {self.MISSING}")
+        listliteral = _parseargs_with_pkg_config_conf(f"pkg-config = [conditional, nested, {self.MISSING}]")
+
+        assert whitespace.args.CPPFLAGS == listliteral.args.CPPFLAGS, (
+            f"whitespace and list-literal conf forms produced different CPPFLAGS.\n"
+            f"  whitespace  args.pkg_config={whitespace.args.pkg_config!r}\n"
+            f"              CPPFLAGS={whitespace.args.CPPFLAGS!r}\n"
+            f"  listliteral args.pkg_config={listliteral.args.pkg_config!r}\n"
+            f"              CPPFLAGS={listliteral.args.CPPFLAGS!r}"
+        )
+        assert whitespace.args.LDFLAGS == listliteral.args.LDFLAGS, (
+            f"whitespace and list-literal conf forms produced different LDFLAGS.\n"
+            f"  whitespace  LDFLAGS={whitespace.args.LDFLAGS!r}\n"
+            f"  listliteral LDFLAGS={listliteral.args.LDFLAGS!r}"
+        )
+        for marker in ("-DTEST_PKG_ENABLED", "-DTEST_PKG1_ENABLED"):
+            assert marker in whitespace.args.CPPFLAGS, (
+                f"{marker} missing from the whitespace form: {whitespace.args.CPPFLAGS!r}"
+            )
+
+    def test_missing_package_does_not_discard_co_listed_present_package(self, pkgconfig_env):
+        """THE defect. A whitespace-joined value naming one present and one
+        absent package must still contribute the present package's cflags and
+        libs.
+
+        The absent package forces ``_batch_pkg_config`` onto its per-package
+        fallback, which is the only path that ever sees the collapsed element.
+        """
+        result = _parseargs_with_pkg_config_conf(f"pkg-config = conditional {self.MISSING}")
+
+        assert "-DTEST_PKG_ENABLED" in result.args.CPPFLAGS, (
+            f"conditional's cflags were discarded because {self.MISSING!r} is absent. "
+            f"args.pkg_config={result.args.pkg_config!r}, CPPFLAGS={result.args.CPPFLAGS!r}"
+        )
+        assert "-ltestpkg" in result.args.LDFLAGS, (
+            f"conditional's libs were discarded because {self.MISSING!r} is absent. "
+            f"args.pkg_config={result.args.pkg_config!r}, LDFLAGS={result.args.LDFLAGS!r}"
+        )
+
+    def test_missing_package_warning_names_only_the_missing_package(self, pkgconfig_env):
+        """The warning must name the absent package alone, never the joined
+        conf value.
+
+        Pre-fix this warned about a package called ``'conditional
+        ct_bogus_absent_pkg'`` — a name that appears in no ``.pc`` file and in
+        no conf key, which sends the reader looking for a package that does
+        not exist instead of the one that does.
+        """
+        result = _parseargs_with_pkg_config_conf(f"pkg-config = conditional {self.MISSING}")
+
+        assert result.warnings, "expected a warning naming the absent package, got none"
+        joined = [w for w in result.warnings if f"conditional {self.MISSING}" in w]
+        assert not joined, f"warning names the collapsed conf value rather than a package: {joined!r}"
+        assert any(self.MISSING in w for w in result.warnings), (
+            f"no warning names the absent package {self.MISSING!r}: {result.warnings!r}"
+        )
+        assert not [w for w in result.warnings if "conditional" in w and self.MISSING not in w], (
+            f"warned about the present package 'conditional': {result.warnings!r}"
+        )
+
+    def test_satisfied_version_floor_resolves_on_conf_surface(self, pkgconfig_env):
+        """``pkg-config = conditional >= 1.0.0`` (fixture is 1.0.0) must
+        resolve and contribute flags, with the operator and version never
+        queried as package names.
+
+        Unlike its siblings this passes on the unfixed code — the batch fast
+        path hands the whole element to pkg-config, which parses the
+        constraint itself. It is here as the guard against the naive repair:
+        an ``entry.split()`` fix turns this green case red by looking up
+        ``'>='`` and ``'1.0.0'`` as packages and dropping the floor, trading a
+        fallback-only bug for an always-on one.
+        """
+        result = _parseargs_with_pkg_config_conf("pkg-config = conditional >= 1.0.0")
+
+        assert "-DTEST_PKG_ENABLED" in result.args.CPPFLAGS, (
+            f"satisfied version floor did not resolve: CPPFLAGS={result.args.CPPFLAGS!r}"
+        )
+        assert "-ltestpkg" in result.args.LDFLAGS, (
+            f"satisfied version floor did not resolve: LDFLAGS={result.args.LDFLAGS!r}"
+        )
+        assert not result.warnings, f"a satisfied version floor must warn about nothing, got {result.warnings!r}"
+
+    def test_unsatisfied_version_floor_reported_as_version_failure(self, pkgconfig_env):
+        """``pkg-config = conditional >= 2.0`` against the 1.0.0 fixture must
+        be reported as an unsatisfied requirement, not as a missing package.
+
+        pkg-config already separates the two under ``--print-errors``
+        (``could not be satisfied`` versus ``was not found``); the warning has
+        to preserve that distinction or the user goes hunting for a ``.pc``
+        file that is sitting right there with the wrong version.
+        """
+        result = _parseargs_with_pkg_config_conf("pkg-config = conditional >= 2.0")
+
+        assert result.warnings, "expected a warning for the unsatisfied version floor, got none"
+        assert any("could not be satisfied" in w for w in result.warnings), (
+            f"unsatisfied version floor was not reported as a version failure: {result.warnings!r}"
+        )
+        assert not any("was not found" in w for w in result.warnings), (
+            f"unsatisfied version floor misreported as a missing package: {result.warnings!r}"
+        )
+
+    def test_version_constrained_spec_survives_fallback_alongside_missing_package(self, pkgconfig_env):
+        """A version-constrained spec co-listed with an absent package must
+        still resolve.
+
+        This is the intersection the two halves of the fix can each pass
+        alone and still fail together: the absent package forces the
+        per-package fallback, and the fallback is where the constraint has to
+        stay attached to its package name.
+        """
+        result = _parseargs_with_pkg_config_conf(f"pkg-config = conditional >= 1.0.0 {self.MISSING}")
+
+        assert "-DTEST_PKG_ENABLED" in result.args.CPPFLAGS, (
+            f"version-constrained spec lost its flags on the fallback path. "
+            f"args.pkg_config={result.args.pkg_config!r}, CPPFLAGS={result.args.CPPFLAGS!r}"
+        )
+        assert any(self.MISSING in w for w in result.warnings), (
+            f"no warning names the absent package {self.MISSING!r}: {result.warnings!r}"
+        )
+        assert not any("1.0.0" in w and "conditional" not in w for w in result.warnings), (
+            f"the version operand was queried as a package name: {result.warnings!r}"
+        )
+
+    def test_append_pkg_config_whitespace_joined_value_splits_like_bare_key(self, pkgconfig_env):
+        """``append-PKG-CONFIG = conditional <absent>`` must behave exactly as
+        the bare ``pkg-config`` key does.
+
+        The accumulating surface is the one the ``--pkg-config`` help text
+        steers conf files towards, so it must not be the one that keeps the
+        collapse.
+        """
+        result = _parseargs_with_pkg_config_conf("", axis_conf_line=f"append-PKG-CONFIG = conditional {self.MISSING}")
+
+        assert "-DTEST_PKG_ENABLED" in result.args.CPPFLAGS, (
+            f"append-PKG-CONFIG dropped the present package. "
+            f"args.pkg_config={result.args.pkg_config!r}, CPPFLAGS={result.args.CPPFLAGS!r}"
+        )
+        assert not [w for w in result.warnings if f"conditional {self.MISSING}" in w], (
+            f"append-PKG-CONFIG warned about the collapsed value: {result.warnings!r}"
+        )
+
+    def test_prepend_pkg_config_whitespace_joined_value_splits_like_bare_key(self, pkgconfig_env):
+        """``prepend-PKG-CONFIG`` gets the same treatment as
+        ``append-PKG-CONFIG``.
+
+        Both route through ``_add_xxpend_argument`` and ``_do_xxpend_list``,
+        so a fix applied to one and not the other leaves a surface behind.
+        """
+        result = _parseargs_with_pkg_config_conf("", axis_conf_line=f"prepend-PKG-CONFIG = conditional {self.MISSING}")
+
+        assert "-DTEST_PKG_ENABLED" in result.args.CPPFLAGS, (
+            f"prepend-PKG-CONFIG dropped the present package. "
+            f"args.pkg_config={result.args.pkg_config!r}, CPPFLAGS={result.args.CPPFLAGS!r}"
+        )
+        assert not [w for w in result.warnings if f"conditional {self.MISSING}" in w], (
+            f"prepend-PKG-CONFIG warned about the collapsed value: {result.warnings!r}"
+        )
 
 
 @pytest.mark.usefixtures("parsers_reset")
