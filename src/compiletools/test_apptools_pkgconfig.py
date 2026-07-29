@@ -79,12 +79,12 @@ def test_add_flags_fallback_uses_real_package_specs(monkeypatch):
         LDFLAGS="",
     )
 
-    with pytest.warns(UserWarning, match=r"pkg-config package spec 'missing' failed") as recorded:
+    with pytest.warns(UserWarning, match=r"pkg-config package 'missing' not found") as recorded:
         pkgconfig._add_flags_from_pkg_config(args)
 
-    assert {str(w.message) for w in recorded} == {
-        "pkg-config package spec 'missing' failed: Package missing was not found in the pkg-config search path."
-    }
+    assert len(recorded) == 1
+    assert str(recorded[0].message).startswith("pkg-config package 'missing' not found")
+    assert "present missing" not in str(recorded[0].message)
     assert "-isystem /present/include" in args.CPPFLAGS
     assert "-DPRESENT" in args.CFLAGS
     assert "-DPRESENT" in args.CXXFLAGS
@@ -119,6 +119,8 @@ def test_batch_fast_path_keeps_constraint_as_one_spec(monkeypatch):
 
 def test_unsatisfied_version_floor_warning_names_the_full_spec(monkeypatch):
     def fake_run(cmd, **_kwargs):
+        if cmd[-1] == "zlib":
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         return subprocess.CompletedProcess(
             cmd,
             1,
@@ -138,22 +140,40 @@ def test_unsatisfied_version_floor_warning_names_the_full_spec(monkeypatch):
         CXXFLAGS="",
     )
 
-    with pytest.warns(UserWarning, match=r"zlib >= 999.*could not be satisfied"):
+    with pytest.warns(UserWarning, match=r"pkg-config version requirement 'zlib >= 999' not satisfied"):
         pkgconfig._add_flags_from_pkg_config(args)
 
 
-def test_malformed_trailing_operator_gets_an_explicit_diagnostic(monkeypatch):
+def test_missing_constrained_package_warning_names_the_bare_package(monkeypatch):
     def fake_run(cmd, **_kwargs):
-        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="translated diagnostic")
 
     monkeypatch.setattr(pkgconfig.subprocess, "run", fake_run)
     args = SimpleNamespace(
-        pkg_config=["zlib >="],
+        pkg_config=["ghost >= 1.0"],
         verbose=0,
         CPPFLAGS="",
         CFLAGS="",
         CXXFLAGS="",
     )
 
-    with pytest.warns(UserWarning, match=r"zlib >=.*invalid or incomplete package specification"):
+    with pytest.warns(UserWarning, match=r"pkg-config package 'ghost' not found"):
+        pkgconfig._add_flags_from_pkg_config(args)
+
+
+@pytest.mark.parametrize("spec", ["zlib >=", ">= 1.2", ">=1.2"])
+def test_malformed_comparison_gets_an_explicit_diagnostic_without_a_probe(monkeypatch, spec):
+    def fail_if_called(*_args, **_kwargs):
+        pytest.fail("malformed specs must not invoke pkg-config")
+
+    monkeypatch.setattr(pkgconfig.subprocess, "run", fail_if_called)
+    args = SimpleNamespace(
+        pkg_config=[spec],
+        verbose=0,
+        CPPFLAGS="",
+        CFLAGS="",
+        CXXFLAGS="",
+    )
+
+    with pytest.warns(UserWarning, match=rf"pkg-config malformed package specification {spec!r}"):
         pkgconfig._add_flags_from_pkg_config(args)

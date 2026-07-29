@@ -130,9 +130,47 @@ def clear_cache():
     _cached_pkg_config_exists.cache_clear()
 
 
+def _pkg_config_constraint_package(spec: str) -> tuple[str | None, bool]:
+    """Return ``(bare_package, malformed)`` for one tokenized spec."""
+    tokens = spec.split()
+    if not tokens or tokens[0][0] in "<>=!":
+        return None, True
+
+    if _PKG_CONFIG_TRAILING_COMPARISON_RE.fullmatch(tokens[0]):
+        return None, True
+
+    if len(tokens) < 2:
+        return None, False
+
+    comparison = _PKG_CONFIG_COMPARISON_RE.fullmatch(tokens[1])
+    if comparison is None:
+        return None, False
+    if not comparison.group(2) and len(tokens) < 3:
+        return None, True
+    return tokens[0], False
+
+
+def _pkg_config_stderr(result: subprocess.CompletedProcess[str]) -> str:
+    stderr = result.stderr
+    if isinstance(stderr, bytes):
+        return stderr.decode(errors="replace").strip()
+    return stderr.strip() if isinstance(stderr, str) else ""
+
+
+def _warn_pkg_config(message: str, detail: str = "") -> None:
+    if detail:
+        message = f"{message}: {detail}"
+    warnings.warn(message, UserWarning, stacklevel=4)
+
+
 @functools.cache
 def _cached_pkg_config_exists(package: str) -> bool:
-    """Check one package spec once and report pkg-config's own diagnostic."""
+    """Check one package spec once and emit a stable failure category."""
+    bare_package, malformed = _pkg_config_constraint_package(package)
+    if malformed:
+        _warn_pkg_config(f"pkg-config malformed package specification {package!r}")
+        return False
+
     exists_result = subprocess.run(
         ["pkg-config", "--print-errors", "--exists", package],
         capture_output=True,
@@ -142,17 +180,24 @@ def _cached_pkg_config_exists(package: str) -> bool:
     if exists_result.returncode == 0:
         return True
 
-    stderr = exists_result.stderr
-    if isinstance(stderr, bytes):
-        stderr = stderr.decode(errors="replace")
-    detail = stderr.strip() if isinstance(stderr, str) else ""
-    if not detail:
-        detail = "invalid or incomplete package specification"
-    warnings.warn(
-        f"pkg-config package spec {package!r} failed: {detail}",
-        UserWarning,
-        stacklevel=3,
+    detail = _pkg_config_stderr(exists_result)
+    if bare_package is None:
+        _warn_pkg_config(f"pkg-config package {package!r} not found", detail)
+        return False
+
+    bare_result = subprocess.run(
+        ["pkg-config", "--print-errors", "--exists", bare_package],
+        capture_output=True,
+        check=False,
+        text=True,
     )
+    if bare_result.returncode == 0:
+        _warn_pkg_config(f"pkg-config version requirement {package!r} not satisfied", detail)
+    else:
+        _warn_pkg_config(
+            f"pkg-config package {bare_package!r} not found while evaluating {package!r}",
+            detail or _pkg_config_stderr(bare_result),
+        )
     return False
 
 
@@ -485,19 +530,27 @@ def _batch_pkg_config(packages: list[str], option: str) -> dict[str, str]:
     If the batch ``--exists`` fails, fall back to per-package cached calls
     which handle missing packages individually.
     """
-    # Single --exists check for all packages at once
+    # Malformed specs are diagnosed without invoking pkg-config. Keep them out
+    # of the batch so valid co-listed packages can still use the fast path.
+    malformed = [pkg for pkg in packages if _pkg_config_constraint_package(pkg)[1]]
+    out = {pkg: cached_pkg_config(pkg, option) for pkg in malformed}
+    query_packages = [pkg for pkg in packages if pkg not in out]
+    if not query_packages:
+        return out
+
+    # Single --exists check for all valid package specs at once
     exists = subprocess.run(
-        ["pkg-config", "--exists"] + packages,
+        ["pkg-config", "--exists"] + query_packages,
         capture_output=True,
         check=False,
     )
     if exists.returncode != 0:
         # At least one package is missing — fall back to per-package
-        return {pkg: cached_pkg_config(pkg, option) for pkg in packages}
+        out.update({pkg: cached_pkg_config(pkg, option) for pkg in query_packages})
+        return out
 
     # All packages exist — query each without the redundant --exists check.
-    out: dict[str, str] = {}
-    for pkg in packages:
+    for pkg in query_packages:
         r = subprocess.run(
             ["pkg-config", option, pkg],
             stdout=subprocess.PIPE,
