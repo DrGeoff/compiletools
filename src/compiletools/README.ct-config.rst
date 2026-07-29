@@ -557,6 +557,59 @@ supports the following features:
     # Python list (for markers)
     exemarkers = [main(,main (,wxIMPLEMENT_APP]
 
+Whitespace does not separate values for list-valued conf keys in
+general. A bare whitespace-separated value is a single string, not
+multiple list elements — use the ``[a, b, c]`` list form for more than
+one value:
+
+.. code-block:: ini
+
+    # One list element, the literal string
+    # "/opt/vendor-a/include /opt/vendor-b/include" — NOT two directories
+    append-INCLUDE = /opt/vendor-a/include /opt/vendor-b/include
+
+    # Two directories
+    append-INCLUDE = [/opt/vendor-a/include, /opt/vendor-b/include]
+
+``pkg-config`` (and its ``append-PKG-CONFIG`` / ``prepend-PKG-CONFIG``
+accumulators) is a documented exception: package specs are tokenized
+before use, so whitespace and commas both separate packages within a
+single value, in addition to the ``[a, b, c]`` list form. All three of
+the following are equivalent:
+
+.. code-block:: ini
+
+    pkg-config = zlib libxml-2.0
+    pkg-config = zlib, libxml-2.0
+    pkg-config = [zlib, libxml-2.0]
+
+The comma means two different things depending on which form is used.
+In the bare (non-bracket) form, the comma is pkg-config's own package
+separator, split out by the tokenizer. In the ``[a, b, c]`` list form,
+the comma is the conf-file list-literal separator, split out by
+``ast.literal_eval()`` before the tokenizer ever sees the values. Both
+land on the same two packages, by different mechanisms.
+
+A ``pkg-config`` entry may carry a version constraint (``=``, ``==``,
+``!=``, ``<``, ``<=``, ``>``, ``>=``), e.g. ``zlib >= 1.2``. Spaces
+around the operator are required — this matches pkg-config's own
+grammar, where ``zlib>=1.2`` (no spaces) is parsed as a package
+literally named ``zlib>=1.2``, not a constraint. The operator and
+version stay attached to the package they qualify and are never
+resolved as a separate package, in any of the three equivalent forms
+above:
+
+.. code-block:: ini
+
+    pkg-config = zlib >= 1.2 libxml-2.0
+    pkg-config = zlib >= 1.2, libxml-2.0
+    pkg-config = [zlib >= 1.2, libxml-2.0]
+
+A version constraint with no package to qualify — an operator with
+nothing before it (``pkg-config = >= 1.2``) or nothing after it
+(``pkg-config = zlib >=`` with no version) — is rejected as a
+malformed package specification before pkg-config is ever invoked.
+
 **Environment Variable Mapping**
 
 Command-line options automatically map to environment variables by:

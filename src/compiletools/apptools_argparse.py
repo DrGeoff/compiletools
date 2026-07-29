@@ -306,7 +306,14 @@ def add_common_arguments(cap, argv=None, variant=None):
     cap.add_argument(
         "--pkg-config",
         dest="pkg_config",
-        help="Query pkg-config to obtain libs and flags for these packages.",
+        help=(
+            "Query pkg-config to obtain libs and flags for these packages. "
+            "In a conf file, whitespace and commas both separate multiple "
+            "packages in one value (pkg-config = zlib libxml-2.0), same as "
+            "the [a, b, c] list form (pkg-config = [zlib, libxml-2.0]). A "
+            "package may carry a version constraint, e.g. 'zlib >= 1.2' "
+            "(spaces around the operator required)."
+        ),
         action="append",
         default=[],
     )
@@ -315,10 +322,11 @@ def add_common_arguments(cap, argv=None, variant=None):
         "pkg-config",
         extrahelp=(
             "Merged into the --pkg-config package list; prepend lands "
-            "leftmost, append lands rightmost. Use the append-/prepend- "
-            "form in conf files so values accumulate across the variant "
-            "hierarchy instead of last-writer-wins clobbering the bare "
-            "pkg-config = ... key."
+            "leftmost, append lands rightmost. Use the append-PKG-CONFIG / "
+            "prepend-PKG-CONFIG form in conf files (uppercase — the "
+            "lowercase append-pkg-config spelling is silently ignored) so "
+            "values accumulate across the variant hierarchy instead of "
+            "last-writer-wins clobbering the bare pkg-config = ... key."
         ),
     )
     _add_xxpend_argument(
