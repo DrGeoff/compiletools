@@ -612,10 +612,10 @@ without saying anything:
     # The only spelling that enforces the constraint you wrote
     pkg-config = zlib >= 1.2
 
-    # Rejected as malformed. pkg-config swallows the version's first
-    # character into the operator token, enforcing ">= .2" instead of
-    # ">= 1.2" -- so the floor you asked for silently disappears and the
-    # probe succeeds against a version that does not meet it
+    # Rejected as malformed. pkg-config drops the first version character
+    # into the operator token, enforcing ">= .2" instead of ">= 1.2", so
+    # it can silently accept an inadequate version or reject an adequate
+    # one depending only on which digit was eaten
     pkg-config = zlib >=1.2
 
     # Rejected as malformed. pkg-config reads two packages, "zlib>=" and
@@ -629,10 +629,12 @@ without saying anything:
 Four shapes are rejected as a malformed package specification before
 pkg-config is ever invoked, because passing them through would make
 pkg-config invent package names out of operators and version numbers,
-or enforce a version floor other than the one written: an operator with
-nothing before it (``pkg-config = >= 1.2``), an operator with nothing
-after it (``pkg-config = zlib >=``), and the two half-spaced forms
-above.
+or enforce a version floor other than the one written:
+
+- an operator with nothing before it — ``>= 1.2``, or ``>=1.2``
+- an operator with nothing after it — ``zlib >=``
+- a version attached to the operator — ``zlib >=1.2``
+- a package attached to the operator — ``zlib>= 1.2``
 
 Both separators are hard boundaries for this: a package specification
 never reaches across a comma, a newline, or a repeated conf key to find

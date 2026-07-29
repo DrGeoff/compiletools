@@ -2181,33 +2181,54 @@ class TestPkgConfigConfValueSplitting:
             )
 
     @pytest.mark.parametrize(
-        ("ct_conf_line", "axis_conf_line", "expected"),
+        ("ct_conf_line", "axis_conf_line", "expected", "expected_source_attrs"),
         [
-            ("pkg-config = conditional nested", "", ["conditional", "nested"]),
-            ("pkg-config = conditional, nested", "", ["conditional", "nested"]),
-            ("pkg-config = [conditional, nested]", "", ["conditional", "nested"]),
-            ("pkg-config = conditional >= 1.0.0, nested", "", ["conditional >= 1.0.0", "nested"]),
-            ("", "append-PKG-CONFIG = conditional nested", ["conditional", "nested"]),
-            ("", "prepend-PKG-CONFIG = conditional nested", ["conditional", "nested"]),
+            ("pkg-config = conditional nested", "", ["conditional", "nested"], {}),
+            ("pkg-config = conditional, nested", "", ["conditional", "nested"], {}),
+            ("pkg-config = [conditional, nested]", "", ["conditional", "nested"], {}),
+            ("pkg-config = conditional >= 1.0.0, nested", "", ["conditional >= 1.0.0", "nested"], {}),
+            (
+                "",
+                "append-PKG-CONFIG = conditional nested",
+                ["conditional", "nested"],
+                {"append_pkg_config": ["conditional", "nested"]},
+            ),
+            (
+                "",
+                "prepend-PKG-CONFIG = conditional nested",
+                ["conditional", "nested"],
+                {"prepend_pkg_config": ["conditional", "nested"]},
+            ),
         ],
     )
     def test_namespace_carries_one_element_per_spec_after_parseargs(
-        self, pkgconfig_env, ct_conf_line, axis_conf_line, expected
+        self, pkgconfig_env, ct_conf_line, axis_conf_line, expected, expected_source_attrs
     ):
-        """``args.pkg_config`` holds one element per specification once
-        ``parseargs`` has returned, on every surface that feeds it.
+        """All three pkg-config namespace attrs hold one element per
+        specification once ``parseargs`` has returned, on every surface that
+        feeds them.
 
-        The tokenizer runs at point-of-use inside
-        ``_add_flags_from_pkg_config``, so the flags come out right whether or
-        not the namespace was normalised — which is exactly why the sibling
-        tests here assert on flags and would stay green if the in-place
-        normalisation in ``_do_xxpend_list`` were removed. This is the one
-        assertion that holds the namespace shape itself, for the benefit of
-        any consumer that reads ``args.pkg_config`` without going through
-        ``_add_flags_from_pkg_config``.
+        ``_tier_one_modifications`` is the sole owner of this normalization —
+        ``_add_flags_from_pkg_config`` trusts the shape and does not
+        re-tokenize. That makes the shape a contract rather than a
+        convenience, and this is the only test that holds it. Its siblings
+        here all assert on the resulting flags, so every one of them would
+        stay green if the normalization moved or disappeared.
+
+        Asserting the merged ``args.pkg_config`` alone is not enough. The
+        accumulators are normalized *before* the merge, so a refactor that
+        normalized only the merged result would leave
+        ``args.append_pkg_config`` holding the raw conf shape
+        ``['conditional nested']`` while every existing assertion in this
+        class still passed. Any consumer reading the accumulator attrs
+        directly would then see a whitespace-joined string where the bare key
+        gives it a list.
 
         A version constraint keeps its internal space: ``conditional >=
-        1.0.0`` is one specification, not three.
+        1.0.0`` is one specification, not three. Constraint *spelling* is
+        deliberately not asserted here — that boundary belongs to
+        ``apptools_pkgconfig``'s classifier and is pinned in
+        test_apptools_pkgconfig.py. This test is about list shape only.
         """
         result = _parseargs_with_pkg_config_conf(ct_conf_line, axis_conf_line=axis_conf_line)
 
@@ -2215,6 +2236,13 @@ class TestPkgConfigConfValueSplitting:
             f"args.pkg_config was not one element per specification: "
             f"got {result.args.pkg_config!r}, expected {expected!r}"
         )
+        for attr, attr_expected in expected_source_attrs.items():
+            assert list(getattr(result.args, attr)) == attr_expected, (
+                f"args.{attr} kept the raw conf shape instead of one element per "
+                f"specification: got {getattr(result.args, attr, '<unset>')!r}, "
+                f"expected {attr_expected!r}. The merged args.pkg_config is correct, "
+                f"so only an assertion on the accumulator itself catches this."
+            )
 
     def test_comma_separated_bare_conf_value_is_equivalent(self, pkgconfig_env):
         """``pkg-config = conditional, nested`` is the third of the three
