@@ -2321,6 +2321,34 @@ class TestPkgConfigConfValueSplitting:
             f"{spec!r} was not classified as malformed: {categories!r}"
         )
 
+    def test_separate_conf_entries_do_not_bleed_across_the_element_boundary(self, pkgconfig_env):
+        """A trailing operator at the end of one conf entry must not absorb
+        the first package of the next entry.
+
+        Two conf entries for this key arrive as two list elements. Tokenizing
+        the concatenation rather than each element lets ``conditional >=``
+        swallow ``nested`` into a version comparison against the literal
+        string ``nested`` — which changes the resulting flags with no warning
+        at all, the worst shape this defect class takes. ``nested`` must
+        resolve on its own and the dangling operator must be named malformed.
+        """
+        result = _parseargs_with_pkg_config_conf(
+            "pkg-config = conditional >=",
+            axis_conf_line="append-PKG-CONFIG = nested",
+        )
+
+        categories = self._categories(result.warnings)
+        assert "-DTEST_PKG1_ENABLED" in result.args.CPPFLAGS, (
+            f"'nested' was absorbed by the preceding entry's dangling operator. "
+            f"args.pkg_config={result.args.pkg_config!r}, CPPFLAGS={result.args.CPPFLAGS!r}"
+        )
+        assert "pkg-config malformed package specification 'conditional >='" in categories, (
+            f"the dangling operator was not reported as malformed: {categories!r}"
+        )
+        assert not [c for c in categories if "nested" in c], (
+            f"'nested' was queried as part of another spec: {categories!r}"
+        )
+
     def test_absent_package_carrying_a_constraint_reported_as_absent(self, pkgconfig_env):
         """``<absent> >= 1.0`` is a missing package, not an unsatisfied floor.
 
