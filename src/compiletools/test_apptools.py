@@ -2128,6 +2128,17 @@ class TestPkgConfigConfValueSplitting:
 
     MISSING = "ct_bogus_absent_pkg"
 
+    @staticmethod
+    def _categories(warning_texts):
+        """Strip the supplementary native stderr from each warning.
+
+        Core owns three stable message forms and appends pkg-config's own
+        stderr after a ``': '`` separator. Only the owned part is a contract;
+        the native prose varies between pkg-config and pkgconf and across
+        locales, so assertions read this rather than the raw text.
+        """
+        return [text.split(": ", 1)[0] for text in warning_texts]
+
     def test_whitespace_and_list_literal_conf_forms_yield_the_same_packages(self, pkgconfig_env):
         """``pkg-config = conditional nested`` and ``pkg-config =
         [conditional, nested]`` must contribute identical flags.
@@ -2228,19 +2239,20 @@ class TestPkgConfigConfValueSplitting:
         """``pkg-config = conditional >= 2.0`` against the 1.0.0 fixture must
         be reported as an unsatisfied requirement, not as a missing package.
 
-        pkg-config already separates the two under ``--print-errors``
-        (``could not be satisfied`` versus ``was not found``); the warning has
-        to preserve that distinction or the user goes hunting for a ``.pc``
-        file that is sitting right there with the wrong version.
+        The distinction has to survive or the user goes hunting for a ``.pc``
+        file that is sitting right there with the wrong version. It is
+        asserted against compiletools' own message category rather than
+        pkg-config's prose, which differs between pkg-config and pkgconf.
         """
         result = _parseargs_with_pkg_config_conf("pkg-config = conditional >= 2.0")
 
+        categories = self._categories(result.warnings)
         assert result.warnings, "expected a warning for the unsatisfied version floor, got none"
-        assert any("could not be satisfied" in w for w in result.warnings), (
-            f"unsatisfied version floor was not reported as a version failure: {result.warnings!r}"
+        assert "pkg-config version requirement 'conditional >= 2.0' not satisfied" in categories, (
+            f"unsatisfied version floor was not reported as a version failure: {categories!r}"
         )
-        assert not any("was not found" in w for w in result.warnings), (
-            f"unsatisfied version floor misreported as a missing package: {result.warnings!r}"
+        assert not [c for c in categories if "not found" in c], (
+            f"unsatisfied version floor misreported as a missing package: {categories!r}"
         )
 
     def test_version_constrained_spec_survives_fallback_alongside_missing_package(self, pkgconfig_env):
@@ -2263,6 +2275,41 @@ class TestPkgConfigConfValueSplitting:
         )
         assert not any("1.0.0" in w and "conditional" not in w for w in result.warnings), (
             f"the version operand was queried as a package name: {result.warnings!r}"
+        )
+
+    @pytest.mark.parametrize("spec", [">= 1.2", ">=1.2", "conditional >=", "conditional >"])
+    def test_operator_without_an_operand_reported_as_malformed(self, pkgconfig_env, spec):
+        """A comparison with no package before it, or no version after it, is
+        a malformed specification and must be named as one.
+
+        Passing these through reaches pkg-config, which answers ``Package >=
+        was not found in the pkg-config search path`` — inventing a package
+        name out of an operator, which is the failure class this whole change
+        exists to remove. The classification happens before any subprocess.
+        """
+        result = _parseargs_with_pkg_config_conf(f"pkg-config = {spec}")
+
+        categories = self._categories(result.warnings)
+        assert f"pkg-config malformed package specification {spec!r}" in categories, (
+            f"{spec!r} was not classified as malformed: {categories!r}"
+        )
+
+    def test_absent_package_carrying_a_constraint_reported_as_absent(self, pkgconfig_env):
+        """``<absent> >= 1.0`` is a missing package, not an unsatisfied floor.
+
+        Both failures arrive from pkg-config as the same non-zero exit on the
+        same spec, so they are only distinguishable by re-probing the bare
+        name. Getting this backwards tells the user to go upgrade a package
+        that was never installed.
+        """
+        result = _parseargs_with_pkg_config_conf(f"pkg-config = {self.MISSING} >= 1.0")
+
+        categories = self._categories(result.warnings)
+        assert [c for c in categories if self.MISSING in c and "not found" in c], (
+            f"absent package carrying a constraint was not reported as absent: {categories!r}"
+        )
+        assert not [c for c in categories if "not satisfied" in c], (
+            f"absent package misreported as an unsatisfied version floor: {categories!r}"
         )
 
     def test_append_pkg_config_whitespace_joined_value_splits_like_bare_key(self, pkgconfig_env):
