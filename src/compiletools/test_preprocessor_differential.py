@@ -33,6 +33,12 @@ rejects (non-zero exit) or merely warns about (integer overflow, shift-count,
 division by zero, ...) is discarded via ``assume``. What remains is exactly the
 subset where C's behaviour is unambiguous, and there compiletools must agree.
 
+That gate is necessary but NOT sufficient: it sees only what the compiler
+chooses to diagnose. Where a compiler accepts undefined behaviour *silently*,
+the UB reaches the comparison and the verdict becomes a property of the
+installed toolchain rather than of compiletools. Such shapes have to be kept out
+of the generator instead -- see the negative shift count below.
+
 Deliberate generator exclusions (documented, not accidental)
 ------------------------------------------------------------
 * ``__has_include`` / ``__has_*`` builtins -- they shell out to the compiler as
@@ -43,10 +49,45 @@ Deliberate generator exclusions (documented, not accidental)
   them, losing signedness; see the KNOWN-DIVERGENCE xfail list below.
 * Leading-zero (octal) literals -- kept out of the generator so the ``08``
   invalid-octal divergence (also an xfail) can't pollute the random stream.
+* NEGATIVE shift counts -- the RHS of ``<<`` / ``>>`` is forced to a
+  non-negative literal. A negative count is undefined in C (C99 6.5.7p3) and the
+  compilers genuinely disagree: for ``#if (1 >> (0 - 1))`` gcc 16.1 keeps the
+  block (it flips the shift direction, ``1 << 1`` -> 2) and emits NO diagnostic
+  even under ``-Wall -Wextra -pedantic``, while clang 22.1 warns "integer
+  overflow in preprocessor expression" and treats it as 0. compiletools raises
+  ``ValueError: negative shift count`` out of ``_parse_shift`` and degrades the
+  condition to false. There is therefore no ground truth to compare against, and
+  because gcc is the silent one the ``assume`` gate cannot discard it -- the
+  property test failed on a gcc box and passed on a clang box, purely from the
+  toolchain. This is NOT recorded as a known-divergence xfail: those assert "the
+  C-standard-correct answer", and for UB no such answer exists.
+  Out-of-range (too large) positive counts are left in: both compilers diagnose
+  those, so the gate handles them.
+
+* LEFT SHIFTS WITH A COMPUTED LHS -- ``<<`` takes two literals, bounded so the
+  result stays at or under ``2**62``. The left shift is the ONLY operator whose
+  overflow gcc does not diagnose: it warns for ``9223372036854775807 + 1``,
+  ``4294967296 * 4294967296`` and ``(1 << 62) * 4``, but is silent for
+  ``(4 << 62)`` (exactly 2**64) and ``((1 << 62) << 1)``. C evaluates ``#if`` in
+  ``intmax_t`` and wraps, so gcc drops those blocks while compiletools' Python
+  bignums keep them -- the bignum-vs-``intmax_t`` divergence already recorded as
+  a strict xfail below, reached through a shift instead of an addition, and
+  invisible to the ``assume`` gate. Measured at 2 failures in 6 fresh
+  default-budget runs before this bound.
+  A computed LHS cannot be allowed even with a small count, because an inner
+  shift can already have produced ``2**62``. Bounding the count alone is not
+  sufficient either: at ``_expr(3)`` each level can multiply (adding subtree
+  exponents) or shift (adding the count), so the reachable maximum is
+  ``2**(24 + 4*C)`` and staying under ``2**63`` would need ``C <= 9`` --
+  abandoning large shift counts, where preprocessor bugs actually live. Two
+  literals keep counts up to 56 in the stream instead.
+  ``>>`` is unconstrained on the left: it only ever shrinks the magnitude, so it
+  cannot overflow. Any overflow *downstream* of a shift travels through an
+  operator gcc does diagnose, so the gate still catches it.
 
 Known expected divergences
 ---------------------------
-Four real, confirmed differences between SimplePreprocessor and C are recorded
+Three real, confirmed differences between SimplePreprocessor and C are recorded
 as ``strict`` xfails in :func:`test_known_divergence_is_still_present` below,
 NOT fixed here (preprocessor fixes are owned elsewhere). ``strict=True`` means
 that the day any of them is fixed the xfail turns into an XPASS *failure*, so
@@ -214,7 +255,7 @@ def _ct_active_sentinels(src: str):
 # octal, bounded nesting depth so SimplePreprocessor never hits its recursion
 # limit). Anything that overflows/UB is filtered post-hoc by the compiler gate.
 # ----------------------------------------------------------------------------
-_BINOPS = ["+", "-", "*", "<<", ">>", "&", "|", "^", "==", "!=", "<", ">", "<=", ">=", "&&", "||"]
+_BINOPS = ["+", "-", "*", "&", "|", "^", "==", "!=", "<", ">", "<=", ">=", "&&", "||"]
 _UNOPS = ["!", "~", "-", "+"]
 
 
@@ -240,9 +281,46 @@ def _expr(depth):
         st.sampled_from(["/", "%"]),
         st.integers(min_value=1, max_value=64).map(str),
     )
+    # Shifts are the one place the compiler gate cannot be relied on, so both
+    # shift operators are constructed rather than drawn from _BINOPS. See the
+    # two shift notes in the module docstring.
+    #
+    # ``>>`` only ever shrinks the magnitude, so its LHS may be any
+    # subexpression. The count is a non-negative literal below the 64-bit width
+    # (a negative count is UB; a count >= width is UB).
+    rshift_ = st.builds(
+        lambda a, b: f"({a} >> {b})",
+        sub,
+        st.integers(min_value=0, max_value=62).map(str),
+    )
+    # ``<<`` is the only operator whose overflow gcc does NOT diagnose, so it
+    # cannot take a computed LHS: an inner shift can already have produced
+    # 2**62, and shifting that again overflows intmax_t silently. Both operands
+    # are literals bounded so the result stays at or under 2**62 < INTMAX_MAX.
+    # Any *later* overflow (e.g. multiplying two such results) travels through
+    # an operator gcc does diagnose, so the gate discards it.
+    lshift_ = st.builds(
+        lambda a, b: f"({a} << {b})",
+        st.integers(min_value=0, max_value=64).map(str),
+        st.integers(min_value=0, max_value=56).map(str),
+    )
     unary = st.builds(lambda op, a: f"({op}{a})", st.sampled_from(_UNOPS), sub)
     ternary = st.builds(lambda c, a, b: f"({c} ? {a} : {b})", sub, sub, sub)
-    return st.one_of(_leaf(), binary, divmod_, unary, ternary)
+    return st.one_of(_leaf(), binary, divmod_, rshift_, lshift_, unary, ternary)
+
+
+def _sample_expressions(count: int) -> list[str]:
+    """Draw ``count`` expressions from the grammar into a plain list, so a test
+    can assert over the whole sample instead of one example at a time."""
+    drawn: list[str] = []
+
+    @settings(max_examples=count, deadline=None, database=None, suppress_health_check=_SUPPRESSED)
+    @given(expr=_expr(3))
+    def _collect(expr):
+        drawn.append(expr)
+
+    _collect()
+    return drawn
 
 
 # ----------------------------------------------------------------------------
@@ -322,6 +400,65 @@ _SUPPRESSED = [HealthCheck.filter_too_much, HealthCheck.too_slow]
 # ----------------------------------------------------------------------------
 # Property tests
 # ----------------------------------------------------------------------------
+# A shift operator must always be followed by a bare non-negative literal and
+# the closing paren of its own ``({a} {op} {b})`` node. Anything else means the
+# RHS is a subexpression again, which can evaluate negative.
+_UNCONSTRAINED_SHIFT_RE = re.compile(r"(?:<<|>>) (?!\d+\))")
+
+# ``<<`` additionally needs a literal LHS, so the whole node is ``(int << int)``.
+# A computed LHS can already be 2**62, and gcc does not diagnose the overflow.
+# Checked by counting: every ``<<`` in the string must belong to such a node.
+_LSHIFT_NODE_RE = re.compile(r"\(\d+ << \d+\)")
+
+
+def test_generator_never_emits_a_negative_shift_count():
+    """The grammar must not produce a negative shift count.
+
+    It is undefined in C, gcc and clang disagree on it, and gcc emits no
+    diagnostic -- so the ``assume`` gate cannot discard it and
+    ``test_single_if_expression_matches_compiler`` would fail or pass purely
+    according to which compiler is installed. See the module docstring.
+
+    Asserted structurally, not by sampling for a raising expression. Reaching a
+    negative shift by chance is rare: 400 examples of the pre-fix grammar did
+    not rediscover one, so a sampling guard would have passed against the very
+    regression it exists to catch (the original counterexample took a full-suite
+    run to surface). The structural assertion fails immediately and
+    deterministically instead. Needs no compiler, so it holds on a
+    toolchain-less box too.
+    """
+    unconstrained = [op for op in ("<<", ">>") if op in _BINOPS]
+    assert not unconstrained, (
+        f"{unconstrained} are in _BINOPS, whose RHS is an arbitrary "
+        f"subexpression that can evaluate negative. Shifts must come from the "
+        f"rshift_/lshift_ strategies in _expr, which pin the count to a "
+        f"non-negative literal."
+    )
+
+    # Second line of defence: a *new* strategy could reintroduce a shift with a
+    # subexpression RHS without touching _BINOPS.
+    samples = _sample_expressions(300)
+    assert any("<<" in s or ">>" in s for s in samples), (
+        "no shift appeared in 300 samples — the shift strategies are unreachable, so this guard would be vacuous"
+    )
+    offenders = [s for s in samples if _UNCONSTRAINED_SHIFT_RE.search(s)]
+    assert not offenders, (
+        f"generated shifts whose RHS is not a bare non-negative literal, so the "
+        f"count can evaluate negative: {offenders[:3]!r}"
+    )
+
+    # ``<<`` needs the stronger invariant: a literal LHS too, since gcc does not
+    # diagnose left-shift overflow (see the module docstring).
+    assert any("<<" in s for s in samples), (
+        "no left shift appeared in 300 samples — the lshift_ guard below would be vacuous"
+    )
+    computed_lhs = [s for s in samples if s.count("<<") != len(_LSHIFT_NODE_RE.findall(s))]
+    assert not computed_lhs, (
+        f"generated left shifts whose LHS is not a bare literal, so the result "
+        f"can silently exceed intmax_t: {computed_lhs[:3]!r}"
+    )
+
+
 @requires_functional_compiler
 @settings(max_examples=_EXPR_EXAMPLES, deadline=None, suppress_health_check=_SUPPRESSED)
 @given(expr=_expr(3))
