@@ -78,10 +78,11 @@ def tokenize_pkg_config_specs(values: list[str]) -> list[str]:
     ``1.2`` for package names.
 
     Attached forms such as ``zlib>=1.2`` are already one token and remain so.
-    Invalid half-spaced forms (``zlib >=1.2`` and ``zlib>= 1.2``) are kept
-    together so they produce one diagnostic rather than an invented package
-    named ``>=1.2`` or ``1.2``. A trailing comparison without a version also
-    remains attached to its package for the same reason.
+    A space before the operator ends the package name; a space after it is
+    optional, so ``zlib >=1.2`` is a valid constraint and stays one spec.
+    ``zlib>= 1.2`` is invalid -- pkg-config reads it as two packages -- so it
+    is kept together to produce one malformed diagnostic instead. A trailing
+    comparison without a version remains attached for the same reason.
     """
     specs: list[str] = []
     for value in values:
@@ -137,7 +138,7 @@ def _pkg_config_constraint_package(spec: str) -> tuple[str | None, bool]:
     comparison = _PKG_CONFIG_COMPARISON_RE.fullmatch(tokens[1])
     if comparison is None:
         return None, False
-    if comparison.group("operand") or len(tokens) < 3:
+    if not comparison.group("operand") and len(tokens) < 3:
         return None, True
     return tokens[0], False
 
