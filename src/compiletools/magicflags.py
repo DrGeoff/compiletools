@@ -327,12 +327,17 @@ class MagicFlagsBase:
                 inside the pkg-config output (e.g. ``$LIB_SUFFIX``). Passed
                 explicitly rather than read from ``self._expander`` so this
                 method has no hidden mutable per-call state on ``self``.
+
+        The annotation is split into package specs by
+        ``apptools.tokenize_pkg_config_specs`` — the same tokenizer the
+        conf-file ``pkg-config = ...`` surface uses, so the two surfaces
+        agree on what counts as one package. A version-constrained spec
+        (``zlib >= 1.2``) is one element, not three, and is passed to
+        pkg-config intact so the version floor is enforced.
         """
         flagsforfilename = defaultdict(list)
 
-        # Convert to string for splitting, as we need to iterate over packages
-        flag_str = str(flag)
-        packages = flag_str.split()
+        packages = compiletools.apptools.tokenize_pkg_config_specs([str(flag)])
 
         first_l_per_pkg = []  # Track first -l per package for hard orderings
 
