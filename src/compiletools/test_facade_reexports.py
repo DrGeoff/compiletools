@@ -67,6 +67,7 @@ _add(
     [
         "cached_pkg_config",
         "filter_pkg_config_cflags",
+        "tokenize_pkg_config_specs",
         "_setup_pkg_config_overrides",
         "_setup_pkg_config_overrides_locked",
         "_add_flags_from_pkg_config",

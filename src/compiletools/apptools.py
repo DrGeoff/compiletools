@@ -261,6 +261,9 @@ from compiletools.apptools_pkgconfig import (
 from compiletools.apptools_pkgconfig import (
     filter_pkg_config_cflags as filter_pkg_config_cflags,
 )
+from compiletools.apptools_pkgconfig import (
+    tokenize_pkg_config_specs as tokenize_pkg_config_specs,
+)
 
 # Re-exported from the leaf apptools_validate module so existing
 # ``apptools.<name>`` call sites (``parseargs`` / ``_commonsubstitutions``
