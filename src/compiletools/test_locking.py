@@ -1377,6 +1377,11 @@ class TestFileLock:
         target = os.path.join(tmpdir, "subdir", "test.o")
         args = _make_lock_args()
         lock = FileLock(target, args)
+        # The makedirs in FileLock.__init__ is the behaviour under test. Asserting
+        # only `lock.lock is not None` does not cover it: with the makedirs removed,
+        # get_filesystem_type() on the missing dir raises, the except branch falls
+        # back to flock, and a lock object is still constructed.
+        assert os.path.isdir(os.path.join(tmpdir, "subdir"))
         assert lock.lock is not None
 
 

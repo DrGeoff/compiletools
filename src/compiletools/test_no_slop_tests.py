@@ -31,10 +31,29 @@ WARNINGS (reported via ``warnings.warn`` + a passing report test — never fail)
   W1 MOCK-ASSERT-ONLY — the only verification is ``assert_called*`` /
      ``assert_not_called`` / ``assert_has_calls`` with no real
      ``assert`` / ``pytest.raises``.
-  W2 CAPTURE-UNUSED   — a ``readouterr()`` / ``capsys`` result assigned but
-     never referenced inside a later ``assert``.
-  W3 NAME-PROMISE     — the name says creates/writes/removes/equals but no
-     assert references ``os.path`` (for fs verbs) / an ``==`` compare (equals).
+  W2 CAPTURE-DISCARDED — a ``readouterr()`` result assigned to a name that is
+     then never read.
+  W3 NAME-PROMISE     — a name *token* says creates/writes/removes and no
+     assert observes the filesystem (directly or one hop through a local), or
+     says equals and no assert compares anything.
+
+The WARNING rules carry allowlists of their own, same key format and same
+typo-guard as the ERROR rules. They were triaged to empty on 2026-07-29, so a
+non-empty warnings summary now means genuinely new, unreviewed findings rather
+than a standing backlog nobody reads.
+
+Precision history (why the W2/W3 predicates look the way they do): the first
+cut of W2 asked "is the captured name referenced inside an ``assert``", which
+flagged all 10 captures in the suite — every one of them the ordinary
+``cap = capsys.readouterr(); parsed = json.loads(cap.out); assert parsed[...]``
+shape, where the capture IS verified, one hop removed. The slop worth catching
+is a capture taken and dropped on the floor, so the predicate is now "is the
+name ever read at all". W3 likewise fired on 27 tests of which 26 were noise:
+substring hits (``rewrites`` ⊃ ``writes``, ``flag_equals_value`` ⊃ ``equals``),
+verbs used in a non-filesystem sense, and fs checks made through assertions
+*stronger* than the whitelisted ``os.path`` predicates (``read_text()``,
+``os.stat()``, ``rglob()``). Hence token-level matching, the wider evidence
+set, and the one-hop dataflow below.
 """
 
 from __future__ import annotations
@@ -102,6 +121,78 @@ _R2_TAUTOLOGY_ALLOWLIST: frozenset[str] = frozenset(set())
 # R3: bare-except tests where the swallow itself is the thing under test.
 _R3_BARE_EXCEPT_ALLOWLIST: frozenset[str] = frozenset(set())
 
+# W1: interaction tests where a mock assertion IS the correct observable — the
+# contract under test is "this call was made (with these arguments)", so there
+# is no resulting state to assert on. Reviewed 2026-07-29.
+_W1_MOCK_ASSERT_ONLY_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        # Delegation / dispatch wiring: the postcondition IS "X was called".
+        # Note the dispatch pair patches methods on the *expected* class, so a
+        # wrong-class regression shows up as the patched method never firing.
+        "test_apptools.py::test_verbose_level_2",
+        "test_bazel_backend.py::test_clean_runs_bazel_clean_command",
+        "test_cake.py::test_process_filelist_branch",
+        "test_cake_backend.py::test_backend_dispatch_instantiates_correct_backend",
+        "test_cake_backend.py::test_backend_dispatch_generates_compilation_database",
+        "test_cake_backend.py::test_clean_calls_backend_clean_method",
+        "test_cake_backend.py::test_realclean_calls_backend_realclean_method",
+        "test_config.py::test_main_calls_create_parser_with_correct_args",
+        "test_config.py::test_main_adds_cake_arguments",
+        "test_config.py::test_main_calls_parseargs",
+        # "the work was SKIPPED" guards (cache hit / short-circuit): the absence
+        # of the subprocess IS the postcondition, so assert_not_called is the
+        # only available observable.
+        "test_build_backend.py::test_pre_lock_fast_path_resolves_relative_output_against_rule_cwd",
+        "test_build_backend.py::test_no_op_when_graph_has_no_aux_rules",
+        "test_cake.py::test_call_compilation_database_skipped_on_realclean",
+        "test_shake_backend.py::test_verify_passes_when_hashes_match",
+        "test_shake_backend.py::test_compile_skipped_when_object_exists_no_traces",
+        "test_shake_backend.py::test_skipped_when_hardlinked_to_cas_input",
+        "test_shake_backend.py::test_skipped_when_symlinked_to_cas_input",
+        # The exact operand string handed to the compiler probe is the whole
+        # contract (macro expansion of __has_attribute / __has_include operands),
+        # and it is only observable in the call arguments.
+        "test_simple_preprocessor.py::test_object_macro_operand_expanded_for_has_attribute",
+        "test_simple_preprocessor.py::test_chained_object_macro_operand_fully_expanded",
+        "test_simple_preprocessor.py::test_quoted_literal_header_operand_not_macro_expanded",
+        "test_simple_preprocessor.py::test_angle_literal_header_operand_not_macro_expanded",
+    }
+)
+
+# W2: captures deliberately taken and not read (none — a discarded capture is
+# never useful; drain with a bare ``capsys.readouterr()`` instead of assigning).
+_W2_CAPTURE_DISCARDED_ALLOWLIST: frozenset[str] = frozenset(set())
+
+# W3: "creates"/"writes"/"removes" used in a NON-filesystem sense — the verb
+# refers to an in-memory object (a BuildRule, an env var, a list/dict entry, a
+# string buffer), so there is no path to probe and each of these asserts the
+# real postcondition instead. Reviewed 2026-07-29.
+_W3_NAME_PROMISE_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        # "creates" a BuildRule in the graph, not a file on disk.
+        "test_build_backend.py::test_pch_header_creates_gch_compile_rule",
+        "test_build_backend.py::test_pch_with_pchdir_creates_content_addressable_gch",
+        "test_cake_startup_performance.py::test_auto_discovery_creates_analysis_objects_once_after_targets_are_known",
+        # "removes" an environment variable / a list element / a dict key.
+        "test_build_context.py::test_removes_var_when_it_was_unset",
+        "test_cmake_backend.py::test_removes_orphan_x_flag",
+        "test_cmake_backend.py::test_removes_x_with_paired_lang_arg",
+        "test_compiler_macros.py::test_removes_bare_linux_and_unix",
+        "test_flag_ops_properties.py::test_dedup_combined_form_preserves_set_and_removes_dups",
+        "test_flag_ops_properties.py::test_strip_d_u_removes_all_define_undef",
+        # "writes" into an in-memory buffer that the test then asserts on.
+        "test_makefile_backend.py::test_generate_writes_makefile_syntax",
+        "test_ninja_backend.py::test_generate_writes_ninja_syntax",
+        "test_shake_backend.py::test_writes_summary_to_output",
+        # Compares the full recursive file listing before/after — a stronger
+        # check than any single existence probe — but the fs access happens
+        # inside the _all_files_under helper, out of the collector's reach.
+        # Key is shared with TestTrimPcmdir's same-named test, which does probe
+        # os.path.isdir directly.
+        "test_trim_cache.py::test_dry_run_removes_nothing",
+    }
+)
+
 
 # ---------------------------------------------------------------------------
 # Regex vocabularies
@@ -124,9 +215,51 @@ _TIMEOUT_ATTRS = frozenset({"wait_for"})
 # mock-style pseudo-assertions (W1).
 _MOCK_ASSERT_RE = re.compile(r"^assert_(called|not_called|has_calls|any_call)")
 
-# fs-verb / equality name promises (W3).
-_W3_FS_VERBS = ("creates", "writes", "removes")
+# fs-verb / equality name promises (W3). Matched against the name's underscore
+# tokens, NOT as substrings: "rewrites" is not "writes" and
+# "test_..._flag_equals_value" is not an equality claim.
+_W3_FS_VERBS = frozenset({"creates", "writes", "removes"})
 _W3_EQ_VERB = "equals"
+
+# Attribute accesses that constitute an observation OF the filesystem (W3
+# evidence). Deliberately wider than the os.path predicates: a test that asserts
+# on read_text() / os.stat().st_mode / rglob() results has made a *stronger*
+# claim than os.path.exists, and must not be told it forgot to check.
+_W3_FS_EVIDENCE_ATTRS = frozenset(
+    {
+        "exists",
+        "lexists",
+        "isdir",
+        "isfile",
+        "islink",
+        "getsize",
+        "getmtime",
+        "stat",
+        "lstat",
+        "listdir",
+        "scandir",
+        "walk",
+        "glob",
+        "rglob",
+        "iterdir",
+        "samefile",
+        "is_file",
+        "is_dir",
+        "is_symlink",
+        "read_text",
+        "read_bytes",
+        "read",
+        "readlines",
+        "st_ino",
+        "st_mode",
+        "st_size",
+        "st_mtime",
+        "st_nlink",
+    }
+)
+
+# Bare-name calls that open the filesystem (no attribute to key on).
+_W3_FS_EVIDENCE_CALLS = frozenset({"open"})
 
 
 def _test_python_files():
@@ -316,7 +449,13 @@ def _collect_w1(func: ast.AST) -> bool:
 
 
 def _collect_w2(func: ast.AST) -> bool:
-    """A readouterr()/capsys capture assigned but never used inside an assert."""
+    """A ``readouterr()`` capture assigned to a name that is then never read.
+
+    Not "never referenced inside an ``assert``" — a capture routed through an
+    intermediate (``parsed = json.loads(cap.out)``) or consumed by a skip helper
+    is verified, just not syntactically inside the assert node. The pattern this
+    rule exists to catch is the capture that is taken and dropped on the floor.
+    """
     captured_names: set[str] = set()
     for node in ast.walk(func):
         if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
@@ -328,39 +467,61 @@ def _collect_w2(func: ast.AST) -> bool:
                         captured_names.add(tgt.id)
     if not captured_names:
         return False
-    # Names referenced anywhere inside an assert node.
-    used_in_assert: set[str] = set()
+    loaded = {n.id for n in ast.walk(func) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
+    return bool(captured_names - loaded)
+
+
+def _has_fs_evidence(node: ast.AST) -> bool:
+    """Does this subtree observe the filesystem (a path predicate, a stat, a
+    directory listing, or a read of a file's bytes)?"""
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Attribute) and sub.attr in _W3_FS_EVIDENCE_ATTRS:
+            return True
+        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name) and sub.func.id in _W3_FS_EVIDENCE_CALLS:
+            return True
+    return False
+
+
+def _fs_derived_names(func: ast.AST) -> set[str]:
+    """Locals bound to the result of a filesystem observation — the one hop of
+    dataflow between ``text = log.read_text()`` and ``assert text.endswith(...)``
+    that a purely syntactic "is it inside the assert" check misses."""
+    derived: set[str] = set()
     for node in ast.walk(func):
-        if isinstance(node, ast.Assert):
-            for sub in ast.walk(node):
-                if isinstance(sub, ast.Name):
-                    used_in_assert.add(sub.id)
-    return bool(captured_names - used_in_assert)
+        if isinstance(node, ast.Assign) and _has_fs_evidence(node.value):
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name):
+                    derived.add(tgt.id)
+        elif isinstance(node, ast.withitem) and node.optional_vars is not None:
+            if _has_fs_evidence(node.context_expr) and isinstance(node.optional_vars, ast.Name):
+                derived.add(node.optional_vars.id)
+    return derived
 
 
 def _collect_w3(name: str, func: ast.AST) -> bool:
     """Name promises a check the body lacks."""
-    lowered = name.lower()
+    tokens = set(name.lower().split("_"))
     asserts = [n for n in ast.walk(func) if isinstance(n, ast.Assert)]
-    if any(verb in lowered for verb in _W3_FS_VERBS):
-        # Expect at least one assert that touches os.path / a path predicate.
+    if tokens & _W3_FS_VERBS:
+        derived = _fs_derived_names(func)
         for a in asserts:
+            if _has_fs_evidence(a):
+                return False
             for sub in ast.walk(a):
-                if isinstance(sub, ast.Attribute) and sub.attr in (
-                    "exists",
-                    "isdir",
-                    "isfile",
-                    "islink",
-                    "getsize",
-                    "getmtime",
-                    "lexists",
-                ):
+                if isinstance(sub, ast.Name) and sub.id in derived:
                     return False
         return True
-    if _W3_EQ_VERB in lowered:
+    if _W3_EQ_VERB in tokens:
+        # Any comparison, an assertEqual-family call, or a pytest.raises
+        # settles an "equals" claim — pinning it to `==` alone flagged
+        # membership assertions and "...=... raises" negative tests.
+        if _has_pytest_raises(func):
+            return False
+        if any(n in ("assertEqual", "assertEquals", "assertIs", "assertIsNot") for n in _call_names(func)):
+            return False
         for a in asserts:
             for sub in ast.walk(a):
-                if isinstance(sub, ast.Compare) and any(isinstance(op, ast.Eq) for op in sub.ops):
+                if isinstance(sub, ast.Compare):
                     return False
         return True
     return False
@@ -454,6 +615,9 @@ def test_allowlist_entries_are_live():
         ("_R1_NO_VERIFICATION_ALLOWLIST", _R1_NO_VERIFICATION_ALLOWLIST),
         ("_R2_TAUTOLOGY_ALLOWLIST", _R2_TAUTOLOGY_ALLOWLIST),
         ("_R3_BARE_EXCEPT_ALLOWLIST", _R3_BARE_EXCEPT_ALLOWLIST),
+        ("_W1_MOCK_ASSERT_ONLY_ALLOWLIST", _W1_MOCK_ASSERT_ONLY_ALLOWLIST),
+        ("_W2_CAPTURE_DISCARDED_ALLOWLIST", _W2_CAPTURE_DISCARDED_ALLOWLIST),
+        ("_W3_NAME_PROMISE_ALLOWLIST", _W3_NAME_PROMISE_ALLOWLIST),
     ):
         stale = sorted(allowlist - live)
         assert not stale, f"{label} has entries that no longer exist: {stale}"
@@ -465,22 +629,76 @@ def test_allowlist_entries_are_live():
 
 
 def _collect_all_warnings() -> dict[str, list[str]]:
-    w1: list[str] = []
-    w2: list[str] = []
-    w3: list[str] = []
+    """Allowlist-filtered W1/W2/W3 hits, deduplicated (two classes in one file
+    may define the same test name, which collapses to one key)."""
+    buckets: dict[str, dict[str, None]] = {"W1": {}, "W2": {}, "W3": {}}
+    allowlists = {
+        "W1": _W1_MOCK_ASSERT_ONLY_ALLOWLIST,
+        "W2": _W2_CAPTURE_DISCARDED_ALLOWLIST,
+        "W3": _W3_NAME_PROMISE_ALLOWLIST,
+    }
     for path in _test_python_files():
         basename = os.path.basename(path)
         with open(path, encoding="utf-8") as fh:
             tree = ast.parse(fh.read(), filename=path)
         for func in _iter_test_functions(tree):
             key = f"{basename}::{func.name}"
-            if _collect_w1(func):
-                w1.append(key)
-            if _collect_w2(func):
-                w2.append(key)
-            if _collect_w3(func.name, func):
-                w3.append(key)
-    return {"W1": w1, "W2": w2, "W3": w3}
+            hits = {
+                "W1": _collect_w1(func),
+                "W2": _collect_w2(func),
+                "W3": _collect_w3(func.name, func),
+            }
+            for code, hit in hits.items():
+                if hit and key not in allowlists[code]:
+                    buckets[code][key] = None
+    return {code: list(keys) for code, keys in buckets.items()}
+
+
+# Sources are parsed with ``ast``, never collected as tests — the linter walks
+# module trees, so a string literal here is invisible to its own scan.
+# (should_flag, rule, source)
+_RULE_BEHAVIOUR_CASES: tuple[tuple[bool, str, str], ...] = (
+    (True, "W1", "def test_x():\n    m.assert_called_once()\n"),
+    (False, "W1", "def test_x():\n    m.assert_called_once()\n    assert m.rc == 0\n"),
+    (True, "W2", "def test_x(capsys):\n    run()\n    cap = capsys.readouterr()\n    assert rc == 0\n"),
+    (
+        False,
+        "W2",
+        "def test_x(capsys):\n    cap = capsys.readouterr()\n    p = json.loads(cap.out)\n    assert p['a']\n",
+    ),
+    (True, "W3", "def test_creates_file():\n    write_it(p)\n    assert rc == 0\n"),
+    (False, "W3", "def test_creates_file():\n    write_it(p)\n    assert os.path.exists(p)\n"),
+    (False, "W3", "def test_creates_file():\n    write_it(p)\n    assert Path(p).read_text() == 'x'\n"),
+    (False, "W3", "def test_creates_file():\n    t = Path(p).read_text()\n    assert t.endswith('x')\n"),
+    # "rewrites" is not the token "writes"; "flag_equals_value" is not an
+    # equality claim. Both were false positives before token-level matching.
+    (False, "W3", "def test_rewrites_flag():\n    assert 'a' in out\n"),
+    (True, "W3", "def test_a_equals_b():\n    assert thing\n"),
+    (False, "W3", "def test_flag_equals_value():\n    assert '--x=1' in toks\n"),
+    (True, "R1", "def test_x():\n    do_thing()\n"),
+    (True, "R2", "def test_x():\n    assert True\n"),
+    (True, "R3", "def test_x():\n    try:\n        f()\n    except:\n        pass\n"),
+)
+
+
+def test_rules_fire_on_slop_and_stay_quiet_on_good_tests():
+    """Self-test: a rule that never fires is not a guard, and a rule that fires
+    on sound tests gets ignored. Pins both directions for all six rules."""
+    collectors = {
+        "R1": lambda node: _collect_r1(node),
+        "R2": lambda node: _collect_r2(node),
+        "R3": lambda node: _collect_r3(node),
+        "W1": lambda node: _collect_w1(node),
+        "W2": lambda node: _collect_w2(node),
+        "W3": lambda node: _collect_w3(node.name, node),
+    }
+    wrong: list[str] = []
+    for should_flag, rule, source in _RULE_BEHAVIOUR_CASES:
+        node = ast.parse(source).body[0]
+        if collectors[rule](node) is not should_flag:
+            verb = "did not flag" if should_flag else "wrongly flagged"
+            wrong.append(f"  {rule} {verb}:\n{source}")
+    assert not wrong, "Rule behaviour regressed:\n" + "\n".join(wrong)
 
 
 def test_report_soft_warnings():
@@ -493,8 +711,8 @@ def test_report_soft_warnings():
     found = _collect_all_warnings()
     descriptions = {
         "W1": "MOCK-ASSERT-ONLY (only assert_called*/assert_not_called/assert_has_calls, no real assert)",
-        "W2": "CAPTURE-UNUSED (readouterr()/capsys captured but never used in an assert)",
-        "W3": "NAME-PROMISE (name says creates/writes/removes/equals but body lacks the matching check)",
+        "W2": "CAPTURE-DISCARDED (readouterr() assigned to a name that is never read)",
+        "W3": "NAME-PROMISE (name token says creates/writes/removes/equals but body lacks the matching check)",
     }
     for code, keys in found.items():
         if keys:
