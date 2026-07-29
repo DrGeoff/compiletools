@@ -78,11 +78,11 @@ def tokenize_pkg_config_specs(values: list[str]) -> list[str]:
     ``1.2`` for package names.
 
     Attached forms such as ``zlib>=1.2`` are already one token and remain so.
-    A space before the operator ends the package name; a space after it is
-    optional, so ``zlib >=1.2`` is a valid constraint and stays one spec.
-    ``zlib>= 1.2`` is invalid -- pkg-config reads it as two packages -- so it
-    is kept together to produce one malformed diagnostic instead. A trailing
-    comparison without a version remains attached for the same reason.
+    Half-spaced forms remain one diagnostic unit but are rejected before a
+    probe: pkgconf can accept ``zlib >=1.2`` after silently consuming the
+    first version character into the operator, while ``zlib>= 1.2`` becomes
+    two invented package names. A trailing comparison without a version also
+    remains attached so it produces one malformed diagnostic.
     """
     specs: list[str] = []
     for value in values:
@@ -138,7 +138,7 @@ def _pkg_config_constraint_package(spec: str) -> tuple[str | None, bool]:
     comparison = _PKG_CONFIG_COMPARISON_RE.fullmatch(tokens[1])
     if comparison is None:
         return None, False
-    if not comparison.group("operand") and len(tokens) < 3:
+    if comparison.group("operand") or len(tokens) < 3:
         return None, True
     return tokens[0], False
 
@@ -161,7 +161,11 @@ def _cached_pkg_config_exists(package: str) -> bool:
     """Check one package spec once and emit a stable failure category."""
     bare_package, malformed = _pkg_config_constraint_package(package)
     if malformed:
-        _warn_pkg_config(f"pkg-config malformed package specification {package!r}")
+        _warn_pkg_config(
+            f"pkg-config malformed package specification {package!r}",
+            "comparison operators require a package and version separated by spaces; "
+            "otherwise pkg-config may invent package names or silently corrupt the version requirement",
+        )
         return False
 
     exists_result = subprocess.run(
