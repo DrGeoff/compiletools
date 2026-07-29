@@ -47,6 +47,7 @@ net set of cleared caches is identical to the pre-split implementation.
 
 import functools
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -57,24 +58,153 @@ from typing import Literal
 import compiletools.wrappedos
 from compiletools.utils import split_command_cached
 
+_PKG_CONFIG_COMPARISON_RE = re.compile(r"^(==|>=|<=|!=|=|<|>)(.*)$")
+_PKG_CONFIG_TRAILING_COMPARISON_RE = re.compile(r"^.+?(?:==|>=|<=|!=|=|<|>)$")
+
+
+def tokenize_pkg_config_specs(values: list[str]) -> list[str]:
+    """Split pkg-config values into package specs, preserving constraints.
+
+    Configargparse's ``action='append'`` representation can contain a whole
+    whitespace-separated conf value in one list element (``["a b c"]``),
+    while repeated CLI options normally arrive as separate elements.  Magic
+    ``//#PKG-CONFIG=`` values have the former shape as well.  Flatten both
+    representations, then join a package name to an adjacent comparison and
+    version so the per-package fallback never mistakes ``>=`` or ``1.2`` for
+    package names. Commas are package separators too, matching pkg-config's
+    accepted input grammar.
+
+    Attached forms such as ``zlib>=1.2`` are already one token and remain so.
+    Partly attached forms (``zlib >=1.2`` and ``zlib>= 1.2``) are joined too.
+    A trailing comparison without a version remains attached to its package,
+    allowing pkg-config's failure and our warning to name the malformed spec
+    rather than inventing a package named ``>=``.
+    """
+    tokens: list[str] = []
+    for value in values:
+        try:
+            tokens.extend(shlex.split(value.replace(",", " ")))
+        except ValueError:
+            tokens.extend(value.replace(",", " ").split())
+
+    specs: list[str] = []
+    i = 0
+    while i < len(tokens):
+        package = tokens[i]
+
+        if _PKG_CONFIG_TRAILING_COMPARISON_RE.fullmatch(package) and i + 1 < len(tokens):
+            specs.append(f"{package} {tokens[i + 1]}")
+            i += 2
+            continue
+
+        if i + 1 < len(tokens):
+            comparison = _PKG_CONFIG_COMPARISON_RE.fullmatch(tokens[i + 1])
+            if comparison is not None:
+                if comparison.group(2):
+                    specs.append(f"{package} {tokens[i + 1]}")
+                    i += 2
+                    continue
+                if i + 2 < len(tokens):
+                    specs.append(f"{package} {tokens[i + 1]} {tokens[i + 2]}")
+                    i += 3
+                    continue
+                specs.append(f"{package} {tokens[i + 1]}")
+                i += 2
+                continue
+
+        specs.append(package)
+        i += 1
+
+    return specs
+
 
 def clear_cache():
     """Clear the pkg-config cache moved out of :mod:`compiletools.apptools`.
 
-    ``apptools.clear_cache`` fans out here so the exact same memo
-    (``cached_pkg_config``) is cleared as before the facade split. Net effect
-    is identical to the previous monolithic ``apptools.clear_cache``.
+    ``apptools.clear_cache`` fans out here so both the result memo
+    (``cached_pkg_config``) and its package-spec existence memo are cleared.
+    Net effect is identical to the previous monolithic
+    ``apptools.clear_cache`` plus the new diagnostic cache.
     """
     cached_pkg_config.cache_clear()
+    _cached_pkg_config_exists.cache_clear()
+
+
+def _pkg_config_constraint_package(spec: str) -> tuple[str | None, bool]:
+    """Return ``(bare_package, malformed)`` for one tokenized spec."""
+    tokens = spec.split()
+    if not tokens or tokens[0][0] in "<>=!":
+        return None, True
+
+    if _PKG_CONFIG_TRAILING_COMPARISON_RE.fullmatch(tokens[0]):
+        return None, True
+
+    if len(tokens) < 2:
+        return None, False
+
+    comparison = _PKG_CONFIG_COMPARISON_RE.fullmatch(tokens[1])
+    if comparison is None:
+        return None, False
+    if not comparison.group(2) and len(tokens) < 3:
+        return None, True
+    return tokens[0], False
+
+
+def _pkg_config_stderr(result: subprocess.CompletedProcess[str]) -> str:
+    stderr = result.stderr
+    if isinstance(stderr, bytes):
+        return stderr.decode(errors="replace").strip()
+    return stderr.strip() if isinstance(stderr, str) else ""
+
+
+def _warn_pkg_config(message: str, detail: str = "") -> None:
+    if detail:
+        message = f"{message}: {detail}"
+    warnings.warn(message, UserWarning, stacklevel=4)
+
+
+@functools.cache
+def _cached_pkg_config_exists(package: str) -> bool:
+    """Check one package spec once and emit a stable failure category."""
+    bare_package, malformed = _pkg_config_constraint_package(package)
+    if malformed:
+        _warn_pkg_config(f"pkg-config malformed package specification {package!r}")
+        return False
+
+    exists_result = subprocess.run(
+        ["pkg-config", "--print-errors", "--exists", package],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if exists_result.returncode == 0:
+        return True
+
+    detail = _pkg_config_stderr(exists_result)
+    if bare_package is None:
+        _warn_pkg_config(f"pkg-config package {package!r} not found", detail)
+        return False
+
+    bare_result = subprocess.run(
+        ["pkg-config", "--print-errors", "--exists", bare_package],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if bare_result.returncode == 0:
+        _warn_pkg_config(f"pkg-config version requirement {package!r} not satisfied", detail)
+    else:
+        _warn_pkg_config(
+            f"pkg-config package {bare_package!r} not found while evaluating {package!r}",
+            detail or _pkg_config_stderr(bare_result),
+        )
+    return False
 
 
 @functools.cache
 def cached_pkg_config(package, option):
     """Cache pkg-config results for package and option (--cflags or --libs)"""
-    # First check if the package exists
-    exists_result = subprocess.run(["pkg-config", "--exists", package], capture_output=True, check=False)
-    if exists_result.returncode != 0:
-        warnings.warn(f"pkg-config package '{package}' not found", UserWarning, stacklevel=2)
+    if not _cached_pkg_config_exists(package):
         return ""
 
     result = subprocess.run(
@@ -361,7 +491,7 @@ def _setup_pkg_config_overrides_locked(context, verbose, prepend_paths, append_p
 
 
 def _add_flags_from_pkg_config(args):
-    packages = list(args.pkg_config)
+    packages = tokenize_pkg_config_specs(list(args.pkg_config))
     if not packages:
         return
 
@@ -400,19 +530,27 @@ def _batch_pkg_config(packages: list[str], option: str) -> dict[str, str]:
     If the batch ``--exists`` fails, fall back to per-package cached calls
     which handle missing packages individually.
     """
-    # Single --exists check for all packages at once
+    # Malformed specs are diagnosed without invoking pkg-config. Keep them out
+    # of the batch so valid co-listed packages can still use the fast path.
+    malformed = [pkg for pkg in packages if _pkg_config_constraint_package(pkg)[1]]
+    out = {pkg: cached_pkg_config(pkg, option) for pkg in malformed}
+    query_packages = [pkg for pkg in packages if pkg not in out]
+    if not query_packages:
+        return out
+
+    # Single --exists check for all valid package specs at once
     exists = subprocess.run(
-        ["pkg-config", "--exists"] + packages,
+        ["pkg-config", "--exists"] + query_packages,
         capture_output=True,
         check=False,
     )
     if exists.returncode != 0:
         # At least one package is missing — fall back to per-package
-        return {pkg: cached_pkg_config(pkg, option) for pkg in packages}
+        out.update({pkg: cached_pkg_config(pkg, option) for pkg in query_packages})
+        return out
 
     # All packages exist — query each without the redundant --exists check.
-    out: dict[str, str] = {}
-    for pkg in packages:
+    for pkg in query_packages:
         r = subprocess.run(
             ["pkg-config", option, pkg],
             stdout=subprocess.PIPE,
