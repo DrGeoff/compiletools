@@ -2173,6 +2173,42 @@ class TestPkgConfigConfValueSplitting:
                 f"{marker} missing from the whitespace form: {whitespace.args.CPPFLAGS!r}"
             )
 
+    @pytest.mark.parametrize(
+        ("ct_conf_line", "axis_conf_line", "expected"),
+        [
+            ("pkg-config = conditional nested", "", ["conditional", "nested"]),
+            ("pkg-config = conditional, nested", "", ["conditional", "nested"]),
+            ("pkg-config = [conditional, nested]", "", ["conditional", "nested"]),
+            ("pkg-config = conditional >= 1.0.0, nested", "", ["conditional >= 1.0.0", "nested"]),
+            ("", "append-PKG-CONFIG = conditional nested", ["conditional", "nested"]),
+            ("", "prepend-PKG-CONFIG = conditional nested", ["conditional", "nested"]),
+        ],
+    )
+    def test_namespace_carries_one_element_per_spec_after_parseargs(
+        self, pkgconfig_env, ct_conf_line, axis_conf_line, expected
+    ):
+        """``args.pkg_config`` holds one element per specification once
+        ``parseargs`` has returned, on every surface that feeds it.
+
+        The tokenizer runs at point-of-use inside
+        ``_add_flags_from_pkg_config``, so the flags come out right whether or
+        not the namespace was normalised — which is exactly why the sibling
+        tests here assert on flags and would stay green if the in-place
+        normalisation in ``_do_xxpend_list`` were removed. This is the one
+        assertion that holds the namespace shape itself, for the benefit of
+        any consumer that reads ``args.pkg_config`` without going through
+        ``_add_flags_from_pkg_config``.
+
+        A version constraint keeps its internal space: ``conditional >=
+        1.0.0`` is one specification, not three.
+        """
+        result = _parseargs_with_pkg_config_conf(ct_conf_line, axis_conf_line=axis_conf_line)
+
+        assert list(result.args.pkg_config) == expected, (
+            f"args.pkg_config was not one element per specification: "
+            f"got {result.args.pkg_config!r}, expected {expected!r}"
+        )
+
     def test_comma_separated_bare_conf_value_is_equivalent(self, pkgconfig_env):
         """``pkg-config = conditional, nested`` is the third of the three
         equivalent conf forms README.ct-config.rst documents.
