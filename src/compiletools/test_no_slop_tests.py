@@ -12,11 +12,11 @@ It mirrors the established in-repo lint style — ``test_entry_point_surface.py`
 ``frozenset[str]`` allowlist keyed ``"filename::test_name"`` so an
 intentional exception is documented inline, never silent.
 
-Rules (all backed by ``ast`` only — no new deps, runs in well under a
-second over the whole tree). All six FAIL THE BUILD. The W-prefixed three were
-advisory (``warnings.warn`` + an always-passing report test) until 2026-07-29;
-they keep their labels for continuity with the allowlist names and the git
-history, but there is no longer a warning tier — an unreviewed hit is an error:
+Rules (all backed by ``ast`` only — no new deps, runs in well under a second
+over the whole tree). All six FAIL THE BUILD; there is no advisory tier, so an
+unreviewed hit is an error. R4-R6 were labelled W1-W3 and were advisory
+(``warnings.warn`` + an always-passing report test) until 2026-07-29 — commit
+messages up to 9fc5a61a use the old names.
 
   R1 NO VERIFICATION  — a ``def test_*`` with zero ``assert`` / ``self.assert*``,
      zero ``pytest.raises``/``warns``/``fail``/``xfail``, no call to an
@@ -28,31 +28,30 @@ history, but there is no longer a warning tier — an unreviewed hit is an error
      "unreachable" marker) is intentionally NOT flagged.
   R3 BARE EXCEPT      — a bare ``except:`` (NOT ``except Exception:``) with no
      assertion following it in the same function body.
-
-  W1 MOCK-ASSERT-ONLY — the only verification is ``assert_called*`` /
+  R4 MOCK-ASSERT-ONLY — the only verification is ``assert_called*`` /
      ``assert_not_called`` / ``assert_has_calls`` with no real
      ``assert`` / ``pytest.raises``.
-  W2 CAPTURE-DISCARDED — a ``readouterr()`` result assigned to a name that is
+  R5 CAPTURE-DISCARDED — a ``readouterr()`` result assigned to a name that is
      then never read.
-  W3 NAME-PROMISE     — a name *token* says creates/writes/removes and no
+  R6 NAME-PROMISE     — a name *token* says creates/writes/removes and no
      assert observes the filesystem (directly or one hop through a local), or
      says equals and no assert compares anything.
 
-W1 is the one rule that routinely fires on *sound* tests: all 21 of its hits at
+R4 is the one rule that routinely fires on *sound* tests: all 21 of its hits at
 promotion time were legitimate interaction tests, and a mock assertion is the
 only observable a dispatch-wiring or work-was-skipped test has. Expect new
 interaction tests to need an allowlist entry — that is the rule working as a
 sign-off gate ("is a call really the whole contract here?"), not as a defect
-detector. R1-R3 and W2-W3, by contrast, only fire on tests that are actually
+detector. R1-R3 and R5-R6, by contrast, only fire on tests that are actually
 missing a check.
 
-Precision history (why the W2/W3 predicates look the way they do): the first
-cut of W2 asked "is the captured name referenced inside an ``assert``", which
+Precision history (why the R5/R6 predicates look the way they do): the first
+cut of R5 asked "is the captured name referenced inside an ``assert``", which
 flagged all 10 captures in the suite — every one of them the ordinary
 ``cap = capsys.readouterr(); parsed = json.loads(cap.out); assert parsed[...]``
 shape, where the capture IS verified, one hop removed. The slop worth catching
 is a capture taken and dropped on the floor, so the predicate is now "is the
-name ever read at all". W3 likewise fired on 27 tests of which 26 were noise:
+name ever read at all". R6 likewise fired on 27 tests of which 26 were noise:
 substring hits (``rewrites`` ⊃ ``writes``, ``flag_equals_value`` ⊃ ``equals``),
 verbs used in a non-filesystem sense, and fs checks made through assertions
 *stronger* than the whitelisted ``os.path`` predicates (``read_text()``,
@@ -124,10 +123,10 @@ _R2_TAUTOLOGY_ALLOWLIST: frozenset[str] = frozenset(set())
 # R3: bare-except tests where the swallow itself is the thing under test.
 _R3_BARE_EXCEPT_ALLOWLIST: frozenset[str] = frozenset(set())
 
-# W1: interaction tests where a mock assertion IS the correct observable — the
+# R4: interaction tests where a mock assertion IS the correct observable — the
 # contract under test is "this call was made (with these arguments)", so there
 # is no resulting state to assert on. Reviewed 2026-07-29.
-_W1_MOCK_ASSERT_ONLY_ALLOWLIST: frozenset[str] = frozenset(
+_R4_MOCK_ASSERT_ONLY_ALLOWLIST: frozenset[str] = frozenset(
     {
         # Delegation / dispatch wiring: the postcondition IS "X was called".
         # Note the dispatch pair patches methods on the *expected* class, so a
@@ -162,15 +161,15 @@ _W1_MOCK_ASSERT_ONLY_ALLOWLIST: frozenset[str] = frozenset(
     }
 )
 
-# W2: captures deliberately taken and not read (none — a discarded capture is
+# R5: captures deliberately taken and not read (none — a discarded capture is
 # never useful; drain with a bare ``capsys.readouterr()`` instead of assigning).
-_W2_CAPTURE_DISCARDED_ALLOWLIST: frozenset[str] = frozenset(set())
+_R5_CAPTURE_DISCARDED_ALLOWLIST: frozenset[str] = frozenset(set())
 
-# W3: "creates"/"writes"/"removes" used in a NON-filesystem sense — the verb
+# R6: "creates"/"writes"/"removes" used in a NON-filesystem sense — the verb
 # refers to an in-memory object (a BuildRule, an env var, a list/dict entry, a
 # string buffer), so there is no path to probe and each of these asserts the
 # real postcondition instead. Reviewed 2026-07-29.
-_W3_NAME_PROMISE_ALLOWLIST: frozenset[str] = frozenset(
+_R6_NAME_PROMISE_ALLOWLIST: frozenset[str] = frozenset(
     {
         # "creates" a BuildRule in the graph, not a file on disk.
         "test_build_backend.py::test_pch_header_creates_gch_compile_rule",
@@ -215,20 +214,20 @@ _PYTEST_VERIFY_ATTRS = frozenset({"raises", "warns", "fail", "xfail"})
 # timeout wrappers that ARE the verification (the test asserts "completes in time").
 _TIMEOUT_ATTRS = frozenset({"wait_for"})
 
-# mock-style pseudo-assertions (W1).
+# mock-style pseudo-assertions (R4).
 _MOCK_ASSERT_RE = re.compile(r"^assert_(called|not_called|has_calls|any_call)")
 
-# fs-verb / equality name promises (W3). Matched against the name's underscore
+# fs-verb / equality name promises (R6). Matched against the name's underscore
 # tokens, NOT as substrings: "rewrites" is not "writes" and
 # "test_..._flag_equals_value" is not an equality claim.
-_W3_FS_VERBS = frozenset({"creates", "writes", "removes"})
-_W3_EQ_VERB = "equals"
+_R6_FS_VERBS = frozenset({"creates", "writes", "removes"})
+_R6_EQ_VERB = "equals"
 
-# Attribute accesses that constitute an observation OF the filesystem (W3
+# Attribute accesses that constitute an observation OF the filesystem (R6
 # evidence). Deliberately wider than the os.path predicates: a test that asserts
 # on read_text() / os.stat().st_mode / rglob() results has made a *stronger*
 # claim than os.path.exists, and must not be told it forgot to check.
-_W3_FS_EVIDENCE_ATTRS = frozenset(
+_R6_FS_EVIDENCE_ATTRS = frozenset(
     {
         "exists",
         "lexists",
@@ -262,7 +261,7 @@ _W3_FS_EVIDENCE_ATTRS = frozenset(
 )
 
 # Bare-name calls that open the filesystem (no attribute to key on).
-_W3_FS_EVIDENCE_CALLS = frozenset({"open"})
+_R6_FS_EVIDENCE_CALLS = frozenset({"open"})
 
 
 def _test_python_files():
@@ -442,7 +441,7 @@ def _collect_r3(func: ast.AST) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _collect_w1(func: ast.AST) -> bool:
+def _collect_r4(func: ast.AST) -> bool:
     """Mock-assert-only: mock pseudo-assert present, no real assert/raises."""
     names = _call_names(func)
     has_mock = any(_MOCK_ASSERT_RE.match(n) for n in names)
@@ -451,7 +450,7 @@ def _collect_w1(func: ast.AST) -> bool:
     return not _has_assert(func) and not _has_pytest_raises(func)
 
 
-def _collect_w2(func: ast.AST) -> bool:
+def _collect_r5(func: ast.AST) -> bool:
     """A ``readouterr()`` capture assigned to a name that is then never read.
 
     Not "never referenced inside an ``assert``" — a capture routed through an
@@ -478,9 +477,9 @@ def _has_fs_evidence(node: ast.AST) -> bool:
     """Does this subtree observe the filesystem (a path predicate, a stat, a
     directory listing, or a read of a file's bytes)?"""
     for sub in ast.walk(node):
-        if isinstance(sub, ast.Attribute) and sub.attr in _W3_FS_EVIDENCE_ATTRS:
+        if isinstance(sub, ast.Attribute) and sub.attr in _R6_FS_EVIDENCE_ATTRS:
             return True
-        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name) and sub.func.id in _W3_FS_EVIDENCE_CALLS:
+        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name) and sub.func.id in _R6_FS_EVIDENCE_CALLS:
             return True
     return False
 
@@ -501,11 +500,11 @@ def _fs_derived_names(func: ast.AST) -> set[str]:
     return derived
 
 
-def _collect_w3(name: str, func: ast.AST) -> bool:
+def _collect_r6(name: str, func: ast.AST) -> bool:
     """Name promises a check the body lacks."""
     tokens = set(name.lower().split("_"))
     asserts = [n for n in ast.walk(func) if isinstance(n, ast.Assert)]
-    if tokens & _W3_FS_VERBS:
+    if tokens & _R6_FS_VERBS:
         derived = _fs_derived_names(func)
         for a in asserts:
             if _has_fs_evidence(a):
@@ -514,7 +513,7 @@ def _collect_w3(name: str, func: ast.AST) -> bool:
                 if isinstance(sub, ast.Name) and sub.id in derived:
                     return False
         return True
-    if _W3_EQ_VERB in tokens:
+    if _R6_EQ_VERB in tokens:
         # Any comparison, an assertEqual-family call, or a pytest.raises
         # settles an "equals" claim — pinning it to `==` alone flagged
         # membership assertions and "...=... raises" negative tests.
@@ -603,8 +602,8 @@ def test_no_bare_except_without_assertion():
 
 
 def test_no_mock_assert_only_tests():
-    """W1: a mock pseudo-assertion is not by itself proof of a postcondition."""
-    hits = _scan(_collect_w1, _W1_MOCK_ASSERT_ONLY_ALLOWLIST)
+    """R4: a mock pseudo-assertion is not by itself proof of a postcondition."""
+    hits = _scan(_collect_r4, _R4_MOCK_ASSERT_ONLY_ALLOWLIST)
     assert not hits, (
         "These tests verify only via assert_called*/assert_not_called/"
         "assert_has_calls — they pin the call graph, not the behaviour, so "
@@ -615,14 +614,14 @@ def test_no_mock_assert_only_tests():
         "written, the value that got returned, the flag that got emitted). "
         "If the call itself IS the contract — dispatch/delegation wiring, or a "
         "'this work was skipped' guard where absence is the only observable — "
-        "add the test to _W1_MOCK_ASSERT_ONLY_ALLOWLIST with a one-line "
+        "add the test to _R4_MOCK_ASSERT_ONLY_ALLOWLIST with a one-line "
         "justification, grouped under the matching comment block."
     )
 
 
 def test_no_discarded_output_captures():
-    """W2: a ``readouterr()`` result that is never read verifies nothing."""
-    hits = _scan(_collect_w2, _W2_CAPTURE_DISCARDED_ALLOWLIST)
+    """R5: a ``readouterr()`` result that is never read verifies nothing."""
+    hits = _scan(_collect_r5, _R5_CAPTURE_DISCARDED_ALLOWLIST)
     assert not hits, (
         "These tests capture stdout/stderr into a name and then never read it "
         "— the capture looks like output verification but is dead:\n"
@@ -635,8 +634,8 @@ def test_no_discarded_output_captures():
 
 
 def test_no_unkept_name_promises():
-    """W3: a name that says creates/writes/removes/equals must check it."""
-    hits = _scan(lambda func: _collect_w3(func.name, func), _W3_NAME_PROMISE_ALLOWLIST)
+    """R6: a name that says creates/writes/removes/equals must check it."""
+    hits = _scan(lambda func: _collect_r6(func.name, func), _R6_NAME_PROMISE_ALLOWLIST)
     assert not hits, (
         "These test names promise a check the body does not make — the name "
         "token says creates/writes/removes but no assertion observes the "
@@ -646,7 +645,7 @@ def test_no_unkept_name_promises():
         "isdir / read_text / os.stat / listdir counts, directly or one "
         "assignment away). If the verb is meant in a non-filesystem sense — "
         "'creates' a BuildRule, 'removes' a dict key, 'writes' to a string "
-        "buffer — add the test to _W3_NAME_PROMISE_ALLOWLIST with a one-line "
+        "buffer — add the test to _R6_NAME_PROMISE_ALLOWLIST with a one-line "
         "justification, or rename the test so it doesn't claim a file."
     )
 
@@ -671,9 +670,9 @@ def test_allowlist_entries_are_live():
         ("_R1_NO_VERIFICATION_ALLOWLIST", _R1_NO_VERIFICATION_ALLOWLIST),
         ("_R2_TAUTOLOGY_ALLOWLIST", _R2_TAUTOLOGY_ALLOWLIST),
         ("_R3_BARE_EXCEPT_ALLOWLIST", _R3_BARE_EXCEPT_ALLOWLIST),
-        ("_W1_MOCK_ASSERT_ONLY_ALLOWLIST", _W1_MOCK_ASSERT_ONLY_ALLOWLIST),
-        ("_W2_CAPTURE_DISCARDED_ALLOWLIST", _W2_CAPTURE_DISCARDED_ALLOWLIST),
-        ("_W3_NAME_PROMISE_ALLOWLIST", _W3_NAME_PROMISE_ALLOWLIST),
+        ("_R4_MOCK_ASSERT_ONLY_ALLOWLIST", _R4_MOCK_ASSERT_ONLY_ALLOWLIST),
+        ("_R5_CAPTURE_DISCARDED_ALLOWLIST", _R5_CAPTURE_DISCARDED_ALLOWLIST),
+        ("_R6_NAME_PROMISE_ALLOWLIST", _R6_NAME_PROMISE_ALLOWLIST),
     ):
         stale = sorted(allowlist - live)
         assert not stale, f"{label} has entries that no longer exist: {stale}"
@@ -687,23 +686,23 @@ def test_allowlist_entries_are_live():
 # module trees, so a string literal here is invisible to its own scan.
 # (should_flag, rule, source)
 _RULE_BEHAVIOUR_CASES: tuple[tuple[bool, str, str], ...] = (
-    (True, "W1", "def test_x():\n    m.assert_called_once()\n"),
-    (False, "W1", "def test_x():\n    m.assert_called_once()\n    assert m.rc == 0\n"),
-    (True, "W2", "def test_x(capsys):\n    run()\n    cap = capsys.readouterr()\n    assert rc == 0\n"),
+    (True, "R4", "def test_x():\n    m.assert_called_once()\n"),
+    (False, "R4", "def test_x():\n    m.assert_called_once()\n    assert m.rc == 0\n"),
+    (True, "R5", "def test_x(capsys):\n    run()\n    cap = capsys.readouterr()\n    assert rc == 0\n"),
     (
         False,
-        "W2",
+        "R5",
         "def test_x(capsys):\n    cap = capsys.readouterr()\n    p = json.loads(cap.out)\n    assert p['a']\n",
     ),
-    (True, "W3", "def test_creates_file():\n    write_it(p)\n    assert rc == 0\n"),
-    (False, "W3", "def test_creates_file():\n    write_it(p)\n    assert os.path.exists(p)\n"),
-    (False, "W3", "def test_creates_file():\n    write_it(p)\n    assert Path(p).read_text() == 'x'\n"),
-    (False, "W3", "def test_creates_file():\n    t = Path(p).read_text()\n    assert t.endswith('x')\n"),
+    (True, "R6", "def test_creates_file():\n    write_it(p)\n    assert rc == 0\n"),
+    (False, "R6", "def test_creates_file():\n    write_it(p)\n    assert os.path.exists(p)\n"),
+    (False, "R6", "def test_creates_file():\n    write_it(p)\n    assert Path(p).read_text() == 'x'\n"),
+    (False, "R6", "def test_creates_file():\n    t = Path(p).read_text()\n    assert t.endswith('x')\n"),
     # "rewrites" is not the token "writes"; "flag_equals_value" is not an
     # equality claim. Both were false positives before token-level matching.
-    (False, "W3", "def test_rewrites_flag():\n    assert 'a' in out\n"),
-    (True, "W3", "def test_a_equals_b():\n    assert thing\n"),
-    (False, "W3", "def test_flag_equals_value():\n    assert '--x=1' in toks\n"),
+    (False, "R6", "def test_rewrites_flag():\n    assert 'a' in out\n"),
+    (True, "R6", "def test_a_equals_b():\n    assert thing\n"),
+    (False, "R6", "def test_flag_equals_value():\n    assert '--x=1' in toks\n"),
     (True, "R1", "def test_x():\n    do_thing()\n"),
     (True, "R2", "def test_x():\n    assert True\n"),
     (True, "R3", "def test_x():\n    try:\n        f()\n    except:\n        pass\n"),
@@ -717,9 +716,9 @@ def test_rules_fire_on_slop_and_stay_quiet_on_good_tests():
         "R1": lambda node: _collect_r1(node),
         "R2": lambda node: _collect_r2(node),
         "R3": lambda node: _collect_r3(node),
-        "W1": lambda node: _collect_w1(node),
-        "W2": lambda node: _collect_w2(node),
-        "W3": lambda node: _collect_w3(node.name, node),
+        "R4": lambda node: _collect_r4(node),
+        "R5": lambda node: _collect_r5(node),
+        "R6": lambda node: _collect_r6(node.name, node),
     }
     wrong: list[str] = []
     for should_flag, rule, source in _RULE_BEHAVIOUR_CASES:
