@@ -2173,6 +2173,33 @@ class TestPkgConfigConfValueSplitting:
                 f"{marker} missing from the whitespace form: {whitespace.args.CPPFLAGS!r}"
             )
 
+    def test_comma_separated_bare_conf_value_is_equivalent(self, pkgconfig_env):
+        """``pkg-config = conditional, nested`` is the third of the three
+        equivalent conf forms README.ct-config.rst documents.
+
+        The comma reaches the tokenizer as ordinary spec text rather than as
+        the configargparse list separator, because a bare value is never
+        parsed as a list literal. Whitespace, comma, and bracket forms are
+        documented as interchangeable for this key alone, so all three are
+        pinned here against the docs going stale in either direction.
+        """
+        comma = _parseargs_with_pkg_config_conf(f"pkg-config = conditional, nested, {self.MISSING}")
+        whitespace = _parseargs_with_pkg_config_conf(f"pkg-config = conditional nested {self.MISSING}")
+
+        assert comma.args.CPPFLAGS == whitespace.args.CPPFLAGS, (
+            f"comma and whitespace conf forms produced different CPPFLAGS.\n"
+            f"  comma      args.pkg_config={comma.args.pkg_config!r}\n"
+            f"             CPPFLAGS={comma.args.CPPFLAGS!r}\n"
+            f"  whitespace CPPFLAGS={whitespace.args.CPPFLAGS!r}"
+        )
+        assert comma.args.LDFLAGS == whitespace.args.LDFLAGS, (
+            f"comma and whitespace conf forms produced different LDFLAGS: "
+            f"{comma.args.LDFLAGS!r} vs {whitespace.args.LDFLAGS!r}"
+        )
+        assert not [c for c in self._categories(comma.warnings) if "," in c], (
+            f"a comma survived into a queried package name: {comma.warnings!r}"
+        )
+
     def test_missing_package_does_not_discard_co_listed_present_package(self, pkgconfig_env):
         """THE defect. A whitespace-joined value naming one present and one
         absent package must still contribute the present package's cflags and
