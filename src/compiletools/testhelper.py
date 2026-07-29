@@ -983,10 +983,10 @@ def _gitignored_under(src: Path) -> set[Path]:
     wholly-untracked directory before ``-i`` filters it: on git 2.31 an
     example dir containing no tracked files reports nothing at all, which
     turns this helper into a no-op (measured 2.31.1 reports nothing,
-    2.50.1 reports the ignored subdirectories). File-level output is the
-    same on every version. The fold here is slightly wider than git's: a
-    directory that is not itself ignored but whose every entry is gets
-    pruned too.
+    2.50.1 reports the ignored subdirectories). File-level output avoids
+    that version-dependent directory fold. The fold done here is slightly
+    wider than git's: a directory that is not itself ignored but whose
+    every entry is gets pruned too.
 
     Returns an empty set when *src* is not inside a git work tree (no
     ignore information exists there, so nothing is filtered).
