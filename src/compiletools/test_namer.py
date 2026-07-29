@@ -54,12 +54,19 @@ def _make_namer(description, extra_argv=()):
     return args, namer
 
 
-def test_executable_pathname():
+def test_executable_pathname(tmp_path, monkeypatch):
     """A source outside the anchor (cwd under --no-git-root) mirrors its
     full mount-stripped path under bindir."""
+    anchor = tmp_path / "anchor"
+    anchor.mkdir()
+    monkeypatch.chdir(anchor)
     _args, namer = _make_namer("TestNamer")
-    exename = namer.executable_pathname("/home/user/code/my.cpp")
-    assert exename == "bin/gcc.debug/home/user/code/my"
+    # The mirror derives from the realpath'd source, so the expectation
+    # must too: a literal like /home/... embeds whatever the host has
+    # symlinked there.
+    outside = os.path.join(os.path.realpath(str(tmp_path)), "code")
+    exename = namer.executable_pathname(os.path.join(outside, "my.cpp"))
+    assert exename == "bin/gcc.debug/" + outside.removeprefix("/") + "/my"
 
 
 def test_executable_pathname_at_anchor_root_stays_flat(tmp_path, monkeypatch):
