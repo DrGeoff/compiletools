@@ -2200,6 +2200,29 @@ class TestPkgConfigConfValueSplitting:
             f"a comma survived into a queried package name: {comma.warnings!r}"
         )
 
+    def test_constraint_and_comma_combine_in_a_bare_conf_value(self, pkgconfig_env):
+        """``pkg-config = conditional >= 1.0.0, nested`` — the form
+        README.ct-config.rst gives as equivalent to the bracket spelling.
+
+        Constraint and comma interact: the comma has to end the spec without
+        being read as part of the version, and the space inside the
+        constraint has to not end it. Splitting on either character alone
+        gets one of the two wrong, so the combined form is the one worth
+        pinning rather than each separator on its own.
+        """
+        bare = _parseargs_with_pkg_config_conf("pkg-config = conditional >= 1.0.0, nested")
+        bracket = _parseargs_with_pkg_config_conf("pkg-config = [conditional >= 1.0.0, nested]")
+
+        for marker in ("-DTEST_PKG_ENABLED", "-DTEST_PKG1_ENABLED"):
+            assert marker in bare.args.CPPFLAGS, (
+                f"{marker} missing from the bare constraint+comma form. "
+                f"args.pkg_config={bare.args.pkg_config!r}, CPPFLAGS={bare.args.CPPFLAGS!r}"
+            )
+        assert bare.args.CPPFLAGS == bracket.args.CPPFLAGS, (
+            f"bare and bracket forms disagree: {bare.args.CPPFLAGS!r} vs {bracket.args.CPPFLAGS!r}"
+        )
+        assert not bare.warnings, f"a documented equivalent form must warn about nothing, got {bare.warnings!r}"
+
     def test_missing_package_does_not_discard_co_listed_present_package(self, pkgconfig_env):
         """THE defect. A whitespace-joined value naming one present and one
         absent package must still contribute the present package's cflags and
