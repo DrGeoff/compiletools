@@ -591,13 +591,10 @@ the comma is the conf-file list-literal separator, split out by
 land on the same two packages, by different mechanisms.
 
 A ``pkg-config`` entry may carry a version constraint (``=``, ``==``,
-``!=``, ``<``, ``<=``, ``>``, ``>=``), e.g. ``zlib >= 1.2``. Spaces
-around the operator are required — this matches pkg-config's own
-grammar, where ``zlib>=1.2`` (no spaces) is parsed as a package
-literally named ``zlib>=1.2``, not a constraint. The operator and
-version stay attached to the package they qualify and are never
-resolved as a separate package, in any of the three equivalent forms
-above:
+``!=``, ``<``, ``<=``, ``>``, ``>=``), e.g. ``zlib >= 1.2``. The
+operator and version stay attached to the package they qualify and are
+never resolved as a separate package, in any of the three equivalent
+forms above:
 
 .. code-block:: ini
 
@@ -605,10 +602,37 @@ above:
     pkg-config = zlib >= 1.2, libxml-2.0
     pkg-config = [zlib >= 1.2, libxml-2.0]
 
-A version constraint with no package to qualify — an operator with
-nothing before it (``pkg-config = >= 1.2``) or nothing after it
-(``pkg-config = zlib >=`` with no version) — is rejected as a
-malformed package specification before pkg-config is ever invoked.
+**A space before the operator is required; a space after it is
+optional.** This follows pkg-config's own grammar, which ends a package
+name at whitespace and then reads the operator straight into the
+version. Writing the space on one side only is therefore not symmetric:
+
+.. code-block:: ini
+
+    # Both are the same constraint on zlib
+    pkg-config = zlib >= 1.2
+    pkg-config = zlib >=1.2
+
+    # NOT a constraint: pkg-config reads one package literally named
+    # "zlib>=1.2" and reports it as missing
+    pkg-config = zlib>=1.2
+
+    # Rejected as malformed (see below): pkg-config would read this as
+    # two packages, "zlib>=" and "1.2", neither of which you wrote
+    pkg-config = zlib>= 1.2
+
+Three shapes are rejected as a malformed package specification before
+pkg-config is ever invoked, because passing them through would make
+pkg-config invent package names out of operators and version numbers:
+an operator with nothing before it (``pkg-config = >= 1.2``), an
+operator with nothing after it (``pkg-config = zlib >=``), and the
+half-spaced ``pkg-config = zlib>= 1.2`` above.
+
+Both separators are hard boundaries for this: a package specification
+never reaches across a comma, a newline, or a repeated conf key to find
+a missing operand. ``pkg-config = zlib >=, libxml-2.0`` is a malformed
+``zlib >=`` plus an ordinary ``libxml-2.0``, not a comparison of zlib's
+version against the string ``libxml-2.0``.
 
 **Environment Variable Mapping**
 

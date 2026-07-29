@@ -2415,6 +2415,56 @@ class TestPkgConfigConfValueSplitting:
             f"'nested' was queried as part of another spec: {categories!r}"
         )
 
+    def test_dangling_operator_does_not_reach_across_a_comma(self, pkgconfig_env):
+        """A comma ends a spec, so a trailing operator cannot take the next
+        package as its version operand.
+
+        This is the element-boundary case one line further in: both are
+        documented separators, but only the element boundary was guarded.
+        It is the worst-behaved member of the family — pkg-config compares
+        ``conditional``'s version against the literal string ``nested`` and
+        answers success, so the build loses ``nested``'s cflags and libs
+        with no diagnostic of any kind. The dangling operator must instead
+        be named malformed and ``nested`` must resolve on its own.
+        """
+        result = _parseargs_with_pkg_config_conf("pkg-config = conditional >=, nested")
+
+        categories = self._categories(result.warnings)
+        assert "-DTEST_PKG1_ENABLED" in result.args.CPPFLAGS, (
+            f"'nested' was swallowed as a version operand across the comma. "
+            f"args.pkg_config={result.args.pkg_config!r}, CPPFLAGS={result.args.CPPFLAGS!r}"
+        )
+        assert "pkg-config malformed package specification 'conditional >='" in categories, (
+            f"the dangling operator was not reported as malformed: {categories!r}"
+        )
+
+    def test_space_after_the_operator_is_optional(self, pkgconfig_env):
+        """``pkg-config = conditional >=1.0.0`` resolves.
+
+        pkg-config ends a package name at whitespace and then reads the
+        operator, which runs straight into the version — so only the space
+        *before* the operator is load-bearing. An earlier draft of the docs
+        claimed spaces on both sides were required and the tokenizer's own
+        docstring called this form invalid; tightening the tokenizer to
+        match that claim would reject a spec pkg-config resolves and
+        silently drop the version floor with it.
+
+        Its mirror image, ``conditional>= 1.0.0``, is the malformed one and
+        is pinned in test_apptools_pkgconfig.py.
+        """
+        result = _parseargs_with_pkg_config_conf("pkg-config = conditional >=1.0.0")
+
+        assert list(result.args.pkg_config) == ["conditional >=1.0.0"], (
+            f"the constraint was not kept as one spec: {result.args.pkg_config!r}"
+        )
+        assert "-DTEST_PKG_ENABLED" in result.args.CPPFLAGS, (
+            f"a valid constraint did not resolve: CPPFLAGS={result.args.CPPFLAGS!r}"
+        )
+        assert "-ltestpkg" in result.args.LDFLAGS, (
+            f"a valid constraint did not resolve: LDFLAGS={result.args.LDFLAGS!r}"
+        )
+        assert not result.warnings, f"a valid constraint must warn about nothing, got {result.warnings!r}"
+
     def test_absent_package_carrying_a_constraint_reported_as_absent(self, pkgconfig_env):
         """``<absent> >= 1.0`` is a missing package, not an unsatisfied floor.
 

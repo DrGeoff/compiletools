@@ -1,6 +1,7 @@
 """Focused tests for package-spec handling in :mod:`apptools_pkgconfig`."""
 
 import subprocess
+import warnings
 from types import SimpleNamespace
 
 import pytest
@@ -56,6 +57,27 @@ def test_tokenize_pkg_config_specs_never_joins_across_list_elements():
     raw = ["zlib >=", "libxml-2.0"]
 
     assert pkgconfig.tokenize_pkg_config_specs(raw) == raw
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("zlib >=, libxml-2.0", ["zlib >=", "libxml-2.0"]),
+        ("zlib, >= 1.2", ["zlib", ">= 1.2"]),
+    ],
+)
+def test_tokenize_pkg_config_specs_treats_comma_as_a_hard_boundary(raw, expected):
+    """A comma ends a spec as firmly as a list-element boundary does.
+
+    The docstring calls commas package separators, but replacing them with
+    spaces before splitting erases the boundary, so a dangling operator
+    reaches across the comma and swallows the next package as its version
+    operand. The result is not even a warning: pkg-config compares the
+    installed version against the literal string it was handed and can
+    return success, so the swallowed package's cflags and libs vanish
+    silently.
+    """
+    assert pkgconfig.tokenize_pkg_config_specs([raw]) == expected
 
 
 def test_add_flags_fallback_uses_real_package_specs(monkeypatch):
@@ -167,8 +189,18 @@ def test_missing_constrained_package_warning_names_the_bare_package(monkeypatch)
         pkgconfig._add_flags_from_pkg_config(args)
 
 
-@pytest.mark.parametrize("spec", ["zlib >=", ">= 1.2", ">=1.2"])
+@pytest.mark.parametrize("spec", ["zlib >=", ">= 1.2", ">=1.2", "zlib>= 1.2"])
 def test_malformed_comparison_gets_an_explicit_diagnostic_without_a_probe(monkeypatch, spec):
+    """Specs pkg-config would answer by inventing package names out of thin air.
+
+    ``zlib>= 1.2`` belongs here with the operand-less forms even though it
+    names a real package: pkg-config's parser does not treat operator
+    characters as ending a package name, so it reads two packages,
+    ``zlib>=`` and ``1.2``, neither of which the user wrote. Diagnosing it
+    here is the one place compiletools is strictly more informative than
+    the tool it wraps.
+    """
+
     def fail_if_called(*_args, **_kwargs):
         pytest.fail("malformed specs must not invoke pkg-config")
 
@@ -183,3 +215,38 @@ def test_malformed_comparison_gets_an_explicit_diagnostic_without_a_probe(monkey
 
     with pytest.warns(UserWarning, match=rf"pkg-config malformed package specification {spec!r}"):
         pkgconfig._add_flags_from_pkg_config(args)
+
+
+def test_version_attached_to_operator_is_a_constraint_not_a_malformed_spec(monkeypatch):
+    """``zlib >=1.2`` is valid: only the space *before* the operator matters.
+
+    Both pkg-config implementations end a package name at whitespace and
+    then read the operator; the operator itself runs straight into the
+    version, so the space after it is optional. Rejecting this form would
+    discard a version floor the user did write, on a spec pkg-config
+    resolves. The guard is that the spec reaches a real probe — the
+    malformed path never runs one.
+    """
+    probed: list[list[str]] = []
+
+    def fake_run(cmd, **_kwargs):
+        probed.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="-DZLIB_OK", stderr="")
+
+    monkeypatch.setattr(pkgconfig.subprocess, "run", fake_run)
+    args = SimpleNamespace(
+        pkg_config=["zlib >=1.2"],
+        verbose=0,
+        CPPFLAGS="",
+        CFLAGS="",
+        CXXFLAGS="",
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        pkgconfig._add_flags_from_pkg_config(args)
+
+    assert ["pkg-config", "--cflags", "zlib >=1.2"] in probed, (
+        f"the constraint was not queried as one intact spec: {probed!r}"
+    )
+    assert "-DZLIB_OK" in args.CPPFLAGS
