@@ -13,9 +13,11 @@ It mirrors the established in-repo lint style — ``test_entry_point_surface.py`
 intentional exception is documented inline, never silent.
 
 Rules (all backed by ``ast`` only — no new deps, runs in well under a
-second over the whole tree):
+second over the whole tree). All six FAIL THE BUILD. The W-prefixed three were
+advisory (``warnings.warn`` + an always-passing report test) until 2026-07-29;
+they keep their labels for continuity with the allowlist names and the git
+history, but there is no longer a warning tier — an unreviewed hit is an error:
 
-ERRORS (fail the build):
   R1 NO VERIFICATION  — a ``def test_*`` with zero ``assert`` / ``self.assert*``,
      zero ``pytest.raises``/``warns``/``fail``/``xfail``, no call to an
      asserting helper (name matches ``assert|compare|verify|expect|check|
@@ -27,7 +29,6 @@ ERRORS (fail the build):
   R3 BARE EXCEPT      — a bare ``except:`` (NOT ``except Exception:``) with no
      assertion following it in the same function body.
 
-WARNINGS (reported via ``warnings.warn`` + a passing report test — never fail):
   W1 MOCK-ASSERT-ONLY — the only verification is ``assert_called*`` /
      ``assert_not_called`` / ``assert_has_calls`` with no real
      ``assert`` / ``pytest.raises``.
@@ -37,10 +38,13 @@ WARNINGS (reported via ``warnings.warn`` + a passing report test — never fail)
      assert observes the filesystem (directly or one hop through a local), or
      says equals and no assert compares anything.
 
-The WARNING rules carry allowlists of their own, same key format and same
-typo-guard as the ERROR rules. They were triaged to empty on 2026-07-29, so a
-non-empty warnings summary now means genuinely new, unreviewed findings rather
-than a standing backlog nobody reads.
+W1 is the one rule that routinely fires on *sound* tests: all 21 of its hits at
+promotion time were legitimate interaction tests, and a mock assertion is the
+only observable a dispatch-wiring or work-was-skipped test has. Expect new
+interaction tests to need an allowlist entry — that is the rule working as a
+sign-off gate ("is a call really the whole contract here?"), not as a defect
+detector. R1-R3 and W2-W3, by contrast, only fire on tests that are actually
+missing a check.
 
 Precision history (why the W2/W3 predicates look the way they do): the first
 cut of W2 asked "is the captured name referenced inside an ``assert``", which
@@ -62,10 +66,9 @@ import ast
 import functools
 import os
 import re
-import warnings
 
 # ---------------------------------------------------------------------------
-# Allowlists — one per ERROR rule. Key format: "<filename>::<test_name>".
+# Allowlists — one per rule. Key format: "<filename>::<test_name>".
 # Every entry MUST carry an inline comment justifying the exception, and
 # every entry is typo-guarded by test_allowlist_entries_are_live below.
 # ---------------------------------------------------------------------------
@@ -534,8 +537,12 @@ def _collect_w3(name: str, func: ast.AST) -> bool:
 
 def _scan(collector, allowlist: frozenset[str]) -> list[str]:
     """Run ``collector(func)`` over every test function; return non-allowlisted
-    ``"<file>::<name>"`` keys where it returned True."""
-    hits: list[str] = []
+    ``"<file>::<name>"`` keys where it returned True.
+
+    Deduplicated: two classes in one file may define the same test name, which
+    collapses to a single key (and to a single allowlist entry covering both).
+    """
+    hits: dict[str, None] = {}
     for path in _test_python_files():
         basename = os.path.basename(path)
         with open(path, encoding="utf-8") as fh:
@@ -545,12 +552,12 @@ def _scan(collector, allowlist: frozenset[str]) -> list[str]:
             if key in allowlist:
                 continue
             if collector(func):
-                hits.append(key)
-    return hits
+                hits[key] = None
+    return list(hits)
 
 
 # ---------------------------------------------------------------------------
-# ERROR tests
+# Rule tests — all six fail the build
 # ---------------------------------------------------------------------------
 
 
@@ -595,6 +602,55 @@ def test_no_bare_except_without_assertion():
     )
 
 
+def test_no_mock_assert_only_tests():
+    """W1: a mock pseudo-assertion is not by itself proof of a postcondition."""
+    hits = _scan(_collect_w1, _W1_MOCK_ASSERT_ONLY_ALLOWLIST)
+    assert not hits, (
+        "These tests verify only via assert_called*/assert_not_called/"
+        "assert_has_calls — they pin the call graph, not the behaviour, so "
+        "they keep passing while the thing the call was supposed to achieve "
+        "breaks:\n"
+        + "\n".join(f"  {h}" for h in hits)
+        + "\n\nFix: assert the observable result as well (the file that got "
+        "written, the value that got returned, the flag that got emitted). "
+        "If the call itself IS the contract — dispatch/delegation wiring, or a "
+        "'this work was skipped' guard where absence is the only observable — "
+        "add the test to _W1_MOCK_ASSERT_ONLY_ALLOWLIST with a one-line "
+        "justification, grouped under the matching comment block."
+    )
+
+
+def test_no_discarded_output_captures():
+    """W2: a ``readouterr()`` result that is never read verifies nothing."""
+    hits = _scan(_collect_w2, _W2_CAPTURE_DISCARDED_ALLOWLIST)
+    assert not hits, (
+        "These tests capture stdout/stderr into a name and then never read it "
+        "— the capture looks like output verification but is dead:\n"
+        + "\n".join(f"  {h}" for h in hits)
+        + "\n\nFix: assert on the captured text, or — if the call is only "
+        "there to drain the buffer so it doesn't leak into the next test — "
+        "drop the assignment and call ``capsys.readouterr()`` bare, which this "
+        "rule deliberately ignores."
+    )
+
+
+def test_no_unkept_name_promises():
+    """W3: a name that says creates/writes/removes/equals must check it."""
+    hits = _scan(lambda func: _collect_w3(func.name, func), _W3_NAME_PROMISE_ALLOWLIST)
+    assert not hits, (
+        "These test names promise a check the body does not make — the name "
+        "token says creates/writes/removes but no assertion observes the "
+        "filesystem, or says equals but no assertion compares anything:\n"
+        + "\n".join(f"  {h}" for h in hits)
+        + "\n\nFix: assert the promised postcondition (any of os.path.exists / "
+        "isdir / read_text / os.stat / listdir counts, directly or one "
+        "assignment away). If the verb is meant in a non-filesystem sense — "
+        "'creates' a BuildRule, 'removes' a dict key, 'writes' to a string "
+        "buffer — add the test to _W3_NAME_PROMISE_ALLOWLIST with a one-line "
+        "justification, or rename the test so it doesn't claim a file."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Allowlist typo-guard (mirrors test_entry_point_surface / cas-dir-resolver)
 # ---------------------------------------------------------------------------
@@ -624,35 +680,8 @@ def test_allowlist_entries_are_live():
 
 
 # ---------------------------------------------------------------------------
-# WARNING report (always passes; surfaces W1/W2/W3 without blocking)
+# Rule self-test
 # ---------------------------------------------------------------------------
-
-
-def _collect_all_warnings() -> dict[str, list[str]]:
-    """Allowlist-filtered W1/W2/W3 hits, deduplicated (two classes in one file
-    may define the same test name, which collapses to one key)."""
-    buckets: dict[str, dict[str, None]] = {"W1": {}, "W2": {}, "W3": {}}
-    allowlists = {
-        "W1": _W1_MOCK_ASSERT_ONLY_ALLOWLIST,
-        "W2": _W2_CAPTURE_DISCARDED_ALLOWLIST,
-        "W3": _W3_NAME_PROMISE_ALLOWLIST,
-    }
-    for path in _test_python_files():
-        basename = os.path.basename(path)
-        with open(path, encoding="utf-8") as fh:
-            tree = ast.parse(fh.read(), filename=path)
-        for func in _iter_test_functions(tree):
-            key = f"{basename}::{func.name}"
-            hits = {
-                "W1": _collect_w1(func),
-                "W2": _collect_w2(func),
-                "W3": _collect_w3(func.name, func),
-            }
-            for code, hit in hits.items():
-                if hit and key not in allowlists[code]:
-                    buckets[code][key] = None
-    return {code: list(keys) for code, keys in buckets.items()}
-
 
 # Sources are parsed with ``ast``, never collected as tests — the linter walks
 # module trees, so a string literal here is invisible to its own scan.
@@ -699,28 +728,3 @@ def test_rules_fire_on_slop_and_stay_quiet_on_good_tests():
             verb = "did not flag" if should_flag else "wrongly flagged"
             wrong.append(f"  {rule} {verb}:\n{source}")
     assert not wrong, "Rule behaviour regressed:\n" + "\n".join(wrong)
-
-
-def test_report_soft_warnings():
-    """Non-blocking: emit W1/W2/W3 findings via ``warnings.warn`` so they are
-    visible in the pytest warnings summary without ever failing the build.
-
-    This test always passes — the ERROR rules above are the gate; these are
-    advisory signals for reviewers.
-    """
-    found = _collect_all_warnings()
-    descriptions = {
-        "W1": "MOCK-ASSERT-ONLY (only assert_called*/assert_not_called/assert_has_calls, no real assert)",
-        "W2": "CAPTURE-DISCARDED (readouterr() assigned to a name that is never read)",
-        "W3": "NAME-PROMISE (name token says creates/writes/removes/equals but body lacks the matching check)",
-    }
-    for code, keys in found.items():
-        if keys:
-            warnings.warn(
-                f"[no-slop {code}] {descriptions[code]} — {len(keys)} test(s):\n" + "\n".join(f"    {k}" for k in keys),
-                stacklevel=2,
-            )
-    # Advisory only. Assert the collector returned a well-formed mapping so this
-    # report test is itself verified (and can never silently break its scan).
-    assert set(found) == {"W1", "W2", "W3"}
-    assert all(isinstance(v, list) for v in found.values())
