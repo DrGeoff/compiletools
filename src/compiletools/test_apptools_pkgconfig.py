@@ -52,6 +52,12 @@ def test_tokenize_pkg_config_specs_is_idempotent(raw, expected):
     assert pkgconfig.tokenize_pkg_config_specs(first) == expected
 
 
+def test_tokenize_pkg_config_specs_never_joins_across_list_elements():
+    raw = ["zlib >=", "libxml-2.0"]
+
+    assert pkgconfig.tokenize_pkg_config_specs(raw) == raw
+
+
 def test_add_flags_fallback_uses_real_package_specs(monkeypatch):
     calls: list[list[str]] = []
 
