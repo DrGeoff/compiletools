@@ -557,6 +557,40 @@ supports the following features:
     # Python list (for markers)
     exemarkers = [main(,main (,wxIMPLEMENT_APP]
 
+Whitespace does not separate values for list-valued conf keys such as
+``pkg-config``, ``append-PKG-CONFIG``, and ``append-INCLUDE``. A bare
+whitespace-separated value is a single string, not multiple list
+elements — use the ``[a, b, c]`` list form for more than one value:
+
+.. code-block:: ini
+
+    # One list element, the literal string "zlib libxml-2.0" — NOT
+    # two packages
+    pkg-config = zlib libxml-2.0
+
+    # Two packages
+    pkg-config = [zlib, libxml-2.0]
+
+    append-PKG-CONFIG = [zlib, libxml-2.0]
+    append-INCLUDE    = [/opt/vendor-a/include, /opt/vendor-b/include]
+
+A ``pkg-config`` entry may carry a version constraint (``=``, ``==``,
+``!=``, ``<``, ``<=``, ``>``, ``>=``), e.g. ``zlib >= 1.2``. Spaces
+around the operator are required — this matches pkg-config's own
+grammar, where ``zlib>=1.2`` (no spaces) is parsed as a package
+literally named ``zlib>=1.2``, not a constraint. The operator and
+version stay attached to the package they qualify and are never
+resolved as a separate package, whether written inline or inside the
+list form:
+
+.. code-block:: ini
+
+    # A version-constrained package alongside a plain one
+    pkg-config = zlib >= 1.2 libxml-2.0
+
+    # Equivalent using the list form
+    pkg-config = [zlib >= 1.2, libxml-2.0]
+
 **Environment Variable Mapping**
 
 Command-line options automatically map to environment variables by:
