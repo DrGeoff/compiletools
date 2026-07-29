@@ -696,9 +696,13 @@ class TestClearCache:
         # Populate the cache with a dummy call
 
         with patch("subprocess.run", return_value=MagicMock(returncode=1)):
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
                 cached_pkg_config("nonexistent_test_pkg_clear_cache", "--cflags")
+
+        assert [w for w in caught if "nonexistent_test_pkg_clear_cache" in str(w.message)], (
+            f"expected the absent package to be named in a warning, got {[str(w.message) for w in caught]!r}"
+        )
 
         assert cached_pkg_config.cache_info().currsize > 0, "Cache should be populated"
 
@@ -1024,10 +1028,13 @@ class TestCachedPkgConfig:
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1)
 
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
                 result = cached_pkg_config("nonexistent_pkg_12345", "--cflags")
         assert result == ""
+        assert [str(w.message) for w in caught] == ["pkg-config package 'nonexistent_pkg_12345' not found"], (
+            f"a missing package must be classified as missing and named: {[str(w.message) for w in caught]!r}"
+        )
         clear_cache()
 
     def test_existing_package(self):
