@@ -629,7 +629,9 @@ without saying anything:
 Four shapes are rejected as a malformed package specification before
 pkg-config is ever invoked, because passing them through would make
 pkg-config invent package names out of operators and version numbers,
-or enforce a version floor other than the one written:
+or enforce a version floor other than the one written. "Rejected" means
+a ``UserWarning`` naming the specification and zero contributed flags —
+the build itself continues:
 
 - an operator with nothing before it — ``>= 1.2``, or ``>=1.2``
 - an operator with nothing after it — ``zlib >=``

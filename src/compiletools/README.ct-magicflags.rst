@@ -104,7 +104,9 @@ is passed to pkg-config intact:
 and version must be three whitespace-separated words. Omitting either
 space changes what pkg-config resolves, and in one case does so without
 saying anything, so those spellings are rejected as a malformed package
-specification before pkg-config is ever invoked:
+specification before pkg-config is ever invoked. "Rejected" means a
+``UserWarning`` naming the specification and zero contributed flags — the
+build itself continues:
 
 .. code-block:: cpp
 

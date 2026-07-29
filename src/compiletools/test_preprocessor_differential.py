@@ -287,7 +287,10 @@ def _expr(depth):
     #
     # ``>>`` only ever shrinks the magnitude, so its LHS may be any
     # subexpression. The count is a non-negative literal below the 64-bit width
-    # (a negative count is UB; a count >= width is UB).
+    # (a negative count is UB; a count >= width is UB). A NEGATIVE LHS is
+    # implementation-defined (C99 6.5.7p5), not UB — and both supported
+    # compilers arithmetic-shift, which matches Python bignum semantics
+    # (-1 >> 3 == -1 in all three), so it is safe to leave in the stream.
     rshift_ = st.builds(
         lambda a, b: f"({a} >> {b})",
         sub,
@@ -314,7 +317,10 @@ def _sample_expressions(count: int) -> list[str]:
     can assert over the whole sample instead of one example at a time."""
     drawn: list[str] = []
 
-    @settings(max_examples=count, deadline=None, database=None, suppress_health_check=_SUPPRESSED)
+    # derandomize: the guard consuming these samples claims to fail
+    # deterministically, so the draw must be seed-stable, not just very likely
+    # to contain a shift.
+    @settings(max_examples=count, deadline=None, database=None, derandomize=True, suppress_health_check=_SUPPRESSED)
     @given(expr=_expr(3))
     def _collect(expr):
         drawn.append(expr)

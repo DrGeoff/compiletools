@@ -437,40 +437,70 @@ def _collect_r3(func: ast.AST) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# WARNING-rule collectors (non-blocking)
+# R4-R6 collectors (build-failing; promoted from the advisory W1-W3 tier)
 # ---------------------------------------------------------------------------
 
 
 def _collect_r4(func: ast.AST) -> bool:
-    """Mock-assert-only: mock pseudo-assert present, no real assert/raises."""
+    """Mock-assert-only: mock pseudo-assert present, no real verification.
+
+    "Real verification" is a bare ``assert``, a pytest verify attr, or a call
+    whose name matches the asserting-helper regex (``self.assertEqual``,
+    ``_verify_output``, ``check_...``) — computed over the call names with the
+    mock pseudo-asserts removed first. That exclusion is load-bearing:
+    ``assert_called_once`` itself matches the ``assert...`` verify-helper
+    regex, so an unfiltered scan would count the mock assertion as its own
+    alibi and R4 could never fire.
+
+    Deliberately NOT extended to R1's ``_verifying_helpers`` fixpoint. The
+    fixpoint is name-keyed across every test file, so ``config.main(...)`` —
+    the production entry point under test — would count as verification just
+    because some unrelated test file defines a verifying helper named ``main``
+    (measured: that single collision exempts 5 of the 21 reviewed interaction
+    tests). For R1 the over-permissiveness only suppresses false positives;
+    for R4, whose job is to make the author confirm a call really is the whole
+    contract, it would let the very call under test vouch for itself.
+    """
     names = _call_names(func)
     has_mock = any(_MOCK_ASSERT_RE.match(n) for n in names)
     if not has_mock:
         return False
-    return not _has_assert(func) and not _has_pytest_raises(func)
+    if _has_assert(func):
+        return False
+    return not any(_is_verifying_call(n) for n in names if not _MOCK_ASSERT_RE.match(n))
 
 
 def _collect_r5(func: ast.AST) -> bool:
-    """A ``readouterr()`` capture assigned to a name that is then never read.
+    """A ``readouterr()`` capture assigned to names that are then never read.
 
     Not "never referenced inside an ``assert``" — a capture routed through an
     intermediate (``parsed = json.loads(cap.out)``) or consumed by a skip helper
     is verified, just not syntactically inside the assert node. The pattern this
     rule exists to catch is the capture that is taken and dropped on the floor.
+
+    Tuple-unpacked captures (``out, err = capsys.readouterr()``) are grouped per
+    assignment: the group counts as used when ANY of its names is read, so the
+    common "assert on out, ignore err" shape is not flagged — only a capture
+    discarded in its entirety is.
     """
-    captured_names: set[str] = set()
+    captured_groups: list[set[str]] = []
     for node in ast.walk(func):
         if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
             f = node.value.func
             is_capture = isinstance(f, ast.Attribute) and f.attr == "readouterr"
             if is_capture:
+                group: set[str] = set()
                 for tgt in node.targets:
                     if isinstance(tgt, ast.Name):
-                        captured_names.add(tgt.id)
-    if not captured_names:
+                        group.add(tgt.id)
+                    elif isinstance(tgt, ast.Tuple):
+                        group.update(e.id for e in tgt.elts if isinstance(e, ast.Name))
+                if group:
+                    captured_groups.append(group)
+    if not captured_groups:
         return False
     loaded = {n.id for n in ast.walk(func) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
-    return bool(captured_names - loaded)
+    return any(not (group & loaded) for group in captured_groups)
 
 
 def _has_fs_evidence(node: ast.AST) -> bool:
@@ -514,12 +544,19 @@ def _collect_r6(name: str, func: ast.AST) -> bool:
                     return False
         return True
     if _R6_EQ_VERB in tokens:
-        # Any comparison, an assertEqual-family call, or a pytest.raises
+        # Any comparison, any unittest-style assert call, or a pytest.raises
         # settles an "equals" claim — pinning it to `==` alone flagged
         # membership assertions and "...=... raises" negative tests.
         if _has_pytest_raises(func):
             return False
-        if any(n in ("assertEqual", "assertEquals", "assertIs", "assertIsNot") for n in _call_names(func)):
+        # Every non-mock assert* call counts (assertEqual, assertDictEqual,
+        # assertCountEqual, assertTrue(a == b), pandas' assert_frame_equal, ...)
+        # rather than a hand-enumerated family: whether it is the *matching*
+        # check is beyond static reach anyway — the same trade the any-Compare
+        # relaxation below already makes — and a hardcoded list silently
+        # excludes every variant it forgot. Mock pseudo-asserts stay excluded
+        # (they verify a call happened, not a value).
+        if any(n.startswith("assert") and not _MOCK_ASSERT_RE.match(n) for n in _call_names(func)):
             return False
         for a in asserts:
             for sub in ast.walk(a):
@@ -678,6 +715,41 @@ def test_allowlist_entries_are_live():
         assert not stale, f"{label} has entries that no longer exist: {stale}"
 
 
+def test_allowlist_entries_still_trip_their_rule():
+    """Every allowlist key must still FIRE its rule, not merely exist.
+
+    ``_scan`` skips allowlisted keys before running the collector, and the
+    liveness guard above only checks the test still exists — so an allowlisted
+    test later rewritten to genuinely verify (e.g. an R4 interaction test that
+    gains a real postcondition) would keep its entry forever as dead weight.
+    This is the unused-``noqa`` check: entries self-expire, and the failure
+    message says which line to delete.
+    """
+    funcs: dict[str, list[ast.AST]] = {}
+    for path in _test_python_files():
+        basename = os.path.basename(path)
+        with open(path, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read(), filename=path)
+        for func in _iter_test_functions(tree):
+            # Same-name definitions in one file (two classes) collapse to one
+            # key; the entry is live if ANY of them fires.
+            funcs.setdefault(f"{basename}::{func.name}", []).append(func)
+
+    collectors = {
+        "_R1_NO_VERIFICATION_ALLOWLIST": (_R1_NO_VERIFICATION_ALLOWLIST, _collect_r1),
+        "_R2_TAUTOLOGY_ALLOWLIST": (_R2_TAUTOLOGY_ALLOWLIST, _collect_r2),
+        "_R3_BARE_EXCEPT_ALLOWLIST": (_R3_BARE_EXCEPT_ALLOWLIST, _collect_r3),
+        "_R4_MOCK_ASSERT_ONLY_ALLOWLIST": (_R4_MOCK_ASSERT_ONLY_ALLOWLIST, _collect_r4),
+        "_R5_CAPTURE_DISCARDED_ALLOWLIST": (_R5_CAPTURE_DISCARDED_ALLOWLIST, _collect_r5),
+        "_R6_NAME_PROMISE_ALLOWLIST": (_R6_NAME_PROMISE_ALLOWLIST, lambda f: _collect_r6(f.name, f)),
+    }
+    for label, (allowlist, collector) in collectors.items():
+        dead = sorted(key for key in allowlist if not any(collector(f) for f in funcs.get(key, [])))
+        assert not dead, (
+            f"{label} entries no longer trip their rule — the test now verifies properly, so delete these lines: {dead}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Rule self-test
 # ---------------------------------------------------------------------------
@@ -688,7 +760,16 @@ def test_allowlist_entries_are_live():
 _RULE_BEHAVIOUR_CASES: tuple[tuple[bool, str, str], ...] = (
     (True, "R4", "def test_x():\n    m.assert_called_once()\n"),
     (False, "R4", "def test_x():\n    m.assert_called_once()\n    assert m.rc == 0\n"),
+    # unittest-style and conventionally-named-helper verification also count
+    # (the mock pseudo-assert alone must not; hence the exclusion in the scan).
+    (False, "R4", "def test_x(self):\n    m.assert_called_once()\n    self.assertEqual(a, b)\n"),
+    (False, "R4", "def test_x():\n    m.assert_called_once()\n    _verify_output(x)\n"),
+    (True, "R4", "def test_x():\n    m.assert_called_once()\n    run_build()\n"),
     (True, "R5", "def test_x(capsys):\n    run()\n    cap = capsys.readouterr()\n    assert rc == 0\n"),
+    # Tuple-unpacked captures group per assignment: wholly discarded flags,
+    # partially read (out asserted, err ignored) does not.
+    (True, "R5", "def test_x(capsys):\n    run()\n    out, err = capsys.readouterr()\n    assert rc == 0\n"),
+    (False, "R5", "def test_x(capsys):\n    out, err = capsys.readouterr()\n    assert 'x' in out\n"),
     (
         False,
         "R5",
@@ -703,6 +784,12 @@ _RULE_BEHAVIOUR_CASES: tuple[tuple[bool, str, str], ...] = (
     (False, "R6", "def test_rewrites_flag():\n    assert 'a' in out\n"),
     (True, "R6", "def test_a_equals_b():\n    assert thing\n"),
     (False, "R6", "def test_flag_equals_value():\n    assert '--x=1' in toks\n"),
+    # Any non-mock assert* call settles an equals claim (unittest variants,
+    # assertTrue(a == b) whose Compare hides inside the call args); a mock
+    # pseudo-assert alone does not.
+    (False, "R6", "def test_a_equals_b(self):\n    self.assertDictEqual(a, b)\n"),
+    (False, "R6", "def test_a_equals_b(self):\n    self.assertTrue(a == b)\n"),
+    (True, "R6", "def test_a_equals_b():\n    m.assert_called_once()\n"),
     (True, "R1", "def test_x():\n    do_thing()\n"),
     (True, "R2", "def test_x():\n    assert True\n"),
     (True, "R3", "def test_x():\n    try:\n        f()\n    except:\n        pass\n"),
