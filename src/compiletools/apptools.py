@@ -1911,12 +1911,55 @@ def _commonsubstitutions(args):
     # caller) rebuilds args.flags from the now-injected raw strings.
     _inject_ffile_prefix_map(args)
 
+    # Re-unify so the injected token lands in CPPFLAGS on THIS pass.
+    # Without this, substitutions() is not idempotent: a re-run's unify
+    # promotes the token from CXXFLAGS into CPPFLAGS, and the CPPFLAGS-
+    # sensitive build-context hash forks the object CAS key space between
+    # single-pass (--no-auto) and two-pass (--auto / recreateobjs) runs.
+    # The injection scan above must still see the pre-unify user state,
+    # so the ordering is unify -> inject -> unify, not a reorder.
+    _unify_cpp_cxx_flags(args)
+
     # Rewrite the wild linker selection to the form the resolved link driver
     # accepts (clang: -fuse-ld=wild -> --ld-path=wild) and wire the wild-B
     # -B/symlink fallback. Runs here so the subsequent _finalize_flag_state
     # (via substitutions) rebuilds args.LDFLAGS_tokens / args.flags from the
     # mutated string. See _normalize_wild_linker.
     _normalize_wild_linker(args)
+
+
+def assert_flag_normalization_fixed_point(args) -> None:
+    """Raise RuntimeError if the flag-normalization tail of
+    ``_commonsubstitutions`` (unify / prefix-map inject) would still change
+    a compile-flag slot when re-applied.
+
+    substitutions() is legitimately re-run on the same namespace (cake's
+    second-stage target discovery, the //#GIT= external-fetch re-run,
+    compilation_database's refresh), so any slot that is not a fixed point
+    forks the object CAS key space between single-pass and multi-pass runs
+    — the ``--auto`` vs ``--no-auto`` ffile-prefix-map fork. Probes a
+    scratch namespace; ``args`` is never mutated. LDFLAGS is not probed:
+    ``_normalize_wild_linker`` touches the filesystem, and its rewrite is
+    detected-and-skipped on re-runs by its own already-normalized check.
+    """
+    slots = ("CPPFLAGS", "CFLAGS", "CXXFLAGS")
+    probe = argparse.Namespace(**{slot: getattr(args, slot, "") or "" for slot in slots})
+    probe.separate_flags_CPP_CXX = getattr(args, "separate_flags_CPP_CXX", False)
+    probe.ffile_prefix_map_target = getattr(args, "ffile_prefix_map_target", ".")
+    _unify_cpp_cxx_flags(probe)
+    _inject_ffile_prefix_map(probe)
+    _unify_cpp_cxx_flags(probe)
+    for slot in slots:
+        before = getattr(args, slot, "") or ""
+        after = getattr(probe, slot)
+        if after != before:
+            raise RuntimeError(
+                f"substitutions() left args.{slot} off its normalization "
+                f"fixed point: a re-run would change it from {before!r} to "
+                f"{after!r}, forking the object CAS key space between "
+                f"single-pass and multi-pass builds. Flag-mutating steps in "
+                f"_commonsubstitutions must converge within one pass."
+            )
 
 
 # List to store the callback functions for parse args
@@ -1957,6 +2000,7 @@ def substitutions(args, verbose=None):
     # nothing changed.
     if hasattr(args, "CPPFLAGS") or hasattr(args, "CFLAGS") or hasattr(args, "CXXFLAGS") or hasattr(args, "LDFLAGS"):
         _finalize_flag_state(args)
+        assert_flag_normalization_fixed_point(args)
 
 
 @contextlib.contextmanager

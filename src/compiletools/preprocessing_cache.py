@@ -430,6 +430,7 @@ class MacroState:
             filter_hash_irrelevant_tokens,
             tokenize_compile_flags,
         )
+        from compiletools.utils import deduplicate_compiler_flags
 
         # tokenize_compile_flags accepts raw strings OR pre-tokenized lists
         # (idempotent on the latter — it strips -D/-U which upstream callers
@@ -442,7 +443,18 @@ class MacroState:
         def _canon(toks):
             return canonicalize_for_cache_key(filter_hash_irrelevant_tokens(toks), self.anchor_root)
 
-        cppflags_part = "CPPFLAGS_TOKENS=" + "\x00".join(_canon(cppflags_tokens))
+        # The cpp slot is hashed as dedup(cpp + cxx) — the same merge
+        # _unify_cpp_cxx_flags applies — so key equality tracks argv
+        # equality: raw CPPFLAGS never reaches a compile line on its own
+        # (the C++ argv is CXX + cxxflags; the C argv is CC + cflags), and
+        # header resolution searches the union of all slots. Hashing the
+        # slot verbatim forked the key space whenever a token was promoted
+        # between cpp and cxx without changing any argv. cflags/cxxflags
+        # stay exact: each IS an argv, and both order and c-vs-cxx
+        # placement are argv properties (a collision here would be a
+        # silent miscompile — cas-objdir has no verification at link).
+        cpp_union_cxx = deduplicate_compiler_flags(list(cppflags_tokens) + list(cxxflags_tokens))
+        cppflags_part = "CPPFLAGS_TOKENS=" + "\x00".join(_canon(cpp_union_cxx))
         cflags_part = "CFLAGS_TOKENS=" + "\x00".join(_canon(cflags_tokens))
         cxxflags_part = "CXXFLAGS_TOKENS=" + "\x00".join(_canon(cxxflags_tokens))
 
