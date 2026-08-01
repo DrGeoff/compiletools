@@ -149,10 +149,15 @@ def _compiler_active_sentinels(src: str):
     (non-zero exit: e.g. div-by-zero, invalid octal) or emitted a warning
     (integer overflow, shift-count out of range, ...). Callers ``assume(ok)``
     so only cleanly-defined programs reach the comparison.
+
+    The candidate must carry a C++ suffix: ``_CXX`` is a C++ driver, and
+    clang++ emits an unconditional driver warning for a ``.c`` input
+    ("treating 'c' input as 'c++' ... deprecated") that the any-stderr
+    gate would read as "outside the subset" for EVERY generated program.
     """
     assert _CXX is not None  # guaranteed by @requires_functional_compiler
     with tempfile.TemporaryDirectory() as d:
-        path = os.path.join(d, "candidate.c")
+        path = os.path.join(d, "candidate.cpp")
         with open(path, "w") as fh:
             fh.write(src)
         try:
@@ -175,10 +180,11 @@ def _compiler_active_sentinels(src: str):
 
 def _compiler_macro_names(src: str):
     """Final CTGEN_ macro name set via ``<cxx> -dM -E`` (the same flag pair
-    magicflags.py uses). Returns (ok, name_set); ok mirrors the subset gate."""
+    magicflags.py uses). Returns (ok, name_set); ok mirrors the subset gate.
+    C++ suffix for the same reason as ``_compiler_active_sentinels``."""
     assert _CXX is not None  # guaranteed by @requires_functional_compiler
     with tempfile.TemporaryDirectory() as d:
-        path = os.path.join(d, "candidate.c")
+        path = os.path.join(d, "candidate.cpp")
         with open(path, "w") as fh:
             fh.write(src)
         try:
@@ -463,6 +469,35 @@ def test_generator_never_emits_a_negative_shift_count():
         f"generated left shifts whose LHS is not a bare literal, so the result "
         f"can silently exceed intmax_t: {computed_lhs[:3]!r}"
     )
+
+
+@requires_functional_compiler
+def test_oracle_accepts_a_trivially_well_defined_program():
+    """The subset gate must pass the simplest possible well-defined input.
+
+    The gate treats ANY stderr as "outside the well-defined subset", so a
+    diagnostic that fires on every input starves the property tests: all
+    examples get discarded and Hypothesis dies with Unsatisfiable instead
+    of testing anything. The one known way to trip this is naming the
+    candidate file ``.c`` while invoking the C++ driver — clang++ then
+    emits an unconditional driver warning ("treating 'c' input as 'c++'
+    ... deprecated") on every single run, while g++ stays silent, making
+    the whole module's verdict a function of which compiler won the
+    functional-compiler probe. Both drivers preprocess the candidate in
+    C++ mode regardless, so the oracle must present a C++-suffixed file
+    and this test must pass under either compiler.
+    """
+    ok, ids = _compiler_active_sentinels("#if 1\nSENTINEL_0\n#endif\n")
+    assert ok, (
+        "the oracle discarded '#if 1' — its compiler invocation emits a "
+        "diagnostic on every input, so every Hypothesis example gets "
+        "assume()d away and the property tests are vacuous"
+    )
+    assert ids == {0}
+
+    ok, names = _compiler_macro_names("#define CTGEN_A 1\n")
+    assert ok, "the -dM -E oracle discarded a bare well-formed #define"
+    assert names == {"CTGEN_A"}
 
 
 @requires_functional_compiler
