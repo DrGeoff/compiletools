@@ -1916,8 +1916,11 @@ def _commonsubstitutions(args):
     # promotes the token from CXXFLAGS into CPPFLAGS, and the CPPFLAGS-
     # sensitive build-context hash forks the object CAS key space between
     # single-pass (--no-auto) and two-pass (--auto / recreateobjs) runs.
-    # The injection scan above must still see the pre-unify user state,
-    # so the ordering is unify -> inject -> unify, not a reorder.
+    # The injection scan above must see the post-unify (final) user state
+    # — only the first unify distributes a prefix-map the user set solely
+    # in CPPFLAGS into CXXFLAGS where the per-slot skip check can see it —
+    # so injection cannot move before the first unify: the ordering is
+    # unify -> inject -> unify, not a reorder.
     _unify_cpp_cxx_flags(args)
 
     # Rewrite the wild linker selection to the form the resolved link driver
@@ -1960,6 +1963,57 @@ def assert_flag_normalization_fixed_point(args) -> None:
                 f"single-pass and multi-pass builds. Flag-mutating steps in "
                 f"_commonsubstitutions must converge within one pass."
             )
+
+
+def warn_unexplained_flag_drift(prior_flags, new_flags, include_paths, verbose=0) -> list[str]:
+    """Compare two ``args.flags`` snapshots taken around a legitimate
+    ``substitutions()`` re-run and return a message per slot whose drift is
+    NOT explained by INCLUDE widening.
+
+    Complements :func:`assert_flag_normalization_fixed_point`, which replays
+    only the normalization tail (unify / prefix-map inject) and so cannot see
+    a non-idempotent step elsewhere in the pipeline. Callers that re-run
+    ``substitutions()`` on the same namespace (cake's second-stage discovery
+    and //#GIT= fetch) snapshot ``args.flags`` before the re-run and hand
+    both snapshots here afterwards.
+
+    Explained drift is exactly what INCLUDE widening produces: a tail of
+    detached ``-I <path>`` pairs (the form ``dedup_include_paths_to_append``
+    emits) appended to the cpp/c/cxx slots, with every path present in
+    *include_paths*. Anything else — removed or reordered tokens, non-include
+    additions, any ``ld`` change, a ``compiler_identity`` change — forks the
+    object CAS key space between single-pass and multi-pass builds and is
+    reported. Messages are printed to stderr at ``verbose >= 1``.
+    """
+    include_set = set(include_paths)
+    messages = []
+    for slot in ("cpp", "c", "cxx", "ld"):
+        prior = getattr(prior_flags, slot)
+        new = getattr(new_flags, slot)
+        if new == prior:
+            continue
+        if slot != "ld" and new[: len(prior)] == prior:
+            tail = new[len(prior) :]
+            if len(tail) % 2 == 0 and all(
+                tail[i] == "-I" and tail[i + 1] in include_set for i in range(0, len(tail), 2)
+            ):
+                continue
+        messages.append(
+            f"args.flags.{slot} drifted across a substitutions() re-run beyond "
+            f"INCLUDE-widening -I additions: {prior!r} -> {new!r}. This forks the "
+            f"object CAS key space between single-pass and multi-pass builds; make "
+            f"the responsible substitutions() step idempotent."
+        )
+    if new_flags.compiler_identity != prior_flags.compiler_identity:
+        messages.append(
+            f"args.flags.compiler_identity changed across a substitutions() re-run: "
+            f"{prior_flags.compiler_identity!r} -> {new_flags.compiler_identity!r} "
+            f"(in-place toolchain swap mid-build?)."
+        )
+    if messages and verbose >= 1:
+        for msg in messages:
+            print(f"Warning: {msg}", file=sys.stderr)
+    return messages
 
 
 # List to store the callback functions for parse args

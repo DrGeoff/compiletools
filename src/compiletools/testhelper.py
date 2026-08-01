@@ -2,6 +2,7 @@ import builtins
 import contextlib
 import functools
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -422,6 +423,16 @@ def create_temp_config(tempdir=None, filename=None, extralines=None):
         ff.writelines(f"{line}\n" for line in extralines)
 
     return filename
+
+
+def without_prefix_map(flag_string):
+    """Drop auto-injected ``-ffile-prefix-map=<gitroot>=.`` tokens before
+    comparing flag strings across two parseargs runs that each built their
+    own temp repo. The token embeds a different gitroot per run by design,
+    so any cross-temp-repo flag-equality assertion must strip it first —
+    the equivalence under test is about the surrounding flags, not
+    workspace anchoring."""
+    return " ".join(tok for tok in shlex.split(flag_string) if not tok.startswith("-ffile-prefix-map="))
 
 
 def create_temp_ct_conf(tempdir, defaultvariant="gcc.cxx26.debug", extralines=None):

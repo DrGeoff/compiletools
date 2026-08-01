@@ -446,13 +446,17 @@ class MacroState:
         # The cpp slot is hashed as dedup(cpp + cxx) — the same merge
         # _unify_cpp_cxx_flags applies — so key equality tracks argv
         # equality: raw CPPFLAGS never reaches a compile line on its own
-        # (the C++ argv is CXX + cxxflags; the C argv is CC + cflags), and
-        # header resolution searches the union of all slots. Hashing the
-        # slot verbatim forked the key space whenever a token was promoted
-        # between cpp and cxx without changing any argv. cflags/cxxflags
-        # stay exact: each IS an argv, and both order and c-vs-cxx
-        # placement are argv properties (a collision here would be a
-        # silent miscompile — cas-objdir has no verification at link).
+        # (the C++ argv is CXX + cxxflags; the C argv is CC + cflags).
+        # Argv equality is sufficient for safety: configs this key
+        # conflates compile identically, and any header-RESOLUTION drift
+        # between them (DirectHeaderDeps searches CPPFLAGS-derived paths
+        # only) is captured independently by dep_hash in the object key.
+        # Hashing the slot verbatim forked the key space whenever a token
+        # was promoted between cpp and cxx without changing any argv.
+        # cflags/cxxflags stay exact: each IS an argv, and both order and
+        # c-vs-cxx placement are argv properties (a collision here would
+        # be a silent miscompile — cas-objdir has no verification at
+        # link).
         cpp_union_cxx = deduplicate_compiler_flags(list(cppflags_tokens) + list(cxxflags_tokens))
         cppflags_part = "CPPFLAGS_TOKENS=" + "\x00".join(_canon(cpp_union_cxx))
         cflags_part = "CFLAGS_TOKENS=" + "\x00".join(_canon(cflags_tokens))

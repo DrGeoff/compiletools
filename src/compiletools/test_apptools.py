@@ -2146,15 +2146,10 @@ class TestPkgConfigConfValueSplitting:
         """
         return [text.split(": ", 1)[0] for text in warning_texts]
 
-    @staticmethod
-    def _without_prefix_map(flag_string):
-        """Drop the auto-injected ``-ffile-prefix-map=<gitroot>=.`` token
-        before comparing flags across two ``_parseargs_with_pkg_config_conf``
-        runs. Each run builds its own temp repo, so the token embeds a
-        different gitroot per run by design; the equivalence pinned by these
-        tests is about pkg-config spec splitting, not workspace anchoring."""
-        return " ".join(tok for tok in shlex.split(flag_string) if not tok.startswith("-ffile-prefix-map="))
-
+    # Cross-temp-repo CPPFLAGS equality assertions must strip the
+    # auto-injected prefix-map token via uth.without_prefix_map — each
+    # _parseargs_with_pkg_config_conf run builds its own temp repo, so the
+    # token embeds a different gitroot per run by design.
     def test_whitespace_and_list_literal_conf_forms_yield_the_same_packages(self, pkgconfig_env):
         """``pkg-config = conditional nested`` and ``pkg-config =
         [conditional, nested]`` must contribute identical flags.
@@ -2172,9 +2167,7 @@ class TestPkgConfigConfValueSplitting:
         whitespace = _parseargs_with_pkg_config_conf(f"pkg-config = conditional nested {self.MISSING}")
         listliteral = _parseargs_with_pkg_config_conf(f"pkg-config = [conditional, nested, {self.MISSING}]")
 
-        assert self._without_prefix_map(whitespace.args.CPPFLAGS) == self._without_prefix_map(
-            listliteral.args.CPPFLAGS
-        ), (
+        assert uth.without_prefix_map(whitespace.args.CPPFLAGS) == uth.without_prefix_map(listliteral.args.CPPFLAGS), (
             f"whitespace and list-literal conf forms produced different CPPFLAGS.\n"
             f"  whitespace  args.pkg_config={whitespace.args.pkg_config!r}\n"
             f"              CPPFLAGS={whitespace.args.CPPFLAGS!r}\n"
@@ -2268,7 +2261,7 @@ class TestPkgConfigConfValueSplitting:
         comma = _parseargs_with_pkg_config_conf(f"pkg-config = conditional, nested, {self.MISSING}")
         whitespace = _parseargs_with_pkg_config_conf(f"pkg-config = conditional nested {self.MISSING}")
 
-        assert self._without_prefix_map(comma.args.CPPFLAGS) == self._without_prefix_map(whitespace.args.CPPFLAGS), (
+        assert uth.without_prefix_map(comma.args.CPPFLAGS) == uth.without_prefix_map(whitespace.args.CPPFLAGS), (
             f"comma and whitespace conf forms produced different CPPFLAGS.\n"
             f"  comma      args.pkg_config={comma.args.pkg_config!r}\n"
             f"             CPPFLAGS={comma.args.CPPFLAGS!r}\n"
@@ -2306,7 +2299,7 @@ class TestPkgConfigConfValueSplitting:
                 f"{marker} missing from the bare constraint+comma form. "
                 f"args.pkg_config={bare.args.pkg_config!r}, CPPFLAGS={bare.args.CPPFLAGS!r}"
             )
-        assert self._without_prefix_map(bare.args.CPPFLAGS) == self._without_prefix_map(bracket.args.CPPFLAGS), (
+        assert uth.without_prefix_map(bare.args.CPPFLAGS) == uth.without_prefix_map(bracket.args.CPPFLAGS), (
             f"bare and bracket forms disagree: {bare.args.CPPFLAGS!r} vs {bracket.args.CPPFLAGS!r}"
         )
         assert not bare.warnings, f"a documented equivalent form must warn about nothing, got {bare.warnings!r}"

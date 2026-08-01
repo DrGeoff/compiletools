@@ -15,6 +15,7 @@ into CPPFLAGS, and the build-context hash (which hashes CPPFLAGS
 tokens) diverged.
 """
 
+import dataclasses
 import os
 
 import pytest
@@ -24,6 +25,7 @@ import compiletools.compilation_database as cdb
 import compiletools.hunter
 import compiletools.testhelper as uth
 from compiletools.build_context import BuildContext
+from compiletools.flags import Flags
 
 FLAG_SLOTS = ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS")
 
@@ -131,6 +133,25 @@ class TestSubstitutionsIdempotent:
         assert unified == args.CPPFLAGS
         assert unified == args.CXXFLAGS
 
+    def test_include_widening_rerun_reports_no_drift(self):
+        """The sanctioned post-parseargs mutation (widen args.INCLUDE, re-run
+        substitutions()) must be recognised as explained drift: the re-run
+        appends detached ``-I <dir>`` pairs, and the drift reporter must not
+        flag them."""
+        with uth.TempDirContext():
+            args = _parseargs_in_temp_repo()
+            prior = args.flags
+            newdir = os.path.join(os.getcwd(), "external_inc")
+            os.makedirs(newdir)
+            args.INCLUDE = (args.INCLUDE + " " + newdir).strip()
+            apptools.substitutions(args, verbose=0)
+            assert args.flags != prior, (
+                "Precondition failed: INCLUDE widening did not change args.flags; this test would pass vacuously."
+            )
+            assert newdir in args.flags.cpp, f"Expected -I pair for {newdir} in cpp slot: {args.flags.cpp}"
+            msgs = apptools.warn_unexplained_flag_drift(prior, args.flags, args.INCLUDE.split(), verbose=0)
+            assert msgs == [], f"INCLUDE widening was misreported as unexplained drift: {msgs}"
+
     def test_separate_flags_mode_keeps_cppflags_clean(self):
         """Under --separate-flags-CPP-CXX the unify step is skipped, so the
         prefix-map token must stay out of CPPFLAGS on every pass."""
@@ -144,3 +165,127 @@ class TestSubstitutionsIdempotent:
             assert token not in args.CPPFLAGS_tokens, (
                 "substitutions() re-run leaked the prefix-map token into CPPFLAGS under --separate-flags-CPP-CXX."
             )
+
+
+def _drift_base_flags():
+    """Synthetic prior-snapshot Flags for the drift-comparison unit tests."""
+    return Flags(
+        cpp=("-O2", "-Wall"),
+        c=("-O2", "-Wall"),
+        cxx=("-O2", "-Wall"),
+        ld=("-lm",),
+        compiler_identity="test-identity",
+    )
+
+
+class TestWarnUnexplainedFlagDrift:
+    """apptools.warn_unexplained_flag_drift complements the in-substitutions
+    fixed-point guard (which replays only the normalization tail): cake calls
+    it after a legitimate substitutions() re-run to catch any OTHER step that
+    drifted args.flags, beyond the sanctioned INCLUDE-widening -I additions."""
+
+    def test_equal_snapshots_report_no_drift(self):
+        flags = _drift_base_flags()
+        assert apptools.warn_unexplained_flag_drift(flags, flags, [], verbose=0) == []
+
+    def test_non_include_addition_is_reported(self):
+        prior = _drift_base_flags()
+        new = dataclasses.replace(prior, cxx=prior.cxx + ("-O3",))
+        msgs = apptools.warn_unexplained_flag_drift(prior, new, [], verbose=0)
+        assert len(msgs) == 1, f"expected exactly one drifted slot, got: {msgs}"
+        assert "cxx" in msgs[0]
+        assert "-O3" in msgs[0]
+
+    def test_removed_token_is_reported(self):
+        prior = _drift_base_flags()
+        new = dataclasses.replace(prior, cpp=prior.cpp[:-1])
+        msgs = apptools.warn_unexplained_flag_drift(prior, new, [], verbose=0)
+        assert len(msgs) == 1
+        assert "cpp" in msgs[0]
+
+    def test_i_pair_is_explained_only_when_path_is_in_include(self):
+        prior = _drift_base_flags()
+        tail = ("-I", "/ext/root")
+        new = dataclasses.replace(prior, cpp=prior.cpp + tail, c=prior.c + tail, cxx=prior.cxx + tail)
+        assert apptools.warn_unexplained_flag_drift(prior, new, ["/ext/root"], verbose=0) == []
+        msgs = apptools.warn_unexplained_flag_drift(prior, new, [], verbose=0)
+        assert len(msgs) == 3, (
+            f"-I additions for a path NOT in INCLUDE must be reported per slot (cpp, c, cxx), got: {msgs}"
+        )
+
+    def test_ld_addition_is_reported_even_in_dash_i_form(self):
+        prior = _drift_base_flags()
+        new = dataclasses.replace(prior, ld=prior.ld + ("-I", "/ext/root"))
+        msgs = apptools.warn_unexplained_flag_drift(prior, new, ["/ext/root"], verbose=0)
+        assert len(msgs) == 1
+        assert "ld" in msgs[0]
+
+    def test_compiler_identity_change_is_reported(self):
+        prior = _drift_base_flags()
+        new = dataclasses.replace(prior, compiler_identity="swapped-identity")
+        msgs = apptools.warn_unexplained_flag_drift(prior, new, [], verbose=0)
+        assert len(msgs) == 1
+        assert "compiler_identity" in msgs[0]
+
+    def test_warning_prints_to_stderr_only_at_verbose(self, capsys):
+        prior = _drift_base_flags()
+        new = dataclasses.replace(prior, cxx=prior.cxx + ("-O3",))
+        apptools.warn_unexplained_flag_drift(prior, new, [], verbose=0)
+        assert capsys.readouterr().err == "", "verbose=0 must not print"
+        apptools.warn_unexplained_flag_drift(prior, new, [], verbose=1)
+        err = capsys.readouterr().err
+        assert "cxx" in err
+        assert "-O3" in err
+
+
+@pytest.mark.usefixtures("parsers_reset")
+class TestCakeRerunDriftWarning:
+    """cake._resubstitute_with_drift_warning is the wrapper _discover_targets
+    uses for its legitimate substitutions() re-run: snapshot args.flags,
+    re-run, then report drift the INCLUDE widening doesn't explain."""
+
+    def test_include_widening_rerun_reports_no_drift(self):
+        import compiletools.cake
+
+        with uth.TempDirContext():
+            args = _parseargs_in_temp_repo()
+            newdir = os.path.join(os.getcwd(), "external_inc")
+            os.makedirs(newdir)
+            args.INCLUDE = (args.INCLUDE + " " + newdir).strip()
+            msgs = compiletools.cake._resubstitute_with_drift_warning(args)
+            assert msgs == [], f"INCLUDE widening was misreported as unexplained drift: {msgs}"
+            assert newdir in args.flags.cpp, (
+                f"Precondition failed: the re-run did not land the -I pair, so the empty "
+                f"drift report would be vacuous. cpp slot: {args.flags.cpp}"
+            )
+
+    def test_non_idempotent_callback_drift_is_warned_on_stderr(self, capsys):
+        import itertools
+
+        import compiletools.cake
+
+        counter = itertools.count(1)
+
+        def nonidempotent_callback(cb_args):
+            # Uniform append across all three slots keeps the state stable
+            # under the normalization-tail replay, so this drift is exactly
+            # the class assert_flag_normalization_fixed_point cannot see.
+            token = f"-DCT_TEST_RERUN{next(counter)}"
+            for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS"):
+                current = getattr(cb_args, slot, "") or ""
+                setattr(cb_args, slot, f"{current} {token}".strip())
+
+        with uth.TempDirContext():
+            args = _parseargs_in_temp_repo()
+            # Registered AFTER parseargs: ParserContext (inside the helper)
+            # wipes the callback registry on entry and exit, and cake's
+            # re-run happens outside any ParserContext anyway.
+            apptools.registercallback(nonidempotent_callback)
+            try:
+                args.verbose = 1
+                msgs = compiletools.cake._resubstitute_with_drift_warning(args)
+            finally:
+                apptools.resetcallbacks()
+            assert msgs, "expected the non-idempotent callback's drift to be reported"
+            err = capsys.readouterr().err
+            assert "-DCT_TEST_RERUN1" in err, f"stderr warning missing the drifted token: {err!r}"
