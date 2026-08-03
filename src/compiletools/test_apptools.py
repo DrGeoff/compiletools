@@ -667,6 +667,25 @@ class TestStripQuotes:
         _strip_quotes(args)
         assert args.foo is None
 
+    def test_private_stashes_pass_through_untouched(self):
+        """A namespace that has already been through substitutions() carries
+        dict/tuple private stashes (_substitution_seed, _registered_flag_slots,
+        _flag_string_snapshot). Iterating-and-assigning those crashes (dict:
+        RuntimeError from mid-iteration key inserts; tuple: TypeError on item
+        assignment), so _strip_quotes must skip private attributes entirely."""
+        seed = {"CPPFLAGS": '"-DFOO"'}
+        args = SimpleNamespace(
+            CPPFLAGS='"-DFOO"',
+            _substitution_seed=seed,
+            _registered_flag_slots=("CPPFLAGS",),
+            _flag_string_snapshot=(("CPPFLAGS", '"-DFOO"'),),
+        )
+        _strip_quotes(args)
+        assert args.CPPFLAGS == "-DFOO"
+        assert args._substitution_seed == {"CPPFLAGS": '"-DFOO"'}
+        assert args._registered_flag_slots == ("CPPFLAGS",)
+        assert args._flag_string_snapshot == (("CPPFLAGS", '"-DFOO"'),)
+
 
 class TestDeriveCCompilerFromCxx:
     def test_gpp_to_gcc(self):

@@ -1740,8 +1740,17 @@ def _strip_quotes(args):
 
     Uses proper shell parsing to understand when quotes are shell quoting
     vs. part of the actual content. Also strips extraneous whitespace.
+
+    Private attributes (leading underscore) are internal stashes, not
+    user-supplied argument values, and are skipped: _substitution_seed is a
+    dict (iterating-and-assigning inserts keys mid-iteration and raises
+    RuntimeError), _registered_flag_slots and _flag_string_snapshot are
+    tuples (item assignment raises TypeError), and _argv must stay verbatim
+    for the variant re-resolve.
     """
     for name in vars(args):
+        if name.startswith("_"):
+            continue
         value = getattr(args, name)
         if value is not None:
             # Can't just use the for loop directly because that would
@@ -1977,11 +1986,20 @@ def assert_flag_normalization_fixed_point(args) -> None:
 def _is_prior_plus_explained_i_insertions(prior, new, include_set) -> bool:
     """True when *new* is exactly *prior* with zero or more detached
     ``-I <path>`` pairs inserted (at any position), every inserted path
-    being a member of *include_set*. Removals, reorders, and any other
-    addition return False. When *prior* itself has a ``-I <path>`` pair
-    at the current position identical to *new*'s, matching *prior* wins
-    over treating the pair as an insertion.
+    being a member of *include_set*, not already a ``-I`` entry in
+    *prior*, and inserted at most once. Removals, reorders, duplicate
+    re-adds, and any other addition return False — legitimate widening
+    goes through ``dedup_include_paths_to_append``, which never emits a
+    path that is already present. When *prior* itself has a ``-I <path>``
+    pair at the current position identical to *new*'s, matching *prior*
+    wins over treating the pair as an insertion.
     """
+    prior_include_paths = extract_include_paths_from_tokens(prior)
+
+    def _insertable(path, inserted):
+        return path in include_set and path not in prior_include_paths and path not in inserted
+
+    inserted: set[str] = set()
     i = j = 0
     while i < len(new):
         if j < len(prior) and new[i] == prior[j]:
@@ -1990,22 +2008,24 @@ def _is_prior_plus_explained_i_insertions(prior, new, include_set) -> bool:
                 and i + 1 < len(new)
                 and j + 1 < len(prior)
                 and new[i + 1] != prior[j + 1]
-                and new[i + 1] in include_set
+                and _insertable(new[i + 1], inserted)
             ):
                 # prior's next -I pair differs: treat new's pair as inserted
+                inserted.add(new[i + 1])
                 i += 2
                 continue
             i += 1
             j += 1
             continue
-        if new[i] == "-I" and i + 1 < len(new) and new[i + 1] in include_set:
+        if new[i] == "-I" and i + 1 < len(new) and _insertable(new[i + 1], inserted):
+            inserted.add(new[i + 1])
             i += 2
             continue
         return False
     return j == len(prior)
 
 
-def warn_unexplained_flag_drift(prior_flags, new_flags, include_paths, verbose=0) -> list[str]:
+def warn_unexplained_flag_drift(prior_flags, new_flags, include_paths) -> list[str]:
     """Compare two ``args.flags`` snapshots taken around a legitimate
     ``substitutions()`` re-run and return a message per slot whose drift is
     NOT explained by INCLUDE widening.
@@ -2019,11 +2039,12 @@ def warn_unexplained_flag_drift(prior_flags, new_flags, include_paths, verbose=0
     Explained drift is exactly what INCLUDE widening produces under the seed-
     restore rebuild: detached ``-I <path>`` pairs (the form
     ``dedup_include_paths_to_append`` emits) inserted anywhere in the cpp/c/cxx
-    sequences, every path present in *include_paths*. Anything else — removed
-    or reordered tokens, non-include additions, any ``ld`` change, a
-    ``compiler_identity`` change — forks the object CAS key space between
-    single-pass and multi-pass builds and is reported. Messages are printed
-    to stderr at ``verbose >= 1``.
+    sequences, every path present in *include_paths* and not already a ``-I``
+    entry. Anything else — removed or reordered tokens, duplicate ``-I``
+    re-adds, non-include additions, any ``ld`` change, a ``compiler_identity``
+    change — forks the object CAS key space between single-pass and multi-pass
+    builds and is reported. Pure comparison: the caller decides how to
+    surface the returned messages (``resubstitute`` raises).
     """
     include_set = set(include_paths)
     messages = []
@@ -2046,9 +2067,6 @@ def warn_unexplained_flag_drift(prior_flags, new_flags, include_paths, verbose=0
             f"{prior_flags.compiler_identity!r} -> {new_flags.compiler_identity!r} "
             f"(in-place toolchain swap mid-build?)."
         )
-    if messages and verbose >= 1:
-        for msg in messages:
-            print(f"Warning: {msg}", file=sys.stderr)
     return messages
 
 
@@ -2066,7 +2084,7 @@ def resubstitute(args) -> None:
     prior_flags = args.flags
     substitutions(args, verbose=0)
     include_paths = (getattr(args, "INCLUDE", "") or "").split()
-    messages = warn_unexplained_flag_drift(prior_flags, args.flags, include_paths, verbose=0)
+    messages = warn_unexplained_flag_drift(prior_flags, args.flags, include_paths)
     if messages:
         raise RuntimeError(
             "substitutions() re-run produced unexplained flag drift:\n"
@@ -2107,11 +2125,11 @@ def substitutions(args, verbose=None):
     # passes) and is deliberately not restored. Snapshot happens before
     # _finalize_flag_state ever runs, so the seed holds only the slots the
     # caller's CAP registered — matching _registered_flag_slots semantics.
-    # The restore does not delete slots _finalize_flag_state materialized
-    # after pass 1, so the namespace SHAPE differs between passes: pipeline
-    # steps must consult _registered_flag_slots, never hasattr, to decide
-    # slot applicability (the want_libs flip in _add_flags_from_pkg_config
-    # was this exact bug).
+    # The restore also restores namespace SHAPE: slots absent from the seed
+    # but materialized by _finalize_flag_state after pass 1 (LDFLAGS = ""
+    # for a three-slot CAP) are deleted, so every pass's pipeline sees the
+    # same hasattr answers (the want_libs flip in _add_flags_from_pkg_config
+    # was a shape-drift bug of exactly this class).
     seed = getattr(args, "_substitution_seed", None)
     if seed is None:
         args._substitution_seed = {
@@ -2120,6 +2138,9 @@ def substitutions(args, verbose=None):
     else:
         for slot, value in seed.items():
             setattr(args, slot, value)
+        for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS"):
+            if slot not in seed and hasattr(args, slot):
+                delattr(args, slot)
 
     for func in _substitutioncallbacks:
         if verbose > 8:
@@ -2388,11 +2409,11 @@ def _finalize_flag_state(args) -> None:
     """
     # Compute the CAP-registered slot set ONCE and make it sticky.
     # The materialise step below synthesizes missing slot attributes for
-    # downstream consumers; a second call (e.g. via substitutions() re-run
-    # from cake's two-stage parse) would then see those synthesized attrs
-    # via hasattr and silently expand the registered set, defeating the
-    # "not applicable here" signal. Reading from args preserves the
-    # original CAP-registration view across re-runs.
+    # downstream consumers. The seed restore in substitutions() deletes
+    # those synthesized attrs before each re-run, but the sticky tuple is
+    # the authoritative record either way: recomputing from hasattr here
+    # would couple the "not applicable here" signal to the restore's
+    # shape discipline for no gain.
     registered = getattr(args, "_registered_flag_slots", None)
     if registered is None:
         registered = tuple(slot for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS") if hasattr(args, slot))

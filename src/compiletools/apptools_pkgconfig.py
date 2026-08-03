@@ -502,9 +502,10 @@ def _add_flags_from_pkg_config(args):
     # per package.  Falls back to per-package calls if the batch fails (e.g. a
     # package is missing and we need to identify which one).
     # Ask the CAP registration, not hasattr: _finalize_flag_state materializes
-    # args.LDFLAGS = "" for downstream consumers after pass 1, so hasattr flips
-    # False->True on a substitutions() re-run in three-slot tools
-    # (ct-compilation-database) and lands --libs in a slot pass 1 never touched.
+    # args.LDFLAGS = "" for downstream consumers after pass 1. The seed restore
+    # in substitutions() deletes materialized slots on re-runs so hasattr would
+    # now agree, but the registration tuple is the authoritative "does this
+    # tool link?" answer and does not depend on that shape restore.
     # None means finalize has not run yet (first pass) -- hasattr is correct there.
     registered = getattr(args, "_registered_flag_slots", None)
     want_libs = "LDFLAGS" in registered if registered is not None else hasattr(args, "LDFLAGS")

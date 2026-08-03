@@ -42,14 +42,15 @@ def parsers_reset():
     uth.reset()
 
 
-def _parseargs_in_temp_repo(extra_argv=()):
+def _parseargs_in_temp_repo(extra_argv=(), register_link_args=True):
     """Full parseargs pipeline in a temp dir, mirroring TestQuietAppliedOnce.
 
     Registers add_link_arguments so args.LDFLAGS exists and
     _add_flags_from_pkg_config takes its want_libs branch (same reason
     test_apptools.py's _parseargs_with_pkg_config_conf does it) -- without
     it args.LDFLAGS is never a CAP-registered slot and pkg-config --libs
-    output has nowhere to land.
+    output has nowhere to land. Pass register_link_args=False to build the
+    three-slot CAP shape (ct-compilation-database registers no LDFLAGS).
     """
     uth.create_temp_ct_conf(os.getcwd())
     with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
@@ -57,7 +58,8 @@ def _parseargs_in_temp_repo(extra_argv=()):
         cap = apptools.create_parser("idempotency test", argv=argv)
         cdb.CompilationDatabaseCreator.add_arguments(cap)
         compiletools.hunter.add_arguments(cap)
-        apptools.add_link_arguments(cap)
+        if register_link_args:
+            apptools.add_link_arguments(cap)
         with uth.ParserContext():
             return apptools.parseargs(cap, argv, context=BuildContext())
 
@@ -223,12 +225,12 @@ class TestWarnUnexplainedFlagDrift:
 
     def test_equal_snapshots_report_no_drift(self):
         flags = _drift_base_flags()
-        assert apptools.warn_unexplained_flag_drift(flags, flags, [], verbose=0) == []
+        assert apptools.warn_unexplained_flag_drift(flags, flags, []) == []
 
     def test_non_include_addition_is_reported(self):
         prior = _drift_base_flags()
         new = dataclasses.replace(prior, cxx=prior.cxx + ("-O3",))
-        msgs = apptools.warn_unexplained_flag_drift(prior, new, [], verbose=0)
+        msgs = apptools.warn_unexplained_flag_drift(prior, new, [])
         assert len(msgs) == 1, f"expected exactly one drifted slot, got: {msgs}"
         assert "cxx" in msgs[0]
         assert "-O3" in msgs[0]
@@ -236,7 +238,7 @@ class TestWarnUnexplainedFlagDrift:
     def test_removed_token_is_reported(self):
         prior = _drift_base_flags()
         new = dataclasses.replace(prior, cpp=prior.cpp[:-1])
-        msgs = apptools.warn_unexplained_flag_drift(prior, new, [], verbose=0)
+        msgs = apptools.warn_unexplained_flag_drift(prior, new, [])
         assert len(msgs) == 1
         assert "cpp" in msgs[0]
 
@@ -244,8 +246,8 @@ class TestWarnUnexplainedFlagDrift:
         prior = _drift_base_flags()
         tail = ("-I", "/ext/root")
         new = dataclasses.replace(prior, cpp=prior.cpp + tail, c=prior.c + tail, cxx=prior.cxx + tail)
-        assert apptools.warn_unexplained_flag_drift(prior, new, ["/ext/root"], verbose=0) == []
-        msgs = apptools.warn_unexplained_flag_drift(prior, new, [], verbose=0)
+        assert apptools.warn_unexplained_flag_drift(prior, new, ["/ext/root"]) == []
+        msgs = apptools.warn_unexplained_flag_drift(prior, new, [])
         assert len(msgs) == 3, (
             f"-I additions for a path NOT in INCLUDE must be reported per slot (cpp, c, cxx), got: {msgs}"
         )
@@ -254,12 +256,25 @@ class TestWarnUnexplainedFlagDrift:
         prior = _drift_base_flags()
         cpp = prior.cpp[:1] + ("-I", "/ext/root") + prior.cpp[1:]
         new = dataclasses.replace(prior, cpp=cpp)
-        assert apptools.warn_unexplained_flag_drift(prior, new, ["/ext/root"], verbose=0) == []
+        assert apptools.warn_unexplained_flag_drift(prior, new, ["/ext/root"]) == []
+
+    def test_duplicate_i_pair_readd_is_reported(self):
+        """Legitimate INCLUDE widening goes through
+        dedup_include_paths_to_append, which never re-adds a path already
+        present -- so a second copy of an existing -I pair is drift, not
+        explained widening, even when the path IS in INCLUDE."""
+        prior = _drift_base_flags()
+        with_pair = dataclasses.replace(prior, cpp=prior.cpp + ("-I", "/ext/root"))
+        doubled = dataclasses.replace(prior, cpp=prior.cpp + ("-I", "/ext/root", "-I", "/ext/root"))
+        msgs = apptools.warn_unexplained_flag_drift(with_pair, doubled, ["/ext/root"])
+        assert len(msgs) == 1 and "cpp" in msgs[0], (
+            f"A re-added duplicate -I pair must be reported as unexplained drift, got: {msgs}"
+        )
 
     def test_i_pair_removal_is_reported(self):
         prior = _drift_base_flags()
         with_pair = dataclasses.replace(prior, cpp=prior.cpp + ("-I", "/ext/root"))
-        msgs = apptools.warn_unexplained_flag_drift(with_pair, prior, ["/ext/root"], verbose=0)
+        msgs = apptools.warn_unexplained_flag_drift(with_pair, prior, ["/ext/root"])
         assert len(msgs) == 1 and "cpp" in msgs[0]
 
     def test_i_pair_inserted_before_existing_i_pair_is_explained(self):
@@ -268,31 +283,32 @@ class TestWarnUnexplainedFlagDrift:
         cpp_new = ("-I", "/ext/root", "-I", "/existing/inc") + prior.cpp
         with_pair = dataclasses.replace(prior, cpp=cpp_prior)
         new = dataclasses.replace(prior, cpp=cpp_new)
-        assert apptools.warn_unexplained_flag_drift(with_pair, new, ["/ext/root"], verbose=0) == []
+        assert apptools.warn_unexplained_flag_drift(with_pair, new, ["/ext/root"]) == []
 
     def test_ld_addition_is_reported_even_in_dash_i_form(self):
         prior = _drift_base_flags()
         new = dataclasses.replace(prior, ld=prior.ld + ("-I", "/ext/root"))
-        msgs = apptools.warn_unexplained_flag_drift(prior, new, ["/ext/root"], verbose=0)
+        msgs = apptools.warn_unexplained_flag_drift(prior, new, ["/ext/root"])
         assert len(msgs) == 1
         assert "ld" in msgs[0]
 
     def test_compiler_identity_change_is_reported(self):
         prior = _drift_base_flags()
         new = dataclasses.replace(prior, compiler_identity="swapped-identity")
-        msgs = apptools.warn_unexplained_flag_drift(prior, new, [], verbose=0)
+        msgs = apptools.warn_unexplained_flag_drift(prior, new, [])
         assert len(msgs) == 1
         assert "compiler_identity" in msgs[0]
 
-    def test_warning_prints_to_stderr_only_at_verbose(self, capsys):
+    def test_comparison_never_prints(self, capsys):
+        """The comparison is pure: surfacing the messages is the caller's
+        job (resubstitute raises). No printing at any drift level."""
         prior = _drift_base_flags()
         new = dataclasses.replace(prior, cxx=prior.cxx + ("-O3",))
-        apptools.warn_unexplained_flag_drift(prior, new, [], verbose=0)
-        assert capsys.readouterr().err == "", "verbose=0 must not print"
-        apptools.warn_unexplained_flag_drift(prior, new, [], verbose=1)
-        err = capsys.readouterr().err
-        assert "cxx" in err
-        assert "-O3" in err
+        msgs = apptools.warn_unexplained_flag_drift(prior, new, [])
+        assert len(msgs) == 1, "Precondition failed: drift must be reported for this check to be meaningful."
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        assert captured.out == ""
 
 
 @pytest.mark.usefixtures("parsers_reset")
@@ -353,13 +369,7 @@ class TestThreeSlotCapRerun:
 
     def test_rerun_without_registered_ldflags_does_not_raise(self, pkgconfig_env):
         with uth.TempDirContext():
-            uth.create_temp_ct_conf(os.getcwd())
-            with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
-                argv = ["--config=" + temp_config_name, "--pkg-config=nested"]
-                cap = apptools.create_parser("three-slot rerun test", argv=argv)
-                compiletools.hunter.add_arguments(cap)
-                with uth.ParserContext():
-                    args = apptools.parseargs(cap, argv, context=BuildContext())
+            args = _parseargs_in_temp_repo(extra_argv=["--pkg-config=nested"], register_link_args=False)
 
             assert "LDFLAGS" not in args._registered_flag_slots, (
                 "Precondition failed: LDFLAGS unexpectedly registered; this test would be vacuous."
@@ -372,6 +382,41 @@ class TestThreeSlotCapRerun:
             apptools.resubstitute(args)
 
             assert args.LDFLAGS == "", "Re-run landed pkg-config --libs in the unregistered LDFLAGS slot."
+
+    def test_rerun_pipeline_sees_pass1_namespace_shape(self, pkgconfig_env):
+        """The seed restore must also restore namespace SHAPE: slots
+        _finalize_flag_state materialized after pass 1 (LDFLAGS = "" for a
+        three-slot CAP) must be absent again while pass 2's pipeline runs,
+        so hasattr-based applicability decisions cannot flip between
+        passes (the want_libs bug class, closed structurally)."""
+        with uth.TempDirContext():
+            args = _parseargs_in_temp_repo(extra_argv=["--pkg-config=nested"], register_link_args=False)
+
+            assert "LDFLAGS" not in args._registered_flag_slots, (
+                "Precondition failed: LDFLAGS unexpectedly registered; this test would be vacuous."
+            )
+            assert hasattr(args, "LDFLAGS"), (
+                "Precondition failed: _finalize_flag_state did not materialize LDFLAGS after pass 1."
+            )
+
+            seen = {}
+
+            def shape_probe(cb_args):
+                # Runs inside pass 2, after _commonsubstitutions but before
+                # _finalize_flag_state re-materializes the slot.
+                seen["ldflags_present"] = hasattr(cb_args, "LDFLAGS")
+
+            apptools.registercallback(shape_probe)
+            try:
+                apptools.resubstitute(args)
+            finally:
+                apptools.resetcallbacks()
+
+            assert seen["ldflags_present"] is False, (
+                "Pass 2's pipeline saw the LDFLAGS slot pass 1's pipeline never had: "
+                "the seed restore did not delete the materialized slot."
+            )
+            assert args.LDFLAGS == "", "LDFLAGS must be re-materialized after the pass completes."
 
 
 def _register_drift_forcing_callback():
@@ -454,13 +499,19 @@ class TestExtendIncludesUsingGitRootIdempotent:
 def test_cdb_rerun_site_uses_resubstitute():
     """compilation_database's --auto refresh must go through the sanctioned
     re-run path so it gets the same drift guard as cake's re-run site; a
-    bare substitutions() call re-runs the pipeline with no drift check."""
+    bare substitutions() call re-runs the pipeline with no drift check.
+    AST-based so comments/docstrings mentioning either name cannot trip it."""
+    import ast
+
     import compiletools.compilation_database
 
     source = pathlib.Path(compiletools.compilation_database.__file__).read_text()
-    assert "apptools.resubstitute(" in source, (
-        "compilation_database no longer routes its re-run through apptools.resubstitute"
-    )
-    assert "apptools.substitutions(" not in source, (
+    called = {
+        node.func.attr
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    assert "resubstitute" in called, "compilation_database no longer routes its re-run through apptools.resubstitute"
+    assert "substitutions" not in called, (
         "compilation_database re-runs substitutions() directly, bypassing the drift guard"
     )
