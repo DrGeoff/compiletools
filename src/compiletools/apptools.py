@@ -2071,7 +2071,7 @@ def resubstitute(args) -> None:
         raise RuntimeError(
             "substitutions() re-run produced unexplained flag drift:\n"
             + "\n".join(messages)
-            + "\nWorkaround: pass explicit target files instead of --auto, and report this as a compiletools bug."
+            + "\nRe-run with -vv for the traceback and report this as a compiletools bug."
         )
 
 
@@ -2107,6 +2107,11 @@ def substitutions(args, verbose=None):
     # passes) and is deliberately not restored. Snapshot happens before
     # _finalize_flag_state ever runs, so the seed holds only the slots the
     # caller's CAP registered — matching _registered_flag_slots semantics.
+    # The restore does not delete slots _finalize_flag_state materialized
+    # after pass 1, so the namespace SHAPE differs between passes: pipeline
+    # steps must consult _registered_flag_slots, never hasattr, to decide
+    # slot applicability (the want_libs flip in _add_flags_from_pkg_config
+    # was this exact bug).
     seed = getattr(args, "_substitution_seed", None)
     if seed is None:
         args._substitution_seed = {

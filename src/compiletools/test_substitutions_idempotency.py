@@ -17,6 +17,7 @@ tokens) diverged.
 
 import argparse
 import dataclasses
+import itertools
 import os
 import pathlib
 
@@ -371,6 +372,67 @@ class TestThreeSlotCapRerun:
             apptools.resubstitute(args)
 
             assert args.LDFLAGS == "", "Re-run landed pkg-config --libs in the unregistered LDFLAGS slot."
+
+
+def _register_drift_forcing_callback():
+    """Same trick as TestResubstitute.test_non_idempotent_callback_raises,
+    reused here because compilation_database.main() drives its own
+    parseargs + resubstitute internally -- there is no hook point between
+    the two, so the callback must already be registered before main() runs
+    and stay live across both of its substitutions() passes."""
+    counter = itertools.count(1)
+
+    def nonidempotent_callback(cb_args):
+        token = f"-DCT_TEST_CDB_RERUN{next(counter)}"
+        for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS"):
+            current = getattr(cb_args, slot, "") or ""
+            setattr(cb_args, slot, f"{current} {token}".strip())
+
+    apptools.registercallback(nonidempotent_callback)
+
+
+class TestCdbFatalRendering:
+    """compilation_database.main's except-RuntimeError branch around its
+    apptools.resubstitute call renders the drift error as a fatal message
+    (cake's _FATAL_ERROR_RENDERERS contract) at default verbosity and
+    re-raises at -vv. Forces the drift with the same non-idempotent-callback
+    trick TestResubstitute uses: pass 1 (main's own parseargs) forms the
+    baseline with one token, and main's internal resubstitute (pass 2) adds
+    a different, per-call-unique token that the seed restore cannot
+    reconcile away.
+    """
+
+    def _run(self, tmp_config, extra_argv=()):
+        with uth.ParserContext():
+            # ParserContext.__enter__ already wiped the callback registry;
+            # register here so it survives for the duration of main()'s
+            # internal parseargs pass AND its resubstitute re-run.
+            _register_drift_forcing_callback()
+            try:
+                return cdb.main(["--config=" + tmp_config, "--auto", *extra_argv])
+            finally:
+                apptools.resetcallbacks()
+
+    @uth.requires_functional_compiler
+    def test_default_verbosity_prints_and_returns_1(self, capsys):
+        with uth.TempDirContext():
+            uth.create_temp_ct_conf(os.getcwd())
+            pathlib.Path("main.cpp").write_text("int main() { return 0; }\n")
+            with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
+                result = self._run(temp_config_name)
+
+        assert result == 1
+        err = capsys.readouterr().err
+        assert "unexplained flag drift" in err, f"Expected drift message on stderr, got: {err!r}"
+
+    @uth.requires_functional_compiler
+    def test_verbose_two_propagates_runtimeerror(self):
+        with uth.TempDirContext():
+            uth.create_temp_ct_conf(os.getcwd())
+            pathlib.Path("main.cpp").write_text("int main() { return 0; }\n")
+            with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
+                with pytest.raises(RuntimeError, match="unexplained flag drift"):
+                    self._run(temp_config_name, extra_argv=("-vv",))
 
 
 class TestExtendIncludesUsingGitRootIdempotent:
