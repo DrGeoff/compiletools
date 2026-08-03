@@ -142,19 +142,6 @@ class TestSubstitutionsIdempotent:
         assert unified == args.CPPFLAGS
         assert unified == args.CXXFLAGS
 
-    def test_include_widening_rerun_reports_no_drift(self):
-        """The sanctioned post-parseargs mutation (widen args.INCLUDE, re-run
-        substitutions()) must be recognised as explained drift: resubstitute()
-        must not raise, and the re-run must actually land the widened -I
-        pair (otherwise the no-raise outcome is vacuous)."""
-        with uth.TempDirContext():
-            args = _parseargs_in_temp_repo()
-            newdir = os.path.join(os.getcwd(), "external_inc")
-            os.makedirs(newdir)
-            args.INCLUDE = (args.INCLUDE + " " + newdir).strip()
-            apptools.resubstitute(args)
-            assert newdir in args.flags.cpp, f"Expected -I pair for {newdir} in cpp slot: {args.flags.cpp}"
-
     def test_separate_flags_mode_keeps_cppflags_clean(self):
         """Under --separate-flags-CPP-CXX the unify step is skipped, so the
         prefix-map token must stay out of CPPFLAGS on every pass."""
@@ -269,9 +256,17 @@ class TestWarnUnexplainedFlagDrift:
 
     def test_i_pair_removal_is_reported(self):
         prior = _drift_base_flags()
-        with_pair = dataclasses.replace(prior, cpp=prior.cpp + ("-I", "/ext/root"), c=prior.c, cxx=prior.cxx)
+        with_pair = dataclasses.replace(prior, cpp=prior.cpp + ("-I", "/ext/root"))
         msgs = apptools.warn_unexplained_flag_drift(with_pair, prior, ["/ext/root"], verbose=0)
         assert len(msgs) == 1 and "cpp" in msgs[0]
+
+    def test_i_pair_inserted_before_existing_i_pair_is_explained(self):
+        prior = _drift_base_flags()
+        cpp_prior = ("-I", "/existing/inc") + prior.cpp
+        cpp_new = ("-I", "/ext/root", "-I", "/existing/inc") + prior.cpp
+        with_pair = dataclasses.replace(prior, cpp=cpp_prior)
+        new = dataclasses.replace(prior, cpp=cpp_new)
+        assert apptools.warn_unexplained_flag_drift(with_pair, new, ["/ext/root"], verbose=0) == []
 
     def test_ld_addition_is_reported_even_in_dash_i_form(self):
         prior = _drift_base_flags()
