@@ -761,7 +761,13 @@ def _extend_includes_using_git_root(args):
             # PYTHONHASHSEED, which would shift the -I order between processes
             # and invalidate the cas-objdir cxxflags_tokens hash component on
             # no-op rebuilds. See TestExtendIncludesUsingGitRootDeterministic.
-            args.INCLUDE = " ".join(args.INCLUDE.split() + sorted(git_roots))
+            # Skip roots already present: INCLUDE survives substitutions()
+            # re-runs (it is an input, not seed-restored derived state), so
+            # an unconditional append would duplicate on every re-run.
+            existing = set(args.INCLUDE.split())
+            new_roots = [root for root in sorted(git_roots) if root not in existing]
+            if new_roots:
+                args.INCLUDE = " ".join(args.INCLUDE.split() + new_roots)
             if args.verbose > 6:
                 print(f"Extended includes to have the gitroots {sorted(git_roots)}")
         else:

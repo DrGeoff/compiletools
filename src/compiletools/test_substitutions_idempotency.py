@@ -15,6 +15,7 @@ into CPPFLAGS, and the build-context hash (which hashes CPPFLAGS
 tokens) diverged.
 """
 
+import argparse
 import dataclasses
 import os
 
@@ -342,3 +343,19 @@ class TestCakeRerunDriftWarning:
             assert msgs, "expected the non-idempotent callback's drift to be reported"
             err = capsys.readouterr().err
             assert "-DCT_TEST_RERUN1" in err, f"stderr warning missing the drifted token: {err!r}"
+
+
+class TestExtendIncludesUsingGitRootIdempotent:
+    def test_second_call_does_not_duplicate_gitroot(self):
+        """INCLUDE is excluded from the substitutions() seed (it is a
+        legitimate between-pass input), so its self-append needs its own
+        already-present check: without one, every re-run appends the same
+        gitroot again."""
+        ns = argparse.Namespace(INCLUDE="", git_root=True, filename=[__file__], verbose=0)
+        apptools._extend_includes_using_git_root(ns)
+        once = ns.INCLUDE
+        assert once.strip(), "Precondition failed: no gitroot was appended on the first call."
+        apptools._extend_includes_using_git_root(ns)
+        assert once == ns.INCLUDE, (
+            f"Second call duplicated gitroot entries:\n  once:  {once!r}\n  twice: {ns.INCLUDE!r}"
+        )
