@@ -40,13 +40,21 @@ def parsers_reset():
 
 
 def _parseargs_in_temp_repo(extra_argv=()):
-    """Full parseargs pipeline in a temp dir, mirroring TestQuietAppliedOnce."""
+    """Full parseargs pipeline in a temp dir, mirroring TestQuietAppliedOnce.
+
+    Registers add_link_arguments so args.LDFLAGS exists and
+    _add_flags_from_pkg_config takes its want_libs branch (same reason
+    test_apptools.py's _parseargs_with_pkg_config_conf does it) -- without
+    it args.LDFLAGS is never a CAP-registered slot and pkg-config --libs
+    output has nowhere to land.
+    """
     uth.create_temp_ct_conf(os.getcwd())
     with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
         argv = ["--config=" + temp_config_name, *extra_argv]
         cap = apptools.create_parser("idempotency test", argv=argv)
         cdb.CompilationDatabaseCreator.add_arguments(cap)
         compiletools.hunter.add_arguments(cap)
+        apptools.add_link_arguments(cap)
         with uth.ParserContext():
             return apptools.parseargs(cap, argv, context=BuildContext())
 
@@ -165,6 +173,51 @@ class TestSubstitutionsIdempotent:
             assert token not in args.CPPFLAGS_tokens, (
                 "substitutions() re-run leaked the prefix-map token into CPPFLAGS under --separate-flags-CPP-CXX."
             )
+
+
+@pytest.mark.usefixtures("parsers_reset")
+class TestPkgConfigSlotsAreFixedPoints:
+    """A substitutions() re-run must not re-append pkg-config --cflags/--libs.
+
+    Pre-fix behavior: _add_flags_from_pkg_config appends unconditionally and
+    the only dedup covering CFLAGS/LDFLAGS runs before it, so pass 2 doubles
+    both slots (all four under --separate-flags-CPP-CXX). The doubled CFLAGS
+    reaches _get_build_context_hash and forks the object CAS key space
+    between --auto and --no-auto builds; the doubled LDFLAGS forks the
+    cas-exedir link key via args.flags.ld.
+    """
+
+    def _assert_rerun_is_noop(self, extra_argv):
+        with uth.TempDirContext():
+            args = _parseargs_in_temp_repo(extra_argv=extra_argv)
+            assert "-ltestpkg1" in args.LDFLAGS, (
+                "Precondition failed: pkg-config --libs did not land; the fixed-point assertions would be vacuous."
+            )
+            assert "testpkg1" in args.CFLAGS, "Precondition failed: pkg-config --cflags did not land in CFLAGS."
+            first_raw = {slot: getattr(args, slot) for slot in FLAG_SLOTS}
+            first_tokens = {slot: list(getattr(args, f"{slot}_tokens")) for slot in FLAG_SLOTS}
+            first_flags = args.flags
+
+            apptools.substitutions(args, verbose=0)
+
+            for slot in FLAG_SLOTS:
+                assert getattr(args, slot) == first_raw[slot], (
+                    f"substitutions() re-run changed args.{slot}:\n"
+                    f"  pass 1: {first_raw[slot]!r}\n"
+                    f"  pass 2: {getattr(args, slot)!r}"
+                )
+                assert list(getattr(args, f"{slot}_tokens")) == first_tokens[slot], (
+                    f"substitutions() re-run changed args.{slot}_tokens"
+                )
+            assert args.flags == first_flags, (
+                f"substitutions() re-run changed args.flags:\n  pass 1: {first_flags}\n  pass 2: {args.flags}"
+            )
+
+    def test_unified_mode(self, pkgconfig_env):
+        self._assert_rerun_is_noop(["--pkg-config=nested"])
+
+    def test_separate_flags_mode(self, pkgconfig_env):
+        self._assert_rerun_is_noop(["--pkg-config=nested", "--separate-flags-CPP-CXX"])
 
 
 def _drift_base_flags():

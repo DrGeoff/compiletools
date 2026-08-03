@@ -2038,6 +2038,25 @@ def substitutions(args, verbose=None):
     if verbose is None:
         verbose = args.verbose
 
+    # The four raw flag slots are DERIVED state: every pass must rebuild
+    # them from the same post-parse base, or any unconditional append in
+    # the pipeline (pkg-config --cflags/--libs, prefix-map injection)
+    # compounds across the legitimate re-runs (cake's --auto second stage,
+    # the //#GIT= fetch, compilation_database's refresh) and forks the
+    # object/link CAS key spaces between single-pass and multi-pass
+    # builds. args.INCLUDE is an INPUT (external fetch widens it between
+    # passes) and is deliberately not restored. Snapshot happens before
+    # _finalize_flag_state ever runs, so the seed holds only the slots the
+    # caller's CAP registered — matching _registered_flag_slots semantics.
+    seed = getattr(args, "_substitution_seed", None)
+    if seed is None:
+        args._substitution_seed = {
+            slot: getattr(args, slot) for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS") if hasattr(args, slot)
+        }
+    else:
+        for slot, value in seed.items():
+            setattr(args, slot, value)
+
     for func in _substitutioncallbacks:
         if verbose > 8:
             print(f"Performing substitution: {func.__qualname__}")
