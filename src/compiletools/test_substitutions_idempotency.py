@@ -339,6 +339,40 @@ class TestResubstitute:
                 apptools.resetcallbacks()
 
 
+@pytest.mark.usefixtures("parsers_reset")
+class TestThreeSlotCapRerun:
+    """A CAP that registers no LDFLAGS (ct-compilation-database) must stay
+    a three-slot tool across a re-run.
+
+    _finalize_flag_state materializes args.LDFLAGS = "" after pass 1, so a
+    hasattr-based want_libs in _add_flags_from_pkg_config flips False->True
+    on the re-run and lands pkg-config --libs in a slot the first pass never
+    touched -- drift resubstitute rejects.
+    """
+
+    def test_rerun_without_registered_ldflags_does_not_raise(self, pkgconfig_env):
+        with uth.TempDirContext():
+            uth.create_temp_ct_conf(os.getcwd())
+            with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
+                argv = ["--config=" + temp_config_name, "--pkg-config=nested"]
+                cap = apptools.create_parser("three-slot rerun test", argv=argv)
+                compiletools.hunter.add_arguments(cap)
+                with uth.ParserContext():
+                    args = apptools.parseargs(cap, argv, context=BuildContext())
+
+            assert "LDFLAGS" not in args._registered_flag_slots, (
+                "Precondition failed: LDFLAGS unexpectedly registered; this test would be vacuous."
+            )
+            assert "testpkg1" in args.CFLAGS, (
+                "Precondition failed: pkg-config --cflags did not land, so the re-run would be vacuous."
+            )
+            assert args.LDFLAGS == "", "Precondition failed: pass 1 must not land --libs in the unregistered slot."
+
+            apptools.resubstitute(args)
+
+            assert args.LDFLAGS == "", "Re-run landed pkg-config --libs in the unregistered LDFLAGS slot."
+
+
 class TestExtendIncludesUsingGitRootIdempotent:
     def test_second_call_does_not_duplicate_gitroot(self):
         """INCLUDE is excluded from the substitutions() seed (it is a

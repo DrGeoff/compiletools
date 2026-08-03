@@ -501,7 +501,13 @@ def _add_flags_from_pkg_config(args):
     # Batch pkg-config calls: query all packages at once instead of one subprocess
     # per package.  Falls back to per-package calls if the batch fails (e.g. a
     # package is missing and we need to identify which one).
-    want_libs = hasattr(args, "LDFLAGS")
+    # Ask the CAP registration, not hasattr: _finalize_flag_state materializes
+    # args.LDFLAGS = "" for downstream consumers after pass 1, so hasattr flips
+    # False->True on a substitutions() re-run in three-slot tools
+    # (ct-compilation-database) and lands --libs in a slot pass 1 never touched.
+    # None means finalize has not run yet (first pass) -- hasattr is correct there.
+    registered = getattr(args, "_registered_flag_slots", None)
+    want_libs = "LDFLAGS" in registered if registered is not None else hasattr(args, "LDFLAGS")
 
     batch_cflags = _batch_pkg_config(packages, "--cflags")
     batch_libs = _batch_pkg_config(packages, "--libs") if want_libs else {}

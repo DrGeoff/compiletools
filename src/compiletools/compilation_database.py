@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 from typing import Any, Optional
 
 import stringzilla as sz
@@ -413,8 +414,17 @@ def main(argv=None):
         # skipped).
         args = compiletools.findtargets.discover_targets_and_reanchor(args, context)
         # Re-run substitutions after targets are discovered, through the
-        # sanctioned path so unexplained drift hard-errors here too.
-        compiletools.apptools.resubstitute(args)
+        # sanctioned path so unexplained drift hard-errors here too. Render
+        # that drift as a fatal message rather than a traceback, matching
+        # cake's _FATAL_ERROR_RENDERERS contract (verbose >= 2 keeps the
+        # traceback as the diagnostic).
+        try:
+            compiletools.apptools.resubstitute(args)
+        except RuntimeError as err:
+            if args.verbose >= 2:
+                raise
+            print(f"Error: {err}", file=sys.stderr)
+            return 1
 
     # Create and run the compilation database creator
     creator = CompilationDatabaseCreator(args, context=context)

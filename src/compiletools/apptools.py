@@ -768,8 +768,8 @@ def _extend_includes_using_git_root(args):
             new_roots = [root for root in sorted(git_roots) if root not in existing]
             if new_roots:
                 args.INCLUDE = " ".join(args.INCLUDE.split() + new_roots)
-            if args.verbose > 6:
-                print(f"Extended includes to have the gitroots {sorted(git_roots)}")
+                if args.verbose > 6:
+                    print(f"Extended includes to have the gitroots {new_roots}")
         else:
             raise ValueError(
                 "args.git_root is True but no git roots found. :( .  If this is expected then specify --no-git-root."
@@ -1951,7 +1951,8 @@ def assert_flag_normalization_fixed_point(args) -> None:
     on drift not explained by INCLUDE widening. Probes a scratch
     namespace; ``args`` is never mutated. LDFLAGS is not probed:
     ``_normalize_wild_linker`` touches the filesystem, and its rewrite is
-    detected-and-skipped on re-runs by its own already-normalized check.
+    deterministic on the seeded LDFLAGS (which the seed restore reverts
+    each pass), so re-runs converge to the same value.
     """
     slots = ("CPPFLAGS", "CFLAGS", "CXXFLAGS")
     probe = argparse.Namespace(**{slot: getattr(args, slot, "") or "" for slot in slots})
@@ -2067,7 +2068,11 @@ def resubstitute(args) -> None:
     include_paths = (getattr(args, "INCLUDE", "") or "").split()
     messages = warn_unexplained_flag_drift(prior_flags, args.flags, include_paths, verbose=0)
     if messages:
-        raise RuntimeError("substitutions() re-run produced unexplained flag drift:\n" + "\n".join(messages))
+        raise RuntimeError(
+            "substitutions() re-run produced unexplained flag drift:\n"
+            + "\n".join(messages)
+            + "\nWorkaround: pass explicit target files instead of --auto, and report this as a compiletools bug."
+        )
 
 
 # List to store the callback functions for parse args
