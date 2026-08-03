@@ -412,8 +412,9 @@ def main(argv=None):
         # ct-cake --auto compiles with (and contradiction validation is
         # skipped).
         args = compiletools.findtargets.discover_targets_and_reanchor(args, context)
-        # Re-run substitutions after targets are discovered
-        compiletools.apptools.substitutions(args, verbose=0)
+        # Re-run substitutions after targets are discovered, through the
+        # sanctioned path so unexplained drift hard-errors here too.
+        compiletools.apptools.resubstitute(args)
 
     # Create and run the compilation database creator
     creator = CompilationDatabaseCreator(args, context=context)

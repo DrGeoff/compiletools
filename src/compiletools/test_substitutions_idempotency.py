@@ -18,6 +18,7 @@ tokens) diverged.
 import argparse
 import dataclasses
 import os
+import pathlib
 
 import pytest
 
@@ -352,3 +353,18 @@ class TestExtendIncludesUsingGitRootIdempotent:
         assert once == ns.INCLUDE, (
             f"Second call duplicated gitroot entries:\n  once:  {once!r}\n  twice: {ns.INCLUDE!r}"
         )
+
+
+def test_cdb_rerun_site_uses_resubstitute():
+    """compilation_database's --auto refresh must go through the sanctioned
+    re-run path so it gets the same drift guard as cake's re-run site; a
+    bare substitutions() call re-runs the pipeline with no drift check."""
+    import compiletools.compilation_database
+
+    source = pathlib.Path(compiletools.compilation_database.__file__).read_text()
+    assert "apptools.resubstitute(" in source, (
+        "compilation_database no longer routes its re-run through apptools.resubstitute"
+    )
+    assert "apptools.substitutions(" not in source, (
+        "compilation_database re-runs substitutions() directly, bypassing the drift guard"
+    )
