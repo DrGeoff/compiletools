@@ -144,22 +144,16 @@ class TestSubstitutionsIdempotent:
 
     def test_include_widening_rerun_reports_no_drift(self):
         """The sanctioned post-parseargs mutation (widen args.INCLUDE, re-run
-        substitutions()) must be recognised as explained drift: the re-run
-        appends detached ``-I <dir>`` pairs, and the drift reporter must not
-        flag them."""
+        substitutions()) must be recognised as explained drift: resubstitute()
+        must not raise, and the re-run must actually land the widened -I
+        pair (otherwise the no-raise outcome is vacuous)."""
         with uth.TempDirContext():
             args = _parseargs_in_temp_repo()
-            prior = args.flags
             newdir = os.path.join(os.getcwd(), "external_inc")
             os.makedirs(newdir)
             args.INCLUDE = (args.INCLUDE + " " + newdir).strip()
-            apptools.substitutions(args, verbose=0)
-            assert args.flags != prior, (
-                "Precondition failed: INCLUDE widening did not change args.flags; this test would pass vacuously."
-            )
+            apptools.resubstitute(args)
             assert newdir in args.flags.cpp, f"Expected -I pair for {newdir} in cpp slot: {args.flags.cpp}"
-            msgs = apptools.warn_unexplained_flag_drift(prior, args.flags, args.INCLUDE.split(), verbose=0)
-            assert msgs == [], f"INCLUDE widening was misreported as unexplained drift: {msgs}"
 
     def test_separate_flags_mode_keeps_cppflags_clean(self):
         """Under --separate-flags-CPP-CXX the unify step is skipped, so the
@@ -267,6 +261,18 @@ class TestWarnUnexplainedFlagDrift:
             f"-I additions for a path NOT in INCLUDE must be reported per slot (cpp, c, cxx), got: {msgs}"
         )
 
+    def test_i_pair_inserted_mid_sequence_is_explained(self):
+        prior = _drift_base_flags()
+        cpp = prior.cpp[:1] + ("-I", "/ext/root") + prior.cpp[1:]
+        new = dataclasses.replace(prior, cpp=cpp)
+        assert apptools.warn_unexplained_flag_drift(prior, new, ["/ext/root"], verbose=0) == []
+
+    def test_i_pair_removal_is_reported(self):
+        prior = _drift_base_flags()
+        with_pair = dataclasses.replace(prior, cpp=prior.cpp + ("-I", "/ext/root"), c=prior.c, cxx=prior.cxx)
+        msgs = apptools.warn_unexplained_flag_drift(with_pair, prior, ["/ext/root"], verbose=0)
+        assert len(msgs) == 1 and "cpp" in msgs[0]
+
     def test_ld_addition_is_reported_even_in_dash_i_form(self):
         prior = _drift_base_flags()
         new = dataclasses.replace(prior, ld=prior.ld + ("-I", "/ext/root"))
@@ -293,37 +299,32 @@ class TestWarnUnexplainedFlagDrift:
 
 
 @pytest.mark.usefixtures("parsers_reset")
-class TestCakeRerunDriftWarning:
-    """cake._resubstitute_with_drift_warning is the wrapper _discover_targets
-    uses for its legitimate substitutions() re-run: snapshot args.flags,
-    re-run, then report drift the INCLUDE widening doesn't explain."""
+class TestResubstitute:
+    """apptools.resubstitute is the only sanctioned substitutions() re-run
+    path: snapshot args.flags, re-run, hard-error on drift the INCLUDE
+    widening doesn't explain."""
 
-    def test_include_widening_rerun_reports_no_drift(self):
-        import compiletools.cake
-
+    def test_include_widening_rerun_does_not_raise(self):
         with uth.TempDirContext():
             args = _parseargs_in_temp_repo()
             newdir = os.path.join(os.getcwd(), "external_inc")
             os.makedirs(newdir)
             args.INCLUDE = (args.INCLUDE + " " + newdir).strip()
-            msgs = compiletools.cake._resubstitute_with_drift_warning(args)
-            assert msgs == [], f"INCLUDE widening was misreported as unexplained drift: {msgs}"
+            apptools.resubstitute(args)
             assert newdir in args.flags.cpp, (
-                f"Precondition failed: the re-run did not land the -I pair, so the empty "
-                f"drift report would be vacuous. cpp slot: {args.flags.cpp}"
+                f"Precondition failed: the re-run did not land the -I pair, so the "
+                f"no-raise outcome would be vacuous. cpp slot: {args.flags.cpp}"
             )
 
-    def test_non_idempotent_callback_drift_is_warned_on_stderr(self, capsys):
+    def test_non_idempotent_callback_raises(self):
         import itertools
-
-        import compiletools.cake
 
         counter = itertools.count(1)
 
         def nonidempotent_callback(cb_args):
-            # Uniform append across all three slots keeps the state stable
-            # under the normalization-tail replay, so this drift is exactly
-            # the class assert_flag_normalization_fixed_point cannot see.
+            # A per-pass-unique token: seed restore cannot make this
+            # converge, so it is exactly the drift class resubstitute
+            # must reject.
             token = f"-DCT_TEST_RERUN{next(counter)}"
             for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS"):
                 current = getattr(cb_args, slot, "") or ""
@@ -332,17 +333,14 @@ class TestCakeRerunDriftWarning:
         with uth.TempDirContext():
             args = _parseargs_in_temp_repo()
             # Registered AFTER parseargs: ParserContext (inside the helper)
-            # wipes the callback registry on entry and exit, and cake's
-            # re-run happens outside any ParserContext anyway.
+            # wipes the callback registry on entry and exit, and the re-run
+            # happens outside any ParserContext anyway.
             apptools.registercallback(nonidempotent_callback)
             try:
-                args.verbose = 1
-                msgs = compiletools.cake._resubstitute_with_drift_warning(args)
+                with pytest.raises(RuntimeError, match="CT_TEST_RERUN"):
+                    apptools.resubstitute(args)
             finally:
                 apptools.resetcallbacks()
-            assert msgs, "expected the non-idempotent callback's drift to be reported"
-            err = capsys.readouterr().err
-            assert "-DCT_TEST_RERUN1" in err, f"stderr warning missing the drifted token: {err!r}"
 
 
 class TestExtendIncludesUsingGitRootIdempotent:

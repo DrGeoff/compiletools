@@ -1971,6 +1971,37 @@ def assert_flag_normalization_fixed_point(args) -> None:
             )
 
 
+def _is_prior_plus_explained_i_insertions(prior, new, include_set) -> bool:
+    """True when *new* is exactly *prior* with zero or more detached
+    ``-I <path>`` pairs inserted (at any position), every inserted path
+    being a member of *include_set*. Removals, reorders, and any other
+    addition return False. When *prior* itself has a ``-I <path>`` pair
+    at the current position identical to *new*'s, matching *prior* wins
+    over treating the pair as an insertion.
+    """
+    i = j = 0
+    while i < len(new):
+        if j < len(prior) and new[i] == prior[j]:
+            if (
+                new[i] == "-I"
+                and i + 1 < len(new)
+                and j + 1 < len(prior)
+                and new[i + 1] != prior[j + 1]
+                and new[i + 1] in include_set
+            ):
+                # prior's next -I pair differs: treat new's pair as inserted
+                i += 2
+                continue
+            i += 1
+            j += 1
+            continue
+        if new[i] == "-I" and i + 1 < len(new) and new[i + 1] in include_set:
+            i += 2
+            continue
+        return False
+    return j == len(prior)
+
+
 def warn_unexplained_flag_drift(prior_flags, new_flags, include_paths, verbose=0) -> list[str]:
     """Compare two ``args.flags`` snapshots taken around a legitimate
     ``substitutions()`` re-run and return a message per slot whose drift is
@@ -1978,18 +2009,18 @@ def warn_unexplained_flag_drift(prior_flags, new_flags, include_paths, verbose=0
 
     Complements :func:`assert_flag_normalization_fixed_point`, which replays
     only the normalization tail (unify / prefix-map inject) and so cannot see
-    a non-idempotent step elsewhere in the pipeline. Callers that re-run
-    ``substitutions()`` on the same namespace (cake's second-stage discovery
-    and //#GIT= fetch) snapshot ``args.flags`` before the re-run and hand
-    both snapshots here afterwards.
+    a non-idempotent step elsewhere in the pipeline. ``resubstitute`` snapshots
+    ``args.flags`` around each sanctioned re-run, hands both snapshots here,
+    and raises on any returned message.
 
-    Explained drift is exactly what INCLUDE widening produces: a tail of
-    detached ``-I <path>`` pairs (the form ``dedup_include_paths_to_append``
-    emits) appended to the cpp/c/cxx slots, with every path present in
-    *include_paths*. Anything else — removed or reordered tokens, non-include
-    additions, any ``ld`` change, a ``compiler_identity`` change — forks the
-    object CAS key space between single-pass and multi-pass builds and is
-    reported. Messages are printed to stderr at ``verbose >= 1``.
+    Explained drift is exactly what INCLUDE widening produces under the seed-
+    restore rebuild: detached ``-I <path>`` pairs (the form
+    ``dedup_include_paths_to_append`` emits) inserted anywhere in the cpp/c/cxx
+    sequences, every path present in *include_paths*. Anything else — removed
+    or reordered tokens, non-include additions, any ``ld`` change, a
+    ``compiler_identity`` change — forks the object CAS key space between
+    single-pass and multi-pass builds and is reported. Messages are printed
+    to stderr at ``verbose >= 1``.
     """
     include_set = set(include_paths)
     messages = []
@@ -1998,12 +2029,8 @@ def warn_unexplained_flag_drift(prior_flags, new_flags, include_paths, verbose=0
         new = getattr(new_flags, slot)
         if new == prior:
             continue
-        if slot != "ld" and new[: len(prior)] == prior:
-            tail = new[len(prior) :]
-            if len(tail) % 2 == 0 and all(
-                tail[i] == "-I" and tail[i + 1] in include_set for i in range(0, len(tail), 2)
-            ):
-                continue
+        if slot != "ld" and _is_prior_plus_explained_i_insertions(prior, new, include_set):
+            continue
         messages.append(
             f"args.flags.{slot} drifted across a substitutions() re-run beyond "
             f"INCLUDE-widening -I additions: {prior!r} -> {new!r}. This forks the "
@@ -2020,6 +2047,25 @@ def warn_unexplained_flag_drift(prior_flags, new_flags, include_paths, verbose=0
         for msg in messages:
             print(f"Warning: {msg}", file=sys.stderr)
     return messages
+
+
+def resubstitute(args) -> None:
+    """Re-run ``substitutions()`` on *args* — the only sanctioned re-run path.
+
+    Snapshots ``args.flags`` around the re-run and raises ``RuntimeError``
+    on any slot drift not explained by INCLUDE-widening ``-I`` additions
+    (same policy as ``check_flag_string_drift``: a forked CAS key space is
+    silent corruption, not a warning). Callers with a legitimate reason to
+    re-run the pipeline (cake's second-stage discovery, the //#GIT= fetch,
+    compilation_database's --auto refresh) go through here so every re-run
+    site gets the same guard.
+    """
+    prior_flags = args.flags
+    substitutions(args, verbose=0)
+    include_paths = (getattr(args, "INCLUDE", "") or "").split()
+    messages = warn_unexplained_flag_drift(prior_flags, args.flags, include_paths, verbose=0)
+    if messages:
+        raise RuntimeError("substitutions() re-run produced unexplained flag drift:\n" + "\n".join(messages))
 
 
 # List to store the callback functions for parse args

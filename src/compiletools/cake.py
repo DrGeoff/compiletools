@@ -31,24 +31,6 @@ from compiletools.build_context import BuildContext
 from compiletools.version import __version__, get_package_git_sha
 
 
-def _resubstitute_with_drift_warning(args):
-    """Re-run ``substitutions()`` on *args* and report unexplained flag drift.
-
-    The in-substitutions fixed-point guard replays only the normalization
-    tail (unify / prefix-map inject); this wrapper closes the rest of the
-    gap at the one place cake legitimately re-runs the pipeline: it
-    snapshots ``args.flags`` around the re-run and warns (stderr, at
-    ``args.verbose >= 1``) about any slot change the INCLUDE-widening
-    ``-I`` additions don't explain. Returns the drift messages.
-    """
-    prior_flags = args.flags
-    compiletools.apptools.substitutions(args, verbose=0)
-    include_paths = (getattr(args, "INCLUDE", "") or "").split()
-    return compiletools.apptools.warn_unexplained_flag_drift(
-        prior_flags, args.flags, include_paths, verbose=args.verbose
-    )
-
-
 class Cake:
     def __init__(self, args, context=None):
         self.args = args
@@ -264,7 +246,7 @@ class Cake:
             # targets. And recreate the ct objects.
             if self.args.verbose > 4:
                 print("Cake recreating objects and reparsing for second stage processing")
-            _resubstitute_with_drift_warning(self.args)
+            compiletools.apptools.resubstitute(self.args)
             self._createctobjs()
             created_ctobjs = True
         elif not created_ctobjs:
