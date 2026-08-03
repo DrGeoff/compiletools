@@ -1993,6 +1993,14 @@ def _is_prior_plus_explained_i_insertions(prior, new, include_set) -> bool:
     path that is already present. When *prior* itself has a ``-I <path>``
     pair at the current position identical to *new*'s, matching *prior*
     wins over treating the pair as an insertion.
+
+    Known over-report: if a mid-pipeline append (e.g. pkg-config --cflags)
+    put a path into the slot on pass 1 and that same path later enters
+    INCLUDE between passes, pass 2 carries both copies and the widening
+    insertion is classified as a duplicate re-add. That requires a
+    pkg-config include dir to coincide with a between-pass INCLUDE
+    widening path; accepting the false positive there is preferred over
+    reopening the duplicate-append hole this predicate exists to close.
     """
     prior_include_paths = extract_include_paths_from_tokens(prior)
 

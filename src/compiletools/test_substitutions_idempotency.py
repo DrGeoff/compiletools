@@ -271,6 +271,18 @@ class TestWarnUnexplainedFlagDrift:
             f"A re-added duplicate -I pair must be reported as unexplained drift, got: {msgs}"
         )
 
+    def test_double_insertion_of_new_path_is_reported(self):
+        """dedup_include_paths_to_append also never emits the same NEW path
+        twice in one widening, so two insertions of a path absent from prior
+        are drift (e.g. two non-idempotent steps each emitting the pair),
+        not explained widening."""
+        prior = _drift_base_flags()
+        new = dataclasses.replace(prior, cpp=prior.cpp + ("-I", "/ext/root", "-I", "/ext/root"))
+        msgs = apptools.warn_unexplained_flag_drift(prior, new, ["/ext/root"])
+        assert len(msgs) == 1 and "cpp" in msgs[0], (
+            f"A doubly-inserted -I pair must be reported as unexplained drift, got: {msgs}"
+        )
+
     def test_i_pair_removal_is_reported(self):
         prior = _drift_base_flags()
         with_pair = dataclasses.replace(prior, cpp=prior.cpp + ("-I", "/ext/root"))
@@ -506,11 +518,16 @@ def test_cdb_rerun_site_uses_resubstitute():
     import compiletools.compilation_database
 
     source = pathlib.Path(compiletools.compilation_database.__file__).read_text()
-    called = {
-        node.func.attr
-        for node in ast.walk(ast.parse(source))
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-    }
+    called = set()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        # Attribute form (apptools.resubstitute(...)) and bare-name form
+        # (from ... import substitutions; substitutions(...)) both count.
+        if isinstance(node.func, ast.Attribute):
+            called.add(node.func.attr)
+        elif isinstance(node.func, ast.Name):
+            called.add(node.func.id)
     assert "resubstitute" in called, "compilation_database no longer routes its re-run through apptools.resubstitute"
     assert "substitutions" not in called, (
         "compilation_database re-runs substitutions() directly, bypassing the drift guard"
