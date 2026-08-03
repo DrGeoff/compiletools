@@ -1942,12 +1942,14 @@ def assert_flag_normalization_fixed_point(args) -> None:
     ``_commonsubstitutions`` (unify / prefix-map inject) would still change
     a compile-flag slot when re-applied.
 
-    substitutions() is legitimately re-run on the same namespace (cake's
-    second-stage target discovery, the //#GIT= external-fetch re-run,
-    compilation_database's refresh), so any slot that is not a fixed point
-    forks the object CAS key space between single-pass and multi-pass runs
-    — the ``--auto`` vs ``--no-auto`` ffile-prefix-map fork. Probes a
-    scratch namespace; ``args`` is never mutated. LDFLAGS is not probed:
+    Scope: this probe replays ONLY the normalization tail (unify /
+    prefix-map inject) and is blind to any other pipeline step — it exists
+    as a cheap every-build sanity check on that tail. Full-pipeline re-run
+    idempotency is owned by the seed restore in ``substitutions()`` (raw
+    slots rebuild from ``args._substitution_seed`` each pass) and enforced
+    at every sanctioned re-run site by ``resubstitute``, which hard-errors
+    on drift not explained by INCLUDE widening. Probes a scratch
+    namespace; ``args`` is never mutated. LDFLAGS is not probed:
     ``_normalize_wild_linker`` touches the filesystem, and its rewrite is
     detected-and-skipped on re-runs by its own already-normalized check.
     """
