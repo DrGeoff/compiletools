@@ -242,6 +242,15 @@ class TestStageResolveNames:
         ns = stage_resolve_names(_inputs(variant_raw="gcc.debug", canonical_order=ORDER, cas_objdir_raw=""))
         assert ns.cas_objdir == ""
 
+    def test_unsupplied_cas_dirs_derive_gitroot_anchored_defaults(self):
+        """None raws derive <gitroot>/cas-<kind>dir/<variant>, mirroring
+        resolve_cas_directory_arguments (Task 14 differential fix)."""
+        ns = stage_resolve_names(_inputs(variant_raw="gcc.debug", canonical_order=ORDER, gitroot="/repo"))
+        assert ns.cas_objdir == "/repo/cas-objdir/gcc.debug"
+        assert ns.cas_pchdir == "/repo/cas-pchdir/gcc.debug"
+        assert ns.cas_pcmdir == "/repo/cas-pcmdir/gcc.debug"
+        assert ns.cas_exedir == "/repo/cas-exedir/gcc.debug"
+
     def test_empty_bindir_raw_passes_through_unchanged(self):
         ns = stage_resolve_names(_inputs(variant_raw="gcc.debug", canonical_order=ORDER, bindir_raw=""))
         assert ns.bindir == ""

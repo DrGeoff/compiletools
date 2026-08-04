@@ -193,7 +193,13 @@ def _with_variant_suffix(raw: str | None, variant: str) -> str:
 def stage_resolve_names(inputs: BuildInputs) -> NameState:
     """Variant canonicalization + bindir/cas-dir naming. All naming is a
     canonicalization fixed point: re-running on its own output changes
-    nothing (the NON_CANONICAL trim-cache class cannot be minted here)."""
+    nothing (the NON_CANONICAL trim-cache class cannot be minted here).
+
+    An unsupplied (None) cas-dir raw derives the gitroot-anchored default
+    ``<gitroot>/cas-<kind>dir/<variant>``, mirroring
+    ``resolve_cas_directory_arguments`` (gather's gitroot is
+    ``find_git_root()``, which falls back to the cwd outside a repo, so
+    the default stays absolute in production)."""
     tokens = [t for t in inputs.variant_raw.replace(",", ".").split(".") if t]
     canonical = compiletools.configutils.canonicalize_variant_tokens(tokens, list(inputs.canonical_order))
     variant = ".".join(canonical)
@@ -203,13 +209,19 @@ def stage_resolve_names(inputs: BuildInputs) -> NameState:
         bindir = ""
     else:
         bindir = posixpath.normpath(inputs.bindir_raw)
+
+    def _cas_dir(raw: str | None, kind: str) -> str:
+        if raw is None:
+            raw = posixpath.join(inputs.gitroot, f"cas-{kind}dir")
+        return _with_variant_suffix(raw, variant)
+
     return NameState(
         variant=variant,
         bindir=bindir,
-        cas_objdir=_with_variant_suffix(inputs.cas_objdir_raw, variant),
-        cas_pchdir=_with_variant_suffix(inputs.cas_pchdir_raw, variant),
-        cas_pcmdir=_with_variant_suffix(inputs.cas_pcmdir_raw, variant),
-        cas_exedir=_with_variant_suffix(inputs.cas_exedir_raw, variant),
+        cas_objdir=_cas_dir(inputs.cas_objdir_raw, "obj"),
+        cas_pchdir=_cas_dir(inputs.cas_pchdir_raw, "pch"),
+        cas_pcmdir=_cas_dir(inputs.cas_pcmdir_raw, "pcm"),
+        cas_exedir=_cas_dir(inputs.cas_exedir_raw, "exe"),
     )
 
 

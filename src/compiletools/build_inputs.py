@@ -234,6 +234,41 @@ def _flag_name_already_present(args, flag_name):
     return any(flag_name in (getattr(args, slot, None) or "") for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS"))
 
 
+_TARGET_ATTRS = ("filename", "static", "dynamic", "tests")
+
+
+def _include_paths_with_gitroots(args, gitroot):
+    """Port of the two INCLUDE-widening steps gather must model because
+    they feed stage_include_paths:
+
+    1. _do_xxpend for INCLUDE: --prepend-INCLUDE / --append-INCLUDE
+       elements merge into the raw string (substring-presence dedup,
+       matching _do_xxpend's `flag not in attr` check on the string).
+    2. _extend_includes_using_git_root: with --git-root on a
+       target-registering CAP (any of the four target attrs present),
+       the gitroots of the cwd and of every target file extend the
+       include list, sorted, skipping already-present paths.
+
+    gather computes the widened tuple instead of mutating args.INCLUDE.
+    """
+    from compiletools.git_utils import find_git_root
+
+    include = getattr(args, "INCLUDE", "") or ""
+    prepend = [e for e in (getattr(args, "prepend_include", None) or ()) if e not in include]
+    merged = " ".join(prepend + [include]) if prepend else include
+    append = [e for e in (getattr(args, "append_include", None) or ()) if e not in merged]
+    paths = " ".join([merged] + append).split()
+
+    if getattr(args, "git_root", False) and any(hasattr(args, attr) for attr in _TARGET_ATTRS):
+        roots = {gitroot} if gitroot else set()
+        for attr in _TARGET_ATTRS:
+            for filename in getattr(args, attr, None) or []:
+                roots.add(find_git_root(filename))
+        existing = set(paths)
+        paths.extend(root for root in sorted(roots) if root not in existing)
+    return tuple(paths)
+
+
 def _raw_dir_value(args, attr):
     """Bindir/cas-dir raw value: absent attr or the unsupplied sentinels
     map to None (stage_resolve_names derives the default)."""
@@ -336,7 +371,7 @@ def gather_inputs(args, context) -> BuildInputs:
         append_cxxflags=_xxpend_tokens(args, "append_cxxflags"),
         prepend_ldflags=_xxpend_tokens(args, "prepend_ldflags"),
         append_ldflags=_xxpend_tokens(args, "append_ldflags"),
-        include_paths=tuple((getattr(args, "INCLUDE", "") or "").split()),
+        include_paths=_include_paths_with_gitroots(args, gitroot),
         pkg_config_results=pkg_config_results,
         separate_flags=getattr(args, "separate_flags_CPP_CXX", False),
         gitroot=gitroot,

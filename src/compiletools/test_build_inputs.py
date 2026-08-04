@@ -254,6 +254,53 @@ class TestProjectMacros:
             assert inputs.project_name is None
 
 
+class TestIncludePathsGathering:
+    """include_paths must model the two old-pipeline INCLUDE-widening
+    steps: --prepend/--append-INCLUDE xxpend merging, and the gitroot
+    extension for target-registering CAPs (Task 14 differential fix)."""
+
+    def test_append_and_prepend_include_merge_into_paths(self):
+        with uth.TempDirContext():
+            args = _minimal_args(
+                INCLUDE="/base/inc",
+                prepend_include=["/pre/inc"],
+                append_include=["/app/inc"],
+            )
+            inputs = gather_inputs(args, BuildContext())
+            assert inputs.include_paths == ("/pre/inc", "/base/inc", "/app/inc")
+
+    def test_xxpend_include_skips_elements_already_present(self):
+        with uth.TempDirContext():
+            args = _minimal_args(
+                INCLUDE="/base/inc",
+                prepend_include=["/base/inc"],
+                append_include=["/base/inc"],
+            )
+            inputs = gather_inputs(args, BuildContext())
+            assert inputs.include_paths == ("/base/inc",)
+
+    def test_gitroot_extends_include_paths_for_target_registering_cap(self):
+        """The four target attrs (filename/static/dynamic/tests) mark a
+        cake-shaped CAP; --git-root then folds the cwd gitroot in, exactly
+        like _extend_includes_using_git_root."""
+        with uth.TempDirContext():
+            args = _minimal_args(git_root=True, filename=[])
+            inputs = gather_inputs(args, BuildContext())
+            assert inputs.include_paths == (os.getcwd(),)
+
+    def test_no_target_attrs_means_no_gitroot_extension(self):
+        with uth.TempDirContext():
+            args = _minimal_args(git_root=True)
+            inputs = gather_inputs(args, BuildContext())
+            assert inputs.include_paths == ()
+
+    def test_gitroot_already_in_include_is_not_duplicated(self):
+        with uth.TempDirContext():
+            args = _minimal_args(git_root=True, filename=[], INCLUDE=os.getcwd())
+            inputs = gather_inputs(args, BuildContext())
+            assert inputs.include_paths == (os.getcwd(),)
+
+
 class TestComputePkgConfigPath:
     """Pure merge extracted from _setup_pkg_config_overrides_locked."""
 
