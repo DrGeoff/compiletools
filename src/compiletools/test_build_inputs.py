@@ -13,7 +13,7 @@ import compiletools.hunter
 import compiletools.testhelper as uth
 from compiletools.apptools_pkgconfig import compute_pkg_config_path
 from compiletools.build_context import BuildContext
-from compiletools.build_inputs import gather_inputs
+from compiletools.build_inputs import _query_pkg_config, gather_inputs
 
 
 @pytest.fixture
@@ -216,6 +216,26 @@ class TestPkgConfigGathering:
             )
             inputs = gather_inputs(args, BuildContext())
             assert tuple(pkg for pkg, _r in inputs.pkg_config_results) == ("first", "base", "last")
+
+
+class TestQueryPkgConfigEnvRestore:
+    """_query_pkg_config's set/restore dance around ``_batch_pkg_config``'s
+    global-environment read, exercised through the REAL ``_batch_pkg_config``
+    (real pkg-config subprocess, real .pc files from the pkgconfig_env
+    fixture) rather than a monkeypatched stand-in. Every other pkg-config
+    test in this module mocks ``_batch_pkg_config`` -- the set/restore
+    dance around a mock never runs the real global-env read it guards
+    against, so it is untested by everything else here."""
+
+    def test_restores_a_previously_set_value(self, pkgconfig_env, monkeypatch):
+        monkeypatch.setenv("PKG_CONFIG_PATH", "/prior/pkg/config/path")
+        _query_pkg_config(["nested"], pkgconfig_env, want_libs=False, verbose=0, context=BuildContext())
+        assert os.environ["PKG_CONFIG_PATH"] == "/prior/pkg/config/path"
+
+    def test_restores_to_unset_when_originally_unset(self, pkgconfig_env, monkeypatch):
+        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+        _query_pkg_config(["nested"], pkgconfig_env, want_libs=False, verbose=0, context=BuildContext())
+        assert "PKG_CONFIG_PATH" not in os.environ
 
 
 @pytest.mark.usefixtures("parsers_reset")
