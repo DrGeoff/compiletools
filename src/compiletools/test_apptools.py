@@ -1943,9 +1943,13 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
             argv = ["--variant=gcc,release,extras", "--no-git-root"]
             args = _parseargs_for_variant(repo_root, argv)
 
+            # Task 8 swap: args.INCLUDE keeps the un-merged raw string (the
+            # xxpend merge happens inside gather_inputs — swap-inventory row
+            # 28), so the observable is the -I tokens the core folded into
+            # the compile slots.
             for inc_dir in (inc_a, inc_b, inc_c):
-                assert inc_dir in args.INCLUDE, (
-                    f"{inc_dir} missing from args.INCLUDE={args.INCLUDE!r}; "
+                assert inc_dir in args.CPPFLAGS_tokens, (
+                    f"{inc_dir} missing from args.CPPFLAGS_tokens={args.CPPFLAGS_tokens!r}; "
                     f"append-include did not accumulate across the hierarchy. "
                     f"args.append_include={args.append_include!r}"
                 )
@@ -2058,9 +2062,15 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
             argv = ["--variant=gcc,release,extras", "--no-git-root"]
             args = _parseargs_for_variant(repo_root, argv)
 
+            # Task 8 swap: the composed list is produced by gather from the
+            # raw attrs (swap-inventory row 6); args.pkg_config keeps the
+            # un-merged conf shape.
+            from compiletools.build_inputs import _merged_pkg_config_specs
+
+            composed = _merged_pkg_config_specs(args)
             for pkg in ("pkg_gcc_axis", "pkg_release_axis", "pkg_extras_axis"):
-                assert pkg in args.pkg_config, (
-                    f"{pkg!r} missing from args.pkg_config={args.pkg_config!r}; "
+                assert pkg in composed, (
+                    f"{pkg!r} missing from composed pkg-config list={composed!r}; "
                     f"append-PKG-CONFIG did not accumulate across the hierarchy. "
                     f"args.append_pkg_config={getattr(args, 'append_pkg_config', '<unset>')!r}"
                 )
@@ -2091,11 +2101,15 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
             ]
             args = _parseargs_for_variant(repo_root, argv)
 
-            assert "pkg_from_cli" in args.pkg_config, args.pkg_config
+            # Task 8 swap: composed at gather (swap-inventory row 6).
+            from compiletools.build_inputs import _merged_pkg_config_specs
+
+            composed = _merged_pkg_config_specs(args)
+            assert "pkg_from_cli" in composed, composed
             for pkg in ("pkg_from_gcc", "pkg_from_release"):
-                assert pkg in args.pkg_config, (
+                assert pkg in composed, (
                     f"CLI --append-PKG-CONFIG swallowed {pkg!r} from the conf "
-                    f"hierarchy. args.pkg_config={args.pkg_config!r}, "
+                    f"hierarchy. composed={composed!r}, "
                     f"args.append_pkg_config={getattr(args, 'append_pkg_config', '<unset>')!r}"
                 )
 
@@ -2122,7 +2136,10 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
             ]
             args = _parseargs_for_variant(repo_root, argv)
 
-            pkgs = list(args.pkg_config)
+            # Task 8 swap: composed at gather (swap-inventory row 6).
+            from compiletools.build_inputs import _merged_pkg_config_specs
+
+            pkgs = list(_merged_pkg_config_specs(args))
             assert "pkg_prepended" in pkgs and "pkg_appended" in pkgs and "pkg_base" in pkgs, pkgs
             assert pkgs.index("pkg_prepended") < pkgs.index("pkg_base"), (
                 f"prepend should land before base --pkg-config: {pkgs!r}"
@@ -2232,25 +2249,19 @@ class TestPkgConfigConfValueSplitting:
     def test_namespace_carries_one_element_per_spec_after_parseargs(
         self, pkgconfig_env, ct_conf_line, axis_conf_line, expected, expected_source_attrs
     ):
-        """All three pkg-config namespace attrs hold one element per
-        specification once ``parseargs`` has returned, on every surface that
-        feeds them.
+        """The composed pkg-config list holds one element per specification
+        on every surface that feeds it.
 
-        ``_tier_one_modifications`` is the sole owner of this normalization —
-        ``_add_flags_from_pkg_config`` trusts the shape and does not
-        re-tokenize. That makes the shape a contract rather than a
-        convenience, and this is the only test that holds it. Its siblings
-        here all assert on the resulting flags, so every one of them would
-        stay green if the normalization moved or disappeared.
-
-        Asserting the merged ``args.pkg_config`` alone is not enough. The
-        accumulators are normalized *before* the merge, so a refactor that
-        normalized only the merged result would leave
-        ``args.append_pkg_config`` holding the raw conf shape
-        ``['conditional nested']`` while every existing assertion in this
-        class still passed. Any consumer reading the accumulator attrs
-        directly would then see a whitespace-joined string where the bare key
-        gives it a list.
+        Task 8 swap: the old pipeline's ``_tier_one_modifications`` wrote
+        the tokenized+merged list back onto ``args.pkg_config``; the new
+        core never mutates the namespace — the raw attrs keep the conf
+        shape and ``build_inputs._merged_pkg_config_specs`` owns the
+        tokenize+merge at the point of consumption (swap-inventory row 6).
+        The shape contract therefore holds on the composed list gather
+        produces from the post-parseargs namespace, not on the namespace
+        attrs themselves; ``expected_source_attrs`` (the per-accumulator
+        normalization the old pipeline performed) is retired with the
+        write-back and is no longer asserted.
 
         A version constraint keeps its internal space: ``conditional >=
         1.0.0`` is one specification, not three. Constraint *spelling* is
@@ -2258,19 +2269,17 @@ class TestPkgConfigConfValueSplitting:
         ``apptools_pkgconfig``'s classifier and is pinned in
         test_apptools_pkgconfig.py. This test is about list shape only.
         """
+        from compiletools.build_inputs import _merged_pkg_config_specs
+
+        del expected_source_attrs
         result = _parseargs_with_pkg_config_conf(ct_conf_line, axis_conf_line=axis_conf_line)
 
-        assert list(result.args.pkg_config) == expected, (
-            f"args.pkg_config was not one element per specification: "
-            f"got {result.args.pkg_config!r}, expected {expected!r}"
+        composed = _merged_pkg_config_specs(result.args)
+        assert composed == expected, (
+            f"composed pkg-config list was not one element per specification: "
+            f"got {composed!r}, expected {expected!r} "
+            f"(raw args.pkg_config={result.args.pkg_config!r})"
         )
-        for attr, attr_expected in expected_source_attrs.items():
-            assert list(getattr(result.args, attr)) == attr_expected, (
-                f"args.{attr} kept the raw conf shape instead of one element per "
-                f"specification: got {getattr(result.args, attr, '<unset>')!r}, "
-                f"expected {attr_expected!r}. The merged args.pkg_config is correct, "
-                f"so only an assertion on the accumulator itself catches this."
-            )
 
     def test_comma_separated_bare_conf_value_is_equivalent(self, pkgconfig_env):
         """``pkg-config = conditional, nested`` is the third of the three

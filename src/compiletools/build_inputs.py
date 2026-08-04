@@ -109,10 +109,12 @@ def _merged_pkg_config_specs(args):
     return base
 
 
-def _compute_pkg_config_path(args):
+def _compute_pkg_config_path(args, verbose=0):
     """The value _setup_pkg_config_overrides_locked would write: existing
     env merged with the conf/CLI prepend/append lists and the
-    auto-discovered cwd/gitroot ct.conf.d/pkgconfig candidates."""
+    auto-discovered cwd/gitroot ct.conf.d/pkgconfig candidates. Emits the
+    verbose >= 4 provenance lines (gather is the impure boundary; the
+    apply layer that performs the env write has no parser access)."""
     import os
 
     import compiletools.apptools_pkgconfig as pkgconf
@@ -133,13 +135,19 @@ def _compute_pkg_config_path(args):
             if repo_pkgconfig not in cwd_candidates:
                 gitroot_candidates.append(repo_pkgconfig)
 
-    return pkgconf.compute_pkg_config_path(
-        os.environ.get("PKG_CONFIG_PATH", ""),
-        getattr(args, "prepend_pkg_config_path", None),
-        getattr(args, "append_pkg_config_path", None),
+    existing = os.environ.get("PKG_CONFIG_PATH", "")
+    prepend_paths = getattr(args, "prepend_pkg_config_path", None)
+    append_paths = getattr(args, "append_pkg_config_path", None)
+    pkgconf.emit_pkg_config_path_provenance(
+        existing,
+        prepend_paths,
+        append_paths,
         cwd_candidates,
         gitroot_candidates,
+        verbose,
+        getattr(args, "_parser", None),
     )
+    return pkgconf.compute_pkg_config_path(existing, prepend_paths, append_paths, cwd_candidates, gitroot_candidates)
 
 
 def _query_pkg_config(packages, pkg_config_path, want_libs, verbose, context):
@@ -343,7 +351,7 @@ def gather_inputs(args, context) -> BuildInputs:
     else:
         verbose = getattr(args, "verbose", 0) - getattr(args, "quiet", 0)
 
-    pkg_config_path = _compute_pkg_config_path(args)
+    pkg_config_path = _compute_pkg_config_path(args, verbose)
     packages = _merged_pkg_config_specs(args)
     want_libs = "LDFLAGS" in registered
     pkg_config_results = _query_pkg_config(packages, pkg_config_path, want_libs, verbose, context)

@@ -2301,11 +2301,26 @@ def _stash_private_attrs(args, cap, context, argv):
 def parseargs(cap, argv, verbose=None, *, context):
     """argv must be the logical equivalent of sys.argv[1:]
 
+    Runs the pure build-state core: parse -> pre-gather namespace steps ->
+    ``gather_inputs`` (the impure boundary) -> ``compute_build_state``
+    (pure) -> ``apply_effects`` / ``populate_args`` -> compiler checks.
+    The legacy ``substitutions()`` pipeline is no longer called here; it
+    remains as the reference pipeline for the differential suite and the
+    transition-period ``resubstitute`` re-run path.
+
     Args:
-        context: BuildContext for per-build state. Stored as args._context
-            and used by substitution callbacks (e.g. to set up project-level
-            pkg-config overrides).
+        context: BuildContext for per-build state. Stored as args._context;
+            owns the PKG_CONFIG_PATH restore sentinel and the pkg-config
+            query memo.
     """
+    # Deferred imports: build_inputs/build_state/build_apply import from
+    # apptools (sentinels, helpers), so top-level imports here would cycle.
+    # Aliased so the local binding does not shadow the module-scope
+    # ``compiletools`` package name for the type checker.
+    from compiletools.build_apply import apply_effects, populate_args
+    from compiletools.build_inputs import gather_inputs
+    from compiletools.build_state import compute_build_state
+
     # Console entry points pass argv=None meaning "use sys.argv". Normalize
     # here so everything downstream (target-anchored conf discovery, the
     # _argv stash the --auto re-anchor reads) sees a real list -- argparse
@@ -2323,13 +2338,9 @@ def parseargs(cap, argv, verbose=None, *, context):
         )
 
     # Propagate --allow-fake-git into the git_utils module-level setting
-    # BEFORE any downstream find_git_root() call inside substitutions /
-    # anchor_root computation. The resolver
-    # ``resolve_cas_directory_arguments`` ALSO calls this (so that
-    # diagnostic-only tools bypassing parseargs still get the flag
-    # honoured), but we propagate it here as well so any other
-    # find_git_root() callsite reached before the resolver runs (inside
-    # _commonsubstitutions) sees the post-parse value. set_allow_fake_git
+    # BEFORE any downstream find_git_root() call -- gather_inputs calls
+    # find_git_root for gitroot/cas anchoring/include widening, and the
+    # target-conf walk below calls it even earlier. set_allow_fake_git
     # clears the @functools.cache when the value actually changes, so
     # earlier strict-mode lookups don't poison subsequent permissive ones.
     compiletools.git_utils.set_allow_fake_git(getattr(args, "allow_fake_git", False))
@@ -2353,7 +2364,7 @@ def parseargs(cap, argv, verbose=None, *, context):
     _strip_quotes(args)
 
     if verbose > 8:
-        print(f"Parsing commandline arguments has occured. Before substitutions args={args}")
+        print(f"Parsing commandline arguments has occured. Before build-state core args={args}")
 
     # Set CXX default if not specified and a functional compiler is available
     if hasattr(args, "CXX") and args.CXX is None:
@@ -2365,14 +2376,87 @@ def parseargs(cap, argv, verbose=None, *, context):
         else:
             raise RuntimeError("No functional C++ compiler detected. Please set CXX explicitly.")
 
-    if verbose > 8:
-        print(f"Parsing functioanl compiler has been set. Before substitutions args={args}")
+    # ---- Pre-gather namespace steps (see the swap inventory) -------------
+    # Each mutates args state that is out of BuildState's cell-naming scope
+    # (or is an impure diagnostic); gather_inputs reads the result.
 
-    substitutions(args, verbose)
+    # Apply --quiet to --verbose exactly once per namespace and latch it:
+    # gather honours _quiet_applied, so an unlatched decrement would
+    # double-subtract on every re-gather. args.verbose is what every
+    # downstream consumer reads; populate_args does not carry verbose.
+    if not getattr(args, "_quiet_applied", False):
+        args.verbose -= args.quiet
+        args._quiet_applied = True
 
-    # After substitutions canonicalise args.variant and finalise the raw
-    # compile flags, validate that the resolved compiler is actually
-    # usable for what the variant requested. Three checks:
+    # Variant-resolution provenance for the -vv trace. The stash's only
+    # production consumer is the print itself; resolve_variant splits and
+    # canonicalizes its own input, and the canonical dotted variant the
+    # build uses comes from stage_resolve_names via populate_args.
+    args._variant_resolution = compiletools.configutils.resolve_variant(
+        variant=args.variant, argv=getattr(args, "_argv", None)
+    )
+    if args.verbose >= 2 and args._variant_resolution is not None:
+        print(compiletools.configutils.format_variant_resolution(args._variant_resolution))
+
+    # CPP/LD *executable names*. BuildState deliberately does not model
+    # them (build_inputs docstring); the flag-slot fallback halves live in
+    # stage_defaults.
+    if hasattr(args, "CPP"):
+        args.CPP = unsupplied_replacement(args.CPP, args.CXX, args.verbose, "CPP")
+    if hasattr(args, "LD"):
+        args.LD = unsupplied_replacement(args.LD, args.CXX, args.verbose, "LD")
+
+    # ct-cake's hook lists: bare prebuild-script / postbuild-script conf
+    # keys are last-writer-wins; append-/prepend- accumulates. hasattr-
+    # guarded because only ct-cake registers these arguments.
+    if hasattr(args, "prebuild_scripts"):
+        _do_xxpend_list(args, "prebuild-script", destname="prebuild-scripts")
+        _note_shadowed_bare_hook_values(args, "prebuild-script", "prebuild_scripts")
+    if hasattr(args, "postbuild_scripts"):
+        _do_xxpend_list(args, "postbuild-script", destname="postbuild-scripts")
+        _note_shadowed_bare_hook_values(args, "postbuild-script", "postbuild_scripts")
+
+    # Cake used preprocess to mean both magic flag preprocess and headerdeps preprocess
+    if hasattr(args, "preprocess") and args.preprocess:
+        args.magic = "cpp"
+        args.headerdeps = "cpp"
+
+    # Anchor --test-xml-dir to gitroot so the value survives a `cd` into a
+    # subdirectory between parseargs and the build. Out of BuildState's
+    # scope (names no CAS cell); re-run-safe via the isabs gate.
+    test_xml_dir = getattr(args, "test_xml_dir", None)
+    if test_xml_dir and not os.path.isabs(test_xml_dir):
+        git_root = compiletools.git_utils.find_git_root()
+        if git_root:
+            args.test_xml_dir = os.path.join(git_root, test_xml_dir)
+        else:
+            args.test_xml_dir = os.path.abspath(test_xml_dir)
+
+    # Transition-period seed for the legacy substitutions()-based
+    # resubstitute (cake --auto / //#GIT= re-runs, compilation_database's
+    # refresh): snapshot the post-parse raw slots so a re-run rebuilds from
+    # the same base the old pipeline would have seeded. Removed when
+    # resubstitute becomes re-gather + recompute (swap Task 9).
+    if getattr(args, "_substitution_seed", None) is None:
+        args._substitution_seed = {
+            slot: getattr(args, slot) for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS") if hasattr(args, slot)
+        }
+
+    # ---- The functional build-state core ---------------------------------
+    # gather_inputs owns every ambient read (env, filesystem, git,
+    # pkg-config subprocesses); compute_build_state is a pure function of
+    # the result; apply_effects executes the effects (PKG_CONFIG_PATH
+    # SetEnv, wild-B symlink dir); populate_args writes the legacy args
+    # surface (raw slot strings, *_tokens, args.flags, variant/bindir/
+    # cas-*dir names, the drift snapshot).
+    inputs = gather_inputs(args, context)
+    state = compute_build_state(inputs)
+    apply_effects(state, context)
+    populate_args(args, state)
+
+    # With args.variant canonicalised and the raw compile flags final,
+    # validate that the resolved compiler is actually usable for what the
+    # variant requested. Three checks:
     #   1. Binary on PATH? — catches "user picked --variant=gcc.* but
     #      gcc isn't installed" (would otherwise be a generic compile
     #      failure with no pointer at the variant chain).
@@ -2385,25 +2469,14 @@ def parseargs(cap, argv, verbose=None, *, context):
     #      from the compiler).
     # All three checks emit a clear diagnostic naming the variant and
     # suggesting either a different variant or a toolchain upgrade.
-    _check_resolved_compiler_available(args)
-    _check_wild_linker_usable(args)
-    _check_compiler_supports_requested_standard(args)
-
-    # Populate tokenized flag lists alongside the raw strings. Consumers
-    # that only need tokens (e.g. build_backend compile commands,
-    # magicflags._parse) can use these directly without re-tokenizing on
-    # every call. Tokens are populated AFTER all parseargs mutations
-    # (env vars, INCLUDE injection, project version macros, pkg-config,
-    # CPP/CXX unification) so they reflect the final raw-string state.
     #
     # WARNING: do not mutate args.{CPPFLAGS,CFLAGS,CXXFLAGS,LDFLAGS}
     # after parseargs returns. args.{*}_tokens and args.flags are
-    # populated once here and will silently drift from the raw strings
-    # if those strings are modified later. All known mutation sites are
-    # in this function (substitutions, _add_include_paths_to_flags,
-    # project version macros, pkg-config, CPP/CXX unification) and run
-    # BEFORE this point.
-    _finalize_flag_state(args)
+    # populated once (by populate_args above) and will silently drift
+    # from the raw strings if those strings are modified later.
+    _check_resolved_compiler_available(args)
+    _check_wild_linker_usable(args)
+    _check_compiler_supports_requested_standard(args)
 
     if verbose > 8:
         print("parseargs has completed.  Returning args")
