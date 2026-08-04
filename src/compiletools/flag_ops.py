@@ -195,3 +195,12 @@ def dedup_tokens(tokens) -> tuple[str, ...]:
     import compiletools.utils
 
     return tuple(compiletools.utils.deduplicate_compiler_flags(list(tokens)))
+
+
+_PREFIX_MAP_STEMS = ("-ffile-prefix-map=", "-fdebug-prefix-map=", "-fmacro-prefix-map=", "-fcanon-prefix-map=")
+
+
+def has_prefix_map_token(tokens) -> bool:
+    """True when any token is a *-prefix-map= flag (any of the four
+    gcc/clang families)."""
+    return any(t.startswith(_PREFIX_MAP_STEMS) for t in tokens)

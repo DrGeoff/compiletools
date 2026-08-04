@@ -7,7 +7,7 @@ import dataclasses
 from dataclasses import dataclass
 
 from compiletools.build_inputs import BuildInputs
-from compiletools.flag_ops import dedup_include_paths_to_append
+from compiletools.flag_ops import dedup_include_paths_to_append, dedup_tokens, has_prefix_map_token
 
 
 @dataclass(frozen=True)
@@ -94,3 +94,27 @@ def stage_pkg_config_flags(inputs: BuildInputs, ts: TokenState) -> TokenState:
         if want_libs and result.libs:
             ld += result.libs
     return TokenState(cpp=cpp, c=c, cxx=cxx, ld=ld)
+
+
+def stage_unify(inputs: BuildInputs, ts: TokenState) -> TokenState:
+    """CPPFLAGS/CXXFLAGS unification (skipped under --separate-flags-CPP-CXX)."""
+    if inputs.separate_flags:
+        return ts
+    unified = dedup_tokens(ts.cpp + ts.cxx)
+    if unified == ts.cpp == ts.cxx:
+        return ts
+    return dataclasses.replace(ts, cpp=unified, cxx=unified)
+
+
+def stage_prefix_map(inputs: BuildInputs, ts: TokenState) -> TokenState:
+    """Inject -ffile-prefix-map=<gitroot>=<target> into cxx/c, per-slot
+    skipped when the user already set any prefix-map family flag."""
+    if not inputs.gitroot:
+        return ts
+    flag = f"-ffile-prefix-map={inputs.gitroot}={inputs.prefix_map_target}"
+    updates = {}
+    for slot in ("cxx", "c"):
+        current = getattr(ts, slot)
+        if not has_prefix_map_token(current):
+            updates[slot] = current + (flag,)
+    return dataclasses.replace(ts, **updates) if updates else ts

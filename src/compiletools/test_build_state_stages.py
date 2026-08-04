@@ -10,7 +10,9 @@ from compiletools.build_state import (
     stage_defaults,
     stage_include_paths,
     stage_pkg_config_flags,
+    stage_prefix_map,
     stage_project_macros,
+    stage_unify,
     stage_xxpend,
 )
 
@@ -127,3 +129,36 @@ class TestStagePkgConfigFlags:
         )
         ts = stage_pkg_config_flags(inputs, TokenState())
         assert ts.ld == ("-la", "-lb")
+
+
+class TestStageUnify:
+    def test_unifies_cpp_and_cxx_with_dedup(self):
+        ts = stage_unify(_inputs(), TokenState(cpp=("-DX", "-O2"), cxx=("-O2", "-Wall")))
+        assert ts.cpp == ts.cxx == ("-DX", "-O2", "-Wall")
+
+    def test_separate_mode_is_identity(self):
+        ts_in = TokenState(cpp=("-DX",), cxx=("-O2",))
+        assert stage_unify(_inputs(separate_flags=True), ts_in) is ts_in
+
+    def test_idempotent(self):
+        once = stage_unify(_inputs(), TokenState(cpp=("-DX",), cxx=("-O2",)))
+        assert stage_unify(_inputs(), once) == once
+
+
+class TestStagePrefixMap:
+    def test_injects_into_cxx_and_c_when_gitroot_known(self):
+        inputs = _inputs(gitroot="/repo")
+        ts = stage_prefix_map(inputs, TokenState(cxx=("-O2",), c=("-O1",)))
+        assert ts.cxx == ("-O2", "-ffile-prefix-map=/repo=.")
+        assert ts.c == ("-O1", "-ffile-prefix-map=/repo=.")
+        assert ts.cpp == ()
+
+    def test_no_gitroot_is_identity(self):
+        ts_in = TokenState(cxx=("-O2",))
+        assert stage_prefix_map(_inputs(), ts_in) is ts_in
+
+    def test_user_prefix_map_skips_that_slot_only(self):
+        inputs = _inputs(gitroot="/repo")
+        ts = stage_prefix_map(inputs, TokenState(cxx=("-fdebug-prefix-map=/a=b",), c=()))
+        assert ts.cxx == ("-fdebug-prefix-map=/a=b",)
+        assert ts.c == ("-ffile-prefix-map=/repo=.",)
