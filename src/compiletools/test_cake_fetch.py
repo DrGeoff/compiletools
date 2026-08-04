@@ -90,8 +90,9 @@ def _build_cake_args(main_repo: str, extra_argv: list[str], context: BuildContex
     argv = ["--config", config, "--exemarkers=main", "--testmarkers=unittest.hpp", *extra_argv]
     cap = compiletools.apptools.create_parser("test-cake-fetch", argv=argv)
     compiletools.cake.Cake.add_arguments(cap)
-    compiletools.cake.Cake.registercallback()
-    return compiletools.apptools.parseargs(cap, argv, context=context)
+    args = compiletools.apptools.parseargs(cap, argv, context=context)
+    compiletools.cake.Cake._hide_makefilename(args)
+    return args
 
 
 @requires_functional_compiler
@@ -328,9 +329,8 @@ def test_main_fetcherror_returns_nonzero_and_writes_stderr(monkeypatch, capsys) 
         try:
             rc = compiletools.cake.main(argv)
         finally:
-            # main() calls Cake.registercallback(), which appends a callback to
-            # apptools' module-global _substitutioncallbacks list. Reset it so
-            # the leaked callback can't fire against a later test's bare args.
+            # Wipe parser/config caches main() populated so a later test's
+            # bare parse doesn't inherit this run's state.
             uth.reset()
         assert rc == 1
 

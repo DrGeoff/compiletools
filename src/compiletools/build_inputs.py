@@ -349,9 +349,19 @@ def gather_inputs(args, context) -> BuildInputs:
     pkg_config_results = _query_pkg_config(packages, pkg_config_path, want_libs, verbose, context)
 
     project_version = _project_macro_value(args, "projectversion", "projectversioncmd", verbose)
+    project_name = _project_macro_value(args, "projectname", "projectnamecmd", verbose)
+    # Deprecation warning fires on the raw opt-in (pre-D1-suppression),
+    # matching the old pipeline's trigger point in _set_project_version /
+    # _set_project_name. Context-level once-latch: gather never mutates args.
+    if (project_version is not None or project_name is not None) and not getattr(
+        context, "_project_macro_deprecation_warned", False
+    ):
+        import sys
+
+        sys.stderr.write(apptools._PROJECT_MACRO_DEPRECATION_MESSAGE)
+        context._project_macro_deprecation_warned = True
     if project_version is not None and _flag_name_already_present(args, "-DCT_PROJECT_VERSION"):
         project_version = None
-    project_name = _project_macro_value(args, "projectname", "projectnamecmd", verbose)
     if project_name is not None and _flag_name_already_present(args, "-DCT_PROJECT_NAME"):
         project_name = None
 

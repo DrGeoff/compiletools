@@ -2112,11 +2112,21 @@ def resetcallbacks():
 
 
 def registercallback(callback):
-    """Use this to register a function to be called back during the
-    substitutions call (usually during parseargs).
-    The callback function will later be given "args" as its argument.
+    """DEPRECATED: the substitution-callback registry is retired.
+
+    Callers that need to post-process the parsed namespace must call
+    their function directly AFTER ``parseargs`` returns (see
+    ``cake.main``'s direct ``Cake._hide_makefilename(args)`` call for
+    the pattern). A process-global registry replayed every registered
+    callback on every later ``parseargs`` in the same process — the
+    direct call scopes the post-processing to the namespace that wants
+    it.
     """
-    _substitutioncallbacks.append(callback)
+    raise RuntimeError(
+        "apptools.registercallback is retired: call your post-processing "
+        "function directly on the namespace parseargs returns (see "
+        "cake.main's Cake._hide_makefilename(args) call for the pattern)."
+    )
 
 
 def substitutions(args, verbose=None):

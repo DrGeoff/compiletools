@@ -53,16 +53,16 @@ class Cake:
     @staticmethod
     def _hide_makefilename(args):
         """Change the args.makefilename to hide the Makefile in the executable_dir()
-        This is a callback function for the compiletools.apptools.substitutions.
-        Only applies when using the make backend.
+        Called directly on the parsed namespace after every parseargs that
+        produces a cake namespace (cake.main, and the --auto re-anchor path
+        which returns a FRESH namespace). Idempotent: the bindir-substring
+        guard makes a second application a no-op. Only applies when using
+        the make backend.
         """
         if getattr(args, "backend", "make") != "make":
             return
-        # The callback registry in apptools is process-global, so once
-        # cake.main() has run, every later parseargs in the same process
-        # (e.g. another tool's, or a test's minimal parser) replays this
-        # callback. Namespaces that never registered bindir/makefilename
-        # aren't cake parses — leave them untouched.
+        # Namespaces that never registered bindir/makefilename aren't cake
+        # parses — leave them untouched.
         if not hasattr(args, "bindir") or not hasattr(args, "makefilename"):
             return
         # Namer.executable_dir() just returns args.bindir, so read it directly
@@ -73,13 +73,6 @@ class Cake:
             if args.verbose > 4:
                 print(f"Makefile location is being altered.  New location is {movedmakefile}")
             args.makefilename = movedmakefile
-
-    @staticmethod
-    def registercallback():
-        """Must be called before object creation so that the args parse
-        correctly
-        """
-        compiletools.apptools.registercallback(Cake._hide_makefilename)
 
     def _fetch_and_register_externals(self):
         """Auto-clone //#GIT= externals and register their include dirs.
@@ -227,6 +220,11 @@ class Cake:
             # discovered subprojects' conf layers (including their
             # exemarkers/testmarkers/disable-tests) shape the final set.
             self.args = compiletools.findtargets.discover_targets_and_reanchor(self.args, self.context)
+            # The re-anchor path may return a FRESH namespace from a new
+            # parseargs run; re-apply the makefile relocation to it (direct
+            # post-parseargs call — the substitution-callback registry is
+            # retired). Idempotent on the unchanged-namespace path.
+            Cake._hide_makefilename(self.args)
             recreateobjs = True
 
         # Auto-clone any //#GIT= externals reachable from the now-final target
@@ -1154,7 +1152,6 @@ def main(argv=None):
         "A convenience tool to aid migration from cake to the ct-* tools", argv=argv
     )
     Cake.add_arguments(cap)
-    Cake.registercallback()
 
     context = BuildContext()
     # The manager must span parseargs (which applies the PKG_CONFIG_PATH
@@ -1169,6 +1166,9 @@ def main(argv=None):
         # verbose >= 2 -- both propagate through main() untouched, same as
         # the validate_otel_timing_pair SystemExit below.
         args = compiletools.apptools.parseargs(cap, argv, context=context)
+        # Direct post-parseargs call replacing the retired substitution-
+        # callback registration: relocate the Makefile into the bindir.
+        Cake._hide_makefilename(args)
         compiletools.apptools.validate_otel_timing_pair(args)
 
         if not any([args.filename, args.static, args.dynamic, args.tests, args.auto]):

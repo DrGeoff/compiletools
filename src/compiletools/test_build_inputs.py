@@ -253,6 +253,28 @@ class TestProjectMacros:
             assert inputs.project_version is None
             assert inputs.project_name is None
 
+    def test_deprecation_warning_fires_once_per_context(self, capsys):
+        """The project-macro deprecation warning is re-homed to gather
+        (inventory row 14): fires on the raw opt-in even when D1
+        suppression later nulls the value, and the context latch makes a
+        second gather silent."""
+        with uth.TempDirContext():
+            context = BuildContext()
+            args = _minimal_args(
+                projectversion="1.2.3",
+                CXXFLAGS='-fPIC -DCT_PROJECT_VERSION="9.9"',
+            )
+            inputs = gather_inputs(args, context)
+            assert inputs.project_version is None, "Precondition: D1 suppression must fire."
+            assert "DEPRECATED" in capsys.readouterr().err
+            gather_inputs(args, context)
+            assert "DEPRECATED" not in capsys.readouterr().err
+
+    def test_no_deprecation_warning_without_opt_in(self, capsys):
+        with uth.TempDirContext():
+            gather_inputs(_minimal_args(), BuildContext())
+            assert "DEPRECATED" not in capsys.readouterr().err
+
 
 class TestIncludePathsGathering:
     """include_paths must model the two old-pipeline INCLUDE-widening

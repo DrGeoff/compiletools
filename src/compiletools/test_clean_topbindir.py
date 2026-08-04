@@ -41,8 +41,8 @@ def _make_cake(config_name, filenames, extra_argv=()):
     uth.reset()
     cap = compiletools.apptools.create_parser("test clean topbindir", argv=argv)
     compiletools.cake.Cake.add_arguments(cap)
-    compiletools.cake.Cake.registercallback()
     args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
+    compiletools.cake.Cake._hide_makefilename(args)
     args.output = None
     args.filename = list(filenames)
     args.static = None

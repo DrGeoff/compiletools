@@ -856,8 +856,9 @@ def _parse_cake_args(cwd, argv):
         with uth.ParserContext():
             cap = compiletools.apptools.create_parser("subproject conf discovery test", argv=argv)
             compiletools.cake.Cake.add_arguments(cap)
-            compiletools.cake.Cake.registercallback()
-            return compiletools.apptools.parseargs(cap, argv, context=BuildContext())
+            args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
+            compiletools.cake.Cake._hide_makefilename(args)
+            return args
 
 
 class TestParseargsTargetAnchoring:
@@ -1161,7 +1162,6 @@ class TestParseargsTargetAnchoring:
             with uth.ParserContext():
                 cap = compiletools.apptools.create_parser("subproject conf discovery test", argv=argv)
                 compiletools.cake.Cake.add_arguments(cap)
-                compiletools.cake.Cake.registercallback()
                 with pytest.raises(SystemExit):
                     compiletools.apptools.parseargs(cap, argv, context=BuildContext())
         assert getattr(cap, "_ct_loaded_target_layers", []) == []

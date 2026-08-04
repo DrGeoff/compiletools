@@ -605,8 +605,9 @@ class TestCake(BaseCompileToolsTestCase):
         uth.reset()
         cap = compiletools.apptools.create_parser("test cake", argv=argv)
         compiletools.cake.Cake.add_arguments(cap)
-        compiletools.cake.Cake.registercallback()
-        return compiletools.apptools.parseargs(cap, argv, context=BuildContext())
+        args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
+        compiletools.cake.Cake._hide_makefilename(args)
+        return args
 
     def test_copyexes_with_output_filename(self):
         """Test _copyexes when args.output is set with a filename target."""
@@ -869,8 +870,8 @@ class TestCake(BaseCompileToolsTestCase):
             ]
             cap = compiletools.apptools.create_parser("test", argv=argv)
             compiletools.cake.Cake.add_arguments(cap)
-            compiletools.cake.Cake.registercallback()
             args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
+            compiletools.cake.Cake._hide_makefilename(args)
 
             cake = compiletools.cake.Cake(args)
             with patch.object(cake, "_call_backend"):
@@ -895,8 +896,8 @@ class TestCake(BaseCompileToolsTestCase):
             ]
             cap = compiletools.apptools.create_parser("test", argv=argv)
             compiletools.cake.Cake.add_arguments(cap)
-            compiletools.cake.Cake.registercallback()
             args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
+            compiletools.cake.Cake._hide_makefilename(args)
 
             cake = compiletools.cake.Cake(args)
             with patch.object(cake, "_call_backend"):

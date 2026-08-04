@@ -288,8 +288,9 @@ def _parse_cake_args(repo_root, argv):
         with uth.ParserContext():
             cap = compiletools.apptools.create_parser("hook layering test", argv=argv)
             compiletools.cake.Cake.add_arguments(cap)
-            compiletools.cake.Cake.registercallback()
-            return compiletools.apptools.parseargs(cap, argv, context=BuildContext())
+            args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
+            compiletools.cake.Cake._hide_makefilename(args)
+            return args
 
 
 class TestHookConfLayering:

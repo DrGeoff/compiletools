@@ -27,10 +27,10 @@ from compiletools.testhelper import requires_functional_compiler
 def _isolate_callbacks():
     """Reset apptools' module-global substitution callbacks around each test.
 
-    ct-cake's ``registercallback`` (exercised by test_cake_fetch.py) appends to
-    apptools' module-global ``_substitutioncallbacks``. A leaked callback would
-    otherwise fire during our bare-parser ``parseargs`` and reach for cake-only
-    attributes (``args.bindir``). Resetting on both sides keeps this file
+    Some tests (e.g. test_substitutions_idempotency.py) append probes to
+    apptools' module-global ``_substitutioncallbacks``. A leaked callback
+    would otherwise fire during our bare-parser ``parseargs`` and reach for
+    attributes it never registered. Resetting on both sides keeps this file
     order-independent under xdist.
     """
     uth.reset()

@@ -346,21 +346,24 @@ class TestResubstitute:
 
         counter = itertools.count(1)
 
-        def nonidempotent_callback(cb_args):
+        def nonidempotent_callback(args):
             # A per-pass-unique token: seed restore cannot make this
             # converge, so it is exactly the drift class resubstitute
             # must reject.
             token = f"-DCT_TEST_RERUN{next(counter)}"
             for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS"):
-                current = getattr(cb_args, slot, "") or ""
-                setattr(cb_args, slot, f"{current} {token}".strip())
+                current = getattr(args, slot, "") or ""
+                setattr(args, slot, f"{current} {token}".strip())
 
         with uth.TempDirContext():
             args = _parseargs_in_temp_repo()
-            # Registered AFTER parseargs: ParserContext (inside the helper)
+            # Appended AFTER parseargs: ParserContext (inside the helper)
             # wipes the callback registry on entry and exit, and the re-run
-            # happens outside any ParserContext anyway.
-            apptools.registercallback(nonidempotent_callback)
+            # happens outside any ParserContext anyway. Direct registry
+            # append: apptools.registercallback is a deprecation error now,
+            # and this hook exists purely to inject drift into the legacy
+            # substitutions() re-run under test.
+            apptools._substitutioncallbacks.append(nonidempotent_callback)
             try:
                 with pytest.raises(RuntimeError, match="CT_TEST_RERUN"):
                     apptools.resubstitute(args)
@@ -413,12 +416,12 @@ class TestThreeSlotCapRerun:
 
             seen = {}
 
-            def shape_probe(cb_args):
+            def shape_probe(args):
                 # Runs inside pass 2, after _commonsubstitutions but before
                 # _finalize_flag_state re-materializes the slot.
-                seen["ldflags_present"] = hasattr(cb_args, "LDFLAGS")
+                seen["ldflags_present"] = hasattr(args, "LDFLAGS")
 
-            apptools.registercallback(shape_probe)
+            apptools._substitutioncallbacks.append(shape_probe)
             try:
                 apptools.resubstitute(args)
             finally:
@@ -439,13 +442,14 @@ def _register_drift_forcing_callback():
     and stay live across both of its substitutions() passes."""
     counter = itertools.count(1)
 
-    def nonidempotent_callback(cb_args):
+    def nonidempotent_callback(args):
         token = f"-DCT_TEST_CDB_RERUN{next(counter)}"
         for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS"):
-            current = getattr(cb_args, slot, "") or ""
-            setattr(cb_args, slot, f"{current} {token}".strip())
+            current = getattr(args, slot, "") or ""
+            setattr(args, slot, f"{current} {token}".strip())
 
-    apptools.registercallback(nonidempotent_callback)
+    # Direct registry append: registercallback is a deprecation error now.
+    apptools._substitutioncallbacks.append(nonidempotent_callback)
 
 
 class TestCdbFatalRendering:

@@ -731,9 +731,15 @@ class TestClearCache:
 
 
 class TestCallbackSystem:
-    def test_register_and_reset(self):
-        called = []
-        registercallback(lambda args: called.append(True))
+    def test_registercallback_is_a_deprecation_error(self):
+        # Task 8 swap: the substitution-callback registry is retired;
+        # registering raises and the registry stays untouched.
+        before = list(apptools._substitutioncallbacks)
+        with pytest.raises(RuntimeError, match="retired"):
+            registercallback(lambda args: None)
+        assert apptools._substitutioncallbacks == before
+
+    def test_reset_restores_default_registry(self):
         resetcallbacks()
         # After reset, only _commonsubstitutions should remain. Read via the
         # module attribute since resetcallbacks() rebinds it; a module-level
@@ -743,7 +749,6 @@ class TestCallbackSystem:
     def test_substitutions_calls_callbacks(self):
         resetcallbacks()
         called = []
-        registercallback(lambda args: called.append(True))
         args = SimpleNamespace(verbose=0)
         # _commonsubstitutions will fail without full args, so just test
         # with our own callback only
