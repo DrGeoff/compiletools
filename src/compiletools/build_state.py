@@ -1,5 +1,9 @@
 """Pure build-state computation. MUST NOT import os, sys, or subprocess
-(import-linter contract). Stages are pure functions over TokenState."""
+(import-linter contract). Stages are pure functions over TokenState.
+
+posixpath is imported for its pure string functions (normpath/join) only;
+stat-calling posixpath functions (exists/islink/getsize) are forbidden by
+the same purity discipline even though the linter can't see them."""
 
 from __future__ import annotations
 
@@ -142,7 +146,7 @@ class EnsureLinkerSymlinkDir:
 Effect = SetEnv | EnsureLinkerSymlinkDir
 
 
-def stage_wild_linker(inputs: BuildInputs, ts: TokenState):
+def stage_wild_linker(inputs: BuildInputs, ts: TokenState) -> tuple[TokenState, tuple[Effect, ...]]:
     """Wild-linker selection decisions as pure data: the clang
     -fuse-ld=wild -> --ld-path=wild rewrite, and the wild-B -B token plus
     a symlink-dir effect for the apply layer to materialize."""

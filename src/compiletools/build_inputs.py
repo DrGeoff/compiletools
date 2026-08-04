@@ -228,8 +228,8 @@ def _flag_name_already_present(args, flag_name):
     Note: this any()-across-slots scope is BROADER than the originals'
     per-slot check -- a macro present in only one of CPPFLAGS/CFLAGS/
     CXXFLAGS suppresses injection into all three, not just the slot it
-    was found in. Flagged for the Task 14 differential harness to confirm
-    whether any real conf/CLI combination makes this observable.
+    was found in. Blessed divergence D1 in
+    docs/superpowers/specs/2026-08-04-functional-build-state-design.md.
     """
     return any(flag_name in (getattr(args, slot, None) or "") for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS"))
 

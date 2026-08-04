@@ -88,3 +88,4 @@ def populate_args(args, state: BuildState) -> None:
     args._flag_string_snapshot = tuple(
         (slot, strings[slot]) for slot in _SLOT_TO_TOKENS if slot in state.registered_slots
     )
+    args._registered_flag_slots = tuple(slot for slot in _SLOT_TO_TOKENS if slot in state.registered_slots)

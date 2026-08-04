@@ -119,3 +119,22 @@ class TestPopulateArgs:
         # downstream consumers even though only CXXFLAGS is registered.
         assert state.cppflags == args.CPPFLAGS
         assert list(args.CPPFLAGS_tokens) == list(state.tokens.cpp)
+
+    def test_registered_flag_slots_written_in_canonical_order(self):
+        state = _state(registered_slots=frozenset({"CPPFLAGS", "CFLAGS", "CXXFLAGS"}))
+        args = argparse.Namespace(verbose=0)
+        populate_args(args, state)
+        assert args._registered_flag_slots == ("CPPFLAGS", "CFLAGS", "CXXFLAGS")
+
+    def test_round_trip_through_gather_keeps_ldflags_unregistered(self):
+        """want_libs loop closure: a populate_args'd namespace fed back to
+        gather_inputs must report LDFLAGS unregistered even though
+        populate_args materialized args.LDFLAGS for downstream consumers."""
+        from compiletools.build_inputs import gather_inputs
+
+        state = _state(registered_slots=frozenset({"CPPFLAGS", "CFLAGS", "CXXFLAGS"}))
+        args = argparse.Namespace(verbose=0)
+        populate_args(args, state)
+        assert hasattr(args, "LDFLAGS")
+        inputs = gather_inputs(args, BuildContext())
+        assert "LDFLAGS" not in inputs.registered_slots

@@ -197,6 +197,8 @@ def dedup_tokens(tokens) -> tuple[str, ...]:
     return tuple(compiletools.utils.deduplicate_compiler_flags(list(tokens)))
 
 
+# Must stay identical to apptools_canonicalize._PREFIX_MAP_FLAG_PREFIXES
+# (drift guard: test_flag_ops.test_prefix_map_stems_match_apptools_canonicalize_prefixes).
 _PREFIX_MAP_STEMS = ("-ffile-prefix-map=", "-fdebug-prefix-map=", "-fmacro-prefix-map=", "-fcanon-prefix-map=")
 
 

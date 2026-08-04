@@ -6,7 +6,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from compiletools.build_inputs import BuildInputs, PkgConfigResult
-from compiletools.build_state import compute_build_state
+from compiletools.build_state import compute_build_state, stage_resolve_names
 from compiletools.flag_ops import dedup_tokens
 
 ALL_SLOTS = frozenset({"CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS"})
@@ -90,7 +90,64 @@ def test_unified_mode_ends_with_cpp_equal_cxx(inputs):
 
 @settings(max_examples=100)
 @given(st.booleans().flatmap(_inputs_strategy))
-def test_pkg_results_order_shuffle_of_dict_iteration_is_irrelevant(inputs):
-    """Same tuple, same result -- guards against any hidden set/dict
-    iteration inside compute."""
-    assert compute_build_state(inputs) == compute_build_state(dataclasses.replace(inputs))
+def test_equal_inputs_from_distinct_objects_are_equal(inputs):
+    """Two structurally-equal BuildInputs built from independent containers
+    (fresh tuples/frozensets, no shared identity with the originals) compute
+    equal states -- pins "no identity-dependent behavior" in compute.
+    pkg_config_results ORDER is deliberately preserved: declaration order is
+    contractual (Task 6), so no permutation-insensitivity is claimed here."""
+    rebuilt = BuildInputs(
+        registered_slots=frozenset(list(inputs.registered_slots)),
+        cppflags=None if inputs.cppflags is None else tuple(list(inputs.cppflags)),
+        cflags=tuple(list(inputs.cflags)),
+        cxxflags=tuple(list(inputs.cxxflags)),
+        ldflags=None if inputs.ldflags is None else tuple(list(inputs.ldflags)),
+        include_paths=tuple(list(inputs.include_paths)),
+        pkg_config_results=tuple(
+            (str(pkg), PkgConfigResult(cflags=tuple(list(r.cflags)), libs=tuple(list(r.libs))))
+            for pkg, r in inputs.pkg_config_results
+        ),
+        separate_flags=inputs.separate_flags,
+        gitroot=str(inputs.gitroot),
+        variant_raw=str(inputs.variant_raw),
+        canonical_order=tuple(list(inputs.canonical_order)),
+    )
+    assert rebuilt is not inputs
+    assert rebuilt == inputs
+    assert compute_build_state(rebuilt) == compute_build_state(inputs)
+
+
+_variant_alphabet = ["gcc", "clang", "debug", "release", "asan", "extras"]
+
+
+@settings(max_examples=200)
+@given(
+    tokens=st.lists(st.sampled_from(_variant_alphabet), min_size=1, max_size=6),
+    canonical_order=st.permutations(_variant_alphabet).map(lambda p: tuple(p[:4])),
+)
+def test_stage_resolve_names_is_a_fixed_point(tokens, canonical_order):
+    """Canonicalization is a fixed point: feeding stage_resolve_names its
+    own resolved names back as raw inputs reproduces them exactly (the
+    NON_CANONICAL trim-cache class cannot be minted here)."""
+    first = stage_resolve_names(
+        BuildInputs(
+            registered_slots=ALL_SLOTS,
+            variant_raw=".".join(tokens),
+            canonical_order=canonical_order,
+            gitroot="/repo",
+        )
+    )
+    second = stage_resolve_names(
+        BuildInputs(
+            registered_slots=ALL_SLOTS,
+            variant_raw=first.variant,
+            canonical_order=canonical_order,
+            gitroot="/repo",
+            bindir_raw=first.bindir,
+            cas_objdir_raw=first.cas_objdir,
+            cas_pchdir_raw=first.cas_pchdir,
+            cas_pcmdir_raw=first.cas_pcmdir,
+            cas_exedir_raw=first.cas_exedir,
+        )
+    )
+    assert second == first

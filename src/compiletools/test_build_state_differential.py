@@ -158,7 +158,7 @@ class TestBlessedDivergences:
                 ("cxx", args.CXXFLAGS_tokens),
                 ("c", args.CFLAGS_tokens),
             ):
-                assert set(old) == set(getattr(state.tokens, slot)), slot
+                assert sorted(old) == sorted(getattr(state.tokens, slot)), slot
 
     def test_xxpend_dedup_is_token_exact_not_substring(self):
         """Blessed divergence D2: old _do_xxpend suppressed an appended

@@ -63,6 +63,9 @@ _GITROOT_SENTINEL = "<GITROOT>"
 # Trailing ``=`` is part of the prefix to keep the substring search
 # tight — a bare ``-ffile-prefix-map`` (no equals, malformed) is not
 # a recognized prefix-map flag.
+#
+# Must stay identical to flag_ops._PREFIX_MAP_STEMS (drift guard:
+# test_flag_ops.test_prefix_map_stems_match_apptools_canonicalize_prefixes).
 _PREFIX_MAP_FLAG_PREFIXES: tuple[str, ...] = (
     "-ffile-prefix-map=",
     "-fdebug-prefix-map=",
