@@ -314,7 +314,9 @@ class TestDifferentialConfShapes:
             # subdir), the wrong tier for a gitroot-level project conf.
             args, state, _raw = _old_and_new(("--cas-objdir=relcas/obj",), confdir=gitroot)
             assert args.cas_objdir == state.names.cas_objdir
-            assert args.cas_objdir.startswith(gitroot), (
-                f"Precondition: anchoring must have fired (got {args.cas_objdir!r}); "
-                f"cwd==gitroot would make this vacuous."
+            assert not args.cas_objdir.startswith(subdir), (
+                f"Precondition failed: anchoring did not fire — cas_objdir {args.cas_objdir!r} resolved under the subdir cwd."
+            )
+            assert args.cas_objdir.startswith(os.path.join(gitroot, "relcas")), (
+                f"Precondition failed: expected gitroot-anchored relcas path, got {args.cas_objdir!r}."
             )
