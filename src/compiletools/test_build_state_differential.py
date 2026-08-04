@@ -57,26 +57,33 @@ def _old_and_new(extra_argv=(), register_link_args=True, *, explicit_config=True
     uth.create_temp_ct_conf(confdir)
 
     def _run(argv):
-        cap = apptools.create_parser("differential", argv=argv)
-        compiletools.hunter.add_arguments(cap)
-        apptools.add_output_directory_arguments(cap, variant="unsupplied")
-        apptools.add_target_arguments_ex(cap)
+        cap2 = apptools.create_parser("differential2", argv=argv)
+        compiletools.hunter.add_arguments(cap2)
+        apptools.add_output_directory_arguments(cap2, variant="unsupplied")
+        apptools.add_target_arguments_ex(cap2)
         if register_link_args:
-            apptools.add_link_arguments(cap)
+            apptools.add_link_arguments(cap2)
         with uth.ParserContext():
             context = BuildContext()
-            args = apptools.parseargs(cap, list(argv), context=context)
-            # Re-parse for the new core's input (parseargs mutated args).
-            cap2 = apptools.create_parser("differential2", argv=argv)
-            compiletools.hunter.add_arguments(cap2)
-            apptools.add_output_directory_arguments(cap2, variant="unsupplied")
-            apptools.add_target_arguments_ex(cap2)
-            if register_link_args:
-                apptools.add_link_arguments(cap2)
+            # Parse the new core's input and gather+compute FIRST, from a
+            # pristine environment -- before the old pipeline's parseargs
+            # (below) mutates PKG_CONFIG_PATH. Reading the environment
+            # only after that mutation would let gather's PKG_CONFIG_PATH
+            # read accidentally depend on the old merge already having run
+            # (and being a fixed point under re-application), instead of
+            # genuinely reproducing it from scratch.
             raw = cap2.parse_args(args=list(argv))
             apptools._flatten_variables(raw)
             apptools._strip_quotes(raw)
             state = compute_build_state(gather_inputs(raw, context))
+
+            cap = apptools.create_parser("differential", argv=argv)
+            compiletools.hunter.add_arguments(cap)
+            apptools.add_output_directory_arguments(cap, variant="unsupplied")
+            apptools.add_target_arguments_ex(cap)
+            if register_link_args:
+                apptools.add_link_arguments(cap)
+            args = apptools.parseargs(cap, list(argv), context=context)
             return args, state, raw
 
     if explicit_config:
@@ -319,4 +326,15 @@ class TestDifferentialConfShapes:
             )
             assert args.cas_objdir.startswith(os.path.join(gitroot, "relcas")), (
                 f"Precondition failed: expected gitroot-anchored relcas path, got {args.cas_objdir!r}."
+            )
+
+    def test_pkg_config_path_value_parity(self, pkgconfig_env):
+        """The value the new core would SetEnv must equal what the old
+        pipeline actually wrote to the environment."""
+        with uth.TempDirContext():
+            args, state, _raw = _old_and_new(("--pkg-config=nested",))
+            del args
+            old_env_value = os.environ.get("PKG_CONFIG_PATH")
+            assert state.pkg_config_path == old_env_value, (
+                f"new core would set {state.pkg_config_path!r}; old pipeline left {old_env_value!r}"
             )
