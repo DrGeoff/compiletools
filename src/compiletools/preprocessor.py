@@ -16,7 +16,15 @@ class PreProcessor:
         compiletools.apptools.add_common_arguments(cap)
 
     def process(self, realpath, extraargs, redirect_stderr_to_stdout=False):
-        cmd = self.args.CPP.split() + self.args.CPPFLAGS.split() + extraargs.split()
+        # args.CPP is an exe-name string (outside args.flags); the cpp flag
+        # tokens come from the frozen args.flags. Never .split() a raw string
+        # that may be shlex.join'd -- quoted tokens would become literal-quote
+        # argv garbage -- so the two raw strings go through shlex splitting.
+        cmd = (
+            compiletools.utils.split_command_cached(self.args.CPP)
+            + list(self.args.flags.cpp)
+            + compiletools.utils.split_command_cached(extraargs)
+        )
         if compiletools.utils.is_header(realpath):
             # Use /dev/null as the dummy source file.
             cmd.extend(["-include", realpath, "-x", "c++", "/dev/null"])

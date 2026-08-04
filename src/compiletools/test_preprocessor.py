@@ -6,11 +6,18 @@ from unittest import mock
 
 import pytest
 
+from compiletools.flags import Flags
 from compiletools.preprocessor import PreProcessor
+from compiletools.utils import split_command_cached
 
 
 def _make_args(cpp="cpp", cppflags="", verbose=0):
-    return types.SimpleNamespace(CPP=cpp, CPPFLAGS=cppflags, verbose=verbose)
+    return types.SimpleNamespace(
+        CPP=cpp,
+        CPPFLAGS=cppflags,
+        flags=Flags(cpp=tuple(split_command_cached(cppflags))),
+        verbose=verbose,
+    )
 
 
 @pytest.fixture
@@ -101,3 +108,20 @@ class TestPreProcessorProcess:
         cmd = mock_check_output.call_args[0][0]
         assert "-I/usr/include" in cmd
         assert "-DBAR" in cmd
+
+    def test_flags_cpp_tokens_used_verbatim(self, mock_check_output):
+        """The argv takes args.flags.cpp tokens as-is: a token with an
+        embedded space (a shlex.join'd raw string would carry it quoted)
+        arrives as ONE argv element, and CPP/extraargs are shlex-split so
+        quoted segments in either survive as single elements."""
+        args = types.SimpleNamespace(
+            CPP="ccache 'my cpp'",
+            CPPFLAGS="-DMSG='hello world'",
+            flags=Flags(cpp=("-DMSG=hello world",)),
+            verbose=0,
+        )
+        PreProcessor(args).process("/tmp/foo.cpp", "-include 'weird dir/pre.h'")
+        cmd = mock_check_output.call_args[0][0]
+        assert cmd[:2] == ["ccache", "my cpp"]
+        assert "-DMSG=hello world" in cmd
+        assert "weird dir/pre.h" in cmd
