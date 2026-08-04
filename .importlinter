@@ -16,6 +16,14 @@
 
 [importlinter]
 root_package = compiletools
+# include_external_packages is required for contract 6 below, which forbids
+# stdlib modules (os, sys, ...) that live outside root_package. This widens
+# the grimp-built graph to include every external package reachable from
+# compiletools, not just os/sys/subprocess/shutil/pathlib -- measured no
+# regression versus the pre-change baseline (~0.25-0.33s either way, run to
+# run noise dominates), still comfortably inside the "fast, file-independent"
+# budget the import-linter hook comment documents.
+include_external_packages = True
 
 # ---------------------------------------------------------------------------
 # Contract 1: the documented build pipeline spine is a one-way stack.
@@ -152,3 +160,33 @@ modules =
     compiletools.cmake_backend
     compiletools.bazel_backend
     compiletools.trace_backend
+
+# ---------------------------------------------------------------------------
+# Contract 6: build_state stays pure (no ambient authority).
+#
+# build_state.py implements the functional-core stages of substitutions() --
+# gather_inputs owns every effectful read (env vars, filesystem, pkg-config
+# subprocess calls); build_state must stay a pure function of BuildInputs so
+# it can be property-tested without mocking. Transitive os via configutils /
+# flags is accepted (see CLAUDE.md "Foundation cluster" note) -- this
+# contract targets build_state's OWN import statements only.
+#
+# `forbidden` contracts are transitive by default (a chain through any
+# intermediate module still counts). `allow_indirect_imports = True` switches
+# to direct-only checking (grimp's find_modules_directly_imported_by), which
+# is the only way to express "no direct os import, transitive os is fine" --
+# without it, this contract would immediately break on build_state's real
+# `import compiletools.configutils` edge (configutils -> ... -> os).
+# ---------------------------------------------------------------------------
+[importlinter:contract:build-state-pure]
+name = build_state stays pure (no ambient authority)
+type = forbidden
+source_modules =
+    compiletools.build_state
+forbidden_modules =
+    os
+    sys
+    subprocess
+    shutil
+    pathlib
+allow_indirect_imports = True
