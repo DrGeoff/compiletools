@@ -150,6 +150,16 @@ def _query_pkg_config(packages, pkg_config_path, want_libs, verbose, context):
     PKG_CONFIG_PATH is set/restored around the query (temporary; the
     apply layer owns the durable SetEnv, and the locked writer keeps its
     own env mutation for the legacy pipeline).
+
+    Note: ``_batch_pkg_config`` itself memoizes with ``functools.cache``
+    keyed per ``(package, option)`` only -- no PKG_CONFIG_PATH in that
+    key. A missing-package verdict is therefore path-insensitive
+    process-wide: once a package is looked up and found missing under one
+    PKG_CONFIG_PATH, that same verdict is served for every later query
+    under a different path within the same process. The ``(pkg,
+    pkg_config_path)`` key on *this* cache is forward-looking -- it is not
+    currently deliverable for the missing-package fallback case, since the
+    underlying ``_batch_pkg_config`` cache does not vary on path either.
     """
     import os
 
@@ -213,7 +223,14 @@ def _flag_name_already_present(args, flag_name):
     """The original _set_project_* suppression: a substring match of the
     flag NAME in any raw compile slot suppresses injection (the pure
     stage dedups exact tokens only, so gather replicates the substring
-    rule by nulling the field)."""
+    rule by nulling the field).
+
+    Note: this any()-across-slots scope is BROADER than the originals'
+    per-slot check -- a macro present in only one of CPPFLAGS/CFLAGS/
+    CXXFLAGS suppresses injection into all three, not just the slot it
+    was found in. Flagged for the Task 14 differential harness to confirm
+    whether any real conf/CLI combination makes this observable.
+    """
     return any(flag_name in (getattr(args, slot, None) or "") for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS"))
 
 
@@ -263,7 +280,19 @@ def gather_inputs(args, context) -> BuildInputs:
     from compiletools.apptools_compiler import compiler_identity, compiler_kind
     from compiletools.git_utils import find_git_root
 
-    registered = frozenset(s for s in _SLOT_NAMES if hasattr(args, s))
+    # Mirror _add_flags_from_pkg_config's posture (the 4d4cfd6d bug class):
+    # _finalize_flag_state materializes args.LDFLAGS = "" for downstream
+    # consumers even when the CAP never registered LDFLAGS, so bare hasattr
+    # disagrees with the real registration on a post-finalize namespace.
+    # _registered_flag_slots is the sticky, authoritative record when
+    # present; hasattr is only correct pre-finalize (first pass, no
+    # _finalize_flag_state run yet), so gather is safe on both namespace
+    # shapes.
+    slot_registration = getattr(args, "_registered_flag_slots", None)
+    if slot_registration is not None:
+        registered = frozenset(slot_registration)
+    else:
+        registered = frozenset(s for s in _SLOT_NAMES if hasattr(args, s))
 
     gitroot = find_git_root() or ""
     # One-off direct read of the live cwd, NOT cached -- mirrors
