@@ -2103,25 +2103,22 @@ def resubstitute(args) -> None:
     ``BuildInputs`` — verified directly against ``gather_inputs``/
     ``BuildInputs`` — so their absence changes nothing gather reads.
 
-    The four raw flag slots (CPPFLAGS/CFLAGS/CXXFLAGS/LDFLAGS) are a
-    different matter: ``gather_inputs`` reads them as raw input, but by
-    the time this runs they already hold the FIRST pass's derived output
-    (unified, prefix-map-injected, pkg-config-merged). Re-gathering from
-    that would compound pass 1's transforms into pass 2's "raw" input —
-    same token set as a fresh single pass over equivalent final inputs,
-    but different token order (CPPFLAGS starts a genuine first pass
-    shorter than CXXFLAGS, which lets stage_include_paths land
-    INCLUDE-derived ``-I`` pairs ahead of the accumulated CFLAGS/CXXFLAGS
-    tail; once CPPFLAGS already equals pass 1's unified CXXFLAGS that
-    ordering opportunity is gone). Since flag-slot hashing is argv-shaped,
-    a reordered-but-equal-set CPPFLAGS/CXXFLAGS forks the object CAS key
-    between --auto (widen + resubstitute) and --no-auto (single pass)
-    builds of the same sources. ``parseargs`` snapshots the four raw
-    slots once, before its own first gather, into
-    ``args._resubstitute_seed``; restoring them here before every
-    re-gather keeps each pass rebuilding from the same base.
-    ``args.INCLUDE`` is the one genuine between-pass input and is
-    deliberately not restored.
+    The four raw flag slots (CPPFLAGS/CFLAGS/CXXFLAGS/LDFLAGS) need no
+    handling here at all: by the time this runs they hold the FIRST
+    pass's derived output (unified, prefix-map-injected,
+    pkg-config-merged), but ``populate_args`` recorded the pre-overwrite
+    raw values in ``args._raw_flag_slots`` and ``gather_inputs`` prefers
+    that record over the live attrs — the shim preserves what it
+    clobbers, so every re-gather rebuilds from the same base without any
+    caller-side snapshot/restore protocol. (Re-gathering from the
+    derived strings instead would reproduce the same token SET but a
+    different token ORDER — a genuine first pass lands
+    ``stage_include_paths``' ``-I`` pairs ahead of the accumulated
+    CXXFLAGS tail because CPPFLAGS is still short pre-unify — and since
+    flag-slot hashing is argv-shaped, that reorder would fork the object
+    CAS key between --auto and --no-auto builds of the same sources.)
+    ``args.INCLUDE`` is the one genuine between-pass input and is read
+    live, never from the record.
 
     The re-run is therefore a fixed point BY CONSTRUCTION, not by a
     seed-restore-and-diff guard: the ``RuntimeError`` drift check the
@@ -2146,11 +2143,6 @@ def resubstitute(args) -> None:
             cas_exedir=args.cas_exedir,
         ),
     )
-
-    seed = getattr(args, "_resubstitute_seed", None)
-    if seed is not None:
-        for slot, value in seed.items():
-            setattr(args, slot, value)
 
     inputs = gather_inputs(args, context)
     state = compute_build_state(inputs)
@@ -2494,27 +2486,6 @@ def parseargs(cap, argv, verbose=None, *, context):
             args.test_xml_dir = os.path.join(git_root, test_xml_dir)
         else:
             args.test_xml_dir = os.path.abspath(test_xml_dir)
-
-    # resubstitute's re-gather reads args.CPPFLAGS/CFLAGS/CXXFLAGS/LDFLAGS
-    # as raw input, but by its first call those slots already hold THIS
-    # pass's DERIVED output (unified, prefix-map-injected, pkg-config-
-    # merged) -- re-gathering from that compounds pass 1's transforms into
-    # pass 2's "raw" input instead of rebuilding from the same base. The
-    # divergence is byte-order, not content: CPPFLAGS starts this pass
-    # shorter than CXXFLAGS (stage_unify hasn't run yet), which lets
-    # stage_include_paths land INCLUDE-derived -I pairs ahead of the
-    # accumulated CFLAGS/CXXFLAGS tail; once CPPFLAGS already equals
-    # pass 1's unified CXXFLAGS, that ordering opportunity is gone and a
-    # re-run's -I pairs land at the tail instead -- same token set,
-    # different order, which forks the object CAS key (flag-slot hashing
-    # is argv-shaped, not slot-shaped). Snapshotting the four raw slots
-    # here, once, lets resubstitute restore them before every re-gather so
-    # each pass rebuilds from the same base; args.INCLUDE is the one
-    # genuine between-pass input and is deliberately not seeded.
-    if getattr(args, "_resubstitute_seed", None) is None:
-        args._resubstitute_seed = {
-            slot: getattr(args, slot) for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS") if hasattr(args, slot)
-        }
 
     # ---- The functional build-state core ---------------------------------
     # gather_inputs owns every ambient read (env, filesystem, git,

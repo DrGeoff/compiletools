@@ -68,7 +68,21 @@ def populate_args(args, state: BuildState) -> None:
     all four, snapshot only the registered ones" split) so downstream
     consumers that read an unregistered slot still see a well-formed
     empty value rather than an AttributeError.
+
+    The shim preserves what it clobbers: gather_inputs reads the four
+    raw slot attrs as raw input, and this function overwrites them with
+    derived output (unified, prefix-map-injected, pkg-config-merged).
+    Before the first overwrite the pre-call values are recorded in
+    args._raw_flag_slots, and gather_inputs prefers that record — so a
+    re-gather always rebuilds from the same base and no caller has to
+    run a snapshot/restore protocol. First call only: a second
+    populate_args on the same namespace (re-run flows) must not replace
+    the record with pass 1's derived output. hasattr-filtered so an
+    absent slot stays absent (its unsuppliedness survives the record).
+    The record dies with this function at consumer-migration end.
     """
+    if getattr(args, "_raw_flag_slots", None) is None:
+        args._raw_flag_slots = {slot: getattr(args, slot) for slot in _SLOT_TO_TOKENS if hasattr(args, slot)}
     strings = {
         "CPPFLAGS": state.cppflags,
         "CFLAGS": state.cflags,

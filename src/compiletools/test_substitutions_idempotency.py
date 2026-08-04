@@ -406,12 +406,14 @@ class TestResubstitute:
         """Same convergence oracle as
         test_include_widening_converges_with_fresh_single_pass, under
         --separate-flags-CPP-CXX. This mode is the one where the
-        _resubstitute_seed's content (not just its restore-before-re-gather
-        timing) is load-bearing: with stage_unify skipped, CPPFLAGS can
-        still carry the raw _UNSUPPLIED_USE_CXXFLAGS sentinel at seed time,
-        and the seed must hand that sentinel back on every re-run rather
-        than a since-materialized concrete string, or the widened run's
-        cppflags would permanently diverge from a fresh single pass'."""
+        _raw_flag_slots record's CONTENT (not just gather preferring it
+        over the live derived strings) is load-bearing: with stage_unify
+        skipped, CPPFLAGS can still carry the raw _UNSUPPLIED_USE_CXXFLAGS
+        sentinel when populate_args records the pre-overwrite slots, and
+        gather must map that recorded sentinel back to unsupplied on every
+        re-run rather than reading the since-materialized concrete string,
+        or the widened run's cppflags would permanently diverge from a
+        fresh single pass'."""
         with uth.TempDirContext():
             newdir = os.path.join(os.getcwd(), "external_inc")
             os.makedirs(newdir)

@@ -128,6 +128,48 @@ class TestSlotSentinelMapping:
             assert getattr(inputs, field) == expected
             assert slot in inputs.registered_slots
 
+
+@pytest.mark.usefixtures("parsers_reset")
+class TestRawSlotRecordPreferred:
+    """gather_inputs prefers args._raw_flag_slots (the pre-populate_args
+    values populate_args recorded) over the live slot attrs, so a
+    re-gather on a populated namespace rebuilds from the same base
+    instead of compounding pass 1's derived output."""
+
+    def test_record_value_wins_over_live_derived_string(self):
+        with uth.TempDirContext():
+            args = _minimal_args(CXXFLAGS="-DDERIVED")
+            args._raw_flag_slots = {"CXXFLAGS": "-DRAW", "CFLAGS": "-fPIC -g -Wall"}
+            inputs = gather_inputs(args, BuildContext())
+            assert inputs.cxxflags == ("-DRAW",)
+
+    def test_slot_absent_from_record_is_unsupplied(self):
+        """A record without LDFLAGS beats a live materialized LDFLAGS="":
+        the pre-populate namespace never had the slot, so its
+        unsuppliedness must survive (stage_defaults fallback semantics),
+        even though populate_args materialized an empty string for
+        downstream consumers."""
+        with uth.TempDirContext():
+            args = _minimal_args(LDFLAGS="")
+            args._raw_flag_slots = {"CXXFLAGS": "-fPIC -g -Wall", "CFLAGS": "-fPIC -g -Wall"}
+            args._registered_flag_slots = ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS")
+            inputs = gather_inputs(args, BuildContext())
+            assert inputs.ldflags is None
+
+    def test_record_sentinel_flows_through_sentinel_mapping(self):
+        """Record values can legitimately hold the unsupplied sentinels
+        (that is what the slot held pre-populate); they must take the
+        same sentinel mapping as live values."""
+        with uth.TempDirContext():
+            args = _minimal_args(CPPFLAGS="-DDERIVED")
+            args._raw_flag_slots = {
+                "CPPFLAGS": apptools._UNSUPPLIED_USE_CXXFLAGS,
+                "CXXFLAGS": "-fPIC -g -Wall",
+                "CFLAGS": "-fPIC -g -Wall",
+            }
+            inputs = gather_inputs(args, BuildContext())
+            assert inputs.cppflags is None
+
     def test_absent_slots_map_to_none_and_are_unregistered(self):
         with uth.TempDirContext():
             args = _minimal_args()

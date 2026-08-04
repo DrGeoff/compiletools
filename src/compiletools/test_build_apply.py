@@ -138,3 +138,26 @@ class TestPopulateArgs:
         assert hasattr(args, "LDFLAGS")
         inputs = gather_inputs(args, BuildContext())
         assert "LDFLAGS" not in inputs.registered_slots
+
+    def test_records_pre_overwrite_raw_slots(self):
+        """The shim preserves what it clobbers: the slot strings present
+        BEFORE populate_args overwrites them land in args._raw_flag_slots,
+        hasattr-filtered (a slot absent pre-call stays absent from the
+        record so its unsuppliedness survives)."""
+        state = _state(cxxflags=("-DDERIVED",))
+        args = argparse.Namespace(verbose=0, CXXFLAGS="-O2 raw", CPPFLAGS="unsupplied")
+        populate_args(args, state)
+        assert args._raw_flag_slots == {"CXXFLAGS": "-O2 raw", "CPPFLAGS": "unsupplied"}
+        assert state.cxxflags == args.CXXFLAGS
+
+    def test_raw_slot_record_is_first_call_only(self):
+        """A second populate_args (re-run flow) must not overwrite the
+        record with pass 1's derived output — that would reintroduce the
+        compounding the record exists to prevent."""
+        state1 = _state(cxxflags=("-DPASS1",))
+        args = argparse.Namespace(verbose=0, CXXFLAGS="-O2 raw")
+        populate_args(args, state1)
+        state2 = _state(cxxflags=("-DPASS2",))
+        populate_args(args, state2)
+        assert args._raw_flag_slots == {"CXXFLAGS": "-O2 raw"}
+        assert state2.cxxflags == args.CXXFLAGS

@@ -66,12 +66,24 @@ def _slot_tokens(args, name):
     CPPFLAGS/LDFLAGS (stage_defaults applies the CXXFLAGS fallback), () for
     CFLAGS/CXXFLAGS. An explicit empty string is (), never None -- the
     sentinel semantics of unsupplied_replacement, not emptiness.
+
+    When args._raw_flag_slots exists (populate_args recorded the
+    pre-overwrite slot values before writing derived output onto these
+    same attrs), the record is preferred over the live attr: a re-gather
+    on a populated namespace must rebuild from the same raw base, not
+    compound pass 1's unified/injected/merged output into pass 2's
+    input. A slot absent from a present record was absent pre-populate
+    -- its unsuppliedness survives even though populate_args
+    materialized a live empty string for downstream consumers. Record
+    values can hold the unsupplied sentinels and flow through the same
+    mapping as live values.
     """
     import compiletools.apptools as apptools
     from compiletools.utils import split_command_cached
 
     unsupplied = None if name in _FALLBACK_SLOTS else ()
-    raw = getattr(args, name, None)
+    record = getattr(args, "_raw_flag_slots", None)
+    raw = record.get(name) if record is not None else getattr(args, name, None)
     if raw is None or raw in apptools._UNSUPPLIED_SENTINELS:
         return unsupplied
     return tuple(split_command_cached(raw))
