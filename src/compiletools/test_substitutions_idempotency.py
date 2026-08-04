@@ -29,6 +29,7 @@ import compiletools.hunter
 import compiletools.testhelper as uth
 from compiletools.build_context import BuildContext
 from compiletools.flags import Flags
+from compiletools.test_build_state_differential import _run_old_pipeline
 
 FLAG_SLOTS = ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS")
 
@@ -62,6 +63,35 @@ def _parseargs_in_temp_repo(extra_argv=(), register_link_args=True):
             apptools.add_link_arguments(cap)
         with uth.ParserContext():
             return apptools.parseargs(cap, argv, context=BuildContext())
+
+
+def _old_pipeline_args_in_temp_repo(extra_argv=(), register_link_args=True):
+    """Same CAP/config setup as ``_parseargs_in_temp_repo``, but drives the
+    resulting namespace through the LEGACY ``substitutions()`` pipeline
+    (``test_build_state_differential._run_old_pipeline``) instead of the
+    post-swap ``apptools.parseargs`` core.
+
+    ``substitutions()``'s own seed-restore / fixed-point contract
+    (``args._substitution_seed``) is only exercised faithfully starting from
+    a namespace ``substitutions()`` itself produced on pass 1 -- calling
+    ``substitutions()`` directly on a new-core namespace has no seed to
+    restore from, so unconditional-append stages (pkg-config) and
+    namespace-shape materialization (``_finalize_flag_state``) double up.
+    Tests pinning ``substitutions()``'s own re-run contract in isolation
+    (as opposed to ``apptools.resubstitute``, which no longer calls
+    ``substitutions()`` at all post-Task-9) need this fixture rather than
+    ``_parseargs_in_temp_repo``.
+    """
+    uth.create_temp_ct_conf(os.getcwd())
+    with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
+        argv = ["--config=" + temp_config_name, *extra_argv]
+        cap = apptools.create_parser("idempotency test", argv=argv)
+        cdb.CompilationDatabaseCreator.add_arguments(cap)
+        compiletools.hunter.add_arguments(cap)
+        if register_link_args:
+            apptools.add_link_arguments(cap)
+        with uth.ParserContext():
+            return _run_old_pipeline(cap, argv, BuildContext())
 
 
 @pytest.mark.usefixtures("parsers_reset")
@@ -171,11 +201,18 @@ class TestPkgConfigSlotsAreFixedPoints:
     reaches _get_build_context_hash and forks the object CAS key space
     between --auto and --no-auto builds; the doubled LDFLAGS forks the
     cas-exedir link key via args.flags.ld.
+
+    This is a property of substitutions()'s OWN seed-restore contract
+    (args._substitution_seed), exercised here in isolation via
+    _old_pipeline_args_in_temp_repo -- post-Task-9 apptools.parseargs no
+    longer installs that seed (only apptools.resubstitute's re-gather path
+    runs on production namespaces), so these tests drive the namespace
+    through the legacy reference pipeline directly.
     """
 
     def _assert_rerun_is_noop(self, extra_argv):
         with uth.TempDirContext():
-            args = _parseargs_in_temp_repo(extra_argv=extra_argv)
+            args = _old_pipeline_args_in_temp_repo(extra_argv=extra_argv)
             assert "-ltestpkg1" in args.LDFLAGS, (
                 "Precondition failed: pkg-config --libs did not land; the fixed-point assertions would be vacuous."
             )
@@ -394,15 +431,18 @@ class TestResubstitute:
             assert args.LDFLAGS_tokens.count("-lctresub9common") == 1
             assert args.LDFLAGS_tokens.count("-L/usr/local/lib") == 1
 
-    def test_non_idempotent_callback_raises(self):
-        import itertools
-
+    def test_legacy_callback_registry_no_longer_affects_resubstitute(self):
+        """RETIRED CONTRACT (was test_non_idempotent_callback_raises):
+        pre-Task-9, appending a non-idempotent hook to the legacy
+        _substitutioncallbacks registry made resubstitute raise, because it
+        replayed substitutions() and that registry drives substitutions().
+        Task 9's resubstitute is re-gather + recompute and never calls
+        substitutions(), so the registry cannot inject drift into it any
+        more -- proven here by registering the exact hook that used to
+        force a RuntimeError and observing it has no effect."""
         counter = itertools.count(1)
 
         def nonidempotent_callback(args):
-            # A per-pass-unique token: seed restore cannot make this
-            # converge, so it is exactly the drift class resubstitute
-            # must reject.
             token = f"-DCT_TEST_RERUN{next(counter)}"
             for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS"):
                 current = getattr(args, slot, "") or ""
@@ -410,18 +450,22 @@ class TestResubstitute:
 
         with uth.TempDirContext():
             args = _parseargs_in_temp_repo()
-            # Appended AFTER parseargs: ParserContext (inside the helper)
-            # wipes the callback registry on entry and exit, and the re-run
-            # happens outside any ParserContext anyway. Direct registry
-            # append: apptools.registercallback is a deprecation error now,
-            # and this hook exists purely to inject drift into the legacy
-            # substitutions() re-run under test.
+            first_flags = args.flags
+            # Direct registry append: apptools.registercallback is a
+            # deprecation error now, and this hook exists purely to prove
+            # it is inert against resubstitute.
             apptools._substitutioncallbacks.append(nonidempotent_callback)
             try:
-                with pytest.raises(RuntimeError, match="CT_TEST_RERUN"):
-                    apptools.resubstitute(args)
+                apptools.resubstitute(args)
             finally:
                 apptools.resetcallbacks()
+
+            assert "CT_TEST_RERUN" not in args.CXXFLAGS, (
+                "resubstitute must not drive the legacy _substitutioncallbacks registry."
+            )
+            assert args.flags == first_flags, (
+                "resubstitute must converge to the same flags when nothing input-affecting changed."
+            )
 
 
 @pytest.mark.usefixtures("parsers_reset")
@@ -456,9 +500,19 @@ class TestThreeSlotCapRerun:
         _finalize_flag_state materialized after pass 1 (LDFLAGS = "" for a
         three-slot CAP) must be absent again while pass 2's pipeline runs,
         so hasattr-based applicability decisions cannot flip between
-        passes (the want_libs bug class, closed structurally)."""
+        passes (the want_libs bug class, closed structurally).
+
+        This is a property of the LEGACY substitutions() pipeline's own
+        seed restore, not of apptools.resubstitute -- Task 9 rewrote
+        resubstitute as re-gather + recompute, which never calls
+        substitutions() and reads _registered_flag_slots directly (the
+        hasattr-shape question is unrepresentable in the new core). Builds
+        the namespace via _old_pipeline_args_in_temp_repo (a genuine pass-1
+        substitutions() run, so args._substitution_seed exists) and calls
+        substitutions() directly so the probe still exercises the
+        semantics it names."""
         with uth.TempDirContext():
-            args = _parseargs_in_temp_repo(extra_argv=["--pkg-config=nested"], register_link_args=False)
+            args = _old_pipeline_args_in_temp_repo(extra_argv=["--pkg-config=nested"], register_link_args=False)
 
             assert "LDFLAGS" not in args._registered_flag_slots, (
                 "Precondition failed: LDFLAGS unexpectedly registered; this test would be vacuous."
@@ -476,7 +530,7 @@ class TestThreeSlotCapRerun:
 
             apptools._substitutioncallbacks.append(shape_probe)
             try:
-                apptools.resubstitute(args)
+                apptools.substitutions(args, verbose=0)
             finally:
                 apptools.resetcallbacks()
 
@@ -487,66 +541,62 @@ class TestThreeSlotCapRerun:
             assert args.LDFLAGS == "", "LDFLAGS must be re-materialized after the pass completes."
 
 
-def _register_drift_forcing_callback():
-    """Same trick as TestResubstitute.test_non_idempotent_callback_raises,
-    reused here because compilation_database.main() drives its own
-    parseargs + resubstitute internally -- there is no hook point between
-    the two, so the callback must already be registered before main() runs
-    and stay live across both of its substitutions() passes."""
-    counter = itertools.count(1)
+class TestCdbAutoConverges:
+    """compilation_database's --auto refresh routes through
+    apptools.resubstitute (test_cdb_rerun_site_uses_resubstitute pins the
+    call site). Before Task 9, two pkg-config packages sharing a
+    Cflags/Libs token hard-errored on this exact path: resubstitute
+    replayed the legacy substitutions() pipeline, whose dedup-then-append
+    ordering could not reproduce the new core's end-of-pipeline dedup (D5
+    surfacing as re-run drift; task-8-report.md Concern #1a). resubstitute
+    is now re-gather + recompute, so the re-run always reproduces pass 1's
+    core exactly -- there is no drift left for the except-RuntimeError
+    branch in compilation_database.main to render."""
 
-    def nonidempotent_callback(args):
-        token = f"-DCT_TEST_CDB_RERUN{next(counter)}"
-        for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS"):
-            current = getattr(args, slot, "") or ""
-            setattr(args, slot, f"{current} {token}".strip())
-
-    # Direct registry append: registercallback is a deprecation error now.
-    apptools._substitutioncallbacks.append(nonidempotent_callback)
-
-
-class TestCdbFatalRendering:
-    """compilation_database.main's except-RuntimeError branch around its
-    apptools.resubstitute call renders the drift error as a fatal message
-    (cake's _FATAL_ERROR_RENDERERS contract) at default verbosity and
-    re-raises at -vv. Forces the drift with the same non-idempotent-callback
-    trick TestResubstitute uses: pass 1 (main's own parseargs) forms the
-    baseline with one token, and main's internal resubstitute (pass 2) adds
-    a different, per-call-unique token that the seed restore cannot
-    reconcile away.
-    """
+    def _write_overlapping_pc_files(self, tmp_path):
+        for name, lib in (("ctcdb9alpha", "-lctcdb9alpha"), ("ctcdb9beta", "-lctcdb9beta")):
+            (tmp_path / f"{name}.pc").write_text(
+                f"Name: {name}\nDescription: cdb overlap pin\nVersion: 1.0.0\n"
+                "Cflags: -DCTCDB9_COMMON\n"
+                f"Libs: -L/usr/local/lib -lctcdb9common {lib}\n"
+            )
 
     def _run(self, tmp_config, extra_argv=()):
         with uth.ParserContext():
-            # ParserContext.__enter__ already wiped the callback registry;
-            # register here so it survives for the duration of main()'s
-            # internal parseargs pass AND its resubstitute re-run.
-            _register_drift_forcing_callback()
-            try:
-                return cdb.main(["--config=" + tmp_config, "--auto", *extra_argv])
-            finally:
-                apptools.resetcallbacks()
+            return cdb.main(
+                [
+                    "--config=" + tmp_config,
+                    "--auto",
+                    "--pkg-config=ctcdb9alpha ctcdb9beta",
+                    *extra_argv,
+                ]
+            )
 
     @uth.requires_functional_compiler
-    def test_default_verbosity_prints_and_returns_1(self, capsys):
+    def test_default_verbosity_succeeds(self, tmp_path, monkeypatch, capsys):
+        self._write_overlapping_pc_files(tmp_path)
+        monkeypatch.setenv("PKG_CONFIG_PATH", str(tmp_path))
         with uth.TempDirContext():
             uth.create_temp_ct_conf(os.getcwd())
             pathlib.Path("main.cpp").write_text("int main() { return 0; }\n")
             with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
                 result = self._run(temp_config_name)
 
-        assert result == 1
+        assert result == 0
         err = capsys.readouterr().err
-        assert "unexplained flag drift" in err, f"Expected drift message on stderr, got: {err!r}"
+        assert "unexplained flag drift" not in err, f"Unexpected drift message on stderr: {err!r}"
 
     @uth.requires_functional_compiler
-    def test_verbose_two_propagates_runtimeerror(self):
+    def test_verbose_two_also_succeeds(self, tmp_path, monkeypatch):
+        self._write_overlapping_pc_files(tmp_path)
+        monkeypatch.setenv("PKG_CONFIG_PATH", str(tmp_path))
         with uth.TempDirContext():
             uth.create_temp_ct_conf(os.getcwd())
             pathlib.Path("main.cpp").write_text("int main() { return 0; }\n")
             with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
-                with pytest.raises(RuntimeError, match="unexplained flag drift"):
-                    self._run(temp_config_name, extra_argv=("-vv",))
+                result = self._run(temp_config_name, extra_argv=("-vv",))
+
+        assert result == 0
 
 
 class TestExtendIncludesUsingGitRootIdempotent:
