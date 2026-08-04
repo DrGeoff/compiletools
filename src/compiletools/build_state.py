@@ -57,3 +57,23 @@ def stage_include_paths(inputs: BuildInputs, ts: TokenState) -> TokenState:
         if added:
             updates[slot] = current + tuple(added)
     return dataclasses.replace(ts, **updates) if updates else ts
+
+
+def stage_project_macros(inputs: BuildInputs, ts: TokenState) -> TokenState:
+    """Append CT_PROJECT_VERSION / CT_PROJECT_NAME define tokens to the
+    compile slots. Values arrive pre-escaped from gather; the embedded
+    double quotes are the C string literal delimiters."""
+    tokens = []
+    if inputs.project_version is not None:
+        tokens.append(f'-DCT_PROJECT_VERSION="{inputs.project_version}"')
+    if inputs.project_name is not None:
+        tokens.append(f'-DCT_PROJECT_NAME="{inputs.project_name}"')
+    if not tokens:
+        return ts
+    updates = {}
+    for slot in ("cpp", "c", "cxx"):
+        current = getattr(ts, slot)
+        added = tuple(t for t in tokens if t not in current)
+        if added:
+            updates[slot] = current + added
+    return dataclasses.replace(ts, **updates) if updates else ts

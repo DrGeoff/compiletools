@@ -5,7 +5,7 @@ conf files, or compilers.
 """
 
 from compiletools.build_inputs import BuildInputs
-from compiletools.build_state import TokenState, stage_defaults, stage_include_paths, stage_xxpend
+from compiletools.build_state import TokenState, stage_defaults, stage_include_paths, stage_project_macros, stage_xxpend
 
 ALL_SLOTS = frozenset({"CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS"})
 
@@ -69,3 +69,22 @@ class TestStageIncludePaths:
     def test_no_include_paths_is_identity(self):
         ts = TokenState(cpp=("-DX",))
         assert stage_include_paths(_inputs(), ts) is ts
+
+
+class TestStageProjectMacros:
+    def test_version_and_name_appended_as_single_tokens(self):
+        inputs = _inputs(project_version="1.2.3", project_name="myproj")
+        ts = stage_project_macros(inputs, TokenState())
+        assert '-DCT_PROJECT_VERSION="1.2.3"' in ts.cpp
+        assert '-DCT_PROJECT_NAME="myproj"' in ts.cxx
+        assert ts.ld == ()
+
+    def test_none_means_no_macro(self):
+        ts = stage_project_macros(_inputs(), TokenState(cpp=("-DX",)))
+        assert ts.cpp == ("-DX",)
+
+    def test_existing_macro_not_doubled(self):
+        tok = '-DCT_PROJECT_VERSION="1.2.3"'
+        inputs = _inputs(project_version="1.2.3")
+        ts = stage_project_macros(inputs, TokenState(cpp=(tok,), c=(tok,), cxx=(tok,)))
+        assert ts.cpp.count(tok) == 1
