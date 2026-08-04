@@ -31,7 +31,7 @@ def parsers_reset():
     uth.reset()
 
 
-def _old_and_new(extra_argv=(), register_link_args=True, *, explicit_config=True):
+def _old_and_new(extra_argv=(), register_link_args=True, *, explicit_config=True, confdir=None):
     """Run the real parseargs (old pipeline) AND gather+compute (new core)
     from one argv/conf setup; return (args, state, raw).
 
@@ -44,8 +44,17 @@ def _old_and_new(extra_argv=(), register_link_args=True, *, explicit_config=True
     (deterministic CC/CXX, no axis-file dependence), but it also makes any
     --variant token on extra_argv inert, so a case that must genuinely
     exercise extends-based composite resolution has to skip the injection.
+
+    confdir=None (default) writes the project ct.conf and the temp
+    --config file at os.getcwd(), matching every existing caller. A case
+    invoked from a SUBDIR of the gitroot (monkeypatch.chdir'd before
+    calling this) must pass confdir=<gitroot> explicitly -- writing the
+    conf at the subdir would put it at the wrong tier and, since both
+    pipelines read the same cwd, wouldn't even surface as a divergence.
     """
-    uth.create_temp_ct_conf(os.getcwd())
+    if confdir is None:
+        confdir = os.getcwd()
+    uth.create_temp_ct_conf(confdir)
 
     def _run(argv):
         cap = apptools.create_parser("differential", argv=argv)
@@ -71,7 +80,7 @@ def _old_and_new(extra_argv=(), register_link_args=True, *, explicit_config=True
             return args, state, raw
 
     if explicit_config:
-        with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
+        with uth.TempConfigContext(tempdir=confdir) as temp_config_name:
             return _run(["--config=" + temp_config_name, *extra_argv])
     return _run(list(extra_argv))
 
@@ -261,3 +270,51 @@ class TestDifferentialConfShapes:
             )
             assert tuple(args.CPPFLAGS_tokens) == state.tokens.cpp
             assert args.variant == state.names.variant
+
+    def test_subdir_invocation_anchors_relative_cas_dirs(self):
+        """Relative --cas-objdir invoked from a SUBDIR of the gitroot must
+        anchor to the gitroot identically in both pipelines (the resolver's
+        anchoring gate in apptools_argparse.resolve_cas_directory_arguments
+        vs its port in build_inputs._anchored_cas_dir).
+
+        No current CASES/blessed-divergence case reaches this branch -- all
+        of them run with cwd == gitroot, where the anchoring gate
+        (realpath(gitroot) != cwd) never fires.
+
+        Uses a raw ``os.chdir`` into the subdir, not ``monkeypatch.chdir``:
+        ``uth.TempDirContext.__exit__`` restores the outer cwd and rmtree's
+        the tmpdir INSIDE this ``with`` block, before the test function
+        returns; a ``monkeypatch.chdir`` fixture only undoes at test
+        teardown (after the block already exited) and would try to chdir
+        back into the already-deleted subdir, raising FileNotFoundError
+        (the exact ordering hazard documented on
+        ``conftest.py``'s hermetic-git-env fixture). ``TempDirContext``
+        itself restores the pre-``with`` cwd on exit, so no manual restore
+        of the outer chdir is needed here either (mirrors ``test_base.py``'s
+        ``os.chdir(tempdir)`` inside a ``with uth.TempDirContext()``).
+        """
+        with uth.TempDirContext():
+            # TempDirContext's tmpdir has no ancestor .git, so find_git_root
+            # falls back to returning the queried directory itself -- from
+            # the subdir below, that would make gitroot == cwd and the
+            # anchoring gate vacuous. Plant a real .git marker at this level
+            # (directory + HEAD, the same convention as
+            # testhelper.copy_example_workspace / test_relative_cas_dir_bug)
+            # so find_git_root resolves HERE from the subdir.
+            gitroot = os.getcwd()
+            git_dir = os.path.join(gitroot, ".git")
+            os.mkdir(git_dir)
+            with open(os.path.join(git_dir, "HEAD"), "w") as f:
+                f.write("ref: refs/heads/main\n")
+            subdir = os.path.join(gitroot, "sub")
+            os.makedirs(subdir)
+            os.chdir(subdir)
+            # confdir=gitroot: _old_and_new's default writes the project
+            # ct.conf and the temp --config file at os.getcwd() (the
+            # subdir), the wrong tier for a gitroot-level project conf.
+            args, state, _raw = _old_and_new(("--cas-objdir=relcas/obj",), confdir=gitroot)
+            assert args.cas_objdir == state.names.cas_objdir
+            assert args.cas_objdir.startswith(gitroot), (
+                f"Precondition: anchoring must have fired (got {args.cas_objdir!r}); "
+                f"cwd==gitroot would make this vacuous."
+            )
