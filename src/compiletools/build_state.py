@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import dataclasses
 import posixpath
+import shlex
 from dataclasses import dataclass
 
 import compiletools.configutils
 from compiletools.build_inputs import BuildInputs
 from compiletools.flag_ops import dedup_include_paths_to_append, dedup_tokens, has_prefix_map_token
+from compiletools.flags import Flags
 
 
 @dataclass(frozen=True)
@@ -25,12 +27,14 @@ _SLOT_FIELDS = (("cpp", "cppflags"), ("c", "cflags"), ("cxx", "cxxflags"), ("ld"
 
 def stage_defaults(inputs: BuildInputs) -> TokenState:
     """Initial TokenState with the CXX-fallback rules of
-    _substitute_CXX_for_missing: empty CPPFLAGS/LDFLAGS inherit CXXFLAGS
-    (LDFLAGS only when the caller registered the slot)."""
-    cpp = inputs.cppflags or inputs.cxxflags
+    _substitute_CXX_for_missing: UNSUPPLIED (None) CPPFLAGS/LDFLAGS inherit
+    CXXFLAGS (LDFLAGS only when the caller registered the slot). An
+    explicitly empty slot (()) is left alone -- mirrors
+    unsupplied_replacement's sentinel semantics, not emptiness."""
+    cpp = inputs.cxxflags if inputs.cppflags is None else inputs.cppflags
     ld = inputs.ldflags
-    if not ld and "LDFLAGS" in inputs.registered_slots:
-        ld = inputs.cxxflags
+    if ld is None:
+        ld = inputs.cxxflags if "LDFLAGS" in inputs.registered_slots else ()
     return TokenState(cpp=cpp, c=inputs.cflags, cxx=inputs.cxxflags, ld=ld)
 
 
@@ -207,3 +211,53 @@ def stage_resolve_names(inputs: BuildInputs) -> NameState:
         cas_pcmdir=_with_variant_suffix(inputs.cas_pcmdir_raw, variant),
         cas_exedir=_with_variant_suffix(inputs.cas_exedir_raw, variant),
     )
+
+
+@dataclass(frozen=True)
+class BuildState:
+    tokens: TokenState
+    names: NameState
+    flags: Flags
+    cppflags: str
+    cflags: str
+    cxxflags: str
+    ldflags: str
+    pkg_config_path: str | None
+    effects: tuple[Effect, ...]
+
+
+def compute_build_state(inputs: BuildInputs) -> BuildState:
+    """The pure pipeline. Stage order is load-bearing (mirrors
+    _commonsubstitutions: unify -> inject -> unify keeps the injected
+    prefix-map in CPPFLAGS within one pass)."""
+    ts = stage_defaults(inputs)
+    ts = stage_xxpend(inputs, ts)
+    ts = stage_include_paths(inputs, ts)
+    ts = stage_project_macros(inputs, ts)
+    ts = stage_pkg_config_flags(inputs, ts)
+    ts = stage_unify(inputs, ts)
+    ts = stage_prefix_map(inputs, ts)
+    ts = stage_unify(inputs, ts)
+    ts, wild_effects = stage_wild_linker(inputs, ts)
+    ts = stage_dedup(inputs, ts)
+    names = stage_resolve_names(inputs)
+    effects: tuple[Effect, ...] = ()
+    if inputs.pkg_config_path is not None:
+        effects += (SetEnv(name="PKG_CONFIG_PATH", value=inputs.pkg_config_path),)
+    effects += wild_effects
+    return BuildState(
+        tokens=ts,
+        names=names,
+        flags=Flags(cpp=ts.cpp, c=ts.c, cxx=ts.cxx, ld=ts.ld, compiler_identity=inputs.compiler_identity),
+        cppflags=shlex.join(ts.cpp),
+        cflags=shlex.join(ts.c),
+        cxxflags=shlex.join(ts.cxx),
+        ldflags=shlex.join(ts.ld),
+        pkg_config_path=inputs.pkg_config_path,
+        effects=effects,
+    )
+
+
+def cache_naming_view(state: BuildState):
+    """Everything that names CAS cells, for re-run diagnostics."""
+    return (state.flags, state.names)

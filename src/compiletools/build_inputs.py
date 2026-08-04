@@ -18,10 +18,10 @@ class PkgConfigResult:
 @dataclass(frozen=True, kw_only=True)
 class BuildInputs:
     registered_slots: frozenset[str]
-    cppflags: tuple[str, ...] = ()
+    cppflags: tuple[str, ...] | None = None
     cflags: tuple[str, ...] = ()
     cxxflags: tuple[str, ...] = ()
-    ldflags: tuple[str, ...] = ()
+    ldflags: tuple[str, ...] | None = None
     prepend_cppflags: tuple[str, ...] = ()
     append_cppflags: tuple[str, ...] = ()
     prepend_cflags: tuple[str, ...] = ()
@@ -47,4 +47,5 @@ class BuildInputs:
     cas_pcmdir_raw: str | None = None
     cas_exedir_raw: str | None = None
     pkg_config_path: str | None = None
+    compiler_identity: str = ""
     verbose: int = 0

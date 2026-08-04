@@ -34,16 +34,26 @@ class TestStageDefaults:
         assert ts.cpp == ("-DX",)
         assert ts.cxx == ("-O2",)
 
-    def test_empty_cppflags_falls_back_to_cxxflags(self):
-        ts = stage_defaults(_inputs(cxxflags=("-O2", "-Wall")))
+    def test_unsupplied_cppflags_falls_back_to_cxxflags(self):
+        ts = stage_defaults(_inputs(cppflags=None, cxxflags=("-O2", "-Wall")))
         assert ts.cpp == ("-O2", "-Wall")
 
-    def test_empty_ldflags_falls_back_to_cxxflags_when_registered(self):
-        ts = stage_defaults(_inputs(cxxflags=("-O2",)))
+    def test_explicitly_empty_cppflags_stays_empty(self):
+        ts = stage_defaults(_inputs(cppflags=(), cxxflags=("-O2", "-Wall")))
+        assert ts.cpp == ()
+
+    def test_unsupplied_ldflags_falls_back_to_cxxflags_when_registered(self):
+        ts = stage_defaults(_inputs(ldflags=None, cxxflags=("-O2",)))
         assert ts.ld == ("-O2",)
 
+    def test_explicitly_empty_ldflags_stays_empty_when_registered(self):
+        ts = stage_defaults(_inputs(ldflags=(), cxxflags=("-O2",)))
+        assert ts.ld == ()
+
     def test_unregistered_ldflags_stays_empty(self):
-        ts = stage_defaults(_inputs(registered_slots=frozenset({"CPPFLAGS", "CFLAGS", "CXXFLAGS"}), cxxflags=("-O2",)))
+        ts = stage_defaults(
+            _inputs(registered_slots=frozenset({"CPPFLAGS", "CFLAGS", "CXXFLAGS"}), ldflags=None, cxxflags=("-O2",))
+        )
         assert ts.ld == ()
 
 
