@@ -19,6 +19,7 @@ import pytest
 import compiletools.apptools as apptools
 import compiletools.hunter
 import compiletools.testhelper as uth
+from compiletools.apptools_argparse import _fix_variable_handling_method
 from compiletools.build_context import BuildContext
 from compiletools.build_inputs import gather_inputs
 from compiletools.build_state import compute_build_state
@@ -51,6 +52,18 @@ def _old_and_new(extra_argv=(), register_link_args=True, *, explicit_config=True
     calling this) must pass confdir=<gitroot> explicitly -- writing the
     conf at the subdir would put it at the wrong tier and, since both
     pipelines read the same cwd, wouldn't even surface as a divergence.
+
+    The raw (new-core) namespace mirrors apptools.parseargs's append-mode
+    branch: when --variable-handling-method=append is in play, a bare
+    cap2.parse_args() never reroutes a FLAG_ENV_VAR_NAMES env var into
+    APPEND_*, because configargparse only supports "override" semantics for
+    environment-sourced values. This helper replicates parseargs's
+    `_fix_variable_handling_method` reparse + `_stash_private_attrs` on the
+    raw namespace for harness fidelity -- without it, the "append" CASES
+    row is vacuous whenever no FLAG_ENV_VAR_NAMES member is actually set in
+    os.environ, and even when one is set, the raw namespace would silently
+    diverge from the old pipeline for a reason that has nothing to do with
+    the core under test.
     """
     if confdir is None:
         confdir = os.getcwd()
@@ -73,6 +86,18 @@ def _old_and_new(extra_argv=(), register_link_args=True, *, explicit_config=True
             # (and being a fixed point under re-application), instead of
             # genuinely reproducing it from scratch.
             raw = cap2.parse_args(args=list(argv))
+            apptools._stash_private_attrs(raw, cap2, context, list(argv))
+            # Mirrors apptools.parseargs's append-mode branch: configargparse
+            # only supports "override" for environment-sourced values, so a
+            # bare cap2.parse_args() never reroutes a FLAG_ENV_VAR_NAMES env
+            # var (CPPFLAGS/CFLAGS/CXXFLAGS/LDFLAGS/INCLUDE) into APPEND_*.
+            # Without this the new core's raw namespace would silently
+            # disagree with the old pipeline whenever both an env var AND
+            # --variable-handling-method=append are in play -- harness
+            # fidelity, not production behavior.
+            if raw.variable_handling_method == "append":
+                raw = _fix_variable_handling_method(cap2, list(argv), getattr(raw, "verbose", 0))
+                apptools._stash_private_attrs(raw, cap2, context, list(argv))
             apptools._flatten_variables(raw)
             apptools._strip_quotes(raw)
             state = compute_build_state(gather_inputs(raw, context))
@@ -152,11 +177,9 @@ class TestDifferential:
 
 @pytest.mark.usefixtures("parsers_reset")
 class TestDifferentialToolchainVariants:
-    def test_clang_variant_agrees_including_wild_rewrite(self):
-        """clang toolchain: flags/names parity, plus the live
-        -fuse-ld=wild -> --ld-path=wild rewrite when the wild axis rides
-        along (guarded: requires clang++ AND wild on PATH; skip otherwise
-        with the reason naming which prerequisite is missing)."""
+    def test_clang_variant_agrees(self):
+        """clang toolchain: flags/names parity (guarded: requires clang++ on
+        PATH; skip otherwise)."""
         import shutil as _sh
 
         if not _sh.which("clang++"):
@@ -166,11 +189,25 @@ class TestDifferentialToolchainVariants:
             assert tuple(args.CXXFLAGS_tokens) == state.tokens.cxx
             assert tuple(args.LDFLAGS_tokens) == state.tokens.ld
             assert args.variant == state.names.variant
-        if _sh.which("wild"):
-            with uth.TempDirContext():
-                args, state, _raw = _old_and_new(("--variant=clang,debug,wild",))
-                assert "--ld-path=wild" in state.tokens.ld
-                assert tuple(args.LDFLAGS_tokens) == state.tokens.ld
+
+    def test_clang_variant_agrees_including_wild_rewrite(self):
+        """The live -fuse-ld=wild -> --ld-path=wild rewrite when the wild
+        axis rides along a clang variant (guarded: requires clang++ AND
+        wild on PATH; skip otherwise, naming which prerequisite is
+        missing). Kept as its own test, separate from
+        test_clang_variant_agrees, so a missing `wild` binary skips only
+        this sub-case instead of silently dropping it after that test's
+        earlier asserts already ran and passed."""
+        import shutil as _sh
+
+        if not _sh.which("clang++"):
+            pytest.skip("clang++ not on PATH")
+        if not _sh.which("wild"):
+            pytest.skip("wild linker not on PATH")
+        with uth.TempDirContext():
+            args, state, _raw = _old_and_new(("--variant=clang,debug,wild",))
+            assert "--ld-path=wild" in state.tokens.ld
+            assert tuple(args.LDFLAGS_tokens) == state.tokens.ld
 
 
 @pytest.mark.usefixtures("parsers_reset")
@@ -363,3 +400,17 @@ class TestDifferentialConfShapes:
             assert state.pkg_config_path == old_env_value, (
                 f"new core would set {state.pkg_config_path!r}; old pipeline left {old_env_value!r}"
             )
+
+    def test_append_mode_env_var_reroutes_identically(self, monkeypatch):
+        """--variable-handling-method=append with a real CPPFLAGS env var:
+        the old pipeline reparses via _fix_variable_handling_method so the
+        env value APPENDS to conf/CLI values instead of overriding. The new
+        core must see the same final tokens."""
+        monkeypatch.setenv("CPPFLAGS", "-DFROMENV")
+        with uth.TempDirContext():
+            args, state, _raw = _old_and_new(("--variable-handling-method=append",))
+            assert "-DFROMENV" in args.CPPFLAGS_tokens, (
+                "Precondition failed: the env var never reached the old pipeline's CPPFLAGS."
+            )
+            assert tuple(args.CPPFLAGS_tokens) == state.tokens.cpp
+            assert tuple(args.CXXFLAGS_tokens) == state.tokens.cxx
