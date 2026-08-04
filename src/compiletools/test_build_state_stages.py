@@ -6,6 +6,7 @@ conf files, or compilers.
 
 from compiletools.build_inputs import BuildInputs, PkgConfigResult
 from compiletools.build_state import (
+    EnsureLinkerSymlinkDir,
     TokenState,
     stage_defaults,
     stage_include_paths,
@@ -13,6 +14,7 @@ from compiletools.build_state import (
     stage_prefix_map,
     stage_project_macros,
     stage_unify,
+    stage_wild_linker,
     stage_xxpend,
 )
 
@@ -162,3 +164,27 @@ class TestStagePrefixMap:
         ts = stage_prefix_map(inputs, TokenState(cxx=("-fdebug-prefix-map=/a=b",), c=()))
         assert ts.cxx == ("-fdebug-prefix-map=/a=b",)
         assert ts.c == ("-ffile-prefix-map=/repo=.",)
+
+
+class TestStageWildLinker:
+    def test_clang_driver_rewrites_fuse_ld_wild(self):
+        inputs = _inputs(link_driver_is_clang=True)
+        ts, effects = stage_wild_linker(inputs, TokenState(ld=("-fuse-ld=wild", "-lm")))
+        assert ts.ld == ("--ld-path=wild", "-lm")
+        assert effects == ()
+
+    def test_gcc_driver_keeps_fuse_ld_wild(self):
+        ts, effects = stage_wild_linker(_inputs(), TokenState(ld=("-fuse-ld=wild",)))
+        assert ts.ld == ("-fuse-ld=wild",)
+        assert effects == ()
+
+    def test_wild_b_appends_bdir_and_emits_effect(self):
+        inputs = _inputs(wild_b_selected=True, gitroot="/repo")
+        ts, effects = stage_wild_linker(inputs, TokenState())
+        assert ts.ld == ("-B/repo/.ct-wild-ld",)
+        assert effects == (EnsureLinkerSymlinkDir(directory="/repo/.ct-wild-ld", link_name="ld", target="wild"),)
+
+    def test_no_wild_selection_is_identity(self):
+        ts_in = TokenState(ld=("-lm",))
+        ts, effects = stage_wild_linker(_inputs(), ts_in)
+        assert ts is ts_in and effects == ()

@@ -118,3 +118,36 @@ def stage_prefix_map(inputs: BuildInputs, ts: TokenState) -> TokenState:
         if not has_prefix_map_token(current):
             updates[slot] = current + (flag,)
     return dataclasses.replace(ts, **updates) if updates else ts
+
+
+@dataclass(frozen=True)
+class SetEnv:
+    name: str
+    value: str
+
+
+@dataclass(frozen=True)
+class EnsureLinkerSymlinkDir:
+    directory: str
+    link_name: str
+    target: str
+
+
+Effect = SetEnv | EnsureLinkerSymlinkDir
+
+
+def stage_wild_linker(inputs: BuildInputs, ts: TokenState):
+    """Wild-linker selection decisions as pure data: the clang
+    -fuse-ld=wild -> --ld-path=wild rewrite, and the wild-B -B token plus
+    a symlink-dir effect for the apply layer to materialize."""
+    ld = ts.ld
+    effects: tuple[Effect, ...] = ()
+    if inputs.link_driver_is_clang and "-fuse-ld=wild" in ld:
+        ld = tuple("--ld-path=wild" if t == "-fuse-ld=wild" else t for t in ld)
+    if inputs.wild_b_selected and inputs.gitroot:
+        directory = f"{inputs.gitroot}/.ct-wild-ld"
+        ld = ld + (f"-B{directory}",)
+        effects = (EnsureLinkerSymlinkDir(directory=directory, link_name="ld", target="wild"),)
+    if ld == ts.ld and not effects:
+        return ts, ()
+    return dataclasses.replace(ts, ld=ld), effects
