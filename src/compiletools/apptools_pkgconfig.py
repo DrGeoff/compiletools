@@ -378,6 +378,77 @@ def _setup_pkg_config_overrides(context, verbose=0, prepend_paths=None, append_p
 _PKG_CONFIG_OVERRIDE_LOCK = threading.Lock()
 
 
+def _merged_pkg_config_path_entries(existing, prepend_paths, append_paths, cwd_candidates, gitroot_candidates):
+    """Yield ``(dir, label, origin)`` for each entry of the final
+    PKG_CONFIG_PATH, in emission order, deduplicated.
+
+    Pure merge with explicit precedence:
+    ``prepend_paths (highest) > candidates > middle (existing) > append_paths``.
+    Each entry appears at most once. An entry already in PKG_CONFIG_PATH is
+    *moved* to the requested position rather than being silently dropped —
+    so ``--prepend-PKG-CONFIG-PATH=/X`` actually promotes /X to the front
+    when /X was already present.
+
+    ``prepend_paths`` / ``append_paths`` arrive ordered
+    ``[low-priority conf, ..., high-priority conf, CLI in parse order]`` —
+    the order ``_AccumulatingConfigFileParser`` and the
+    ``_ComposingArgumentParser`` CLI re-append produce for every
+    ``prepend-*`` / ``append-*`` key. Compiler-flag slots emit that list
+    left-to-right and rely on the compiler's "last token wins" rule to
+    honor CLI > high-conf > low-conf. ``PKG_CONFIG_PATH`` resolves
+    leftmost-first, so both lists are *reversed* here so the same priority
+    ordering survives the inversion of the wins rule. Symmetric for
+    prepend and append: within each group, the highest-priority source
+    ends up leftmost in PATH (winning), the lowest-priority source ends up
+    rightmost in its group (only used as a fallback for packages no higher
+    source defines).
+
+    ``label``/``origin`` are the provenance-printing hints
+    ``_setup_pkg_config_overrides_locked`` consumes at ``verbose >= 4``;
+    both are None for middle (pre-existing) entries.
+    """
+    existing_dirs = [compiletools.wrappedos.normpath(d) for d in existing.split(os.pathsep)] if existing else []
+    prepend_normd = [compiletools.wrappedos.normpath(d) for d in reversed(prepend_paths or [])]
+    append_normd = [compiletools.wrappedos.normpath(d) for d in reversed(append_paths or [])]
+    forced_at_end = set(append_normd)
+
+    middle = [d for d in existing_dirs if d not in forced_at_end]
+
+    seen: set[str] = set()
+    emission_passes: list[tuple[list[str], str | None, _PkgConfigOrigin | None]] = [
+        (prepend_normd, "Prepended", "prepend"),
+        (list(cwd_candidates), "Prepended", "candidate-cwd"),
+        (list(gitroot_candidates), "Prepended", "candidate-gitroot"),
+        (middle, None, None),
+        (append_normd, "Appended", "append"),
+    ]
+    for source, label, origin in emission_passes:
+        for d in source:
+            if not d or d in seen:
+                continue
+            seen.add(d)
+            yield d, label, origin
+
+
+def compute_pkg_config_path(existing, prepend_paths, append_paths, cwd_candidates, gitroot_candidates):
+    """Pure merge producing the final PKG_CONFIG_PATH value, or None when
+    the merge is empty.
+
+    Extraction of the merge loop of ``_setup_pkg_config_overrides_locked``
+    (which now calls this and keeps only the candidate discovery, env write
+    and provenance printing). ``gather_inputs`` calls it too so the pure
+    build-state core receives the value as data instead of reading the
+    mutated environment.
+    """
+    final = [
+        d
+        for d, _label, _origin in _merged_pkg_config_path_entries(
+            existing, prepend_paths, append_paths, cwd_candidates, gitroot_candidates
+        )
+    ]
+    return os.pathsep.join(final) if final else None
+
+
 def _setup_pkg_config_overrides_locked(context, verbose, prepend_paths, append_paths, args_parser=None):
     """Body of _setup_pkg_config_overrides; assumes the module lock is held."""
     if context.pkg_config_overrides_applied:
@@ -412,33 +483,6 @@ def _setup_pkg_config_overrides_locked(context, verbose, prepend_paths, append_p
                 gitroot_candidates.append(repo_pkgconfig)
 
     existing = os.environ.get("PKG_CONFIG_PATH", "")
-    existing_dirs = [compiletools.wrappedos.normpath(d) for d in existing.split(os.pathsep)] if existing else []
-
-    # Build the final path with explicit precedence:
-    #   prepend_paths (highest) > candidates > middle (existing) > append_paths
-    # Each entry appears at most once. An entry that is already in
-    # PKG_CONFIG_PATH gets *moved* to the requested position rather than
-    # being silently dropped — so --prepend-PKG-CONFIG-PATH=/X actually
-    # promotes /X to the front when /X was already present.
-    #
-    # ``prepend_paths`` / ``append_paths`` arrive ordered
-    # ``[low-priority conf, ..., high-priority conf, CLI in parse order]``
-    # — the order ``_AccumulatingConfigFileParser`` and the
-    # ``_ComposingArgumentParser`` CLI re-append produce for every
-    # ``prepend-*`` / ``append-*`` key. Compiler-flag slots emit that
-    # list left-to-right and rely on the compiler's "last token wins"
-    # rule to honor CLI > high-conf > low-conf. ``PKG_CONFIG_PATH``
-    # resolves leftmost-first, so we *reverse* both lists here so the
-    # same priority ordering survives the inversion of the wins rule.
-    # Symmetric for prepend and append: within each group, the highest-
-    # priority source ends up leftmost in PATH (winning), the
-    # lowest-priority source ends up rightmost in its group (only used
-    # as a fallback for packages no higher source defines).
-    prepend_normd = [compiletools.wrappedos.normpath(d) for d in reversed(prepend_paths or [])]
-    append_normd = [compiletools.wrappedos.normpath(d) for d in reversed(append_paths or [])]
-    forced_at_end = set(append_normd)
-
-    middle = [d for d in existing_dirs if d not in forced_at_end]
 
     provenance = {}
     if args_parser is not None:
@@ -453,29 +497,19 @@ def _setup_pkg_config_overrides_locked(context, verbose, prepend_paths, append_p
                     file=sys.stderr,
                 )
 
-    seen: set[str] = set()
-    final: list[str] = []
-    emission_passes: list[tuple[list[str], str | None, _PkgConfigOrigin | None]] = [
-        (prepend_normd, "Prepended", "prepend"),
-        (cwd_candidates, "Prepended", "candidate-cwd"),
-        (gitroot_candidates, "Prepended", "candidate-gitroot"),
-        (middle, None, None),
-        (append_normd, "Appended", "append"),
-    ]
-    for source, label, origin in emission_passes:
-        for d in source:
-            if not d or d in seen:
+    if verbose >= 4:
+        for d, label, origin in _merged_pkg_config_path_entries(
+            existing, prepend_paths, append_paths, cwd_candidates, gitroot_candidates
+        ):
+            if label is None or origin is None:
                 continue
-            seen.add(d)
-            final.append(d)
-            if label is not None and origin is not None and verbose >= 4:
-                attribution = _pkg_config_provenance_label(d, origin, provenance)
-                if attribution:
-                    print(f"{label} pkg-config path: {d} {attribution}")
-                else:
-                    print(f"{label} pkg-config path: {d}")
+            attribution = _pkg_config_provenance_label(d, origin, provenance)
+            if attribution:
+                print(f"{label} pkg-config path: {d} {attribution}")
+            else:
+                print(f"{label} pkg-config path: {d}")
 
-    new_value = os.pathsep.join(final) if final else None
+    new_value = compute_pkg_config_path(existing, prepend_paths, append_paths, cwd_candidates, gitroot_candidates)
 
     # Save original ONLY if we are about to mutate, so restore_pkg_config_path
     # can faithfully undo. Set the flag AFTER the mutation succeeds so a
