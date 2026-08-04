@@ -139,6 +139,37 @@ class TestPopulateArgs:
         inputs = gather_inputs(args, BuildContext())
         assert "LDFLAGS" not in inputs.registered_slots
 
+    def test_stashes_build_state_on_namespace(self):
+        """Consumer-migration surface: populate_args stashes the BuildState
+        itself so migrated consumers read args._build_state instead of the
+        legacy slot attrs. Refreshed on every call (unlike _raw_flag_slots,
+        which is first-call-only): consumers must see the CURRENT pass's
+        state after a re-run."""
+        state1 = _state(cxxflags=("-DPASS1",))
+        args = argparse.Namespace(verbose=0)
+        populate_args(args, state1)
+        assert args._build_state is state1
+        state2 = _state(cxxflags=("-DPASS2",))
+        populate_args(args, state2)
+        assert args._build_state is state2
+
+    def test_get_build_state_accessor_and_missing_error(self):
+        """get_build_state returns the stash; on a namespace that never went
+        through populate_args it raises a named error pointing at the
+        fixture gap (not a bare AttributeError)."""
+        import pytest
+
+        from compiletools.build_apply import get_build_state
+
+        state = _state()
+        args = argparse.Namespace(verbose=0)
+        populate_args(args, state)
+        assert get_build_state(args) is state
+
+        bare = argparse.Namespace(verbose=0)
+        with pytest.raises(RuntimeError, match="populate_args"):
+            get_build_state(bare)
+
     def test_records_pre_overwrite_raw_slots(self):
         """The shim preserves what it clobbers: the slot strings present
         BEFORE populate_args overwrites them land in args._raw_flag_slots,

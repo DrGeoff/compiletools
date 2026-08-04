@@ -83,6 +83,11 @@ def populate_args(args, state: BuildState) -> None:
     """
     if getattr(args, "_raw_flag_slots", None) is None:
         args._raw_flag_slots = {slot: getattr(args, slot) for slot in _SLOT_TO_TOKENS if hasattr(args, slot)}
+    # The consumer-migration surface: migrated consumers read the state
+    # directly via get_build_state(args) instead of the legacy slot attrs.
+    # Refreshed on EVERY call (unlike _raw_flag_slots) so consumers always
+    # see the current pass's state after a re-run.
+    args._build_state = state
     strings = {
         "CPPFLAGS": state.cppflags,
         "CFLAGS": state.cflags,
@@ -103,3 +108,26 @@ def populate_args(args, state: BuildState) -> None:
         (slot, strings[slot]) for slot in _SLOT_TO_TOKENS if slot in state.registered_slots
     )
     args._registered_flag_slots = tuple(slot for slot in _SLOT_TO_TOKENS if slot in state.registered_slots)
+
+
+def get_build_state(args) -> BuildState:
+    """Return the BuildState populate_args stashed on *args*.
+
+    The read-side of consumer migration: modules that used to read the
+    legacy args.{CPPFLAGS,...}/variant/bindir/cas-*dir surface read
+    state.tokens/state.names/state.flags through this accessor instead.
+    Raises a named error (not a bare AttributeError) when the namespace
+    never went through populate_args -- almost always a test fixture
+    that built args by hand; route it through parseargs or
+    testhelper.finalize_flag_state.
+    """
+    state = getattr(args, "_build_state", None)
+    if state is None:
+        raise RuntimeError(
+            "args carries no BuildState: this namespace never went through "
+            "populate_args (parseargs/resubstitute). Test fixtures that "
+            "construct args by hand must run it through parseargs or "
+            "testhelper.finalize_flag_state before handing it to a "
+            "BuildState-consuming module."
+        )
+    return state
