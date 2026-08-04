@@ -1953,12 +1953,16 @@ def assert_flag_normalization_fixed_point(args) -> None:
 
     Scope: this probe replays ONLY the normalization tail (unify /
     prefix-map inject) and is blind to any other pipeline step — it exists
-    as a cheap every-build sanity check on that tail. Full-pipeline re-run
-    idempotency is owned by the seed restore in ``substitutions()`` (raw
-    slots rebuild from ``args._substitution_seed`` each pass) and enforced
-    at every sanctioned re-run site by ``resubstitute``, which hard-errors
-    on drift not explained by INCLUDE widening. Probes a scratch
-    namespace; ``args`` is never mutated. LDFLAGS is not probed:
+    as a cheap every-build sanity check on that tail, and only runs inside
+    the legacy ``substitutions()`` pipeline (the differential suite's
+    reference path). Full-pipeline re-run idempotency for that legacy
+    pipeline is owned by its own seed restore (raw slots rebuild from
+    ``args._substitution_seed`` each pass). The production re-run path,
+    ``apptools.resubstitute``, no longer drives ``substitutions()`` at
+    all (swap Task 9): it re-runs ``gather_inputs`` /
+    ``compute_build_state`` directly, which is a fixed point by
+    construction and carries no drift guard of this kind. Probes a
+    scratch namespace; ``args`` is never mutated. LDFLAGS is not probed:
     ``_normalize_wild_linker`` touches the filesystem, and its rewrite is
     deterministic on the seeded LDFLAGS (which the seed restore reverts
     each pass), so re-runs converge to the same value.
@@ -2040,9 +2044,12 @@ def warn_unexplained_flag_drift(prior_flags, new_flags, include_paths) -> list[s
 
     Complements :func:`assert_flag_normalization_fixed_point`, which replays
     only the normalization tail (unify / prefix-map inject) and so cannot see
-    a non-idempotent step elsewhere in the pipeline. ``resubstitute`` snapshots
-    ``args.flags`` around each sanctioned re-run, hands both snapshots here,
-    and raises on any returned message.
+    a non-idempotent step elsewhere in the pipeline. Historically
+    ``apptools.resubstitute`` snapshotted ``args.flags`` around each sanctioned
+    re-run, handed both snapshots here, and raised on any returned message;
+    swap Task 9 retired that call (resubstitute is now re-gather + recompute,
+    a fixed point by construction). Kept as tested pure infrastructure for
+    the legacy ``substitutions()`` pipeline and ad hoc drift analysis.
 
     Explained drift is exactly what INCLUDE widening produces under the seed-
     restore rebuild: detached ``-I <path>`` pairs (the form
@@ -2079,26 +2086,79 @@ def warn_unexplained_flag_drift(prior_flags, new_flags, include_paths) -> list[s
 
 
 def resubstitute(args) -> None:
-    """Re-run ``substitutions()`` on *args* — the only sanctioned re-run path.
+    """Re-run the pure build-state core on *args* — the only sanctioned
+    re-run path (cake's second-stage target discovery, the //#GIT=
+    external fetch, compilation_database's --auto refresh).
 
-    Snapshots ``args.flags`` around the re-run and raises ``RuntimeError``
-    on any slot drift not explained by INCLUDE-widening ``-I`` additions
-    (same policy as ``check_flag_string_drift``: a forked CAS key space is
-    silent corruption, not a warning). Callers with a legitimate reason to
-    re-run the pipeline (cake's second-stage discovery, the //#GIT= fetch,
-    compilation_database's --auto refresh) go through here so every re-run
-    site gets the same guard.
+    Post-swap this is re-gather + recompute, not a legacy
+    ``substitutions()`` replay. None of ``parseargs``'s pre-gather
+    namespace steps (quiet latch, variant-resolution stash, CPP/LD
+    exe-name substitution, hook-script lists, preprocess/magic aliasing,
+    test-xml-dir anchoring) need replaying here: none of them feed
+    ``BuildInputs`` — verified directly against ``gather_inputs``/
+    ``BuildInputs`` — so their absence changes nothing gather reads.
+
+    The four raw flag slots (CPPFLAGS/CFLAGS/CXXFLAGS/LDFLAGS) are a
+    different matter: ``gather_inputs`` reads them as raw input, but by
+    the time this runs they already hold the FIRST pass's derived output
+    (unified, prefix-map-injected, pkg-config-merged). Re-gathering from
+    that would compound pass 1's transforms into pass 2's "raw" input —
+    same token set as a fresh single pass over equivalent final inputs,
+    but different token order (CPPFLAGS starts a genuine first pass
+    shorter than CXXFLAGS, which lets stage_include_paths land
+    INCLUDE-derived ``-I`` pairs ahead of the accumulated CFLAGS/CXXFLAGS
+    tail; once CPPFLAGS already equals pass 1's unified CXXFLAGS that
+    ordering opportunity is gone). Since flag-slot hashing is argv-shaped,
+    a reordered-but-equal-set CPPFLAGS/CXXFLAGS forks the object CAS key
+    between --auto (widen + resubstitute) and --no-auto (single pass)
+    builds of the same sources. ``parseargs`` snapshots the four raw
+    slots once, before its own first gather, into
+    ``args._resubstitute_seed``; restoring them here before every
+    re-gather keeps each pass rebuilding from the same base.
+    ``args.INCLUDE`` is the one genuine between-pass input and is
+    deliberately not restored.
+
+    The re-run is therefore a fixed point BY CONSTRUCTION, not by a
+    seed-restore-and-diff guard: the ``RuntimeError`` drift check the
+    legacy path enforced here is retired. ``cache_naming_view`` is logged
+    at ``verbose >= 2`` as an informational before/after diff — since
+    gather is a pure function of the (possibly caller-mutated) namespace,
+    any observed change reflects the caller's own edit, never corruption.
     """
-    prior_flags = args.flags
-    substitutions(args, verbose=0)
-    include_paths = (getattr(args, "INCLUDE", "") or "").split()
-    messages = warn_unexplained_flag_drift(prior_flags, args.flags, include_paths)
-    if messages:
-        raise RuntimeError(
-            "substitutions() re-run produced unexplained flag drift:\n"
-            + "\n".join(messages)
-            + "\nRe-run with -vv for the traceback and report this as a compiletools bug."
-        )
+    from compiletools.build_apply import apply_effects, populate_args
+    from compiletools.build_inputs import gather_inputs
+    from compiletools.build_state import NameState, cache_naming_view, compute_build_state
+
+    context = args._context
+    prior_view = (
+        args.flags,
+        NameState(
+            variant=args.variant,
+            bindir=args.bindir,
+            cas_objdir=args.cas_objdir,
+            cas_pchdir=args.cas_pchdir,
+            cas_pcmdir=args.cas_pcmdir,
+            cas_exedir=args.cas_exedir,
+        ),
+    )
+
+    seed = getattr(args, "_resubstitute_seed", None)
+    if seed is not None:
+        for slot, value in seed.items():
+            setattr(args, slot, value)
+
+    inputs = gather_inputs(args, context)
+    state = compute_build_state(inputs)
+    apply_effects(state, context)
+    populate_args(args, state)
+
+    if args.verbose >= 2:
+        new_view = cache_naming_view(state)
+        if new_view != prior_view:
+            print(
+                "resubstitute: cache-naming view changed across the re-run "
+                f"(informational only, not an error):\n  before: {prior_view}\n  after:  {new_view}"
+            )
 
 
 # List to store the callback functions for parse args
@@ -2432,13 +2492,24 @@ def parseargs(cap, argv, verbose=None, *, context):
         else:
             args.test_xml_dir = os.path.abspath(test_xml_dir)
 
-    # Transition-period seed for the legacy substitutions()-based
-    # resubstitute (cake --auto / //#GIT= re-runs, compilation_database's
-    # refresh): snapshot the post-parse raw slots so a re-run rebuilds from
-    # the same base the old pipeline would have seeded. Removed when
-    # resubstitute becomes re-gather + recompute (swap Task 9).
-    if getattr(args, "_substitution_seed", None) is None:
-        args._substitution_seed = {
+    # resubstitute's re-gather reads args.CPPFLAGS/CFLAGS/CXXFLAGS/LDFLAGS
+    # as raw input, but by its first call those slots already hold THIS
+    # pass's DERIVED output (unified, prefix-map-injected, pkg-config-
+    # merged) -- re-gathering from that compounds pass 1's transforms into
+    # pass 2's "raw" input instead of rebuilding from the same base. The
+    # divergence is byte-order, not content: CPPFLAGS starts this pass
+    # shorter than CXXFLAGS (stage_unify hasn't run yet), which lets
+    # stage_include_paths land INCLUDE-derived -I pairs ahead of the
+    # accumulated CFLAGS/CXXFLAGS tail; once CPPFLAGS already equals
+    # pass 1's unified CXXFLAGS, that ordering opportunity is gone and a
+    # re-run's -I pairs land at the tail instead -- same token set,
+    # different order, which forks the object CAS key (flag-slot hashing
+    # is argv-shaped, not slot-shaped). Snapshotting the four raw slots
+    # here, once, lets resubstitute restore them before every re-gather so
+    # each pass rebuilds from the same base; args.INCLUDE is the one
+    # genuine between-pass input and is deliberately not seeded.
+    if getattr(args, "_resubstitute_seed", None) is None:
+        args._resubstitute_seed = {
             slot: getattr(args, slot) for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS") if hasattr(args, slot)
         }
 

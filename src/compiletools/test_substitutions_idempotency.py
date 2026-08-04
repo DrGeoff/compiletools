@@ -325,9 +325,10 @@ class TestWarnUnexplainedFlagDrift:
 
 @pytest.mark.usefixtures("parsers_reset")
 class TestResubstitute:
-    """apptools.resubstitute is the only sanctioned substitutions() re-run
-    path: snapshot args.flags, re-run, hard-error on drift the INCLUDE
-    widening doesn't explain."""
+    """apptools.resubstitute is the only sanctioned re-run path. Swap Task
+    9 rewrote it as re-gather + recompute (no more legacy substitutions()
+    replay), which is a fixed point BY CONSTRUCTION -- the RuntimeError
+    drift guard the pre-Task-9 version raised is retired."""
 
     def test_include_widening_rerun_does_not_raise(self):
         with uth.TempDirContext():
@@ -340,6 +341,58 @@ class TestResubstitute:
                 f"Precondition failed: the re-run did not land the -I pair, so the "
                 f"no-raise outcome would be vacuous. cpp slot: {args.flags.cpp}"
             )
+
+    def test_include_widening_converges_with_fresh_single_pass(self):
+        """The --auto (two-pass: parse, then widen INCLUDE and resubstitute)
+        vs --no-auto (one pass, INCLUDE known up front) convergence, now
+        pinned as a first-class contract: re-gather + recompute must land
+        on exactly the same args.flags a fresh single-pass parseargs would
+        compute over equivalent inputs."""
+        with uth.TempDirContext():
+            newdir = os.path.join(os.getcwd(), "external_inc")
+            os.makedirs(newdir)
+
+            widened = _parseargs_in_temp_repo()
+            widened.INCLUDE = (widened.INCLUDE + " " + newdir).strip()
+            apptools.resubstitute(widened)
+
+            fresh = _parseargs_in_temp_repo(extra_argv=[f"--append-INCLUDE={newdir}"])
+
+            assert widened.flags == fresh.flags, (
+                f"--auto (widen + resubstitute) diverged from a fresh single-pass parse:\n"
+                f"  widened: {widened.flags}\n  fresh:   {fresh.flags}"
+            )
+
+    def test_auto_rerun_with_overlapping_pkg_config_converges(self, tmp_path, monkeypatch):
+        """The blocker Task 8 flagged (task-8-report.md Concern #1a): two
+        pkg-config packages sharing a Cflags/Libs token. Pass 1 (the new
+        core) dedups the shared tokens at the END of the pipeline
+        (stage_dedup, D5); the pre-Task-9 resubstitute replayed the LEGACY
+        substitutions() pipeline, whose dedup-then-append ordering
+        re-derives the OLD duplicated form and raised RuntimeError on the
+        (spurious) drift. resubstitute no longer replays that pipeline, so
+        the re-run reproduces pass 1's already-deduped result exactly."""
+        for name, lib in (("ctresub9alpha", "-lctresub9alpha"), ("ctresub9beta", "-lctresub9beta")):
+            (tmp_path / f"{name}.pc").write_text(
+                f"Name: {name}\nDescription: resubstitute overlap pin\nVersion: 1.0.0\n"
+                "Cflags: -DCTRESUB9_COMMON\n"
+                f"Libs: -L/usr/local/lib -lctresub9common {lib}\n"
+            )
+        monkeypatch.setenv("PKG_CONFIG_PATH", str(tmp_path))
+        with uth.TempDirContext():
+            args = _parseargs_in_temp_repo(extra_argv=["--pkg-config=ctresub9alpha ctresub9beta"])
+            assert args.CFLAGS_tokens.count("-DCTRESUB9_COMMON") == 1, (
+                "Precondition failed: pass 1's core did not dedup the shared cflags token."
+            )
+            assert args.LDFLAGS_tokens.count("-lctresub9common") == 1, (
+                "Precondition failed: pass 1's core did not dedup the shared libs token."
+            )
+
+            apptools.resubstitute(args)
+
+            assert args.CFLAGS_tokens.count("-DCTRESUB9_COMMON") == 1
+            assert args.LDFLAGS_tokens.count("-lctresub9common") == 1
+            assert args.LDFLAGS_tokens.count("-L/usr/local/lib") == 1
 
     def test_non_idempotent_callback_raises(self):
         import itertools
