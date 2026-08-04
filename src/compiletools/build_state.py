@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import dataclasses
+import posixpath
 from dataclasses import dataclass
 
+import compiletools.configutils
 from compiletools.build_inputs import BuildInputs
 from compiletools.flag_ops import dedup_include_paths_to_append, dedup_tokens, has_prefix_map_token
 
@@ -151,3 +153,52 @@ def stage_wild_linker(inputs: BuildInputs, ts: TokenState):
     if ld == ts.ld and not effects:
         return ts, ()
     return dataclasses.replace(ts, ld=ld), effects
+
+
+def stage_dedup(inputs: BuildInputs, ts: TokenState) -> TokenState:
+    """Uniform pair-aware dedup over all four slots -- runs AFTER the
+    pkg-config merge, closing the CFLAGS/LDFLAGS re-append class by
+    position rather than by guard."""
+    return TokenState(
+        cpp=dedup_tokens(ts.cpp),
+        c=dedup_tokens(ts.c),
+        cxx=dedup_tokens(ts.cxx),
+        ld=dedup_tokens(ts.ld),
+    )
+
+
+@dataclass(frozen=True)
+class NameState:
+    variant: str
+    bindir: str
+    cas_objdir: str
+    cas_pchdir: str
+    cas_pcmdir: str
+    cas_exedir: str
+
+
+def _with_variant_suffix(raw: str | None, variant: str) -> str:
+    if raw is None:
+        return ""
+    normalized = posixpath.normpath(raw)
+    if normalized == variant or normalized.endswith("/" + variant):
+        return normalized
+    return normalized + "/" + variant
+
+
+def stage_resolve_names(inputs: BuildInputs) -> NameState:
+    """Variant canonicalization + bindir/cas-dir naming. All naming is a
+    canonicalization fixed point: re-running on its own output changes
+    nothing (the NON_CANONICAL trim-cache class cannot be minted here)."""
+    tokens = [t for t in inputs.variant_raw.replace(",", ".").split(".") if t]
+    canonical = compiletools.configutils.canonicalize_variant_tokens(tokens, list(inputs.canonical_order))
+    variant = ".".join(canonical)
+    bindir = posixpath.normpath(inputs.bindir_raw) if inputs.bindir_raw is not None else "bin/" + variant
+    return NameState(
+        variant=variant,
+        bindir=bindir,
+        cas_objdir=_with_variant_suffix(inputs.cas_objdir_raw, variant),
+        cas_pchdir=_with_variant_suffix(inputs.cas_pchdir_raw, variant),
+        cas_pcmdir=_with_variant_suffix(inputs.cas_pcmdir_raw, variant),
+        cas_exedir=_with_variant_suffix(inputs.cas_exedir_raw, variant),
+    )

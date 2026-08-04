@@ -8,11 +8,13 @@ from compiletools.build_inputs import BuildInputs, PkgConfigResult
 from compiletools.build_state import (
     EnsureLinkerSymlinkDir,
     TokenState,
+    stage_dedup,
     stage_defaults,
     stage_include_paths,
     stage_pkg_config_flags,
     stage_prefix_map,
     stage_project_macros,
+    stage_resolve_names,
     stage_unify,
     stage_wild_linker,
     stage_xxpend,
@@ -188,3 +190,40 @@ class TestStageWildLinker:
         ts_in = TokenState(ld=("-lm",))
         ts, effects = stage_wild_linker(_inputs(), ts_in)
         assert ts is ts_in and effects == ()
+
+
+ORDER = ("gcc", "clang", "debug", "release")
+
+
+class TestStageDedup:
+    def test_all_slots_deduped(self):
+        ts = stage_dedup(
+            _inputs(),
+            TokenState(cpp=("-DX", "-DX"), c=("-I/a", "-I", "/a"), cxx=("-O2",), ld=("-lm", "-lm")),
+        )
+        assert ts.cpp == ("-DX",)
+        assert ts.c == ("-I/a",)
+        assert ts.ld == ("-lm",)
+
+
+class TestStageResolveNames:
+    def test_variant_canonicalized_and_deduped(self):
+        ns = stage_resolve_names(_inputs(variant_raw="debug,gcc,gcc", canonical_order=ORDER))
+        assert ns.variant == "gcc.debug"
+
+    def test_bindir_defaults_to_bin_variant(self):
+        ns = stage_resolve_names(_inputs(variant_raw="gcc.debug", canonical_order=ORDER))
+        assert ns.bindir == "bin/gcc.debug"
+
+    def test_explicit_bindir_is_normalized(self):
+        ns = stage_resolve_names(_inputs(variant_raw="gcc.debug", canonical_order=ORDER, bindir_raw="./out//x/./y"))
+        assert ns.bindir == "out/x/y"
+
+    def test_cas_dir_gets_variant_suffix_once(self):
+        inputs = _inputs(variant_raw="gcc.debug", canonical_order=ORDER, cas_objdir_raw="/cas/obj")
+        ns = stage_resolve_names(inputs)
+        assert ns.cas_objdir == "/cas/obj/gcc.debug"
+        again = stage_resolve_names(
+            _inputs(variant_raw="gcc.debug", canonical_order=ORDER, cas_objdir_raw=ns.cas_objdir)
+        )
+        assert again.cas_objdir == "/cas/obj/gcc.debug"
