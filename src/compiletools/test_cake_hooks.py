@@ -280,7 +280,7 @@ def _hook_conf_repo(ct_conf_lines, variant_conf_lines, variant="hookvariant"):
 
 
 def _parse_cake_args(repo_root, argv):
-    """create_parser + Cake.add_arguments + registercallback + parseargs,
+    """create_parser + Cake.add_arguments + parseargs + _hide_makefilename,
     isolated via DirectoryContext + ParserContext (same plumbing as
     ``cake.main`` / ``test_cake.TestCake._make_cake_args``)."""
     argv = list(argv)

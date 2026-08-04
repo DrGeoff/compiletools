@@ -124,10 +124,11 @@ def test_fetch_step_registers_external_include_dirs(monkeypatch) -> None:
         clone = os.path.join(externals_dir, "extlib")
         assert os.path.isfile(os.path.join(clone, "include", "extlib.h"))
 
-        # INCLUDE now carries the external's include dir; re-run substitutions
-        # exactly as process() does to redistribute it into the frozen flags.
+        # INCLUDE now carries the external's include dir; re-run through
+        # resubstitute exactly as process() does (post-swap Task 9: re-gather
+        # + recompute) to redistribute it into the frozen flags.
         assert os.path.join(clone, "include") in args.INCLUDE.split()
-        compiletools.apptools.substitutions(args, verbose=0)
+        compiletools.apptools.resubstitute(args)
 
         # (2) args.flags (frozen) carries -I entries pointing at the external.
         cxx_tokens = list(args.flags.cxx)

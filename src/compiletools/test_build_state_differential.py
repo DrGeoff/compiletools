@@ -107,6 +107,13 @@ def _old_and_new(extra_argv=(), register_link_args=True, *, explicit_config=True
     os.environ, and even when one is set, the raw namespace would silently
     diverge from the old pipeline for a reason that has nothing to do with
     the core under test.
+
+    Known harness gap (inert today): the raw side omits
+    ``apptools._apply_target_conf_layers``, which the old side runs. No
+    current case passes an explicit target outside the cwd subproject, so
+    the layer walk is a no-op on every case; a future case exercising
+    target-anchored conf layers must add the call to the raw side or the
+    two sides will diverge for harness reasons.
     """
     if confdir is None:
         confdir = os.getcwd()
@@ -400,6 +407,19 @@ class TestRawStringAndExeNameSplit:
             assert _shlex.split(args.CXXFLAGS) == list(state.tokens.cxx)
             assert _shlex.split(args.LDFLAGS) == list(state.tokens.ld)
 
+    def test_raw_string_shlex_round_trips_for_quoted_values(self):
+        """The quoted-value row's raw-string leg: the raw strings may
+        differ in quoting STYLE between pipelines (shlex.join vs the old
+        ' '.join), but a shlex round-trip of the OLD pipeline's raw string
+        must recover exactly the new core's token stream -- a consumer
+        that re-splits args.CPPFLAGS sees the same argv either way."""
+        with uth.TempDirContext():
+            args, state, _raw = _old_and_new(('--CPPFLAGS=-DMSG="hello world"',))
+            import shlex as _shlex
+
+            assert "-DMSG=hello world" in state.tokens.cpp
+            assert _shlex.split(args.CPPFLAGS) == list(state.tokens.cpp)
+
     def test_cpp_and_ld_exe_names_stay_on_the_old_path(self):
         """BuildState does not model CPP/LD executable names; the old
         pipeline's _substitute_CXX_for_missing owns them through the swap.
@@ -511,7 +531,14 @@ class TestDifferentialConfShapes:
 
     def test_pkg_config_path_value_parity(self, pkgconfig_env):
         """The value the new core would SetEnv must equal what the old
-        pipeline actually wrote to the environment."""
+        pipeline actually wrote to the environment.
+
+        Regression pin, not independent verification: both sides call the
+        shared ``apptools_pkgconfig.compute_pkg_config_path`` — the parity
+        asserted here is that gather's CANDIDATE DISCOVERY (cwd/gitroot
+        ct.conf.d/pkgconfig walk, prepend/append attr reads) matches the
+        locked writer's, not that two independent merge implementations
+        agree."""
         with uth.TempDirContext():
             args, state, _raw = _old_and_new(("--pkg-config=nested",))
             del args

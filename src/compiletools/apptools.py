@@ -2380,8 +2380,6 @@ def parseargs(cap, argv, verbose=None, *, context):
     """
     # Deferred imports: build_inputs/build_state/build_apply import from
     # apptools (sentinels, helpers), so top-level imports here would cycle.
-    # Aliased so the local binding does not shadow the module-scope
-    # ``compiletools`` package name for the type checker.
     from compiletools.build_apply import apply_effects, populate_args
     from compiletools.build_inputs import gather_inputs
     from compiletools.build_state import compute_build_state
