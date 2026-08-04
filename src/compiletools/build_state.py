@@ -224,6 +224,7 @@ class BuildState:
     ldflags: str
     pkg_config_path: str | None
     effects: tuple[Effect, ...]
+    registered_slots: frozenset[str]
 
 
 def compute_build_state(inputs: BuildInputs) -> BuildState:
@@ -255,6 +256,7 @@ def compute_build_state(inputs: BuildInputs) -> BuildState:
         ldflags=shlex.join(ts.ld),
         pkg_config_path=inputs.pkg_config_path,
         effects=effects,
+        registered_slots=inputs.registered_slots,
     )
 
 

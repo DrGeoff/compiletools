@@ -186,6 +186,8 @@ _R6_NAME_PROMISE_ALLOWLIST: frozenset[str] = frozenset(
         "test_makefile_backend.py::test_generate_writes_makefile_syntax",
         "test_ninja_backend.py::test_generate_writes_ninja_syntax",
         "test_shake_backend.py::test_writes_summary_to_output",
+        # "writes" an environment variable (os.environ), not a file.
+        "test_build_apply.py::test_setenv_writes_and_saves_original",
         # Compares the full recursive file listing before/after — a stronger
         # check than any single existence probe — but the fs access happens
         # inside the _all_files_under helper, out of the collector's reach.
