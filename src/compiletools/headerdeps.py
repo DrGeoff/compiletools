@@ -134,6 +134,19 @@ class HeaderDepsBase:
         """Derived classes implement this function"""
         raise NotImplementedError
 
+    def _cpp_flag_string(self) -> str:
+        """The preprocessor flag string the include-path extraction reads.
+
+        Consumer migration: prefers the stashed BuildState's cpp string
+        over the legacy ``args.CPPFLAGS`` attr. The legacy fallback covers
+        transition-period fixtures that built args by hand without
+        ``testhelper.finalize_flag_state``; it dies with the shim.
+        """
+        state = getattr(self.args, "_build_state", None)
+        if state is not None:
+            return state.cppflags
+        return self.args.CPPFLAGS
+
     def process(self, filename: str, macro_cache_key: MacroCacheKey) -> list[str]:
         """Return an ordered list of header dependencies for the given file.
 
@@ -248,7 +261,7 @@ class DirectHeaderDeps(HeaderDepsBase):
         if self._core_macros is None:
             # Grab the include paths from the CPPFLAGS, excluding system paths.
             # Use proper shell parsing instead of regex to handle quoted paths with spaces
-            self._includes = self._extract_include_paths_from_flags(self.args.CPPFLAGS)
+            self._includes = self._extract_include_paths_from_flags(self._cpp_flag_string())
             # Append any caller-supplied extra -I dirs (e.g. fetch reaching into
             # already-cloned externals). Kept as raw path strings so paths with
             # spaces survive without a shlex round-trip through CPPFLAGS.
@@ -561,7 +574,7 @@ class CppHeaderDeps(HeaderDepsBase):
         """
         # Exclude system paths. Use proper shell parsing instead of regex to
         # handle quoted paths with spaces.
-        isystem_paths = self._extract_isystem_paths_from_flags(self.args.CPPFLAGS)
+        isystem_paths = self._extract_isystem_paths_from_flags(self._cpp_flag_string())
         system_paths = tuple(item for pth in isystem_paths for item in (pth, compiletools.wrappedos.realpath(pth)))
         realpath_obj = Path(realpath)
         if any(realpath_obj.is_relative_to(syspath) for syspath in system_paths):

@@ -420,11 +420,14 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
         # This is the critical test case that exposes the bug
         expected_includes = ["/path with spaces/include"]
 
-        # Bypass command line parsing issues by setting CPPFLAGS directly
-        args = self._parse_args(["-q"])
+        # Bypass command line parsing issues by setting the flag string
+        # directly. Post consumer-migration the extraction reads the stashed
+        # BuildState's cpp string, so the override goes there (a bare
+        # args.CPPFLAGS mutation is deliberately inert now).
+        import dataclasses
 
-        # Set the CPPFLAGS with properly quoted string directly
-        args.CPPFLAGS = '-I "/path with spaces/include"'
+        args = self._parse_args(["-q"])
+        args._build_state = dataclasses.replace(args._build_state, cppflags='-I "/path with spaces/include"')
 
         deps = compiletools.headerdeps.DirectHeaderDeps(args, context=BuildContext())
         actual_includes = deps.includes
@@ -481,6 +484,28 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
         )
         expected = self._get_sample_path("computed_include/linux_extra.h")
         assert expected in result_set, f"Expected {expected} in {result_set}"
+
+
+class TestHeaderDepsReadsBuildState(tb.BaseCompileToolsTestCase):
+    """Consumer migration: DirectHeaderDeps' include-path extraction must
+    read the stashed BuildState's cpp string, not the legacy args.CPPFLAGS
+    attr. Pinned by mutating the legacy attr after parseargs: the include
+    list must reflect the state, not the mutation."""
+
+    def test_includes_come_from_build_state_not_legacy_attr(self, monkeypatch):
+        _clear_include_env(monkeypatch)
+        cap = configargparse.ArgumentParser(
+            conflict_handler="resolve",
+            args_for_setting_config_path=["-c", "--config"],
+            ignore_unknown_config_file_keys=True,
+        )
+        compiletools.headerdeps.add_arguments(cap)
+        compiletools.apptools.add_common_arguments(cap)
+        args = compiletools.apptools.parseargs(cap, ["-q", "--CPPFLAGS=-I /state/include"], context=BuildContext())
+        args.CPPFLAGS = "-I /legacy/mutated"
+        deps = compiletools.headerdeps.DirectHeaderDeps(args, context=BuildContext())
+        assert "/state/include" in deps.includes
+        assert "/legacy/mutated" not in deps.includes
 
 
 class TestHeaderDepsUnitTests(tb.BaseCompileToolsTestCase):
