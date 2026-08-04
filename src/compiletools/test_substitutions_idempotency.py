@@ -349,8 +349,10 @@ class TestWarnUnexplainedFlagDrift:
         assert "compiler_identity" in msgs[0]
 
     def test_comparison_never_prints(self, capsys):
-        """The comparison is pure: surfacing the messages is the caller's
-        job (resubstitute raises). No printing at any drift level."""
+        """The comparison is pure: surfacing the messages would be a
+        caller's job, but no production caller remains post-Task-9
+        (apptools.resubstitute no longer invokes it). No printing at any
+        drift level."""
         prior = _drift_base_flags()
         new = dataclasses.replace(prior, cxx=prior.cxx + ("-O3",))
         msgs = apptools.warn_unexplained_flag_drift(prior, new, [])
@@ -398,6 +400,31 @@ class TestResubstitute:
             assert widened.flags == fresh.flags, (
                 f"--auto (widen + resubstitute) diverged from a fresh single-pass parse:\n"
                 f"  widened: {widened.flags}\n  fresh:   {fresh.flags}"
+            )
+
+    def test_include_widening_converges_with_fresh_single_pass_under_separate_flags(self):
+        """Same convergence oracle as
+        test_include_widening_converges_with_fresh_single_pass, under
+        --separate-flags-CPP-CXX. This mode is the one where the
+        _resubstitute_seed's content (not just its restore-before-re-gather
+        timing) is load-bearing: with stage_unify skipped, CPPFLAGS can
+        still carry the raw _UNSUPPLIED_USE_CXXFLAGS sentinel at seed time,
+        and the seed must hand that sentinel back on every re-run rather
+        than a since-materialized concrete string, or the widened run's
+        cppflags would permanently diverge from a fresh single pass'."""
+        with uth.TempDirContext():
+            newdir = os.path.join(os.getcwd(), "external_inc")
+            os.makedirs(newdir)
+
+            widened = _parseargs_in_temp_repo(extra_argv=["--separate-flags-CPP-CXX"])
+            widened.INCLUDE = (widened.INCLUDE + " " + newdir).strip()
+            apptools.resubstitute(widened)
+
+            fresh = _parseargs_in_temp_repo(extra_argv=["--separate-flags-CPP-CXX", f"--append-INCLUDE={newdir}"])
+
+            assert widened.flags == fresh.flags, (
+                f"--auto (widen + resubstitute) diverged from a fresh single-pass parse "
+                f"under --separate-flags-CPP-CXX:\n  widened: {widened.flags}\n  fresh:   {fresh.flags}"
             )
 
     def test_auto_rerun_with_overlapping_pkg_config_converges(self, tmp_path, monkeypatch):

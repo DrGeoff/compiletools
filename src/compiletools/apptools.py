@@ -2061,8 +2061,10 @@ def warn_unexplained_flag_drift(prior_flags, new_flags, include_paths) -> list[s
     entry. Anything else — removed or reordered tokens, duplicate ``-I``
     re-adds, non-include additions, any ``ld`` change, a ``compiler_identity``
     change — forks the object CAS key space between single-pass and multi-pass
-    builds and is reported. Pure comparison: the caller decides how to
-    surface the returned messages (``resubstitute`` raises).
+    builds and is reported. Pure comparison: it has no caller left in
+    production (``apptools.resubstitute`` no longer invokes it); a future
+    consumer of the legacy ``substitutions()`` pipeline decides how to
+    surface the returned messages.
     """
     include_set = set(include_paths)
     messages = []

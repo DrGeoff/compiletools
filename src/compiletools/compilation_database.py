@@ -1,6 +1,5 @@
 import json
 import os
-import sys
 from typing import Any, Optional
 
 import stringzilla as sz
@@ -413,18 +412,11 @@ def main(argv=None):
         # ct-cake --auto compiles with (and contradiction validation is
         # skipped).
         args = compiletools.findtargets.discover_targets_and_reanchor(args, context)
-        # Re-run substitutions after targets are discovered, through the
-        # sanctioned path so unexplained drift hard-errors here too. Render
-        # that drift as a fatal message rather than a traceback, matching
-        # cake's _FATAL_ERROR_RENDERERS contract (verbose >= 2 keeps the
-        # traceback as the diagnostic).
-        try:
-            compiletools.apptools.resubstitute(args)
-        except RuntimeError as err:
-            if args.verbose >= 2:
-                raise
-            print(f"Error: {err}", file=sys.stderr)
-            return 1
+        # Re-run the pure build-state core through the sanctioned re-run
+        # path so the CDB's flags reflect the just-discovered targets. This
+        # is re-gather + recompute (Task 9), a fixed point by construction
+        # -- there is no drift left to render as a fatal error here.
+        compiletools.apptools.resubstitute(args)
 
     # Create and run the compilation database creator
     creator = CompilationDatabaseCreator(args, context=context)

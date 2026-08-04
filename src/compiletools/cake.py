@@ -84,11 +84,12 @@ class Cake:
         ``args.INCLUDE``.
 
         Returns ``True`` if anything was appended to ``args.INCLUDE`` (so the
-        caller re-runs ``substitutions()`` to redistribute INCLUDE into the
-        *FLAGS and re-finalize the frozen ``args.flags``), else ``False``.
+        caller re-runs ``apptools.resubstitute`` to re-gather and recompute
+        the build state, redistributing INCLUDE into the *FLAGS and
+        re-finalizing the frozen ``args.flags``), else ``False``.
 
         Mutating ``args.INCLUDE`` (not a frozen flag slot) and letting the
-        downstream ``substitutions()`` re-run is the sanctioned way to widen
+        downstream ``resubstitute`` re-run is the sanctioned way to widen
         the include path post-parseargs without tripping
         ``check_flag_string_drift``.
 
@@ -169,8 +170,8 @@ class Cake:
 
         Runs the single-file library implied-source expansion, ``--auto``
         target discovery, and the ``//#GIT=`` external fetch, then re-runs
-        ``substitutions()`` and rebuilds the ct objects whenever any of those
-        steps changed the args. Mutates ``self.args`` and populates
+        ``apptools.resubstitute`` and rebuilds the ct objects whenever any of
+        those steps changed the args. Mutates ``self.args`` and populates
         ``self.namer`` / ``self.headerdeps`` / ``self.magicparser`` /
         ``self.hunter``.
 
@@ -231,7 +232,7 @@ class Cake:
         # list and register their include dirs. Must run AFTER single-lib
         # expansion and --auto discovery (so the target set is settled) but
         # BEFORE the recreateobjs re-substitution: it mutates args.INCLUDE only,
-        # and the substitutions() re-run below redistributes INCLUDE into the
+        # and the resubstitute re-run below redistributes INCLUDE into the
         # *FLAGS and re-finalizes the frozen args.flags -- the sanctioned path
         # that keeps check_flag_string_drift happy.
         externals_changed = self._fetch_and_register_externals()
@@ -239,9 +240,9 @@ class Cake:
             recreateobjs = True
 
         if recreateobjs:
-            # Since we've fiddled with the args, run the substitutions again.
-            # Primarily, this fixes the --includes for the git root of the
-            # targets. And recreate the ct objects.
+            # Since we've fiddled with the args, re-gather and recompute via
+            # resubstitute. Primarily, this fixes the --includes for the git
+            # root of the targets. And recreate the ct objects.
             if self.args.verbose > 4:
                 print("Cake recreating objects and reparsing for second stage processing")
             compiletools.apptools.resubstitute(self.args)
