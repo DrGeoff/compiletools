@@ -178,7 +178,7 @@ class NameState:
 
 
 def _with_variant_suffix(raw: str | None, variant: str) -> str:
-    if raw is None:
+    if not raw:
         return ""
     normalized = posixpath.normpath(raw)
     if normalized == variant or normalized.endswith("/" + variant):
@@ -193,7 +193,12 @@ def stage_resolve_names(inputs: BuildInputs) -> NameState:
     tokens = [t for t in inputs.variant_raw.replace(",", ".").split(".") if t]
     canonical = compiletools.configutils.canonicalize_variant_tokens(tokens, list(inputs.canonical_order))
     variant = ".".join(canonical)
-    bindir = posixpath.normpath(inputs.bindir_raw) if inputs.bindir_raw is not None else "bin/" + variant
+    if inputs.bindir_raw is None:
+        bindir = "bin/" + variant
+    elif inputs.bindir_raw == "":
+        bindir = ""
+    else:
+        bindir = posixpath.normpath(inputs.bindir_raw)
     return NameState(
         variant=variant,
         bindir=bindir,

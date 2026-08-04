@@ -227,3 +227,11 @@ class TestStageResolveNames:
             _inputs(variant_raw="gcc.debug", canonical_order=ORDER, cas_objdir_raw=ns.cas_objdir)
         )
         assert again.cas_objdir == "/cas/obj/gcc.debug"
+
+    def test_empty_cas_objdir_raw_passes_through_unchanged(self):
+        ns = stage_resolve_names(_inputs(variant_raw="gcc.debug", canonical_order=ORDER, cas_objdir_raw=""))
+        assert ns.cas_objdir == ""
+
+    def test_empty_bindir_raw_passes_through_unchanged(self):
+        ns = stage_resolve_names(_inputs(variant_raw="gcc.debug", canonical_order=ORDER, bindir_raw=""))
+        assert ns.bindir == ""
