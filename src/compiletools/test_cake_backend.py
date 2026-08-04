@@ -120,7 +120,7 @@ class TestCakeBackendDispatch:
             expected_class = get_backend_class("make")
 
             with (
-                patch.object(compiletools.apptools, "substitutions"),
+                patch.object(compiletools.apptools, "resubstitute"),
                 patch.object(compiletools.apptools, "verboseprintconfig"),
                 patch.object(expected_class, "build_graph", return_value=MagicMock()),
                 patch.object(expected_class, "generate"),

@@ -35,15 +35,15 @@ def test_auto_discovery_creates_analysis_objects_once_after_targets_are_known():
             patch("compiletools.findtargets.FindTargets", FakeFindTargets),
             patch.object(
                 compiletools.apptools,
-                "substitutions",
-                side_effect=lambda args, verbose=0: events.append("substitutions"),
+                "resubstitute",
+                side_effect=lambda args: events.append("resubstitute"),
             ),
             patch.object(compiletools.apptools, "verboseprintconfig"),
             patch.object(cake, "_call_backend", side_effect=lambda: events.append("backend")),
         ):
             cake.process()
 
-    assert events == ["find-init", "find-process", "substitutions", "create", "backend"]
+    assert events == ["find-init", "find-process", "resubstitute", "create", "backend"]
 
 
 def test_cake_argument_registration_keeps_backend_modules_cold():

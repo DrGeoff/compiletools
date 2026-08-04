@@ -1093,13 +1093,23 @@ def make_backend_args(tmpdir, **overrides):
     by TOKEN-5). Production code that consumes ``args.flags.cxx`` etc.
     (build_backend compile commands, magicflags._parse) thus works
     without re-tokenizing in the test fixtures.
+
+    Also sets ``_context`` (a fresh ``BuildContext``), ``variant``, and
+    ``cas_pcmdir`` -- ``apptools.resubstitute`` (the post-swap pure
+    build-state re-run path that ``cake._discover_targets`` drives) reads
+    all three unconditionally, so any test that calls ``cake.process()``
+    through ``CakeTestContext`` needs them present even when the
+    resubstitute call itself is mocked out.
     """
+    from compiletools.build_context import BuildContext
+
     defaults = dict(
         filename=[],
         tests=[],
         static=[],
         dynamic=[],
         verbose=0,
+        variant="",
         cas_objdir=os.path.join(tmpdir, "obj"),
         cas_exedir=os.path.join(tmpdir, "cas-exe"),
         bindir=os.path.join(tmpdir, "bin"),
@@ -1112,6 +1122,7 @@ def make_backend_args(tmpdir, **overrides):
         LD="g++",
         LDFLAGS="",
         cas_pchdir=os.path.join(tmpdir, "pch"),
+        cas_pcmdir=os.path.join(tmpdir, "pcm"),
         file_locking=False,
         serialisetests=False,
         build_only_changed=None,
@@ -1120,6 +1131,7 @@ def make_backend_args(tmpdir, **overrides):
         makefilename="Makefile",
         parallel=1,
         shuffle=False,
+        _context=BuildContext(),
     )
     defaults.update(overrides)
     args = SimpleNamespace(**defaults)
