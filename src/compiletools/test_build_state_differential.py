@@ -17,6 +17,7 @@ import stat
 import pytest
 
 import compiletools.apptools as apptools
+import compiletools.git_utils
 import compiletools.hunter
 import compiletools.testhelper as uth
 from compiletools.apptools_argparse import _fix_variable_handling_method
@@ -32,9 +33,51 @@ def parsers_reset():
     uth.reset()
 
 
+def _run_old_pipeline(cap, argv, context):
+    """Drive the OLD (legacy substitutions) pipeline explicitly.
+
+    Replicates the pre-swap ``apptools.parseargs`` flow step by step:
+    parse -> stash -> set_allow_fake_git -> target-conf layers ->
+    append-mode reparse (+re-stash) -> flatten/strip -> CXX default ->
+    ``substitutions()`` -> compiler checks -> ``_finalize_flag_state``.
+
+    The production ``parseargs`` runs the NEW pure core after the Task 8
+    swap, so this suite's "old side" cannot go through it any more — it
+    would compare the core against itself. The legacy functions
+    (``substitutions``, ``_commonsubstitutions`` and friends) remain in
+    apptools as the reference pipeline for the transition period; this
+    helper is their only end-to-end driver and must be deleted together
+    with them on the final branch.
+    """
+    argv = list(argv)
+    args = cap.parse_args(args=argv)
+    apptools._stash_private_attrs(args, cap, context, argv)
+    compiletools.git_utils.set_allow_fake_git(getattr(args, "allow_fake_git", False))
+    verbose = args.verbose
+    args = apptools._apply_target_conf_layers(cap, argv, args, verbose)
+    if args.variable_handling_method == "append":
+        args = _fix_variable_handling_method(cap, argv, verbose)
+        apptools._stash_private_attrs(args, cap, context, argv)
+    apptools._flatten_variables(args)
+    apptools._strip_quotes(args)
+    if hasattr(args, "CXX") and args.CXX is None:
+        functional_compiler = apptools.get_functional_cxx_compiler()
+        if functional_compiler:
+            args.CXX = functional_compiler
+        else:
+            raise RuntimeError("No functional C++ compiler detected. Please set CXX explicitly.")
+    apptools.substitutions(args, verbose)
+    apptools._check_resolved_compiler_available(args)
+    apptools._check_wild_linker_usable(args)
+    apptools._check_compiler_supports_requested_standard(args)
+    apptools._finalize_flag_state(args)
+    return args
+
+
 def _old_and_new(extra_argv=(), register_link_args=True, *, explicit_config=True, confdir=None):
-    """Run the real parseargs (old pipeline) AND gather+compute (new core)
-    from one argv/conf setup; return (args, state, raw).
+    """Run the OLD pipeline (explicitly, via _run_old_pipeline) AND
+    gather+compute (new core) from one argv/conf setup; return
+    (args, state, raw).
 
     explicit_config=False omits the injected --config=<tempfile>. An
     explicit --config makes configutils.extract_variant's impliedvariant()
@@ -108,7 +151,7 @@ def _old_and_new(extra_argv=(), register_link_args=True, *, explicit_config=True
             apptools.add_target_arguments_ex(cap)
             if register_link_args:
                 apptools.add_link_arguments(cap)
-            args = apptools.parseargs(cap, list(argv), context=context)
+            args = _run_old_pipeline(cap, list(argv), context)
             return args, state, raw
 
     if explicit_config:
