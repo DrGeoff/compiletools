@@ -207,17 +207,33 @@ _ORDER_ONLY_DEP_FORBIDDEN_EXTS = _COMPILE_ORDERING_INPUT_EXTS + (
 )
 
 
-def _wild_b_link_argv(args) -> list[str]:
-    """Return the ``-B<absolute-search-dir>`` argv for the wild-B axis, else [].
+_WILD_B_DIR_SUFFIX = "/.ct-wild-ld"
 
-    Routed here (and appended AFTER the canonicalize_for_command pass in the
-    link-rule builders) rather than through LDFLAGS so the absolute path is
-    never rewritten to a target-relative form. The wild-B variant is already
-    in the link key via ``canonical_bindir`` — the per-user wild path stays
-    out of the cache-key payload.
+
+def _extract_wild_b_argv(tokens: list[str]) -> tuple[list[str], list[str]]:
+    """Split *tokens* into (everything else, wild-B ``-B<dir>`` tokens).
+
+    ``stage_wild_linker`` appends ``-B<gitroot>/.ct-wild-ld`` directly into
+    ``state.tokens.ld`` (LDFLAGS), so it arrives here as an ordinary token
+    in ``args.flags.ld`` rather than through a side channel. It still needs
+    to be pulled out and appended AFTER the ``canonicalize_for_command``
+    pass in the link-rule builders: that pass rewrites an absolute
+    workspace-rooted path to a target-relative form (``-B./.ct-wild-ld``),
+    which only resolves when the build runs from the gitroot — link rules
+    don't run with ``cwd=anchor_root``, so under subdir invocation the
+    linker would silently fall through to the default linker while the CAS
+    link key still claims the wild-B variant. Matched by directory suffix
+    rather than an exact string so a caller-relative ``ffile_prefix_map_target``
+    doesn't change which token is recognised.
     """
-    search_dir = getattr(args, "_wild_b_search_dir", None)
-    return [f"-B{search_dir}"] if search_dir else []
+    remaining: list[str] = []
+    wild_b: list[str] = []
+    for tok in tokens:
+        if tok.startswith("-B") and tok[2:].endswith(_WILD_B_DIR_SUFFIX):
+            wild_b.append(tok)
+        else:
+            remaining.append(tok)
+    return remaining, wild_b
 
 
 class BuildBackend(abc.ABC):
@@ -3387,20 +3403,19 @@ class BuildBackend(abc.ABC):
         merged_ldflags_for_cmd = compiletools.apptools.canonicalize_for_command(
             list(merged_ldflags), self._anchor_root, target=ffile_prefix_map_target
         )
+        # wild-B axis: pull the -B<absolute_dir> token out of ld_extra
+        # before canonicalize_for_command sees it, then append it back
+        # verbatim after — see _extract_wild_b_argv for why the argv form
+        # must stay absolute. ld_extra itself (used below for the link-key
+        # hash) is left untouched: canonicalize_for_cache_key's <GITROOT>
+        # sentinel is stable across workspaces either way.
+        ld_extra_no_wild_b, wild_b_argv = _extract_wild_b_argv(ld_extra)
         ld_extra_for_cmd = compiletools.apptools.canonicalize_for_command(
-            ld_extra, self._anchor_root, target=ffile_prefix_map_target
+            ld_extra_no_wild_b, self._anchor_root, target=ffile_prefix_map_target
         )
         extra_link_argv_for_cmd = compiletools.apptools.canonicalize_for_command(
             extra_link_argv, self._anchor_root, target=ffile_prefix_map_target
         )
-        # wild-B axis: append -B<absolute_dir> after the canonicalised
-        # portions so canonicalize_for_command never sees it (rewriting an
-        # absolute -B path to "./..." breaks under subdir invocation, since
-        # link rules don't run with cwd=anchor_root and gcc would silently
-        # fall through to the default linker — see _normalize_wild_linker).
-        # The wild-B variant is already in the link key via canonical_bindir,
-        # so the per-user wild path doesn't need to enter the key payload.
-        wild_b_argv = _wild_b_link_argv(self.args)
 
         if self._self_manages_exe_placement():
             # Backend already has its own CAS layer — emit the legacy
@@ -3596,11 +3611,11 @@ class BuildBackend(abc.ABC):
         merged_ldflags_for_cmd = compiletools.apptools.canonicalize_for_command(
             list(merged_ldflags), self._anchor_root, target=ffile_prefix_map_target
         )
-        ld_extra_for_cmd = compiletools.apptools.canonicalize_for_command(
-            ld_extra, self._anchor_root, target=ffile_prefix_map_target
-        )
         # See _create_link_rule for rationale.
-        wild_b_argv = _wild_b_link_argv(self.args)
+        ld_extra_no_wild_b, wild_b_argv = _extract_wild_b_argv(ld_extra)
+        ld_extra_for_cmd = compiletools.apptools.canonicalize_for_command(
+            ld_extra_no_wild_b, self._anchor_root, target=ffile_prefix_map_target
+        )
 
         if self._self_manages_exe_placement():
             lib_cmd = (

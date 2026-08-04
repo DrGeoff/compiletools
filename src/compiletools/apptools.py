@@ -1273,11 +1273,17 @@ def _normalize_wild_linker(args) -> None:
     The ``wild-B`` axis (a comment-only conf) selects the universal
     ``-B<dir>`` + ``ld -> wild`` symlink trick that works on ANY gcc; the
     symlink dir is materialised by :func:`_materialize_wild_b_searchdir`
-    and stashed on ``args._wild_b_search_dir``. The link-rule builders in
-    ``build_backend`` append ``-B<absolute_dir>`` directly to the emitted
-    link argv, bypassing LDFLAGS (and therefore ``canonicalize_for_command``
-    rewriting) — see comment in the wild-B branch below for the silent
-    fall-through hazard this avoids.
+    and stashed on ``args._wild_b_search_dir``.
+
+    This function (and the stash) now only serve the legacy reference
+    pipeline (``_run_old_pipeline`` / the differential tests it feeds). The
+    production parseargs path builds the ``-B<dir>`` token directly into
+    ``state.tokens.ld`` in ``build_state.stage_wild_linker`` — it rides
+    LDFLAGS end-to-end, and ``build_backend._extract_wild_b_argv`` pulls it
+    back out immediately before the ``canonicalize_for_command`` pass on
+    the emitted link argv (same absolute-path-must-survive rationale as
+    the comment below), not via this side channel. No production consumer
+    reads ``args._wild_b_search_dir`` any more.
 
     For the clang rewrite, mutates ``args.LDFLAGS`` in place. Called from
     ``_commonsubstitutions`` before ``_finalize_flag_state`` (via
@@ -1296,13 +1302,10 @@ def _normalize_wild_linker(args) -> None:
             rewritten = ["--ld-path=wild" if t == "-fuse-ld=wild" else t for t in tokens]
             args.LDFLAGS = shlex.join(rewritten)
 
-    # `wild-B` axis: materialise the -B search dir. The -B<dir> flag itself
-    # is injected per-rule by the link-rule builders in build_backend.py —
-    # routing it through LDFLAGS would let canonicalize_for_command rewrite
-    # the absolute path to a target-relative form (e.g. "-B./.ct-wild-ld")
-    # that only resolves when the build runs from the gitroot, silently
-    # falling through to the default linker under subdir invocation while
-    # the CAS link key still claims the wild-B variant.
+    # `wild-B` axis: materialise the -B search dir and stash it for the
+    # legacy pipeline's own (now unused-by-production) per-rule injection.
+    # See the docstring above for why nothing in build_backend reads this
+    # any more.
     if _variant_has_axis(args, "wild-B"):
         args._wild_b_search_dir = _materialize_wild_b_searchdir()
 

@@ -1289,6 +1289,49 @@ class TestCompilerWrapperSplit:
         assert _cmd(compile_rules[0])[0] == "g++"
 
 
+class TestWildBDashBToken:
+    """The wild-B axis's ``-B<gitroot>/.ct-wild-ld`` token now rides
+    LDFLAGS end-to-end (``build_state.stage_wild_linker`` appends it to
+    ``state.tokens.ld``) instead of the retired ``args._wild_b_search_dir``
+    side channel that ``build_backend`` used to read via
+    ``_wild_b_link_argv``. It still needs bespoke handling in the
+    link-rule builders: ``canonicalize_for_command`` rewrites absolute
+    workspace-rooted paths to a target-relative form for cross-user
+    byte-identical link output, but link rules don't run with
+    ``cwd=anchor_root`` (unlike the PCH/PCM precompile rules) -- a
+    relativised ``-B./.ct-wild-ld`` only resolves when the build happens
+    to be invoked from the gitroot, silently falling back to the default
+    linker under subdir invocation while the CAS link key still claims
+    wild-B."""
+
+    def test_dash_b_token_appears_once_and_stays_absolute(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        fake_wild = tmp_path / "wild"
+        fake_wild.write_text("#!/bin/sh\nexit 0\n")
+        fake_wild.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+
+        main_src = tmp_path / "main.cpp"
+        main_src.write_text("int main() { return 0; }\n")
+
+        _backend, graph = uth.build_real_backend(
+            MakefileBackend, tmp_path, [main_src], extra_argv=["--variant=gcc,debug,wild-B"]
+        )
+
+        link_rules = [r for r in graph.rules if r.rule_type == "link"]
+        assert len(link_rules) == 1
+        link_cmd = _cmd(link_rules[0])
+
+        b_tokens = [tok for tok in link_cmd if tok.startswith("-B") and tok[2:].endswith("/.ct-wild-ld")]
+        assert len(b_tokens) == 1, f"expected exactly one wild-B -B token, got {b_tokens} in {link_cmd}"
+        wild_b_dir = b_tokens[0][2:]
+        assert os.path.isabs(wild_b_dir), (
+            f"wild-B -B token was relativised by canonicalize_for_command "
+            f"(link rules do not run with cwd=anchor_root, so this only "
+            f"resolves when invoked from the gitroot): {b_tokens[0]!r}"
+        )
+
+
 class TestGccCppmExtensionRecognition:
     """gcc < 14 does NOT recognize the ``.cppm`` extension as C++ source.
     Without an explicit ``-x c++`` coercion the driver treats ``math.cppm``
