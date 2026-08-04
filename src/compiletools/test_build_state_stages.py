@@ -4,8 +4,15 @@ Every test constructs BuildInputs literals -- no tempdirs, parsers,
 conf files, or compilers.
 """
 
-from compiletools.build_inputs import BuildInputs
-from compiletools.build_state import TokenState, stage_defaults, stage_include_paths, stage_project_macros, stage_xxpend
+from compiletools.build_inputs import BuildInputs, PkgConfigResult
+from compiletools.build_state import (
+    TokenState,
+    stage_defaults,
+    stage_include_paths,
+    stage_pkg_config_flags,
+    stage_project_macros,
+    stage_xxpend,
+)
 
 ALL_SLOTS = frozenset({"CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS"})
 
@@ -88,3 +95,35 @@ class TestStageProjectMacros:
         inputs = _inputs(project_version="1.2.3")
         ts = stage_project_macros(inputs, TokenState(cpp=(tok,), c=(tok,), cxx=(tok,)))
         assert ts.cpp.count(tok) == 1
+
+
+def _zlib_inputs(**kw):
+    return _inputs(
+        pkg_config_results=(("zlib", PkgConfigResult(cflags=("-I/z",), libs=("-lz",))),),
+        **kw,
+    )
+
+
+class TestStagePkgConfigFlags:
+    def test_cflags_to_compile_slots_libs_to_ld(self):
+        ts = stage_pkg_config_flags(_zlib_inputs(), TokenState())
+        assert ts.cpp == ("-I/z",) and ts.c == ("-I/z",) and ts.cxx == ("-I/z",)
+        assert ts.ld == ("-lz",)
+
+    def test_unregistered_ldflags_never_receives_libs(self):
+        inputs = _inputs(
+            registered_slots=frozenset({"CPPFLAGS", "CFLAGS", "CXXFLAGS"}),
+            pkg_config_results=(("zlib", PkgConfigResult(cflags=("-I/z",), libs=("-lz",))),),
+        )
+        ts = stage_pkg_config_flags(inputs, TokenState())
+        assert ts.ld == ()
+
+    def test_package_order_preserved(self):
+        inputs = _inputs(
+            pkg_config_results=(
+                ("a", PkgConfigResult(cflags=(), libs=("-la",))),
+                ("b", PkgConfigResult(cflags=(), libs=("-lb",))),
+            )
+        )
+        ts = stage_pkg_config_flags(inputs, TokenState())
+        assert ts.ld == ("-la", "-lb")

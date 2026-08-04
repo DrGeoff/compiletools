@@ -77,3 +77,20 @@ def stage_project_macros(inputs: BuildInputs, ts: TokenState) -> TokenState:
         if added:
             updates[slot] = current + added
     return dataclasses.replace(ts, **updates) if updates else ts
+
+
+def stage_pkg_config_flags(inputs: BuildInputs, ts: TokenState) -> TokenState:
+    """Fold gathered pkg-config query results into the slots. --libs
+    lands in ld only when the caller's CAP registered LDFLAGS -- the
+    decision is input schema (the want_libs hasattr bug class is
+    unrepresentable here)."""
+    want_libs = "LDFLAGS" in inputs.registered_slots
+    cpp, c, cxx, ld = ts.cpp, ts.c, ts.cxx, ts.ld
+    for _pkg, result in inputs.pkg_config_results:
+        if result.cflags:
+            cpp += result.cflags
+            c += result.cflags
+            cxx += result.cflags
+        if want_libs and result.libs:
+            ld += result.libs
+    return TokenState(cpp=cpp, c=c, cxx=cxx, ld=ld)
