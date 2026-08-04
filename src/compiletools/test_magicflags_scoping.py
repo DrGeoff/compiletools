@@ -63,6 +63,27 @@ class TestInitialMacroStateWiring(tb.BaseCompileToolsTestCase):
         assert sz.Str("FOO") in origin
         assert sz.Str("BAR") in origin
 
+    def test_initial_macro_state_reads_raw_strings_from_build_state(self):
+        """Consumer migration: the MacroState's raw-string fields must come
+        from the stashed BuildState (get_build_state(args).cppflags etc.),
+        not the legacy args.CPPFLAGS attrs. Value-identical today
+        (populate_args writes state.cppflags onto args.CPPFLAGS), so pin
+        identity of SOURCE by mutating the legacy attr after parseargs and
+        asserting the MacroState still carries the state's string."""
+        parser = _make_parser(
+            ["--append-CPPFLAGS=-DFROMSTATE"],
+            tempdir=self._tmpdir,
+        )
+        from compiletools.build_apply import get_build_state
+
+        state = get_build_state(parser._args)
+        parser._args.CPPFLAGS = "-DLEGACY_MUTATION"
+        ms = parser._initialize_macro_state()
+        assert ms.cppflags == state.cppflags
+        assert ms.cppflags != "-DLEGACY_MUTATION"
+        assert ms.cflags == state.cflags
+        assert ms.cxxflags == state.cxxflags
+
     def test_initial_macro_state_populates_tokens(self):
         """Structured *_tokens must be populated and must NOT contain
         the cmdline -D entries (those go via core), but MUST retain

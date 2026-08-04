@@ -1144,11 +1144,47 @@ def finalize_flag_state(args) -> None:
 
     Use after ``cap.parse_args`` or after constructing a SimpleNamespace
     by hand, when the test then drives code that reads
-    ``args.{*}_tokens`` or ``args.flags`` (Hunter, MagicFlags, build
-    backends). Production code never needs this -- ``parseargs``
-    already calls the underlying helper.
+    ``args.{*}_tokens``, ``args.flags``, or (post consumer migration)
+    ``build_apply.get_build_state(args)`` -- Hunter, MagicFlags, build
+    backends. Production code never needs this -- ``parseargs`` already
+    runs the full gather/compute/apply/populate pipeline.
+
+    Also stashes a synthesized ``BuildState`` view of the finalized
+    namespace on ``args._build_state`` so migrated consumers work on
+    hand-built fixtures. The synthesis mirrors what ``populate_args``
+    would have written for these exact values; it does NOT run gather
+    (no pkg-config, no git, no env) -- a fixture wanting those effects
+    must go through ``parseargs``.
     """
     compiletools.apptools._finalize_flag_state(args)
+
+    from compiletools.build_state import BuildState, NameState, TokenState
+
+    tokens = TokenState(
+        cpp=tuple(args.CPPFLAGS_tokens),
+        c=tuple(args.CFLAGS_tokens),
+        cxx=tuple(args.CXXFLAGS_tokens),
+        ld=tuple(args.LDFLAGS_tokens),
+    )
+    args._build_state = BuildState(
+        tokens=tokens,
+        names=NameState(
+            variant=getattr(args, "variant", ""),
+            bindir=getattr(args, "bindir", ""),
+            cas_objdir=getattr(args, "cas_objdir", ""),
+            cas_pchdir=getattr(args, "cas_pchdir", ""),
+            cas_pcmdir=getattr(args, "cas_pcmdir", ""),
+            cas_exedir=getattr(args, "cas_exedir", ""),
+        ),
+        flags=args.flags,
+        cppflags=args.CPPFLAGS,
+        cflags=args.CFLAGS,
+        cxxflags=args.CXXFLAGS,
+        ldflags=args.LDFLAGS,
+        pkg_config_path=None,
+        effects=(),
+        registered_slots=frozenset(args._registered_flag_slots),
+    )
 
 
 def add_backend_arguments(cap):

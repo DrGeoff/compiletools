@@ -7,6 +7,7 @@ from typing import Optional, Union
 import stringzilla as sz
 
 import compiletools.apptools
+import compiletools.build_apply
 import compiletools.compiler_macros
 import compiletools.git_utils
 import compiletools.headerdeps
@@ -188,13 +189,17 @@ class MagicFlagsBase:
         # anchor_root is the gitroot used to canonicalize -I/etc. tokens
         # in the cache-key hash (decouples cache from absolute workspace
         # path so identical TUs in /run-1/... and /run-2/... share entries).
+        # Raw flag strings come from the stashed BuildState (consumer
+        # migration off the legacy args.CPPFLAGS surface); args.flags is
+        # already BuildState data.
+        build_state = compiletools.build_apply.get_build_state(self._args)
         return MacroState(
             core_macros,
             {},
             compiler_path=self._args.CXX,
-            cppflags=self._args.CPPFLAGS,
-            cflags=self._args.CFLAGS,
-            cxxflags=self._args.CXXFLAGS,
+            cppflags=build_state.cppflags,
+            cflags=build_state.cflags,
+            cxxflags=build_state.cxxflags,
             cmdline_origin=cmdline_origin,
             cppflags_tokens=cppflags_tokens,
             cflags_tokens=cflags_tokens,
