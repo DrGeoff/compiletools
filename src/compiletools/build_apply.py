@@ -16,7 +16,13 @@ def apply_effects(state: BuildState, context) -> None:
     protocol: context._original_pkg_config_path is set only for
     PKG_CONFIG_PATH and only when the value actually changes, to True
     when the var was previously unset (so restore_pkg_config_path can
-    tell "delete it" from "put this string back").
+    tell "delete it" from "put this string back"). The save is guarded
+    on the context's current sentinel being None (its BuildContext
+    __init__ default) rather than on attribute presence, and applies
+    once per context: a second apply_effects call against the same
+    context (cake's --auto / //#GIT= re-run flows both call it again)
+    must not overwrite an already-recorded original with an
+    intermediate value from the first call.
 
     EnsureLinkerSymlinkDir ports the filesystem half of
     _materialize_wild_b_searchdir: the effect's target is a bare
@@ -30,7 +36,7 @@ def apply_effects(state: BuildState, context) -> None:
         if isinstance(effect, SetEnv):
             existing = os.environ.get(effect.name)
             if existing != effect.value:
-                if effect.name == "PKG_CONFIG_PATH":
+                if effect.name == "PKG_CONFIG_PATH" and context._original_pkg_config_path is None:
                     context._original_pkg_config_path = existing if existing is not None else True
                 os.environ[effect.name] = effect.value
         elif isinstance(effect, EnsureLinkerSymlinkDir):

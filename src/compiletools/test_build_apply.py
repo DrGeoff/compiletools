@@ -32,6 +32,14 @@ class TestApplyEffects:
         assert os.environ["PKG_CONFIG_PATH"] == "/new"
         assert context._original_pkg_config_path is True
 
+    def test_rerun_does_not_clobber_saved_original(self, monkeypatch):
+        monkeypatch.setenv("PKG_CONFIG_PATH", "/old")
+        context = BuildContext()
+        apply_effects(_state(pkg_config_path="/new1"), context)
+        apply_effects(_state(pkg_config_path="/new2"), context)
+        assert os.environ["PKG_CONFIG_PATH"] == "/new2"
+        assert context._original_pkg_config_path == "/old"
+
     def test_no_effects_is_noop(self, monkeypatch):
         monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
         apply_effects(_state(), BuildContext())
