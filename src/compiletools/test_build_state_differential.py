@@ -114,6 +114,8 @@ CASES = [
     pytest.param(("--separate-flags-CPP-CXX", "--CPPFLAGS=-DFOO"), True, False, id="separate-plus-cpp"),
     pytest.param(("--quiet", "--quiet"), True, False, id="quiet"),
     pytest.param(("--cas-objdir=relcas/obj",), True, False, id="cas-objdir-relative"),
+    pytest.param(("--variable-handling-method=append",), True, False, id="append-mode"),
+    pytest.param(('--CPPFLAGS=-DMSG="hello world"',), True, False, id="quoted-value"),
 ]
 
 
@@ -146,6 +148,29 @@ class TestDifferential:
             assert args.cas_pchdir == state.names.cas_pchdir
             assert args.cas_pcmdir == state.names.cas_pcmdir
             assert args.cas_exedir == state.names.cas_exedir
+
+
+@pytest.mark.usefixtures("parsers_reset")
+class TestDifferentialToolchainVariants:
+    def test_clang_variant_agrees_including_wild_rewrite(self):
+        """clang toolchain: flags/names parity, plus the live
+        -fuse-ld=wild -> --ld-path=wild rewrite when the wild axis rides
+        along (guarded: requires clang++ AND wild on PATH; skip otherwise
+        with the reason naming which prerequisite is missing)."""
+        import shutil as _sh
+
+        if not _sh.which("clang++"):
+            pytest.skip("clang++ not on PATH")
+        with uth.TempDirContext():
+            args, state, _raw = _old_and_new(("--variant=clang,debug",))
+            assert tuple(args.CXXFLAGS_tokens) == state.tokens.cxx
+            assert tuple(args.LDFLAGS_tokens) == state.tokens.ld
+            assert args.variant == state.names.variant
+        if _sh.which("wild"):
+            with uth.TempDirContext():
+                args, state, _raw = _old_and_new(("--variant=clang,debug,wild",))
+                assert "--ld-path=wild" in state.tokens.ld
+                assert tuple(args.LDFLAGS_tokens) == state.tokens.ld
 
 
 @pytest.mark.usefixtures("parsers_reset")
