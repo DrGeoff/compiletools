@@ -183,3 +183,15 @@ def filter_hash_irrelevant_tokens(tokens: Sequence[str]) -> list[str]:
         out.append(tok)
         i += 1
     return out
+
+
+def dedup_tokens(tokens) -> tuple[str, ...]:
+    """Pair-aware order-preserving dedup over a token sequence.
+
+    Tuple-native form of ``utils.deduplicate_compiler_flags`` for the
+    pure build-state stages: same flag-family equality (-I/-isystem/-L/-D,
+    attached or detached), first occurrence wins.
+    """
+    import compiletools.utils
+
+    return tuple(compiletools.utils.deduplicate_compiler_flags(list(tokens)))
