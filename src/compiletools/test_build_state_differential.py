@@ -294,6 +294,40 @@ class TestBlessedDivergences:
 
 
 @pytest.mark.usefixtures("parsers_reset")
+class TestRawStringAndExeNameSplit:
+    """Consumers outside apptools' own pipeline that still read
+    args.CPPFLAGS/CFLAGS/CXXFLAGS/LDFLAGS as raw strings (see the Task 5
+    audit) rely on the raw string agreeing with the token form for
+    unquoted token streams, and on CPP/LD staying resolved by the old
+    pipeline since BuildState does not model them."""
+
+    def test_raw_string_form_agrees_for_unquoted_tokens(self):
+        """populate_args writes shlex.join'ed strings. For token streams
+        with no shell-active characters the round-trip is the identity, so
+        raw strings agree; quoted-value cases are covered by the
+        quoted-value CASES row at the token level (raw strings there may
+        legitimately differ in quoting style -- that difference is confined
+        to display)."""
+        with uth.TempDirContext():
+            args, state, _raw = _old_and_new(())
+            import shlex as _shlex
+
+            assert _shlex.split(args.CXXFLAGS) == list(state.tokens.cxx)
+            assert _shlex.split(args.LDFLAGS) == list(state.tokens.ld)
+
+    def test_cpp_and_ld_exe_names_stay_on_the_old_path(self):
+        """BuildState does not model CPP/LD executable names; the old
+        pipeline's _substitute_CXX_for_missing owns them through the swap.
+        Pin that the old pipeline still resolves them so the swap task
+        cannot silently drop the responsibility."""
+        with uth.TempDirContext():
+            args, state, _raw = _old_and_new(())
+            assert args.CPP not in (None, apptools._UNSUPPLIED_USE_CXX), "old pipeline must resolve CPP"
+            assert args.LD not in (None, apptools._UNSUPPLIED_USE_CXX), "old pipeline must resolve LD"
+            assert not hasattr(state, "cpp_exe"), "BuildState must not grow exe names silently"
+
+
+@pytest.mark.usefixtures("parsers_reset")
 class TestDifferentialConfShapes:
     """Conf-file shapes the CASES table cannot express: composite variants
     with extends, and a subproject ct.conf.d layer."""
