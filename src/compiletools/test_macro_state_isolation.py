@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 import compiletools.headerdeps
+import compiletools.testhelper as uth
 from compiletools.build_context import BuildContext
 
 
@@ -61,6 +62,7 @@ def test_macro_state_isolation_with_temp_files(temp_sample_dir, monkeypatch):
     args.CFLAGS = ""
     args.CXXFLAGS = ""
     args.CXX = "g++"
+    uth.finalize_flag_state(args)
 
     monkeypatch.chdir(temp_sample_dir)
 

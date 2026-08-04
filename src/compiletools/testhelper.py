@@ -1151,23 +1151,30 @@ def finalize_flag_state(args) -> None:
 
     Also stashes a synthesized ``BuildState`` view of the finalized
     namespace on ``args._build_state`` so migrated consumers work on
-    hand-built fixtures. The synthesis mirrors what ``populate_args``
-    would have written for these exact values; it does NOT run gather
-    (no pkg-config, no git, no env) -- a fixture wanting those effects
-    must go through ``parseargs``.
+    hand-built fixtures. The synthesis builds the state from the
+    namespace's finalized values and then routes it through the REAL
+    ``populate_args`` -- one writer for the namespace surface, so the
+    stash, snapshot, and slot attrs can never drift from what production
+    writes (the round-trip is the identity because the state is built
+    from those same values). It does NOT run gather (no pkg-config, no
+    git, no env): ``pkg_config_path`` is None and ``effects`` is empty
+    in the synthesized state -- a consumer migrated onto either of
+    those fields will see the None/empty form in every fixture-driven
+    test, and a fixture wanting the real values must go through
+    ``parseargs``.
     """
     compiletools.apptools._finalize_flag_state(args)
 
+    from compiletools.build_apply import populate_args
     from compiletools.build_state import BuildState, NameState, TokenState
 
-    tokens = TokenState(
-        cpp=tuple(args.CPPFLAGS_tokens),
-        c=tuple(args.CFLAGS_tokens),
-        cxx=tuple(args.CXXFLAGS_tokens),
-        ld=tuple(args.LDFLAGS_tokens),
-    )
-    args._build_state = BuildState(
-        tokens=tokens,
+    state = BuildState(
+        tokens=TokenState(
+            cpp=tuple(args.CPPFLAGS_tokens),
+            c=tuple(args.CFLAGS_tokens),
+            cxx=tuple(args.CXXFLAGS_tokens),
+            ld=tuple(args.LDFLAGS_tokens),
+        ),
         names=NameState(
             variant=getattr(args, "variant", ""),
             bindir=getattr(args, "bindir", ""),
@@ -1185,6 +1192,7 @@ def finalize_flag_state(args) -> None:
         effects=(),
         registered_slots=frozenset(args._registered_flag_slots),
     )
+    populate_args(args, state)
 
 
 def add_backend_arguments(cap):

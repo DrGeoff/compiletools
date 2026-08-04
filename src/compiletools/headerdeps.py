@@ -7,6 +7,7 @@ from pprint import pprint
 import stringzilla as sz
 
 import compiletools.apptools
+import compiletools.build_apply
 import compiletools.file_analyzer
 import compiletools.git_utils
 import compiletools.preprocessor
@@ -137,15 +138,13 @@ class HeaderDepsBase:
     def _cpp_flag_string(self) -> str:
         """The preprocessor flag string the include-path extraction reads.
 
-        Consumer migration: prefers the stashed BuildState's cpp string
-        over the legacy ``args.CPPFLAGS`` attr. The legacy fallback covers
-        transition-period fixtures that built args by hand without
-        ``testhelper.finalize_flag_state``; it dies with the shim.
+        Consumer migration: reads the stashed BuildState's cpp string, not
+        the legacy ``args.CPPFLAGS`` attr. Strict (same contract as
+        magicflags): a namespace without a state is a fixture gap —
+        ``get_build_state`` raises a named error pointing at
+        ``testhelper.finalize_flag_state``.
         """
-        state = getattr(self.args, "_build_state", None)
-        if state is not None:
-            return state.cppflags
-        return self.args.CPPFLAGS
+        return compiletools.build_apply.get_build_state(self.args).cppflags
 
     def process(self, filename: str, macro_cache_key: MacroCacheKey) -> list[str]:
         """Return an ordered list of header dependencies for the given file.
@@ -283,6 +282,10 @@ class DirectHeaderDeps(HeaderDepsBase):
             # local re-import — the local re-import shadows the module-level
             # ``compiletools`` binding for the type checker, breaking access to
             # sibling submodules like ``compiletools.git_utils`` below.)
+            # NOTE: extract_command_line_macros still reads the legacy
+            # args.<SLOT> attrs (shared with un-migrated callers);
+            # value-identical to the stashed BuildState today. It migrates
+            # with the apptools helpers, not with this module.
             raw_macros = compiletools.apptools.extract_command_line_macros(
                 self.args,
                 flag_sources=["CPPFLAGS", "CFLAGS", "CXXFLAGS"],

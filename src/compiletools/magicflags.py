@@ -159,6 +159,10 @@ class MagicFlagsBase:
         core_macros.update({sz.Str(k): sz.Str(v) for k, v in compiler_macros.items()})
 
         # Add command-line macros to core - they're also static for the entire build
+        # NOTE: extract_command_line_macros / cmdline_d_macro_names below still
+        # read the legacy args.<SLOT> attrs (they are shared with un-migrated
+        # callers); value-identical to the stashed BuildState today. They
+        # migrate with the apptools helpers, not with this module.
         cmd_macros = compiletools.apptools.extract_command_line_macros(
             self._args, flag_sources=["CPPFLAGS", "CXXFLAGS"], include_compiler_macros=False, verbose=self._args.verbose
         )

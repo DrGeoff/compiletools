@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import compiletools.headerdeps
+import compiletools.testhelper as uth
 from compiletools.build_context import BuildContext
 from compiletools.examples_registry import example_path
 
@@ -31,6 +32,7 @@ def test_sequential_dependency_analysis_consistency(monkeypatch):
     args.CFLAGS = ""
     args.CXXFLAGS = ""
     args.CXX = "g++"
+    uth.finalize_flag_state(args)
 
     # Create single DirectHeaderDeps instance (simulates ct-cake behavior)
     ctx = BuildContext()

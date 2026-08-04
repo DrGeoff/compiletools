@@ -170,6 +170,26 @@ class TestPopulateArgs:
         with pytest.raises(RuntimeError, match="populate_args"):
             get_build_state(bare)
 
+    def test_finalize_flag_state_routes_through_populate_args(self):
+        """testhelper.finalize_flag_state must not hand-mirror
+        populate_args' namespace writes: it builds a synthetic state and
+        routes it through the REAL populate_args (one writer). Pinned by
+        checking the fixture namespace carries populate_args' full
+        surface — including fields only populate_args writes
+        (_registered_flag_slots ordering, _flag_string_snapshot) — and
+        that the stashed state round-trips the fixture's own values."""
+        import compiletools.testhelper as uth
+        from compiletools.build_apply import get_build_state
+
+        args = argparse.Namespace(verbose=0, CXXFLAGS="-O2", CFLAGS="", CPPFLAGS="-DFIX")
+        uth.finalize_flag_state(args)
+        state = get_build_state(args)
+        assert state.cxxflags == "-O2"
+        assert args.CXXFLAGS == "-O2"
+        assert dict(args._flag_string_snapshot)["CPPFLAGS"] == "-DFIX"
+        assert args._registered_flag_slots == ("CPPFLAGS", "CFLAGS", "CXXFLAGS")
+        assert list(args.CXXFLAGS_tokens) == list(state.tokens.cxx)
+
     def test_records_pre_overwrite_raw_slots(self):
         """The shim preserves what it clobbers: the slot strings present
         BEFORE populate_args overwrites them land in args._raw_flag_slots,
