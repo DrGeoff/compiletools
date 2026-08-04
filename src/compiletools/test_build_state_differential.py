@@ -133,6 +133,7 @@ CASES = [
     pytest.param(("--project-version=1.2.3",), True, False, id="project-version"),
     pytest.param(("--project-name=myapp",), True, False, id="project-name"),
     pytest.param(("--variant=gcc,debug",), True, False, id="variant-commas"),
+    pytest.param(("--variant=gcc debug",), True, False, id="variant-whitespace"),
     pytest.param(("--bindir=mybin/sub/",), True, False, id="bindir-explicit"),
     pytest.param(("--LDFLAGS=-lm -ldl",), True, False, id="ldflags-explicit"),
     pytest.param(("--CPPFLAGS=-DFOO",), True, False, id="cppflags-explicit"),
@@ -275,6 +276,47 @@ class TestBlessedDivergences:
             assert '-DCT_PROJECT_VERSION="9.9.9"' in state.tokens.cxx
             assert args.projectversion == "9.9.9"
             assert raw.projectversion is None
+
+    def test_same_pass_pkg_config_duplicates_dedup_in_cflags_and_ldflags(self, tmp_path, monkeypatch):
+        """Blessed divergence D5: the old pipeline runs _deduplicate_all_flags
+        at tier-one, BEFORE _add_flags_from_pkg_config appends, and nothing
+        re-dedups CFLAGS/LDFLAGS afterwards (unify only covers CPP/CXX) -- two
+        packages sharing a cflags/libs token leave same-pass duplicates in the
+        old final strings. The new core's stage_dedup at pipeline END removes
+        them.
+
+        The shipped examples-features/pkgs .pc files only overlap on the Libs
+        side (-L/usr/local/lib in nested/modified/conditional), so two crafted
+        packages sharing BOTH a -D cflags token and -L/-l libs tokens pin both
+        halves of the class. Unique package names keep cached_pkg_config's
+        per-process memo from cross-contaminating other tests."""
+        from compiletools.flag_ops import dedup_tokens
+
+        for name, lib in (("ctd5alpha", "-lctd5alpha"), ("ctd5beta", "-lctd5beta")):
+            (tmp_path / f"{name}.pc").write_text(
+                f"Name: {name}\nDescription: D5 overlap pin\nVersion: 1.0.0\n"
+                "Cflags: -DCTD5_COMMON\n"
+                f"Libs: -L/usr/local/lib -lctd5common {lib}\n"
+            )
+        monkeypatch.setenv("PKG_CONFIG_PATH", str(tmp_path))
+        with uth.TempDirContext():
+            args, state, _raw = _old_and_new(("--pkg-config=ctd5alpha ctd5beta",))
+            # Old keeps the same-pass duplicates in CFLAGS and LDFLAGS...
+            assert args.CFLAGS_tokens.count("-DCTD5_COMMON") == 2
+            assert args.LDFLAGS_tokens.count("-lctd5common") == 2
+            assert args.LDFLAGS_tokens.count("-L/usr/local/lib") == 2
+            # ...the new core's end-of-pipeline stage_dedup removes them...
+            assert state.tokens.c.count("-DCTD5_COMMON") == 1
+            assert state.tokens.ld.count("-lctd5common") == 1
+            assert state.tokens.ld.count("-L/usr/local/lib") == 1
+            # ...and new is exactly the pair-aware dedup of old (semantic
+            # oracle: flag_ops.dedup_tokens, not a naive set comparison).
+            assert dedup_tokens(tuple(args.CFLAGS_tokens)) == state.tokens.c
+            assert dedup_tokens(tuple(args.LDFLAGS_tokens)) == state.tokens.ld
+            # CPP/CXX are a NON-divergence: the old pipeline's unify pass
+            # already deduped them, so both sides agree without blessing.
+            assert tuple(args.CPPFLAGS_tokens) == state.tokens.cpp
+            assert tuple(args.CXXFLAGS_tokens) == state.tokens.cxx
 
     def test_wild_b_dash_b_token_lands_in_ld_tokens(self, tmp_path, monkeypatch):
         """Blessed divergence D4: the old pipeline kept -B<dir> OUT of

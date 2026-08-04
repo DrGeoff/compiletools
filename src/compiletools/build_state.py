@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 import posixpath
+import re
 import shlex
 from dataclasses import dataclass
 
@@ -27,6 +28,10 @@ class TokenState:
 
 
 _SLOT_FIELDS = (("cpp", "cppflags"), ("c", "cflags"), ("cxx", "cxxflags"), ("ld", "ldflags"))
+
+# Variant tokens may be separated by '.', ',', or whitespace anywhere they
+# appear -- must stay identical to configutils._VARIANT_SEP_RE.
+_VARIANT_SEP_RE = re.compile(r"[\s,.]+")
 
 
 def stage_defaults(inputs: BuildInputs) -> TokenState:
@@ -204,7 +209,7 @@ def stage_resolve_names(inputs: BuildInputs) -> NameState:
     ``resolve_cas_directory_arguments`` (gather's gitroot is
     ``find_git_root()``, which falls back to the cwd outside a repo, so
     the default stays absolute in production)."""
-    tokens = [t for t in inputs.variant_raw.replace(",", ".").split(".") if t]
+    tokens = [t for t in _VARIANT_SEP_RE.split(inputs.variant_raw.strip()) if t]
     canonical = compiletools.configutils.canonicalize_variant_tokens(tokens, list(inputs.canonical_order))
     variant = ".".join(canonical)
     if inputs.bindir_raw is None:

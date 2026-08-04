@@ -221,6 +221,16 @@ class TestStageResolveNames:
         ns = stage_resolve_names(_inputs(variant_raw="debug,gcc,gcc", canonical_order=ORDER))
         assert ns.variant == "gcc.debug"
 
+    def test_whitespace_separated_variant_tokenizes(self):
+        """The documented contract accepts '.', ',', or whitespace anywhere
+        (configutils._VARIANT_SEP_RE); the core splitter must match."""
+        ns = stage_resolve_names(_inputs(variant_raw="gcc debug", canonical_order=ORDER))
+        assert ns.variant == "gcc.debug"
+
+    def test_mixed_separator_variant_tokenizes(self):
+        ns = stage_resolve_names(_inputs(variant_raw=" debug,  gcc.gcc ", canonical_order=ORDER))
+        assert ns.variant == "gcc.debug"
+
     def test_bindir_defaults_to_bin_variant(self):
         ns = stage_resolve_names(_inputs(variant_raw="gcc.debug", canonical_order=ORDER))
         assert ns.bindir == "bin/gcc.debug"
