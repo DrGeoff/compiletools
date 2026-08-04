@@ -31,12 +31,23 @@ def parsers_reset():
     uth.reset()
 
 
-def _old_and_new(extra_argv=(), register_link_args=True):
+def _old_and_new(extra_argv=(), register_link_args=True, *, explicit_config=True):
     """Run the real parseargs (old pipeline) AND gather+compute (new core)
-    from one argv/conf setup; return (args, state, raw)."""
+    from one argv/conf setup; return (args, state, raw).
+
+    explicit_config=False omits the injected --config=<tempfile>. An
+    explicit --config makes configutils.extract_variant's impliedvariant()
+    short-circuit ALL variant axis/composite discovery -- resolve_variant's
+    explicit_config branch returns empty axes unconditionally, treating the
+    config path as the sole source of truth (by design: "the path itself is
+    authoritative"). That is correct default behavior for the CASES table
+    (deterministic CC/CXX, no axis-file dependence), but it also makes any
+    --variant token on extra_argv inert, so a case that must genuinely
+    exercise extends-based composite resolution has to skip the injection.
+    """
     uth.create_temp_ct_conf(os.getcwd())
-    with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
-        argv = ["--config=" + temp_config_name, *extra_argv]
+
+    def _run(argv):
         cap = apptools.create_parser("differential", argv=argv)
         compiletools.hunter.add_arguments(cap)
         apptools.add_output_directory_arguments(cap, variant="unsupplied")
@@ -58,6 +69,11 @@ def _old_and_new(extra_argv=(), register_link_args=True):
             apptools._strip_quotes(raw)
             state = compute_build_state(gather_inputs(raw, context))
             return args, state, raw
+
+    if explicit_config:
+        with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
+            return _run(["--config=" + temp_config_name, *extra_argv])
+    return _run(list(extra_argv))
 
 
 # pytest.param cannot carry a usefixtures mark (pytest rejects it at
@@ -197,3 +213,51 @@ class TestBlessedDivergences:
             assert search_dir and search_dir.endswith(".ct-wild-ld")
             assert not any(t.startswith("-B") for t in args.LDFLAGS_tokens)
             assert state.tokens.ld == tuple(args.LDFLAGS_tokens) + (f"-B{search_dir}",)
+
+
+@pytest.mark.usefixtures("parsers_reset")
+class TestDifferentialConfShapes:
+    """Conf-file shapes the CASES table cannot express: composite variants
+    with extends, and a subproject ct.conf.d layer."""
+
+    def test_extends_composite_variant_agrees(self):
+        """A composite conf using extends = ... must resolve to the same
+        variant name, flags, and cas dirs in both pipelines.
+
+        Composite filename must match the CANONICALIZED multi-token variant
+        name (configutils.resolve_variant's composite lookup only fires for
+        len(canonical_tokens) > 1): --variant=gcc,debug,myext canonicalizes
+        to "gcc.debug.myext" (gcc/debug sort by canonical order, the unknown
+        "myext" token trails), so the file is named accordingly. Must also
+        run with explicit_config=False -- an injected --config=<tempfile>
+        (the _old_and_new default) short-circuits ALL axis/composite
+        discovery via impliedvariant(), which would make this precondition
+        vacuous on both pipelines equally rather than exercising extends.
+        """
+        with uth.TempDirContext():
+            confdir = os.path.join(os.getcwd(), "ct.conf.d")
+            os.makedirs(confdir)
+            with open(os.path.join(confdir, "gcc.debug.myext.conf"), "w") as f:
+                f.write("extends = gcc, debug\nappend-CXXFLAGS = -DFROM_COMPOSITE\n")
+            args, state, _raw = _old_and_new(("--variant=gcc,debug,myext",), explicit_config=False)
+            assert args.variant == state.names.variant
+            assert tuple(args.CXXFLAGS_tokens) == state.tokens.cxx
+            assert "-DFROM_COMPOSITE" in state.tokens.cxx, (
+                "Precondition: the composite's append must actually land, or this test is vacuous."
+            )
+            assert args.cas_objdir == state.names.cas_objdir
+
+    def test_subproject_conf_layer_agrees(self):
+        """A nested ct.conf.d (cwd tier) contributing flags must reach both
+        pipelines identically."""
+        with uth.TempDirContext():
+            confdir = os.path.join(os.getcwd(), "ct.conf.d")
+            os.makedirs(confdir)
+            with open(os.path.join(confdir, "ct.conf"), "w") as f:
+                f.write("append-CPPFLAGS = -DFROM_SUBPROJECT\n")
+            args, state, _raw = _old_and_new(())
+            assert "-DFROM_SUBPROJECT" in state.tokens.cpp, (
+                "Precondition: the cwd-tier conf must actually contribute, or this test is vacuous."
+            )
+            assert tuple(args.CPPFLAGS_tokens) == state.tokens.cpp
+            assert args.variant == state.names.variant
