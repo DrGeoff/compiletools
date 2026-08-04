@@ -7,6 +7,7 @@ import dataclasses
 from dataclasses import dataclass
 
 from compiletools.build_inputs import BuildInputs
+from compiletools.flag_ops import dedup_include_paths_to_append
 
 
 @dataclass(frozen=True)
@@ -41,4 +42,18 @@ def stage_xxpend(inputs: BuildInputs, ts: TokenState) -> TokenState:
         post = tuple(t for t in getattr(inputs, f"append_{in_field}") if t not in current)
         if pre or post:
             updates[ts_field] = pre + current + post
+    return dataclasses.replace(ts, **updates) if updates else ts
+
+
+def stage_include_paths(inputs: BuildInputs, ts: TokenState) -> TokenState:
+    """Fold inputs.include_paths into the compile slots as detached
+    -I pairs, skipping paths already present as -I entries."""
+    if not inputs.include_paths:
+        return ts
+    updates = {}
+    for slot in ("cpp", "c", "cxx"):
+        current = getattr(ts, slot)
+        added = dedup_include_paths_to_append(current, inputs.include_paths)
+        if added:
+            updates[slot] = current + tuple(added)
     return dataclasses.replace(ts, **updates) if updates else ts

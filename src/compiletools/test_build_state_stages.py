@@ -5,7 +5,7 @@ conf files, or compilers.
 """
 
 from compiletools.build_inputs import BuildInputs
-from compiletools.build_state import TokenState, stage_defaults, stage_xxpend
+from compiletools.build_state import TokenState, stage_defaults, stage_include_paths, stage_xxpend
 
 ALL_SLOTS = frozenset({"CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS"})
 
@@ -49,3 +49,23 @@ class TestStageXxpend:
         inputs = _inputs(prepend_cxxflags=("-P",))
         ts = stage_xxpend(inputs, TokenState(cpp=("-DX",), cxx=()))
         assert ts.cpp == ("-DX",)
+
+
+class TestStageIncludePaths:
+    def test_appends_detached_pairs_to_compile_slots_only(self):
+        inputs = _inputs(include_paths=("/inc",))
+        ts = stage_include_paths(inputs, TokenState(cpp=("-DX",), ld=("-lm",)))
+        assert ts.cpp == ("-DX", "-I", "/inc")
+        assert ts.c == ("-I", "/inc")
+        assert ts.cxx == ("-I", "/inc")
+        assert ts.ld == ("-lm",)
+
+    def test_already_present_path_skipped_per_slot(self):
+        inputs = _inputs(include_paths=("/inc",))
+        ts = stage_include_paths(inputs, TokenState(cpp=("-I/inc",)))
+        assert ts.cpp == ("-I/inc",)
+        assert ts.c == ("-I", "/inc")
+
+    def test_no_include_paths_is_identity(self):
+        ts = TokenState(cpp=("-DX",))
+        assert stage_include_paths(_inputs(), ts) is ts
