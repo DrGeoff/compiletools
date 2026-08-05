@@ -3,11 +3,9 @@ import contextlib
 import logging
 import os
 import shlex
-import shutil
 import signal
 import subprocess
 import sys
-import tempfile
 import textwrap
 import threading
 from collections.abc import Generator
@@ -97,7 +95,6 @@ from compiletools.apptools_argparse import (
 # See the re-export rationale comment above the first apptools_argparse import.
 from compiletools.apptools_argparse import (
     _fix_variable_handling_method,
-    resolve_cas_directory_arguments,
 )
 from compiletools.apptools_argparse import (
     _open_conf_file_utf8 as _open_conf_file_utf8,
@@ -151,6 +148,9 @@ from compiletools.apptools_argparse import (
     parser_has_option as parser_has_option,
 )
 from compiletools.apptools_argparse import (
+    resolve_cas_directory_arguments as resolve_cas_directory_arguments,
+)
+from compiletools.apptools_argparse import (
     validate_otel_timing_pair as validate_otel_timing_pair,
 )
 from compiletools.apptools_canonicalize import (
@@ -158,6 +158,9 @@ from compiletools.apptools_canonicalize import (
 )
 from compiletools.apptools_canonicalize import (
     _PATH_BEARING_FLAGS as _PATH_BEARING_FLAGS,
+)
+from compiletools.apptools_canonicalize import (
+    _PREFIX_MAP_FLAG_PREFIXES as _PREFIX_MAP_FLAG_PREFIXES,
 )
 
 # Re-exported from the leaf apptools_canonicalize module so existing
@@ -168,9 +171,6 @@ from compiletools.apptools_canonicalize import (
 # pure re-exports (only consumed by external modules / docstrings), so they
 # carry the redundant ``name as name`` alias to mark them as intentional
 # re-exports for the F401 linter.
-from compiletools.apptools_canonicalize import (
-    _PREFIX_MAP_FLAG_PREFIXES,
-)
 from compiletools.apptools_canonicalize import (
     _canonicalize_one_path as _canonicalize_one_path,
 )
@@ -222,7 +222,7 @@ from compiletools.apptools_compiler import (
     compiler_identity as compiler_identity,
 )
 from compiletools.apptools_compiler import (
-    compiler_kind,
+    compiler_kind as compiler_kind,
 )
 from compiletools.apptools_compiler import (
     derive_c_compiler_from_cxx as derive_c_compiler_from_cxx,
@@ -240,8 +240,7 @@ from compiletools.apptools_pkgconfig import (
     _PKG_CONFIG_OVERRIDE_LOCK as _PKG_CONFIG_OVERRIDE_LOCK,
 )
 from compiletools.apptools_pkgconfig import (
-    _add_flags_from_pkg_config,
-    _setup_pkg_config_overrides,
+    _add_flags_from_pkg_config as _add_flags_from_pkg_config,
 )
 from compiletools.apptools_pkgconfig import (
     _batch_pkg_config as _batch_pkg_config,
@@ -251,6 +250,9 @@ from compiletools.apptools_pkgconfig import (
 )
 from compiletools.apptools_pkgconfig import (
     _PkgConfigOrigin as _PkgConfigOrigin,
+)
+from compiletools.apptools_pkgconfig import (
+    _setup_pkg_config_overrides as _setup_pkg_config_overrides,
 )
 from compiletools.apptools_pkgconfig import (
     _setup_pkg_config_overrides_locked as _setup_pkg_config_overrides_locked,
@@ -300,6 +302,12 @@ from compiletools.apptools_validate import (
 from compiletools.apptools_validate import (
     _check_wild_linker_usable as _check_wild_linker_usable,
 )
+from compiletools.flag_ops import (
+    dedup_include_paths_to_append as dedup_include_paths_to_append,
+)
+from compiletools.flag_ops import (
+    extract_include_paths_from_tokens as extract_include_paths_from_tokens,
+)
 
 # Re-exported from the leaf flag_ops module so existing
 # ``apptools.<name>`` call sites and test/patch targets keep working with
@@ -307,12 +315,8 @@ from compiletools.apptools_validate import (
 # pure re-export (no internal apptools caller), hence the explicit
 # redundant alias to mark it as an intentional re-export for linters.
 from compiletools.flag_ops import (
-    dedup_include_paths_to_append,
     filter_hash_irrelevant_tokens,
     strip_d_u_tokens,
-)
-from compiletools.flag_ops import (
-    extract_include_paths_from_tokens as extract_include_paths_from_tokens,
 )
 from compiletools.flags import Flags
 from compiletools.utils import split_command_cached
@@ -377,25 +381,6 @@ def _ensure_variant_suffix(path, variant):
     if os.path.basename(normalised) == variant:
         return normalised
     return os.path.join(normalised, variant)
-
-
-def _substitute_CXX_for_missing(args):
-    """If C PreProcessor variables (and the same for the LD*) are not set
-    but CXX ones are set then just use the CXX equivalents.
-
-    LD/LDFLAGS are only registered by ``add_link_arguments`` (used by ct-cake
-    and the makefile backend); tools that build only the CPP/CXX side of the
-    parser (ct-cleanup-locks, ct-trim-cache, ct-list-variants, ...) won't
-    have those attrs, so we skip that substitution rather than raise.
-    """
-    if args.verbose > 8:
-        print("Using CXX variables as defaults for missing C, CPP, LD variables")
-    args.CPP = unsupplied_replacement(args.CPP, args.CXX, args.verbose, "CPP")
-    args.CPPFLAGS = unsupplied_replacement(args.CPPFLAGS, args.CXXFLAGS, args.verbose, "CPPFLAGS")
-    if hasattr(args, "LD"):
-        args.LD = unsupplied_replacement(args.LD, args.CXX, args.verbose, "LD")
-    if hasattr(args, "LDFLAGS"):
-        args.LDFLAGS = unsupplied_replacement(args.LDFLAGS, args.CXXFLAGS, args.verbose, "LDFLAGS")
 
 
 def _collect_explicit_target_files(args):
@@ -724,84 +709,6 @@ def reanchor_config_for_discovered_targets(args):
     return parseargs(cap, argv, context=args._context)
 
 
-def _extend_includes_using_git_root(args):
-    """Unless turned off, the git root will be added
-    to the list of include paths
-    """
-    if args.git_root and (
-        hasattr(args, "filename") or hasattr(args, "static") or hasattr(args, "dynamic") or hasattr(args, "tests")
-    ):
-        if args.verbose > 8:
-            print("Extending the include paths to have the git root")
-
-        git_roots = set()
-        git_roots.add(compiletools.git_utils.find_git_root())
-
-        # No matter whether args.filename is a single value or a list,
-        # filenames will be a list
-        filenames = []
-
-        if hasattr(args, "filename") and args.filename:
-            filenames.extend(args.filename)
-
-        if hasattr(args, "static") and args.static:
-            filenames.extend(args.static)
-
-        if hasattr(args, "dynamic") and args.dynamic:
-            filenames.extend(args.dynamic)
-
-        if hasattr(args, "tests") and args.tests:
-            filenames.extend(args.tests)
-
-        for filename in filenames:
-            git_roots.add(compiletools.git_utils.find_git_root(filename))
-
-        if git_roots:
-            # sorted(), not list(): set iteration order depends on
-            # PYTHONHASHSEED, which would shift the -I order between processes
-            # and invalidate the cas-objdir cxxflags_tokens hash component on
-            # no-op rebuilds. See TestExtendIncludesUsingGitRootDeterministic.
-            # Skip roots already present: INCLUDE survives substitutions()
-            # re-runs (it is an input, not seed-restored derived state), so
-            # an unconditional append would duplicate on every re-run.
-            existing = set(args.INCLUDE.split())
-            new_roots = [root for root in sorted(git_roots) if root not in existing]
-            if new_roots:
-                args.INCLUDE = " ".join(args.INCLUDE.split() + new_roots)
-                if args.verbose > 6:
-                    print(f"Extended includes to have the gitroots {new_roots}")
-        else:
-            raise ValueError(
-                "args.git_root is True but no git roots found. :( .  If this is expected then specify --no-git-root."
-            )
-
-
-def _add_include_paths_to_flags(args):
-    """Add all the include paths to all three compile flags.
-
-    Token-walk dedup: a path already present as ``-Ip`` or ``-I p`` is
-    skipped, but presence as ``-isystem /p``, ``-L /p``, or ``-DFOO=/p``
-    is treated as absent (those are different flag families). The raw
-    flag string is only *appended* to (never tokenized-and-rejoined),
-    so existing shell-quoted content is preserved verbatim.
-    """
-    new_paths = args.INCLUDE.split()
-    if not new_paths:
-        return
-
-    for raw_attr in ("CPPFLAGS", "CFLAGS", "CXXFLAGS"):
-        existing = split_command_cached(getattr(args, raw_attr))
-        added = dedup_include_paths_to_append(existing, new_paths)
-        if added:
-            setattr(args, raw_attr, getattr(args, raw_attr) + " " + " ".join(added))
-
-    if args.verbose >= 6 and len(args.INCLUDE) > 0:
-        print("Extra include paths have been appended to the *FLAG variables:")
-        print("\tCPPFLAGS=" + args.CPPFLAGS)
-        print("\tCFLAGS=" + args.CFLAGS)
-        print("\tCXXFLAGS=" + args.CXXFLAGS)
-
-
 def extract_system_include_paths(args, flag_sources=None, verbose=0):
     """Extract -I and -isystem include paths from command-line flags.
 
@@ -1102,81 +1009,6 @@ def cmdline_d_macro_names(args, flag_sources=None, verbose=0) -> frozenset[sz.St
     return frozenset(sz.Str(name) for name in names)
 
 
-def _has_prefix_map_flag(raw_flags: str) -> bool:
-    """Return True if *raw_flags* contains any top-level
-    ``-f{file,debug,macro,canon}-prefix-map=`` flag.
-
-    Tokenizes via ``shlex.split`` and checks ``tok.startswith(prefix)``
-    so that a prefix-map substring nested inside another flag's value
-    (e.g. ``-DREASON='-ffile-prefix-map=oops='``) does NOT false-
-    positive — naive substring search would, and the symptom (silently
-    per-user-divergent ``.o`` bytes for a project that thought it had
-    cross-user CAS sharing) would be hard to diagnose.
-
-    Empty / None returns False. Unparseable flag strings (e.g.
-    unbalanced quotes from a user's CXXFLAGS) return True — the
-    conservative call: an opaque string is unsafe to interpret either
-    way, so decline auto-injection rather than risk appending a flag
-    the user might already have inside their unparseable text.
-    """
-    if not raw_flags:
-        return False
-    try:
-        tokens = shlex.split(raw_flags)
-    except ValueError:
-        return True
-    return any(tok.startswith(prefix) for tok in tokens for prefix in _PREFIX_MAP_FLAG_PREFIXES)
-
-
-def _inject_ffile_prefix_map(args) -> None:
-    """Append ``-ffile-prefix-map=<gitroot>=<target>`` to args.CXXFLAGS
-    and args.CFLAGS where the user has not already specified any
-    prefix-map flag.
-
-    The flag rewrites paths the compiler EMITS (DWARF debug info,
-    ``__FILE__`` / ``__builtin_FILE``, ``.d`` output) so two users
-    compiling the same source at different workspace paths produce
-    byte-identical .o bytes -- the user-stated goal of Round 3 for
-    the cas-objdir layer.
-
-    Known scope limitation: PCH (.gch) and C++20 BMI (.pcm / .gcm)
-    files embed the absolute source path through gcc's internal
-    path-table, which is NOT subject to -ffile-prefix-map.
-    -fdebug-compilation-dir= would address this for clang but is not
-    a recognised gcc flag (rejected by gcc as of 16.1.0). The
-    precompile rule emitters close the gap for downstream ``.o``
-    byte-identity instead: they pass the source workspace-relative
-    and set ``BuildRule.cwd`` to the anchor root (see
-    ``_create_pch_rules`` in ``build_backend.py``), so consumers of a
-    shared cas-pchdir / cas-pcmdir still produce byte-identical
-    objects even though the PCH / BMI bytes themselves stay
-    per-workspace.
-
-    Skipped when ``compiletools.git_utils.find_git_root()`` returns an
-    empty / falsy value (no anchor to canonicalize against). Per-slot
-    independently -- user can override C++ but accept the C default.
-
-    Mutates ``args.CXXFLAGS`` and ``args.CFLAGS`` in place. The caller
-    (``_commonsubstitutions``) triggers ``_finalize_flag_state``
-    afterward so the ``*_tokens`` lists and ``args.flags`` reflect the
-    new strings.
-
-    Idempotent: a second call detects the previously-injected flag via
-    :func:`_has_prefix_map_flag` and skips. The CLI flag
-    ``--ffile-prefix-map-target`` (default ``.``) controls the RHS.
-    """
-    git_root = compiletools.git_utils.find_git_root()
-    if not git_root:
-        return
-    target = getattr(args, "ffile_prefix_map_target", ".")
-    flag = f"-ffile-prefix-map={git_root}={target}"
-    for attr in ("CXXFLAGS", "CFLAGS"):
-        existing = getattr(args, attr, "") or ""
-        if _has_prefix_map_flag(existing):
-            continue
-        setattr(args, attr, f"{existing} {flag}".strip() if existing else flag)
-
-
 def _effective_link_driver(args) -> str | None:
     """Return the compiler driver that actually performs the link.
 
@@ -1202,112 +1034,6 @@ def _variant_has_axis(args, axis_name: str) -> bool:
     """
     variant = getattr(args, "variant", "") or ""
     return axis_name in compiletools.configutils.split_variant(variant)
-
-
-def _materialize_wild_b_searchdir() -> str | None:
-    """Create (idempotently) a directory holding a symlink ``ld -> wild`` and
-    return its path, for the ``wild-B`` linker axis.
-
-    gcc/clang's ``-B<dir>`` adds <dir> to the executable search path; gcc's
-    collect2 then invokes ``<dir>/ld``, which we point at the wild binary.
-    This is the universal wild invocation that works on ANY gcc version
-    (unlike ``-fuse-ld=wild``, which needs gcc >= 16.1).
-
-    Location: ``<gitroot>/.ct-wild-ld/`` when a gitroot exists, so the
-    injected ``-B<gitroot>/.ct-wild-ld`` is rewritten by
-    ``canonicalize_for_cache_key`` (``<gitroot>/...`` -> ``<GITROOT>``
-    sentinel) in the link key and stays workspace-portable across users
-    sharing a CAS. Falls back to a shared system temp dir
-    (``<tmpdir>/ct-wild-ld``) when no gitroot exists
-    (``_inject_ffile_prefix_map`` is a no-op in that case; here
-    we still produce a usable -B dir).
-
-    Returns None if the wild binary can't be found (the startup check
-    ``_check_wild_linker_usable`` raises a clear error in that case).
-    """
-    wild_path = shutil.which("wild")
-    if not wild_path:
-        return None
-    git_root = compiletools.git_utils.find_git_root()
-    if git_root:
-        search_dir = os.path.join(git_root, ".ct-wild-ld")
-    else:
-        search_dir = os.path.join(tempfile.gettempdir(), "ct-wild-ld")
-    os.makedirs(search_dir, exist_ok=True)
-    ld_link = os.path.join(search_dir, "ld")
-    # Idempotent: (re)create only when missing or pointing elsewhere.
-    try:
-        current = os.readlink(ld_link)
-    except OSError:
-        current = None
-    if current != wild_path:
-        # Atomic replace via a PID-scoped temp name so concurrent ct-cake
-        # processes sharing this gitroot don't race on a shared temp path
-        # (one's os.symlink would hit EEXIST, or one's pre-unlink would yank
-        # another's live temp out from under its os.replace). os.replace is
-        # atomic and every racer writes the same target, so last-writer-wins
-        # is safe. The pre-unlink only clears a leftover temp from a prior
-        # crash of THIS pid.
-        tmp_link = f"{ld_link}.{os.getpid()}.tmp"
-        try:
-            os.unlink(tmp_link)
-        except OSError:
-            pass
-        os.symlink(wild_path, tmp_link)
-        os.replace(tmp_link, ld_link)
-    return search_dir
-
-
-def _normalize_wild_linker(args) -> None:
-    """Rewrite the wild linker selection to the form the link driver accepts,
-    and wire up the ``wild-B`` ``-B``/symlink fallback.
-
-    ``wild.conf`` emits the canonical, user-facing token ``-fuse-ld=wild`` —
-    exactly what gcc >= 16.1 wants, but clang rejects it ("invalid linker
-    name in argument '-fuse-ld=wild'") unless an ``ld.wild`` symlink is on
-    PATH, which wild's installer does NOT create. clang's portable
-    invocation is ``--ld-path=wild``, so for a clang link driver we rewrite
-    the token (bare name, PATH-resolved, to keep per-user absolute paths out
-    of the link key).
-
-    The ``wild-B`` axis (a comment-only conf) selects the universal
-    ``-B<dir>`` + ``ld -> wild`` symlink trick that works on ANY gcc; the
-    symlink dir is materialised by :func:`_materialize_wild_b_searchdir`
-    and stashed on ``args._wild_b_search_dir``.
-
-    This function (and the stash) now only serve the legacy reference
-    pipeline (``_run_old_pipeline`` / the differential tests it feeds). The
-    production parseargs path builds the ``-B<dir>`` token directly into
-    ``state.tokens.ld`` in ``build_state.stage_wild_linker`` — it rides
-    LDFLAGS end-to-end, and ``build_backend._extract_wild_b_argv`` pulls it
-    back out immediately before the ``canonicalize_for_command`` pass on
-    the emitted link argv (same absolute-path-must-survive rationale as
-    the comment below), not via this side channel. No production consumer
-    reads ``args._wild_b_search_dir`` any more.
-
-    For the clang rewrite, mutates ``args.LDFLAGS`` in place. Called from
-    ``_commonsubstitutions`` before ``_finalize_flag_state`` (via
-    ``substitutions``), so ``args.LDFLAGS_tokens`` / ``args.flags`` are
-    rebuilt from the mutated string and ``check_flag_string_drift`` stays
-    satisfied. No-op when wild is not selected. Idempotent: after the clang
-    rewrite the ``-fuse-ld=wild`` token is gone, so a re-run (e.g. via
-    cake's two-stage parse) makes no further change.
-    """
-    ldflags = getattr(args, "LDFLAGS", "") or ""
-
-    # `wild` axis: clang needs --ld-path=wild in place of -fuse-ld=wild.
-    if "-fuse-ld=wild" in split_command_cached(ldflags):
-        if compiler_kind(_effective_link_driver(args)) == "clang":
-            tokens = split_command_cached(ldflags)
-            rewritten = ["--ld-path=wild" if t == "-fuse-ld=wild" else t for t in tokens]
-            args.LDFLAGS = shlex.join(rewritten)
-
-    # `wild-B` axis: materialise the -B search dir and stash it for the
-    # legacy pipeline's own (now unused-by-production) per-rule injection.
-    # See the docstring above for why nothing in build_backend reads this
-    # any more.
-    if _variant_has_axis(args, "wild-B"):
-        args._wild_b_search_dir = _materialize_wild_b_searchdir()
 
 
 def tokenize_compile_flags(
@@ -1389,168 +1115,6 @@ _PROJECT_MACRO_DEPRECATION_MESSAGE = (
     "Use --prebuild-script with a generated implementation file instead — "
     "see examples-end-to-end/appinfo/ and README.ct-cake.rst.\n"
 )
-
-
-def _warn_project_macros_deprecated(args):
-    """Emit the deprecation warning once per process for the project-macro flags."""
-    if getattr(args, "_project_macro_deprecation_warned", False):
-        return
-    sys.stderr.write(_PROJECT_MACRO_DEPRECATION_MESSAGE)
-    args._project_macro_deprecation_warned = True
-
-
-def _set_project_version(args):
-    """Inject ``-DCT_PROJECT_VERSION="<value>"`` into CPPFLAGS/CFLAGS/CXXFLAGS,
-    but only if the user opted in.
-
-    Opt-in is any of:
-      * ``--project-version VALUE`` on CLI / ct.conf / env
-      * ``--project-version-cmd CMD`` on CLI / ct.conf / env
-
-    If neither is set, do nothing — no macro is injected. This keeps
-    cmdline ``-D`` cache-key noise off TUs that don't ask for it (see the
-    "Macro Scope Filter" section of README.ct-cake.rst for why a
-    cmdline ``-D`` macro is sticky once introduced).
-
-    DEPRECATED — see ``_warn_project_macros_deprecated``. The
-    generated-implementation-file pattern (``examples-end-to-end/appinfo``)
-    is the supported replacement.
-    """
-    projectversion = getattr(args, "projectversion", None)
-    projectversioncmd = getattr(args, "projectversioncmd", None)
-
-    if not projectversion and projectversioncmd:
-        try:
-            projectversion = (
-                subprocess.check_output(projectversioncmd.split(), universal_newlines=True).strip("\n").split()[0]
-            )
-            args.projectversion = projectversion
-            if args.verbose >= 6:
-                print("Used projectversioncmd to set projectversion")
-        except (subprocess.CalledProcessError, OSError) as err:
-            sys.stderr.write(
-                " ".join(
-                    [
-                        "Could not use projectversioncmd =",
-                        projectversioncmd,
-                        "to set projectversion.\n",
-                    ]
-                )
-            )
-            if args.verbose <= 2:
-                sys.stderr.write(str(err) + "\n")
-                sys.exit(1)
-            else:
-                raise
-
-    if not projectversion:
-        return
-
-    _warn_project_macros_deprecated(args)
-
-    version_escaped = projectversion.replace("\\", "\\\\").replace('"', '\\"')
-
-    if "-DCT_PROJECT_VERSION" not in args.CPPFLAGS:
-        args.CPPFLAGS += " -DCT_PROJECT_VERSION=" + shlex.quote(f'"{version_escaped}"')
-    if "-DCT_PROJECT_VERSION" not in args.CFLAGS:
-        args.CFLAGS += " -DCT_PROJECT_VERSION=" + shlex.quote(f'"{version_escaped}"')
-    if "-DCT_PROJECT_VERSION" not in args.CXXFLAGS:
-        args.CXXFLAGS += " -DCT_PROJECT_VERSION=" + shlex.quote(f'"{version_escaped}"')
-
-    if args.verbose >= 6:
-        print("*FLAG variables have been modified with the project version:")
-        print("\tCPPFLAGS=" + args.CPPFLAGS)
-        print("\tCFLAGS=" + args.CFLAGS)
-        print("\tCXXFLAGS=" + args.CXXFLAGS)
-
-
-def _set_project_name(args):
-    """Inject ``-DCT_PROJECT_NAME="<value>"`` into CPPFLAGS/CFLAGS/CXXFLAGS,
-    but only if the user opted in.
-
-    Opt-in is any of:
-      * ``--project-name VALUE`` on CLI / ct.conf / env
-      * ``--project-name-cmd CMD`` on CLI / ct.conf / env
-
-    If neither is set, do nothing — no macro is injected. Mirrors
-    _set_project_version. See the "Macro Scope Filter" section of
-    README.ct-cake.rst for why CT_PROJECT_NAME (like any cmdline ``-D``
-    macro) should only be turned on when actually needed: comments in
-    transitive headers that mention the macro by name will pull it
-    into every includer's per-TU cache key.
-    """
-    projectname = getattr(args, "projectname", None)
-    projectnamecmd = getattr(args, "projectnamecmd", None)
-
-    if not projectname and projectnamecmd:
-        try:
-            projectname = (
-                subprocess.check_output(projectnamecmd.split(), universal_newlines=True).strip("\n").split()[0]
-            )
-            args.projectname = projectname
-            if args.verbose >= 6:
-                print("Used projectnamecmd to set projectname")
-        except (subprocess.CalledProcessError, OSError) as err:
-            sys.stderr.write(
-                " ".join(
-                    [
-                        "Could not use projectnamecmd =",
-                        projectnamecmd,
-                        "to set projectname.\n",
-                    ]
-                )
-            )
-            if args.verbose <= 2:
-                sys.stderr.write(str(err) + "\n")
-                sys.exit(1)
-            else:
-                raise
-
-    if not projectname:
-        return
-
-    _warn_project_macros_deprecated(args)
-
-    name_escaped = projectname.replace("\\", "\\\\").replace('"', '\\"')
-
-    if "-DCT_PROJECT_NAME" not in args.CPPFLAGS:
-        args.CPPFLAGS += " -DCT_PROJECT_NAME=" + shlex.quote(f'"{name_escaped}"')
-    if "-DCT_PROJECT_NAME" not in args.CFLAGS:
-        args.CFLAGS += " -DCT_PROJECT_NAME=" + shlex.quote(f'"{name_escaped}"')
-    if "-DCT_PROJECT_NAME" not in args.CXXFLAGS:
-        args.CXXFLAGS += " -DCT_PROJECT_NAME=" + shlex.quote(f'"{name_escaped}"')
-
-    if args.verbose >= 6:
-        print("*FLAG variables have been modified with the project name:")
-        print("\tCPPFLAGS=" + args.CPPFLAGS)
-        print("\tCFLAGS=" + args.CFLAGS)
-        print("\tCXXFLAGS=" + args.CXXFLAGS)
-
-
-def _do_xxpend(args, name):
-    """For example, if name is CPPFLAGS, take the
-    args.prependcppflags and prepend them to args.CPPFLAGS.
-    Similarly for append.
-    """
-    xxlist = ("prepend", "append")
-    for xx in xxlist:
-        xxpendname = "_".join([xx, name.lower()])
-        if hasattr(args, xxpendname):
-            xxpendattr = getattr(args, xxpendname)
-            attr = getattr(args, name)
-
-            if xxpendattr:
-                extra = []
-                for flag in xxpendattr:
-                    if flag not in attr:
-                        extra.append(flag)
-                        if args.verbose > 8:
-                            print(f"{xx} {extra} to {name}")
-                if xx == "prepend":
-                    attr = " ".join(extra + [attr])
-                else:
-                    attr = " ".join([attr] + extra)
-            setattr(args, name, attr)
 
 
 def _do_xxpend_list(args, name, destname=None):
@@ -1647,97 +1211,6 @@ def _note_shadowed_bare_hook_values(args, name, dest):
             )
 
 
-def _unify_cpp_cxx_flags(args):
-    """Combine CPPFLAGS and CXXFLAGS into a single deduplicated value.
-
-    Skipped when --separate-flags-CPP-CXX is set.
-
-    Uses ``shlex.join`` (not ``' '.join``) to reconstruct the raw flag
-    string from the deduplicated token list.  ``combine_and_deduplicate``
-    calls ``shlex.split`` to tokenise, so the token list may contain
-    entries with shell-special characters (e.g. ``-DCT_PROJECT_VERSION="1.2.3"``
-    with literal double-quote chars produced by ``_set_project_version``).
-    A plain ``' '.join`` writes those tokens back to the raw string without
-    any shell quoting, causing a subsequent ``shlex.split`` (in
-    ``_finalize_flag_state``) to strip the double-quote characters — so the
-    C-string-literal delimiters are lost before the token ever reaches the
-    compiler.  ``shlex.join`` re-adds single-quote wrapping for tokens that
-    contain shell-active characters, preserving the round-trip invariant.
-    """
-    if getattr(args, "separate_flags_CPP_CXX", False):
-        return
-    unified = shlex.join(compiletools.utils.combine_and_deduplicate_compiler_flags(args.CPPFLAGS, args.CXXFLAGS))
-    args.CPPFLAGS = unified
-    args.CXXFLAGS = unified
-
-
-def _deduplicate_all_flags(args):
-    """Deduplicate all compiler and linker flags after all processing is complete.
-
-    Uses ``shlex.join`` to reconstruct each raw flag string from the
-    deduplicated token list, preserving shell-special characters in tokens
-    (e.g. double-quote chars in ``-DCT_PROJECT_VERSION="1.2.3"``).  See
-    ``_unify_cpp_cxx_flags`` for the full rationale.
-    """
-    flaglist = ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS")
-    for flag_name in flaglist:
-        if hasattr(args, flag_name):
-            flag_value = getattr(args, flag_name)
-            if flag_value:
-                # Split the flag string into individual flags and deduplicate
-                deduplicated_flags = compiletools.utils.combine_and_deduplicate_compiler_flags(flag_value)
-                # Use shlex.join (not ' '.join) so tokens with shell-active
-                # characters survive the round-trip through shlex.split.
-                setattr(args, flag_name, shlex.join(deduplicated_flags))
-
-
-def _tier_one_modifications(args):
-    """Do some early modifications that can potentially cause
-    downstream modifications.
-    """
-    if args.verbose > 8:
-        print("Tier one modification")
-        print(f"{args=}")
-    _substitute_CXX_for_missing(args)
-    # Iteration order is irrelevant: _do_xxpend touches only its own flag's
-    # attrs, so the shared tuple's ordering is safe to inherit.
-    for flag in compiletools.utils.FLAG_ENV_VAR_NAMES:
-        _do_xxpend(args, flag)
-
-    # args.pkg_config is a list of package specs (not a flag string), so
-    # it needs the list-typed merge — _do_xxpend would " ".join() it into
-    # a single space-separated string and break downstream consumers.
-    # Tokenizing all three attrs first makes one element one spec however
-    # the conf file spelled it, which is both what the dedup pass needs
-    # and what any consumer inspecting them expects. The tokenizer is
-    # idempotent, so the re-run of tier one that substitutions() does
-    # after external fetches widen INCLUDE is a no-op here.
-    for pkg_config_attr in ("pkg_config", "prepend_pkg_config", "append_pkg_config"):
-        setattr(args, pkg_config_attr, tokenize_pkg_config_specs(getattr(args, pkg_config_attr, None) or []))
-    _do_xxpend_list(args, "pkg-config")
-
-    # ct-cake's hook lists get the same treatment. The bare
-    # prebuild-script / postbuild-script conf keys are last-writer-wins
-    # across layers; append-/prepend- is the accumulating spelling.
-    # hasattr-guarded because only ct-cake registers these arguments —
-    # an unconditional _do_xxpend_list would setattr empty lists onto
-    # every other ct-* tool's args.
-    if hasattr(args, "prebuild_scripts"):
-        _do_xxpend_list(args, "prebuild-script", destname="prebuild-scripts")
-        _note_shadowed_bare_hook_values(args, "prebuild-script", "prebuild_scripts")
-    if hasattr(args, "postbuild_scripts"):
-        _do_xxpend_list(args, "postbuild-script", destname="postbuild-scripts")
-        _note_shadowed_bare_hook_values(args, "postbuild-script", "postbuild_scripts")
-
-    # Deduplicate all compiler/linker flags after all processing is complete
-    _deduplicate_all_flags(args)
-
-    # Cake used preprocess to mean both magic flag preprocess and headerdeps preprocess
-    if hasattr(args, "preprocess") and args.preprocess:
-        args.magic = "cpp"
-        args.headerdeps = "cpp"
-
-
 def _strip_quotes(args):
     """Remove shell quotes from arguments while preserving content quotes.
 
@@ -1745,7 +1218,7 @@ def _strip_quotes(args):
     vs. part of the actual content. Also strips extraneous whitespace.
 
     Private attributes (leading underscore) are internal stashes, not
-    user-supplied argument values, and are skipped: _substitution_seed is a
+    user-supplied argument values, and are skipped: _raw_flag_slots is a
     dict (iterating-and-assigning inserts keys mid-iteration and raises
     RuntimeError), _registered_flag_slots and _flag_string_snapshot are
     tuples (item assignment raises TypeError), and _argv must stay verbatim
@@ -1831,265 +1304,6 @@ def _flatten_variables(args):
             setattr(args, varname, shlex.join(getattr(args, varname)))
 
 
-def _commonsubstitutions(args):
-    """If certain arguments have not been specified but others have
-    then there are some obvious substitutions to make
-    """
-    # Apply --quiet to --verbose exactly once per namespace. substitutions()
-    # is legitimately re-run on the SAME namespace (cake's second-stage
-    # target discovery, the //#GIT= external-fetch re-run,
-    # compilation_database's refresh), and an unguarded `verbose -= quiet`
-    # would double-decrement on every re-run. Latch pattern matches
-    # _project_macro_deprecation_warned / _hook_shadow_notes_emitted. The
-    # latch survives the append-mode reparse because that reparse replaces
-    # the namespace BEFORE substitutions() first runs in parseargs.
-    if not getattr(args, "_quiet_applied", False):
-        args.verbose -= args.quiet
-        args._quiet_applied = True
-
-    if args.verbose > 8:
-        print("Performing common substitutions")
-
-    # Canonicalize the parsed args.variant. The default value for --variant
-    # came from extract_variant(argv) at parser construction with composite
-    # input already canonicalized, but an explicit --variant=gcc,debug,asan
-    # in argv bypasses that — argparse stores the raw comma-separated string.
-    # Resolve here so downstream consumers (cas-objdir/<variant>/, bindir,
-    # compile_commands.<variant>.json) always see the dotted canonical form.
-    args.variant = compiletools.configutils.canonicalize_variant_input(args.variant, argv=getattr(args, "_argv", None))
-    # Re-resolve fresh from the post-argparse variant value rather than
-    # caching the create_parser-time resolution. Cheap (just file stats),
-    # avoids module-level mutable state, and uses the correct variant when
-    # --variant was explicitly set on the CLI. Pass argv through so the
-    # explicit_config branch fires when --config=path was supplied
-    # (args.variant becomes the implied basename, which isn't a real
-    # axis — the resolver needs argv to know that the basename is from
-    # --config and not a request to look up a missing axis).
-    args._variant_resolution = compiletools.configutils.resolve_variant(
-        variant=args.variant, argv=getattr(args, "_argv", None)
-    )
-    if args.verbose > 6:
-        print(f"Determined variant to be {args.variant}")
-    # Per-axis provenance is short (10-15 lines) and answers "why did I get
-    # these flags?" without rebuilding. Emit it at -vv and above; quiet by
-    # default so build-system wrappers around ct-cake aren't surprised by
-    # extra stdout. ct-config auto-bumps verbosity so it always shows.
-    if args.verbose >= 2 and args._variant_resolution is not None:
-        print(compiletools.configutils.format_variant_resolution(args._variant_resolution))
-
-    _tier_one_modifications(args)
-    _extend_includes_using_git_root(args)
-    _add_include_paths_to_flags(args)
-    _setup_pkg_config_overrides(
-        args._context,
-        args.verbose,
-        prepend_paths=getattr(args, "prepend_pkg_config_path", None),
-        append_paths=getattr(args, "append_pkg_config_path", None),
-        args_parser=getattr(args, "_parser", None),
-    )
-    _add_flags_from_pkg_config(args)
-    _set_project_version(args)
-    _set_project_name(args)
-    _unify_cpp_cxx_flags(args)
-
-    try:
-        # If the user didn't explicitly supply a bindir then modify the bindir to use the variant name
-        args.bindir = unsupplied_replacement(args.bindir, os.path.join("bin", args.variant), args.verbose, "bindir")
-        # Normalize once so ./bin/x, bin/x/ and bin/./x collapse to bin/x.
-        # Leading .. and bare . are deliberately preserved as legal values;
-        # they put the workspace inside the bindir, so every clean path
-        # (cake._clean_topbindir, BuildBackend.clean()/realclean(), the
-        # Makefile clean/realclean recipes) must scope removals to build
-        # outputs instead of removing the tree.
-        args.bindir = os.path.normpath(args.bindir)
-    except AttributeError:
-        pass
-
-    resolve_cas_directory_arguments(args)
-
-    # Anchor --test-xml-dir to gitroot so the value survives a `cd` into
-    # a subdirectory between parseargs and the build, matching how
-    # cas-objdir / cas-pchdir are anchored. This is a path resolution
-    # only; the directory is created by the build graph's mkdir rule.
-    test_xml_dir = getattr(args, "test_xml_dir", None)
-    if test_xml_dir and not os.path.isabs(test_xml_dir):
-        git_root = compiletools.git_utils.find_git_root()
-        if git_root:
-            args.test_xml_dir = os.path.join(git_root, test_xml_dir)
-        else:
-            args.test_xml_dir = os.path.abspath(test_xml_dir)
-
-    # Round 3: inject -ffile-prefix-map=<gitroot>=<target> into CXXFLAGS /
-    # CFLAGS so cas-objdir / cas-pchdir / cas-pcmdir contents are byte-
-    # identical across users with different checkout paths. Must run AFTER
-    # all earlier flag mutations (project version / name macros, CPP/CXX
-    # unification, pkg-config flag merging) so the detection scan sees the
-    # final user-state of the slot before deciding whether to inject. The
-    # subsequent _finalize_flag_state call (via substitutions(args) in the
-    # caller) rebuilds args.flags from the now-injected raw strings.
-    _inject_ffile_prefix_map(args)
-
-    # Re-unify so the injected token lands in CPPFLAGS on THIS pass.
-    # Without this, substitutions() is not idempotent: a re-run's unify
-    # promotes the token from CXXFLAGS into CPPFLAGS, and the CPPFLAGS-
-    # sensitive build-context hash forks the object CAS key space between
-    # single-pass (--no-auto) and two-pass (--auto / recreateobjs) runs.
-    # The injection scan above must see the post-unify (final) user state
-    # — only the first unify distributes a prefix-map the user set solely
-    # in CPPFLAGS into CXXFLAGS where the per-slot skip check can see it —
-    # so injection cannot move before the first unify: the ordering is
-    # unify -> inject -> unify, not a reorder.
-    _unify_cpp_cxx_flags(args)
-
-    # Rewrite the wild linker selection to the form the resolved link driver
-    # accepts (clang: -fuse-ld=wild -> --ld-path=wild) and wire the wild-B
-    # -B/symlink fallback. Runs here so the subsequent _finalize_flag_state
-    # (via substitutions) rebuilds args.LDFLAGS_tokens / args.flags from the
-    # mutated string. See _normalize_wild_linker.
-    _normalize_wild_linker(args)
-
-
-def assert_flag_normalization_fixed_point(args) -> None:
-    """Raise RuntimeError if the flag-normalization tail of
-    ``_commonsubstitutions`` (unify / prefix-map inject) would still change
-    a compile-flag slot when re-applied.
-
-    Scope: this probe replays ONLY the normalization tail (unify /
-    prefix-map inject) and is blind to any other pipeline step — it exists
-    as a cheap every-build sanity check on that tail, and only runs inside
-    the legacy ``substitutions()`` pipeline (the differential suite's
-    reference path). Full-pipeline re-run idempotency for that legacy
-    pipeline is owned by its own seed restore (raw slots rebuild from
-    ``args._substitution_seed`` each pass). The production re-run path,
-    ``apptools.resubstitute``, no longer drives ``substitutions()`` at
-    all (swap Task 9): it re-runs ``gather_inputs`` /
-    ``compute_build_state`` directly, which is a fixed point by
-    construction and carries no drift guard of this kind. Probes a
-    scratch namespace; ``args`` is never mutated. LDFLAGS is not probed:
-    ``_normalize_wild_linker`` touches the filesystem, and its rewrite is
-    deterministic on the seeded LDFLAGS (which the seed restore reverts
-    each pass), so re-runs converge to the same value.
-    """
-    slots = ("CPPFLAGS", "CFLAGS", "CXXFLAGS")
-    probe = argparse.Namespace(**{slot: getattr(args, slot, "") or "" for slot in slots})
-    probe.separate_flags_CPP_CXX = getattr(args, "separate_flags_CPP_CXX", False)
-    probe.ffile_prefix_map_target = getattr(args, "ffile_prefix_map_target", ".")
-    _unify_cpp_cxx_flags(probe)
-    _inject_ffile_prefix_map(probe)
-    _unify_cpp_cxx_flags(probe)
-    for slot in slots:
-        before = getattr(args, slot, "") or ""
-        after = getattr(probe, slot)
-        if after != before:
-            raise RuntimeError(
-                f"substitutions() left args.{slot} off its normalization "
-                f"fixed point: a re-run would change it from {before!r} to "
-                f"{after!r}, forking the object CAS key space between "
-                f"single-pass and multi-pass builds. Flag-mutating steps in "
-                f"_commonsubstitutions must converge within one pass."
-            )
-
-
-def _is_prior_plus_explained_i_insertions(prior, new, include_set) -> bool:
-    """True when *new* is exactly *prior* with zero or more detached
-    ``-I <path>`` pairs inserted (at any position), every inserted path
-    being a member of *include_set*, not already a ``-I`` entry in
-    *prior*, and inserted at most once. Removals, reorders, duplicate
-    re-adds, and any other addition return False — legitimate widening
-    goes through ``dedup_include_paths_to_append``, which never emits a
-    path that is already present. When *prior* itself has a ``-I <path>``
-    pair at the current position identical to *new*'s, matching *prior*
-    wins over treating the pair as an insertion.
-
-    Known over-report: if a mid-pipeline append (e.g. pkg-config --cflags)
-    put a path into the slot on pass 1 and that same path later enters
-    INCLUDE between passes, pass 2 carries both copies and the widening
-    insertion is classified as a duplicate re-add. That requires a
-    pkg-config include dir to coincide with a between-pass INCLUDE
-    widening path; accepting the false positive there is preferred over
-    reopening the duplicate-append hole this predicate exists to close.
-    """
-    prior_include_paths = extract_include_paths_from_tokens(prior)
-
-    def _insertable(path, inserted):
-        return path in include_set and path not in prior_include_paths and path not in inserted
-
-    inserted: set[str] = set()
-    i = j = 0
-    while i < len(new):
-        if j < len(prior) and new[i] == prior[j]:
-            if (
-                new[i] == "-I"
-                and i + 1 < len(new)
-                and j + 1 < len(prior)
-                and new[i + 1] != prior[j + 1]
-                and _insertable(new[i + 1], inserted)
-            ):
-                # prior's next -I pair differs: treat new's pair as inserted
-                inserted.add(new[i + 1])
-                i += 2
-                continue
-            i += 1
-            j += 1
-            continue
-        if new[i] == "-I" and i + 1 < len(new) and _insertable(new[i + 1], inserted):
-            inserted.add(new[i + 1])
-            i += 2
-            continue
-        return False
-    return j == len(prior)
-
-
-def warn_unexplained_flag_drift(prior_flags, new_flags, include_paths) -> list[str]:
-    """Compare two ``args.flags`` snapshots taken around a legitimate
-    ``substitutions()`` re-run and return a message per slot whose drift is
-    NOT explained by INCLUDE widening.
-
-    Complements :func:`assert_flag_normalization_fixed_point`, which replays
-    only the normalization tail (unify / prefix-map inject) and so cannot see
-    a non-idempotent step elsewhere in the pipeline. Historically
-    ``apptools.resubstitute`` snapshotted ``args.flags`` around each sanctioned
-    re-run, handed both snapshots here, and raised on any returned message;
-    swap Task 9 retired that call (resubstitute is now re-gather + recompute,
-    a fixed point by construction). Kept as tested pure infrastructure for
-    the legacy ``substitutions()`` pipeline and ad hoc drift analysis.
-
-    Explained drift is exactly what INCLUDE widening produces under the seed-
-    restore rebuild: detached ``-I <path>`` pairs (the form
-    ``dedup_include_paths_to_append`` emits) inserted anywhere in the cpp/c/cxx
-    sequences, every path present in *include_paths* and not already a ``-I``
-    entry. Anything else — removed or reordered tokens, duplicate ``-I``
-    re-adds, non-include additions, any ``ld`` change, a ``compiler_identity``
-    change — forks the object CAS key space between single-pass and multi-pass
-    builds and is reported. Pure comparison: it has no caller left in
-    production (``apptools.resubstitute`` no longer invokes it); a future
-    consumer of the legacy ``substitutions()`` pipeline decides how to
-    surface the returned messages.
-    """
-    include_set = set(include_paths)
-    messages = []
-    for slot in ("cpp", "c", "cxx", "ld"):
-        prior = getattr(prior_flags, slot)
-        new = getattr(new_flags, slot)
-        if new == prior:
-            continue
-        if slot != "ld" and _is_prior_plus_explained_i_insertions(prior, new, include_set):
-            continue
-        messages.append(
-            f"args.flags.{slot} drifted across a substitutions() re-run beyond "
-            f"INCLUDE-widening -I additions: {prior!r} -> {new!r}. This forks the "
-            f"object CAS key space between single-pass and multi-pass builds; make "
-            f"the responsible substitutions() step idempotent."
-        )
-    if new_flags.compiler_identity != prior_flags.compiler_identity:
-        messages.append(
-            f"args.flags.compiler_identity changed across a substitutions() re-run: "
-            f"{prior_flags.compiler_identity!r} -> {new_flags.compiler_identity!r} "
-            f"(in-place toolchain swap mid-build?)."
-        )
-    return messages
-
-
 def resubstitute(args) -> None:
     """Re-run the pure build-state core on *args* — the only sanctioned
     re-run path (cake's second-stage target discovery, the //#GIT=
@@ -2156,84 +1370,6 @@ def resubstitute(args) -> None:
                 "resubstitute: cache-naming view changed across the re-run "
                 f"(informational only, not an error):\n  before: {prior_view}\n  after:  {new_view}"
             )
-
-
-# List to store the callback functions for parse args
-_substitutioncallbacks = [_commonsubstitutions]
-
-
-def resetcallbacks():
-    """Useful in tests to clear out the substitution callbacks"""
-    global _substitutioncallbacks
-    _substitutioncallbacks = [_commonsubstitutions]
-
-
-def registercallback(callback):
-    """DEPRECATED: the substitution-callback registry is retired.
-
-    Callers that need to post-process the parsed namespace must call
-    their function directly AFTER ``parseargs`` returns (see
-    ``cake.main``'s direct ``Cake._hide_makefilename(args)`` call for
-    the pattern). A process-global registry replayed every registered
-    callback on every later ``parseargs`` in the same process — the
-    direct call scopes the post-processing to the namespace that wants
-    it.
-    """
-    raise RuntimeError(
-        "apptools.registercallback is retired: call your post-processing "
-        "function directly on the namespace parseargs returns (see "
-        "cake.main's Cake._hide_makefilename(args) call for the pattern)."
-    )
-
-
-def substitutions(args, verbose=None):
-    if verbose is None:
-        verbose = args.verbose
-
-    # The four raw flag slots are DERIVED state: every pass must rebuild
-    # them from the same post-parse base, or any unconditional append in
-    # the pipeline (pkg-config --cflags/--libs, prefix-map injection)
-    # compounds across the legitimate re-runs (cake's --auto second stage,
-    # the //#GIT= fetch, compilation_database's refresh) and forks the
-    # object/link CAS key spaces between single-pass and multi-pass
-    # builds. args.INCLUDE is an INPUT (external fetch widens it between
-    # passes) and is deliberately not restored. Snapshot happens before
-    # _finalize_flag_state ever runs, so the seed holds only the slots the
-    # caller's CAP registered — matching _registered_flag_slots semantics.
-    # The restore also restores namespace SHAPE: slots absent from the seed
-    # but materialized by _finalize_flag_state after pass 1 (LDFLAGS = ""
-    # for a three-slot CAP) are deleted, so every pass's pipeline sees the
-    # same hasattr answers (the want_libs flip in _add_flags_from_pkg_config
-    # was a shape-drift bug of exactly this class).
-    seed = getattr(args, "_substitution_seed", None)
-    if seed is None:
-        args._substitution_seed = {
-            slot: getattr(args, slot) for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS") if hasattr(args, slot)
-        }
-    else:
-        for slot, value in seed.items():
-            setattr(args, slot, value)
-        for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS"):
-            if slot not in seed and hasattr(args, slot):
-                delattr(args, slot)
-
-    for func in _substitutioncallbacks:
-        if verbose > 8:
-            print(f"Performing substitution: {func.__qualname__}")
-        func(args)
-
-    if verbose >= 8:
-        print("Args after substitutions")
-        verboseprintconfig(args)
-
-    # substitutions is the canonical mutation site for raw flag strings.
-    # Refresh args.{*}_tokens, args.flags, and the drift snapshot so any
-    # caller that re-runs substitutions (e.g. cake's two-stage parse for
-    # findtargets) sees a coherent post-mutation state. Idempotent when
-    # nothing changed.
-    if hasattr(args, "CPPFLAGS") or hasattr(args, "CFLAGS") or hasattr(args, "CXXFLAGS") or hasattr(args, "LDFLAGS"):
-        _finalize_flag_state(args)
-        assert_flag_normalization_fixed_point(args)
 
 
 @contextlib.contextmanager
@@ -2543,13 +1679,10 @@ def _finalize_flag_state(args) -> None:
     Any subsequent in-place mutation of a registered raw string will be
     flagged by check_flag_string_drift.
     """
-    # Compute the CAP-registered slot set ONCE and make it sticky.
-    # The materialise step below synthesizes missing slot attributes for
-    # downstream consumers. The seed restore in substitutions() deletes
-    # those synthesized attrs before each re-run, but the sticky tuple is
-    # the authoritative record either way: recomputing from hasattr here
-    # would couple the "not applicable here" signal to the restore's
-    # shape discipline for no gain.
+    # Compute the CAP-registered slot set ONCE and make it sticky:
+    # the materialise step below synthesizes missing slot attributes for
+    # downstream consumers, so a recompute from hasattr on a later call
+    # would silently widen the registered set.
     registered = getattr(args, "_registered_flag_slots", None)
     if registered is None:
         registered = tuple(slot for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS") if hasattr(args, slot))

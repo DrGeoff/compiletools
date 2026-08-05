@@ -25,14 +25,8 @@ from compiletools.testhelper import requires_functional_compiler
 
 @pytest.fixture(autouse=True)
 def _isolate_callbacks():
-    """Reset apptools' module-global substitution callbacks around each test.
-
-    Some tests (e.g. test_substitutions_idempotency.py) append probes to
-    apptools' module-global ``_substitutioncallbacks``. A leaked callback
-    would otherwise fire during our bare-parser ``parseargs`` and reach for
-    attributes it never registered. Resetting on both sides keeps this file
-    order-independent under xdist.
-    """
+    """Reset the configargparse parser cache around each test so this
+    file stays order-independent under xdist."""
     uth.reset()
     yield
     uth.reset()

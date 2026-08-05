@@ -318,7 +318,6 @@ def requires_pkg_config(*packages):
 
 def reset():
     delete_existing_parsers()
-    compiletools.apptools.resetcallbacks()
     # Clear wrappedos caches to prevent test interactions
     import compiletools.wrappedos as wo
 
@@ -663,13 +662,11 @@ def ParserContext():
     """Context manager for temporarily resetting configargparse state."""
     saved_parsers = configargparse._parsers.copy()
     delete_existing_parsers()
-    compiletools.apptools.resetcallbacks()
 
     try:
         yield
     finally:
         configargparse._parsers = saved_parsers
-        compiletools.apptools.resetcallbacks()
 
 
 @contextlib.contextmanager

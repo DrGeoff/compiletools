@@ -31,11 +31,9 @@ def _clear_apptools_cache():
     in (or out)."""
     apptools.clear_cache()
     uth.delete_existing_parsers()
-    apptools.resetcallbacks()
     yield
     apptools.clear_cache()
     uth.delete_existing_parsers()
-    apptools.resetcallbacks()
 
 
 def _conf_dir() -> str:

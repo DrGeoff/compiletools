@@ -8,7 +8,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
 import warnings
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -25,25 +24,16 @@ import compiletools.hunter
 import compiletools.testhelper as uth
 from compiletools.apptools import (
     _AccumulatingConfigFileParser,
-    _add_include_paths_to_flags,
     _add_xxpend_argument,
     _add_xxpend_arguments,
     _check_legacy_cas_config_keys,
     _check_legacy_variant_config_keys,
     _ComposingArgumentParser,
-    _deduplicate_all_flags,
-    _do_xxpend,
     _flatten_variables,
-    _has_prefix_map_flag,
     _pkg_config_provenance_label,
     _safely_unquote_string,
-    _set_project_name,
-    _set_project_version,
-    _setup_pkg_config_overrides,
     _strip_quotes,
-    _substitute_CXX_for_missing,
     _test_compiler_functionality,
-    _unify_cpp_cxx_flags,
     add_base_arguments,
     add_link_arguments,
     add_locking_arguments,
@@ -59,16 +49,12 @@ from compiletools.apptools import (
     extract_system_include_paths,
     filter_pkg_config_cflags,
     find_system_header,
-    registercallback,
-    resetcallbacks,
-    substitutions,
     terminalcolumns,
     unsupplied_replacement,
     verbose_print_args,
     verboseprintconfig,
 )
 from compiletools.build_context import BuildContext
-from compiletools.utils import split_command_cached
 
 
 @pytest.fixture
@@ -347,24 +333,6 @@ class TestSubstituteCXXForMissing:
             CPPFLAGS=cppflags,
         )
 
-    def test_substitutes_cpp_and_cppflags(self):
-        args = self._args(cpp="unsupplied_implies_use_CXX", cppflags="unsupplied_implies_use_CXXFLAGS")
-        _substitute_CXX_for_missing(args)
-        assert args.CPP == "g++"
-        assert args.CPPFLAGS == "-Wall"
-
-    def test_substitutes_ld_when_present(self):
-        args = self._args(cpp="g++", cppflags="-Wall")
-        args.LD = "unsupplied_implies_use_CXX"
-        args.LDFLAGS = "unsupplied_implies_use_CXXFLAGS"
-        _substitute_CXX_for_missing(args)
-        assert args.LD == "g++"
-        assert args.LDFLAGS == "-Wall"
-
-    def test_no_ld_attribute_ok(self):
-        args = self._args(cpp="g++", cppflags="-Wall")
-        _substitute_CXX_for_missing(args)  # Should not raise
-
 
 class TestAddIncludePathsToFlags:
     def _args(self, *, cppflags="-Wall", verbose=0):
@@ -382,28 +350,9 @@ class TestAddIncludePathsToFlags:
             verbose=verbose,
         )
 
-    def test_adds_include_paths(self):
-        args = self._args()
-        _add_include_paths_to_flags(args)
-        assert "-I /tmp/inc" in args.CPPFLAGS
-        assert "-I /tmp/inc" in args.CFLAGS
-        assert "-I /tmp/inc" in args.CXXFLAGS
 
-    def test_no_duplicate_include_paths(self):
-        args = self._args(cppflags="-Wall -I /tmp/inc")
-        _add_include_paths_to_flags(args)
-        # /tmp/inc already a proper -I entry in CPPFLAGS; do not add again.
-        assert args.CPPFLAGS.count("/tmp/inc") == 1
-
-    def test_verbose_include_print(self):
-        args = self._args(verbose=6)
-        with patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
-            _add_include_paths_to_flags(args)
-        assert "include" in mock_stdout.getvalue().lower()
-
-
-class TestExtendIncludesUsingGitRootDeterministic:
-    """Regression: ``_extend_includes_using_git_root`` must emit git roots in a
+class TestGatherGitrootIncludeOrderDeterministic:
+    """Regression: gather's gitroot widening must emit git roots in a
     deterministic order. Set iteration order depends on ``PYTHONHASHSEED``, so
     a naive ``list(set)`` join shifts the ``-I`` order between processes,
     invalidating the cas-objdir cache key (cxxflags_tokens hash component) on
@@ -427,14 +376,16 @@ class TestExtendIncludesUsingGitRootDeterministic:
         "    _calls['n'] += 1\n"
         "    return _ROOTS[idx]\n"
         "compiletools.git_utils.find_git_root = _fake_find_git_root\n"
+        "import compiletools.build_inputs as bi\n"
         "args = SimpleNamespace(\n"
         "    git_root=True,\n"
         "    INCLUDE='',\n"
         "    filename=['a.cpp', 'b.cpp', 'c.cpp'],\n"
+        "    tests=[], static=[], dynamic=[],\n"
         "    verbose=0,\n"
         ")\n"
-        "apptools._extend_includes_using_git_root(args)\n"
-        "sys.stdout.write(args.INCLUDE)\n"
+        "paths = bi._include_paths_with_gitroots(args, _ROOTS[0])\n"
+        "sys.stdout.write(' '.join(paths))\n"
     )
 
     def _run_with_seed(self, seed):
@@ -527,80 +478,6 @@ class TestExtractCommandLineMacros:
         args = SimpleNamespace(CPPFLAGS="-D FOO=1 -D BAR", CFLAGS="", CXXFLAGS="", verbose=0, CXX=None)
         macros = extract_command_line_macros(args, include_compiler_macros=False)
         assert macros == {"FOO": "1", "BAR": "1"}  # bare -D BAR defaults value to "1"
-
-
-class TestDoXxpend:
-    def test_prepend(self):
-        args = SimpleNamespace(
-            CPPFLAGS="-Wall",
-            prepend_cppflags=["-O2"],
-            append_cppflags=[],
-            verbose=0,
-        )
-        _do_xxpend(args, "CPPFLAGS")
-        assert args.CPPFLAGS.startswith("-O2")
-
-    def test_append(self):
-        args = SimpleNamespace(
-            CPPFLAGS="-Wall",
-            prepend_cppflags=[],
-            append_cppflags=["-O2"],
-            verbose=0,
-        )
-        _do_xxpend(args, "CPPFLAGS")
-        assert args.CPPFLAGS.endswith("-O2")
-
-    def test_no_duplicate_xxpend(self):
-        args = SimpleNamespace(
-            CPPFLAGS="-Wall -O2",
-            prepend_cppflags=["-O2"],
-            append_cppflags=[],
-            verbose=0,
-        )
-        _do_xxpend(args, "CPPFLAGS")
-        # -O2 already in CPPFLAGS, should not be prepended again
-        assert args.CPPFLAGS.count("-O2") == 1
-
-    def test_no_xxpend_attrs(self):
-        args = SimpleNamespace(CPPFLAGS="-Wall", verbose=0)
-        _do_xxpend(args, "CPPFLAGS")  # Should not raise
-        assert args.CPPFLAGS == "-Wall"
-
-
-class TestUnifyCppCxxFlags:
-    def test_unifies_flags(self):
-        args = SimpleNamespace(
-            CPPFLAGS="-DFOO",
-            CXXFLAGS="-Wall",
-            separate_flags_CPP_CXX=False,
-        )
-        _unify_cpp_cxx_flags(args)
-        assert args.CPPFLAGS == args.CXXFLAGS
-        assert "-DFOO" in args.CPPFLAGS
-        assert "-Wall" in args.CPPFLAGS
-
-    def test_separate_flags_skips(self):
-        args = SimpleNamespace(
-            CPPFLAGS="-DFOO",
-            CXXFLAGS="-Wall",
-            separate_flags_CPP_CXX=True,
-        )
-        _unify_cpp_cxx_flags(args)
-        assert args.CPPFLAGS == "-DFOO"
-        assert args.CXXFLAGS == "-Wall"
-
-
-class TestDeduplicateAllFlags:
-    def test_deduplicates(self):
-        args = SimpleNamespace(CPPFLAGS="-Wall -Wall -O2", CFLAGS="-g -g", CXXFLAGS="-Wall", LDFLAGS="-lm -lm")
-        _deduplicate_all_flags(args)
-        assert args.CPPFLAGS.count("-Wall") == 1
-        assert args.CFLAGS.count("-g") == 1
-        assert args.LDFLAGS.count("-lm") == 1
-
-    def test_missing_flag_ok(self):
-        args = SimpleNamespace(CPPFLAGS="-Wall", CFLAGS="-g", CXXFLAGS="-Wall")
-        _deduplicate_all_flags(args)  # No LDFLAGS, should not raise
 
 
 class TestFlattenVariables:
@@ -728,39 +605,6 @@ class TestClearCache:
         clear_cache()
 
         assert cached_pkg_config.cache_info().currsize == 0, "Cache should be cleared"
-
-
-class TestCallbackSystem:
-    def test_registercallback_is_a_deprecation_error(self):
-        # Task 8 swap: the substitution-callback registry is retired;
-        # registering raises and the registry stays untouched.
-        before = list(apptools._substitutioncallbacks)
-        with pytest.raises(RuntimeError, match="retired"):
-            registercallback(lambda args: None)
-        assert apptools._substitutioncallbacks == before
-
-    def test_reset_restores_default_registry(self):
-        resetcallbacks()
-        # After reset, only _commonsubstitutions should remain. Read via the
-        # module attribute since resetcallbacks() rebinds it; a module-level
-        # `from ... import` snapshot would still see the pre-reset list.
-        assert len(apptools._substitutioncallbacks) == 1
-
-    def test_substitutions_calls_callbacks(self):
-        resetcallbacks()
-        called = []
-        args = SimpleNamespace(verbose=0)
-        # _commonsubstitutions will fail without full args, so just test
-        # with our own callback only
-
-        saved = apptools._substitutioncallbacks[:]
-        try:
-            apptools._substitutioncallbacks = [lambda args: called.append("main")]
-            substitutions(args)
-        finally:
-            apptools._substitutioncallbacks = saved
-            resetcallbacks()
-        assert "main" in called
 
 
 class TestAddArguments:
@@ -904,129 +748,6 @@ class TestProjectVersionAndNameOptIn:
         args.CXXFLAGS = ""
         args.verbose = 0
         return args
-
-    def test_no_injection_when_neither_flag_set_version(self):
-        args = self._make_args()
-        _set_project_version(args)
-        assert "-DCT_PROJECT_VERSION" not in args.CPPFLAGS
-        assert "-DCT_PROJECT_VERSION" not in args.CFLAGS
-        assert "-DCT_PROJECT_VERSION" not in args.CXXFLAGS
-
-    def test_no_injection_when_neither_flag_set_name(self):
-        args = self._make_args()
-        _set_project_name(args)
-        assert "-DCT_PROJECT_NAME" not in args.CPPFLAGS
-        assert "-DCT_PROJECT_NAME" not in args.CFLAGS
-        assert "-DCT_PROJECT_NAME" not in args.CXXFLAGS
-
-    def test_explicit_version_injects(self):
-        args = self._make_args(**{"project-version": "1.2.3"})
-        _set_project_version(args)
-        assert "-DCT_PROJECT_VERSION='\"1.2.3\"'" in args.CPPFLAGS
-        assert "-DCT_PROJECT_VERSION='\"1.2.3\"'" in args.CFLAGS
-        assert "-DCT_PROJECT_VERSION='\"1.2.3\"'" in args.CXXFLAGS
-
-    def test_explicit_name_injects(self):
-        args = self._make_args(**{"project-name": "myapp"})
-        _set_project_name(args)
-        assert "-DCT_PROJECT_NAME='\"myapp\"'" in args.CPPFLAGS
-        assert "-DCT_PROJECT_NAME='\"myapp\"'" in args.CFLAGS
-        assert "-DCT_PROJECT_NAME='\"myapp\"'" in args.CXXFLAGS
-
-    def test_version_cmd_alone_injects(self):
-        args = self._make_args(**{"project-version-cmd": "echo from-cmd-1.0"})
-        _set_project_version(args)
-        # First whitespace token of stdout is taken
-        assert "-DCT_PROJECT_VERSION='\"from-cmd-1.0\"'" in args.CPPFLAGS
-
-    def test_name_cmd_alone_injects(self):
-        args = self._make_args(**{"project-name-cmd": "echo cmd-named-app"})
-        _set_project_name(args)
-        assert "-DCT_PROJECT_NAME='\"cmd-named-app\"'" in args.CPPFLAGS
-
-    def test_explicit_version_takes_precedence_over_cmd(self):
-        args = self._make_args(**{"project-version": "explicit-1.0", "project-version-cmd": "echo from-cmd"})
-        _set_project_version(args)
-        assert "-DCT_PROJECT_VERSION='\"explicit-1.0\"'" in args.CPPFLAGS
-        assert "from-cmd" not in args.CPPFLAGS
-
-    def test_idempotent_when_macro_already_present(self):
-        args = self._make_args(**{"project-name": "newvalue"})
-        args.CPPFLAGS = '-DCT_PROJECT_NAME="oldvalue"'
-        _set_project_name(args)
-        assert args.CPPFLAGS.count("-DCT_PROJECT_NAME") == 1
-        assert "oldvalue" in args.CPPFLAGS
-        assert "newvalue" not in args.CPPFLAGS
-
-    def test_project_version_token_is_argv_safe(self):
-        """The -DCT_PROJECT_VERSION token must survive the full
-        _set_project_version → _unify_cpp_cxx_flags pipeline.
-
-        _unify_cpp_cxx_flags deduplicates by calling shlex.split on the raw
-        CPPFLAGS string and then joining the result. If that join uses
-        ' '.join (a plain space-join) instead of shlex.join, any token
-        containing double-quote characters (like -DCT_PROJECT_VERSION="1.2.3")
-        is written back to the raw string with unquoted double-quotes.  A
-        subsequent shlex.split then strips those double-quotes so args.flags.cxx
-        ends up with '-DCT_PROJECT_VERSION=1.2.3' — a bare numeric token — which
-        causes the compiler to reject '1.2.3' as "too many decimal points in
-        number".
-
-        The assertion: after the full injection+unification round-trip, the token
-        in the tokenized flag list must have literal double-quote characters (the C
-        string-literal delimiters).
-        """
-
-        args = self._make_args(**{"project-version": "1.2.3"})
-        args.separate_flags_CPP_CXX = False  # default; unify will run
-        _set_project_version(args)
-
-        # Simulate _unify_cpp_cxx_flags (runs immediately after _set_project_version
-        # in _commonsubstitutions) followed by _finalize_flag_state (shlex.split):
-        _unify_cpp_cxx_flags(args)
-        final_tokens = split_command_cached(args.CPPFLAGS)
-
-        version_tokens = [t for t in final_tokens if t.startswith("-DCT_PROJECT_VERSION")]
-        assert version_tokens, (
-            f"no -DCT_PROJECT_VERSION token survived the injection+unification "
-            f"round-trip; final CPPFLAGS tokens: {final_tokens!r}"
-        )
-        assert len(version_tokens) == 1, f"duplicate version tokens: {version_tokens!r}"
-        token = version_tokens[0]
-
-        macro, _, value = token.partition("=")
-        assert macro == "-DCT_PROJECT_VERSION"
-        assert value == '"1.2.3"', (
-            f'macro value must be the C string literal "1.2.3" '
-            f"(with literal double-quote chars) after the unification round-trip, "
-            f"got {value!r}.  Likely cause: _unify_cpp_cxx_flags uses ' '.join "
-            f"instead of shlex.join to reconstruct args.CPPFLAGS, dropping the "
-            f"shell-quoting that protects the double-quote characters."
-        )
-
-    def test_project_name_token_is_argv_safe(self):
-        """Mirror of test_project_version_token_is_argv_safe for CT_PROJECT_NAME."""
-
-        args = self._make_args(**{"project-name": "myapp"})
-        args.separate_flags_CPP_CXX = False
-        _set_project_name(args)
-        _unify_cpp_cxx_flags(args)
-        final_tokens = split_command_cached(args.CPPFLAGS)
-
-        name_tokens = [t for t in final_tokens if t.startswith("-DCT_PROJECT_NAME")]
-        assert name_tokens, (
-            f"no -DCT_PROJECT_NAME token survived the injection+unification "
-            f"round-trip; final CPPFLAGS tokens: {final_tokens!r}"
-        )
-        token = name_tokens[0]
-
-        macro, _, value = token.partition("=")
-        assert macro == "-DCT_PROJECT_NAME"
-        assert value == '"myapp"', (
-            f'macro value must be the C string literal "myapp" '
-            f"(with literal double-quote chars) after the unification round-trip, "
-            f"got {value!r}"
-        )
 
 
 class TestFilterPkgConfigCflagsExtended:
@@ -1229,93 +950,6 @@ class TestSetupPkgConfigOverrides:
         d.mkdir(parents=True)
         return d
 
-    def test_prepends_when_override_dir_exists(self, monkeypatch, tmp_path, pkgconfig_dir):
-        """When ct.conf.d/pkgconfig/ exists at gitroot, it is prepended to PKG_CONFIG_PATH."""
-
-        _stub_gitroot_and_chdir(monkeypatch, tmp_path)
-        monkeypatch.setenv("PKG_CONFIG_PATH", "/existing/path")
-
-        ctx = BuildContext()
-        _setup_pkg_config_overrides(ctx)
-
-        pkg_config_path = os.environ["PKG_CONFIG_PATH"]
-        assert pkg_config_path.startswith(str(pkgconfig_dir))
-        assert "/existing/path" in pkg_config_path
-
-    def test_noop_when_no_override_dir(self, monkeypatch, tmp_path):
-        """When ct.conf.d/pkgconfig/ does not exist, PKG_CONFIG_PATH is unchanged."""
-        _stub_gitroot_and_chdir(monkeypatch, tmp_path)
-        monkeypatch.setenv("PKG_CONFIG_PATH", "/original/path")
-
-        ctx = BuildContext()
-        _setup_pkg_config_overrides(ctx)
-
-        assert os.environ["PKG_CONFIG_PATH"] == "/original/path"
-
-    def test_works_when_pkg_config_path_unset(self, monkeypatch, tmp_path, pkgconfig_dir):
-        """When PKG_CONFIG_PATH is not set, sets it to just the override dir."""
-
-        _stub_gitroot_and_chdir(monkeypatch, tmp_path)
-        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
-
-        ctx = BuildContext()
-        _setup_pkg_config_overrides(ctx)
-
-        assert os.environ["PKG_CONFIG_PATH"] == str(pkgconfig_dir)
-
-    def test_idempotency(self, monkeypatch, tmp_path, pkgconfig_dir):
-        """Calling twice does not duplicate the path in PKG_CONFIG_PATH."""
-
-        _stub_gitroot_and_chdir(monkeypatch, tmp_path)
-        monkeypatch.setenv("PKG_CONFIG_PATH", "/existing/path")
-
-        ctx = BuildContext()
-        _setup_pkg_config_overrides(ctx)
-        first_value = os.environ["PKG_CONFIG_PATH"]
-
-        _setup_pkg_config_overrides(ctx)
-        second_value = os.environ["PKG_CONFIG_PATH"]
-
-        assert first_value == second_value
-
-    def test_verbose_output(self, monkeypatch, tmp_path, capsys, pkgconfig_dir):
-        """Verbose >= 4 prints the override path with an auto-discovered label."""
-
-        _stub_gitroot_and_chdir(monkeypatch, tmp_path)
-        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
-
-        ctx = BuildContext()
-        _setup_pkg_config_overrides(ctx, verbose=4)
-
-        captured = capsys.readouterr()
-        assert "Prepended pkg-config path:" in captured.out
-        assert str(pkgconfig_dir) in captured.out
-        # cwd == gitroot here, so the cwd branch fires first and dedup
-        # suppresses the gitroot duplicate. Label must say "cwd".
-        assert "(auto-discovered: cwd)" in captured.out
-        assert "(auto-discovered: gitroot)" not in captured.out
-
-    def test_verbose_output_labels_gitroot_when_cwd_differs(self, monkeypatch, tmp_path, capsys):
-        """When cwd != gitroot and only the gitroot has a pkgconfig dir,
-        the auto-discovered label says 'gitroot'."""
-        repo_root = tmp_path / "repo"
-        project_dir = tmp_path / "repo" / "subproject"
-        repo_pkgconfig = repo_root / "ct.conf.d" / "pkgconfig"
-        repo_pkgconfig.mkdir(parents=True)
-        project_dir.mkdir(parents=True)
-
-        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: str(repo_root))
-        monkeypatch.chdir(project_dir)
-        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
-
-        ctx = BuildContext()
-        _setup_pkg_config_overrides(ctx, verbose=4)
-
-        captured = capsys.readouterr()
-        assert str(repo_pkgconfig) in captured.out
-        assert "(auto-discovered: gitroot)" in captured.out
-        assert "(auto-discovered: cwd)" not in captured.out
-
     def test_setup_pkg_config_overrides_emits_provenance_at_verbose_4(self, monkeypatch, tmp_path, capsys):
         """A prepend-PKG-CONFIG-PATH set in a conf file produces an
         attribution line of the form ``(from <abs_conf_path>:<lineno>)``
@@ -1388,205 +1022,6 @@ class TestSetupPkgConfigOverrides:
         prov = {"prepend-PKG-CONFIG-PATH": [("/abs/path", "/conf/a.conf", 7)]}
         assert _pkg_config_provenance_label("/abs/path", "prepend", prov) == "(from /conf/a.conf:7)"
 
-    def test_cwd_pkgconfig_takes_priority_over_gitroot(self, monkeypatch, tmp_path):
-        """cwd/ct.conf.d/pkgconfig/ is prepended before gitroot/ct.conf.d/pkgconfig/."""
-        repo_root = tmp_path / "repo"
-        project_dir = tmp_path / "repo" / "subproject"
-        repo_pkgconfig = repo_root / "ct.conf.d" / "pkgconfig"
-        cwd_pkgconfig = project_dir / "ct.conf.d" / "pkgconfig"
-        repo_pkgconfig.mkdir(parents=True)
-        cwd_pkgconfig.mkdir(parents=True)
-
-        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: str(repo_root))
-        monkeypatch.chdir(project_dir)
-        monkeypatch.setenv("PKG_CONFIG_PATH", "/system/path")
-
-        ctx = BuildContext()
-        _setup_pkg_config_overrides(ctx)
-
-        dirs = os.environ["PKG_CONFIG_PATH"].split(os.pathsep)
-        assert dirs[0] == str(cwd_pkgconfig)
-        assert dirs[1] == str(repo_pkgconfig)
-        assert dirs[2] == "/system/path"
-
-    def test_cwd_only_no_gitroot(self, monkeypatch, tmp_path):
-        """When outside a git repo, cwd/ct.conf.d/pkgconfig/ is still discovered."""
-        cwd_pkgconfig = tmp_path / "ct.conf.d" / "pkgconfig"
-        cwd_pkgconfig.mkdir(parents=True)
-
-        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: None)
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
-
-        ctx = BuildContext()
-        _setup_pkg_config_overrides(ctx)
-
-        assert os.environ["PKG_CONFIG_PATH"] == str(cwd_pkgconfig)
-
-    def test_dedup_when_cwd_equals_gitroot(self, monkeypatch, tmp_path, pkgconfig_dir):
-        """When cwd is the git root, only one entry is prepended."""
-
-        _stub_gitroot_and_chdir(monkeypatch, tmp_path)
-        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
-
-        ctx = BuildContext()
-        _setup_pkg_config_overrides(ctx)
-
-        pkg_config_path = os.environ["PKG_CONFIG_PATH"]
-        assert pkg_config_path == str(pkgconfig_dir)
-        assert pkg_config_path.count(str(pkgconfig_dir)) == 1
-
-    def test_prepend_promotes_existing_entry_to_front(self, monkeypatch, tmp_path):
-        """Regression: --prepend-PKG-CONFIG-PATH=/X with PKG_CONFIG_PATH=/Y:/X
-        must produce /X:/Y (X promoted), not /Y:/X (unchanged)."""
-        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: None)
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("PKG_CONFIG_PATH", "/system:/local")
-
-        ctx = BuildContext()
-        _setup_pkg_config_overrides(ctx, prepend_paths=["/local"])
-
-        dirs = os.environ["PKG_CONFIG_PATH"].split(os.pathsep)
-        assert dirs == ["/local", "/system"]
-
-    def test_append_demotes_existing_entry_to_end(self, monkeypatch, tmp_path):
-        """Symmetric: --append-PKG-CONFIG-PATH should move an existing
-        entry to the end."""
-        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: None)
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("PKG_CONFIG_PATH", "/local:/system")
-
-        ctx = BuildContext()
-        _setup_pkg_config_overrides(ctx, append_paths=["/local"])
-
-        dirs = os.environ["PKG_CONFIG_PATH"].split(os.pathsep)
-        assert dirs == ["/system", "/local"]
-
-    def test_prepend_higher_priority_conf_wins_over_lower(self, monkeypatch, tmp_path):
-        """Regression: ``prepend-PKG-CONFIG-PATH`` set in two layered conf
-        files must place the higher-priority conf's entry leftmost in
-        ``PKG_CONFIG_PATH``, mirroring the codebase's prepend/append
-        idiom (highest-priority source wins).
-
-        ``args.prepend_pkg_config_path`` arrives ordered
-        ``[low_priority_conf, ..., high_priority_conf, cli_in_parse_order]``
-        — the same order ``_AccumulatingConfigFileParser`` produces for
-        every ``prepend-*`` / ``append-*`` key. For compiler-flag slots
-        the rightmost token wins, so that order yields CLI > high-conf >
-        low-conf naturally. ``PKG_CONFIG_PATH`` resolves leftmost-first,
-        so the accumulator list must be *reversed* on emission to
-        preserve the same priority ordering.
-
-        Before the fix, the base ct.conf entry sat leftmost and silently
-        shadowed every axis-level override that targeted the same .pc
-        file, causing the wrong ABI flavor of a pinned library to be
-        selected by downstream consumers.
-        """
-        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: None)
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
-
-        ctx = BuildContext()
-        _setup_pkg_config_overrides(
-            ctx,
-            prepend_paths=["/base/pkgconfig", "/axisX/pkgconfig"],
-        )
-
-        dirs = os.environ["PKG_CONFIG_PATH"].split(os.pathsep)
-        assert dirs == ["/axisX/pkgconfig", "/base/pkgconfig"]
-
-    def test_append_higher_priority_conf_wins_over_lower(self, monkeypatch, tmp_path):
-        """Symmetric to ``test_prepend_higher_priority_conf_wins_over_lower``
-        for ``append-PKG-CONFIG-PATH``. Within the appended group, the
-        higher-priority conf entry still has to land leftmost — appends
-        are fallback paths searched after prepends + existing env, and
-        within that fallback group leftmost still wins."""
-        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: None)
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
-
-        ctx = BuildContext()
-        _setup_pkg_config_overrides(
-            ctx,
-            append_paths=["/base/pkgconfig", "/axisX/pkgconfig"],
-        )
-
-        dirs = os.environ["PKG_CONFIG_PATH"].split(os.pathsep)
-        assert dirs == ["/axisX/pkgconfig", "/base/pkgconfig"]
-
-    def test_prepend_cli_wins_over_conf(self, monkeypatch, tmp_path):
-        """The CLI portion of ``--prepend-PKG-CONFIG-PATH`` is appended to
-        the accumulator list after every conf-file contribution (matches
-        the ``_ComposingArgumentParser`` CLI re-append). The reversal
-        therefore puts CLI entries leftmost, ahead of any conf-file
-        prepend — so CLI overrides every conf the same way it does for
-        compiler-flag slots."""
-        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: None)
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
-
-        ctx = BuildContext()
-        _setup_pkg_config_overrides(
-            ctx,
-            prepend_paths=["/conf/pkgconfig", "/cli/pkgconfig"],
-        )
-
-        dirs = os.environ["PKG_CONFIG_PATH"].split(os.pathsep)
-        assert dirs[0] == "/cli/pkgconfig"
-        assert dirs[1] == "/conf/pkgconfig"
-
-    def test_append_cli_wins_over_conf(self, monkeypatch, tmp_path):
-        """Symmetric: within the appended fallback group, CLI lands
-        leftmost (most preferred fallback)."""
-        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: None)
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
-
-        ctx = BuildContext()
-        _setup_pkg_config_overrides(
-            ctx,
-            append_paths=["/conf/pkgconfig", "/cli/pkgconfig"],
-        )
-
-        dirs = os.environ["PKG_CONFIG_PATH"].split(os.pathsep)
-        assert dirs[-2] == "/cli/pkgconfig"
-        assert dirs[-1] == "/conf/pkgconfig"
-
-    def test_prepend_within_cli_last_wins(self, monkeypatch, tmp_path):
-        """Multiple ``--prepend-PKG-CONFIG-PATH`` flags on the same CLI:
-        the rightmost-typed flag ends up leftmost in PKG_CONFIG_PATH,
-        matching the "last-occurrence wins" convention every other
-        ``prepend-*`` / ``append-*`` key follows in this codebase."""
-        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: None)
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
-
-        ctx = BuildContext()
-        _setup_pkg_config_overrides(
-            ctx,
-            prepend_paths=["/cli/first", "/cli/second"],
-        )
-
-        dirs = os.environ["PKG_CONFIG_PATH"].split(os.pathsep)
-        assert dirs == ["/cli/second", "/cli/first"]
-
-    def test_append_within_cli_last_wins(self, monkeypatch, tmp_path):
-        """Symmetric for ``--append-PKG-CONFIG-PATH``: within the
-        appended fallback group, the rightmost-typed CLI flag lands
-        leftmost (most preferred fallback)."""
-        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: None)
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
-
-        ctx = BuildContext()
-        _setup_pkg_config_overrides(
-            ctx,
-            append_paths=["/cli/first", "/cli/second"],
-        )
-
-        dirs = os.environ["PKG_CONFIG_PATH"].split(os.pathsep)
-        assert dirs == ["/cli/second", "/cli/first"]
-
     def test_two_layered_conf_files_axis_wins_through_parseargs(self, monkeypatch, tmp_path, capsys):
         """End-to-end repro: project ``ct.conf`` and a higher-priority
         axis conf each set ``prepend-PKG-CONFIG-PATH``. After running
@@ -1646,92 +1081,6 @@ class TestSetupPkgConfigOverrides:
             f"ct.conf prepend; got axis@{axis_idx}, base@{base_idx}, "
             f"PKG_CONFIG_PATH={dirs!r}"
         )
-
-    def test_flag_set_only_after_env_mutation_succeeds(self, monkeypatch, tmp_path):
-        """Regression: pkg_config_overrides_applied must NOT be set
-        if the function raises before mutating PKG_CONFIG_PATH — otherwise
-        a retry within the same context is silently suppressed."""
-
-        def boom(filename=None):
-            raise RuntimeError("simulated find_git_root failure")
-
-        monkeypatch.setattr("compiletools.git_utils.find_git_root", boom)
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("PKG_CONFIG_PATH", "/system")
-
-        ctx = BuildContext()
-        try:
-            _setup_pkg_config_overrides(ctx)
-        except RuntimeError:
-            pass
-        assert ctx.pkg_config_overrides_applied is False, (
-            "Flag must remain False if the function failed; otherwise the caller has no way to retry."
-        )
-
-    def test_restore_pkg_config_path_undoes_mutation(self, monkeypatch, tmp_path, pkgconfig_dir):
-        """Regression: BuildContext must expose a way to undo the
-        global env mutation, so long-lived processes / tests using
-        multiple sequential contexts don't leak PKG_CONFIG_PATH state."""
-        _stub_gitroot_and_chdir(monkeypatch, tmp_path)
-        monkeypatch.setenv("PKG_CONFIG_PATH", "/original/path")
-
-        ctx = BuildContext()
-        _setup_pkg_config_overrides(ctx)
-        # Mutated
-        assert os.environ["PKG_CONFIG_PATH"] != "/original/path"
-
-        ctx.restore_pkg_config_path()
-
-        assert os.environ.get("PKG_CONFIG_PATH") == "/original/path"
-        assert ctx.pkg_config_overrides_applied is False, (
-            "After restore, the flag should be reset so a future apply works."
-        )
-
-    def test_restore_when_pkg_config_path_was_unset(self, monkeypatch, tmp_path, pkgconfig_dir):
-        """Restore must remove PKG_CONFIG_PATH if it was originally unset."""
-        _stub_gitroot_and_chdir(monkeypatch, tmp_path)
-        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
-
-        ctx = BuildContext()
-        _setup_pkg_config_overrides(ctx)
-        assert "PKG_CONFIG_PATH" in os.environ
-
-        ctx.restore_pkg_config_path()
-
-        assert "PKG_CONFIG_PATH" not in os.environ
-
-    def test_restore_runs_after_subprocess_exception(self, monkeypatch, tmp_path, pkgconfig_dir):
-        """Regression: restore_pkg_config_path() must cleanly undo the
-        env mutation even when a downstream pkg-config subprocess raises
-        between apply and restore. Long-lived processes / tests rely on
-        this for cleanup-by-context-manager / try/finally patterns."""
-        _stub_gitroot_and_chdir(monkeypatch, tmp_path)
-        monkeypatch.setenv("PKG_CONFIG_PATH", "/original/path")
-
-        ctx = BuildContext()
-        _setup_pkg_config_overrides(ctx)
-        mutated_value = os.environ["PKG_CONFIG_PATH"]
-        assert mutated_value != "/original/path"
-
-        # Mock subprocess to raise — simulate batch pkg-config failure
-        def boom(*args, **kwargs):
-            raise subprocess.CalledProcessError(1, "pkg-config", "boom")
-
-        monkeypatch.setattr(subprocess, "run", boom)
-
-        # Caller's try/finally pattern: regardless of pkg-config exception,
-        # restore must succeed and leave the environment clean.
-        try:
-            subprocess.run(["pkg-config", "--exists", "fake"], check=True)
-        except subprocess.CalledProcessError:
-            pass
-        finally:
-            ctx.restore_pkg_config_path()
-
-        assert os.environ.get("PKG_CONFIG_PATH") == "/original/path", (
-            "Restore must succeed even when a pkg-config subprocess raised"
-        )
-        assert ctx.pkg_config_overrides_applied is False
 
 
 @pytest.mark.usefixtures("parsers_reset")
@@ -2658,47 +2007,6 @@ class TestVariantResolutionRespectsArgv:
 
 
 @pytest.mark.usefixtures("parsers_reset")
-class TestQuietAppliedOnce:
-    """Regression test for the --quiet double-decrement.
-
-    _commonsubstitutions applies `args.verbose -= args.quiet`, but
-    substitutions() is legitimately re-run on the SAME namespace by
-    production code (cake's second-stage target discovery, the //#GIT=
-    external-fetch re-run, compilation_database's refresh). Pre-fix, each
-    re-run decremented verbose by args.quiet again; the _quiet_applied
-    latch makes the application idempotent."""
-
-    def test_substitutions_rerun_does_not_redecrement_verbose(self):
-        with uth.TempDirContext():
-            uth.create_temp_ct_conf(os.getcwd())
-            with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
-                argv = [
-                    "--config=" + temp_config_name,
-                    "--quiet",
-                    "--quiet",
-                    "--no-git-root",
-                ]
-                cap = apptools.create_parser("quiet idempotency test", argv=argv)
-                cdb.CompilationDatabaseCreator.add_arguments(cap)
-                compiletools.hunter.add_arguments(cap)
-                with uth.ParserContext():
-                    args = apptools.parseargs(cap, argv, context=BuildContext())
-                assert args.quiet == 2
-                verbose_after_parseargs = args.verbose
-                # Re-run substitutions on the same namespace, as cake.py's
-                # second-stage target discovery does.
-                apptools.substitutions(args, verbose=0)
-                assert args.verbose == verbose_after_parseargs, (
-                    f"substitutions() re-run changed args.verbose from "
-                    f"{verbose_after_parseargs} to {args.verbose}: --quiet was "
-                    "applied more than once on the same namespace."
-                )
-                # And a third run for good measure — the latch must hold.
-                apptools.substitutions(args, verbose=0)
-                assert args.verbose == verbose_after_parseargs
-
-
-@pytest.mark.usefixtures("parsers_reset")
 class TestVariableHandlingMethod:
     """End-to-end coverage for --variable-handling-method through the full
     parseargs pipeline (both parse paths — the plain parse and the append-mode
@@ -3061,60 +2369,6 @@ class TestFfilePrefixMapTargetArg:
         assert args.ffile_prefix_map_target == ""
 
 
-class TestHasPrefixMapFlag:
-    """``_has_prefix_map_flag`` detects user-specified prefix-map flags so
-    :func:`apptools._inject_ffile_prefix_map` can skip auto-injection on
-    a per-slot basis (user choice wins).
-    """
-
-    def test_detects_all_four_aliases(self):
-        for prefix in (
-            "-ffile-prefix-map",
-            "-fdebug-prefix-map",
-            "-fmacro-prefix-map",
-            "-fcanon-prefix-map",
-        ):
-            assert _has_prefix_map_flag(f"-O2 {prefix}=/foo=. -g")
-            assert _has_prefix_map_flag(f"{prefix}=/foo=.")
-
-    def test_negative_cases(self):
-        assert not _has_prefix_map_flag("-O2 -g -Wall")
-        assert not _has_prefix_map_flag("")
-        # Lookalike: -fno-omit-frame-pointer shares the -f prefix but
-        # is not a prefix-map flag. Must not false-positive.
-        assert not _has_prefix_map_flag("-fno-omit-frame-pointer")
-        # Bare prefix without trailing '=': not a recognized prefix-map
-        # flag (the flag syntax is OLD=NEW after the equals).
-        assert not _has_prefix_map_flag("-ffile-prefix-map")
-
-    def test_quoted_d_macro_does_not_false_positive(self):
-        """Regression: a ``-D`` macro whose VALUE happens to contain the
-        literal ``-ffile-prefix-map=`` substring (e.g. a build-reason
-        string baked into the binary) must NOT be mistaken for a
-        user-supplied prefix-map flag — silently skipping auto-injection
-        for that slot would cause per-user-divergent ``.o`` bytes for a
-        project that thought it had cross-user CAS sharing. Substring
-        detection on the raw string returned True here; tokenized
-        detection correctly returns False.
-        """
-
-        assert not _has_prefix_map_flag("-DREASON='-ffile-prefix-map=oops='")
-        # And a real prefix-map sitting next to the masquerading -D=
-        # is still detected.
-        assert _has_prefix_map_flag("-DFOO=bar -ffile-prefix-map=/a=/b")
-
-    def test_unbalanced_quote_fallback(self):
-        """An unparseable flag string (shlex raises ValueError on
-        unbalanced quotes) is treated as user-supplied prefix-map —
-        the conservative call: an opaque string is unsafe to interpret
-        either way, so decline auto-injection rather than risk appending
-        a flag the user might already have inside their unparseable
-        text. Pinned explicitly so future changes don't silently flip.
-        """
-
-        assert _has_prefix_map_flag("'unbalanced quote")
-
-
 class TestInjectFfilePrefixMap:
     """``_inject_ffile_prefix_map`` appends
     ``-ffile-prefix-map=<gitroot>=<target>`` to args.CXXFLAGS / args.CFLAGS
@@ -3133,84 +2387,6 @@ class TestInjectFfilePrefixMap:
         )
         defaults.update(overrides)
         return SimpleNamespace(**defaults)
-
-    def test_appends_when_absent(self, monkeypatch):
-        monkeypatch.setattr(apptools.compiletools.git_utils, "find_git_root", lambda: "/home/alice/proj")
-        args = self._make_args()
-        apptools._inject_ffile_prefix_map(args)
-        assert "-ffile-prefix-map=/home/alice/proj=." in args.CXXFLAGS
-        assert "-ffile-prefix-map=/home/alice/proj=." in args.CFLAGS
-
-    def test_respects_user_override_per_slot(self, monkeypatch):
-        """User-set ``-fdebug-prefix-map`` in CXXFLAGS suppresses injection
-        for CXXFLAGS only; CFLAGS still gets the default."""
-
-        monkeypatch.setattr(apptools.compiletools.git_utils, "find_git_root", lambda: "/home/alice/proj")
-        args = self._make_args(CXXFLAGS="-O2 -fdebug-prefix-map=/user/set=foo")
-        apptools._inject_ffile_prefix_map(args)
-        # CXXFLAGS unchanged: user already specified a prefix-map flag
-        assert args.CXXFLAGS == "-O2 -fdebug-prefix-map=/user/set=foo"
-        # CFLAGS gets the default injection (independent slot)
-        assert "-ffile-prefix-map=/home/alice/proj=." in args.CFLAGS
-
-    def test_no_op_when_git_root_falsy(self, monkeypatch):
-        """An empty / falsy gitroot is the identity -- no anchor to
-        canonicalize against, so injection is silently skipped."""
-
-        monkeypatch.setattr(apptools.compiletools.git_utils, "find_git_root", lambda: "")
-        args = self._make_args(CXXFLAGS="-O2", CFLAGS="-O2")
-        apptools._inject_ffile_prefix_map(args)
-        assert args.CXXFLAGS == "-O2"
-        assert args.CFLAGS == "-O2"
-
-    def test_honors_custom_target(self, monkeypatch):
-        monkeypatch.setattr(apptools.compiletools.git_utils, "find_git_root", lambda: "/home/alice/proj")
-        args = self._make_args(ffile_prefix_map_target="/__ct__/", CFLAGS="")
-        apptools._inject_ffile_prefix_map(args)
-        assert "-ffile-prefix-map=/home/alice/proj=/__ct__/" in args.CXXFLAGS
-
-    def test_handles_empty_initial_flag_string(self, monkeypatch):
-        """No leading whitespace when the slot starts empty."""
-
-        monkeypatch.setattr(apptools.compiletools.git_utils, "find_git_root", lambda: "/repo")
-        args = self._make_args(CXXFLAGS="", CFLAGS="")
-        apptools._inject_ffile_prefix_map(args)
-        assert args.CXXFLAGS == "-ffile-prefix-map=/repo=."
-        assert args.CFLAGS == "-ffile-prefix-map=/repo=."
-
-    def test_idempotent(self, monkeypatch):
-        """Second call detects its own injection and skips."""
-
-        monkeypatch.setattr(apptools.compiletools.git_utils, "find_git_root", lambda: "/repo")
-        args = self._make_args()
-        apptools._inject_ffile_prefix_map(args)
-        first_cxx = args.CXXFLAGS
-        first_c = args.CFLAGS
-        apptools._inject_ffile_prefix_map(args)
-        assert first_cxx == args.CXXFLAGS
-        assert first_c == args.CFLAGS
-
-    def test_quoted_d_macro_does_not_block_injection(self, monkeypatch):
-        """End-to-end regression: a ``-D`` whose VALUE contains the
-        literal ``-ffile-prefix-map=`` substring previously caused
-        ``_has_prefix_map_flag`` to return True (substring match),
-        so ``_inject_ffile_prefix_map`` skipped auto-injection for that
-        slot. The user thought they had cross-user CAS sharing; they
-        actually got per-user-divergent ``.o`` bytes. After the
-        tokenization fix, auto-injection happens as expected.
-        """
-
-        monkeypatch.setattr(apptools.compiletools.git_utils, "find_git_root", lambda: "/home/alice/proj")
-        args = self._make_args(
-            CXXFLAGS="-O2 -DREASON='-ffile-prefix-map=oops='",
-            CFLAGS="-O2 -DREASON='-ffile-prefix-map=oops='",
-        )
-        apptools._inject_ffile_prefix_map(args)
-        assert "-ffile-prefix-map=/home/alice/proj=." in args.CXXFLAGS
-        assert "-ffile-prefix-map=/home/alice/proj=." in args.CFLAGS
-        # The masquerading -D should still be present, untouched.
-        assert "-DREASON='-ffile-prefix-map=oops='" in args.CXXFLAGS
-        assert "-DREASON='-ffile-prefix-map=oops='" in args.CFLAGS
 
 
 class TestConfFileEncodingTolerance:
@@ -3310,77 +2486,6 @@ def _wild_args(cxx, ldflags, variant="gcc.wild.release"):
     return SimpleNamespace(CXX=cxx, LDFLAGS=ldflags, variant=variant)
 
 
-def test_normalize_wild_clang_rewrites_to_ld_path():
-    args = _wild_args("clang++", "-fuse-ld=wild", "clang.wild.release")
-    apptools._normalize_wild_linker(args)
-    assert "--ld-path=wild" in args.LDFLAGS
-    assert "-fuse-ld=wild" not in args.LDFLAGS
-
-
-def test_normalize_wild_gcc_passthrough(monkeypatch):
-    # compiler_kind introspects --version when the basename is gcc-ish to
-    # detect distros (e.g. Termux) where g++ is a clang symlink. The unit
-    # test wants "g++ means gcc" regardless of the host's PATH, so pin
-    # the probe and clear the lru_cache.
-    monkeypatch.setattr(apptools, "_compiler_major_version", lambda _c: ("gcc", 16))
-    apptools.compiler_kind.cache_clear()
-    args = _wild_args("g++", "-fuse-ld=wild", "gcc.wild.release")
-    apptools._normalize_wild_linker(args)
-    assert args.LDFLAGS == "-fuse-ld=wild"
-
-
-def test_normalize_wild_unknown_compiler_passthrough():
-    args = _wild_args("weirdcc", "-fuse-ld=wild", "weird.wild.release")
-    apptools._normalize_wild_linker(args)
-    assert args.LDFLAGS == "-fuse-ld=wild"
-
-
-def test_normalize_wild_noop_when_not_selected():
-    args = _wild_args("clang++", "-O2 -lm", "clang.release")
-    apptools._normalize_wild_linker(args)
-    assert args.LDFLAGS == "-O2 -lm"
-
-
-def test_normalize_wild_explicit_ld_overrides_cxx_for_clang():
-    # _effective_link_driver prefers args.LD: a clang LD with a gcc CXX
-    # still triggers the clang rewrite (LDFLAGS is consumed by the link
-    # driver, which is LD here).
-    args = _wild_args("g++", "-fuse-ld=wild", "gcc.wild.release")
-    args.LD = "clang++"
-    apptools._normalize_wild_linker(args)
-    assert "--ld-path=wild" in args.LDFLAGS
-    assert "-fuse-ld=wild" not in args.LDFLAGS
-
-
-def test_normalize_wild_b_stashes_searchdir_and_makes_symlink(tmp_path, monkeypatch):
-    fake_wild = tmp_path / "wild"
-    fake_wild.write_text("#!/bin/sh\nexit 0\n")
-    monkeypatch.setattr(shutil, "which", lambda name: str(fake_wild) if name == "wild" else None)
-    monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda *a, **k: str(tmp_path))
-    args = _wild_args("g++", "", "gcc.wild-B.release")
-    apptools._normalize_wild_linker(args)
-
-    search_dir = tmp_path / ".ct-wild-ld"
-    # The -B flag itself is NOT in LDFLAGS — it's stashed and emitted by
-    # the link-rule builders, bypassing canonicalize_for_command.
-    assert "-B" not in args.LDFLAGS
-    assert args._wild_b_search_dir == str(search_dir)
-    ld_link = search_dir / "ld"
-    assert ld_link.is_symlink()
-    assert os.readlink(ld_link) == str(fake_wild)
-
-
-def test_normalize_wild_clang_rewrite_preserves_quoted_tokens():
-    # Regression: " ".join(rewritten) silently split tokens containing spaces.
-    # shlex.join round-trips them correctly.
-    args = _wild_args("clang++", '-fuse-ld=wild -Wl,-rpath,"$ORIGIN/dir with space"', "clang.wild.release")
-    apptools._normalize_wild_linker(args)
-    tokens = shlex.split(args.LDFLAGS)
-    assert "--ld-path=wild" in tokens
-    assert "-fuse-ld=wild" not in tokens
-    assert "-Wl,-rpath,$ORIGIN/dir with space" in tokens
-
-
 def test_check_wild_b_with_bazel_backend_raises(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
     args = _wild_args("g++", "", "gcc.wild-B.release")
@@ -3395,33 +2500,6 @@ def test_check_wild_b_with_make_backend_ok(monkeypatch):
     args = _wild_args("g++", "", "gcc.wild-B.release")
     args.backend = "make"
     apptools._check_wild_linker_usable(args)  # no raise
-
-
-def test_materialize_wild_b_idempotent(tmp_path, monkeypatch):
-    fake_wild = tmp_path / "wild"
-    fake_wild.write_text("#!/bin/sh\nexit 0\n")
-    monkeypatch.setattr(shutil, "which", lambda name: str(fake_wild) if name == "wild" else None)
-    monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda *a, **k: str(tmp_path))
-    d1 = apptools._materialize_wild_b_searchdir()
-    d2 = apptools._materialize_wild_b_searchdir()
-    assert d1 == d2 == str(tmp_path / ".ct-wild-ld")
-    ld_link = tmp_path / ".ct-wild-ld" / "ld"
-    assert ld_link.is_symlink()
-    assert os.readlink(ld_link) == str(fake_wild)
-
-
-def test_materialize_wild_b_falls_back_to_tempdir_without_gitroot(tmp_path, monkeypatch):
-    fake_wild = tmp_path / "wild"
-    fake_wild.write_text("#!/bin/sh\nexit 0\n")
-    monkeypatch.setattr(shutil, "which", lambda name: str(fake_wild) if name == "wild" else None)
-    monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda *a, **k: None)
-    faketmp = tmp_path / "faketmp"
-    faketmp.mkdir()
-    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(faketmp))
-
-    result = apptools._materialize_wild_b_searchdir()
-    assert result == str(faketmp / "ct-wild-ld")
-    assert (faketmp / "ct-wild-ld" / "ld").is_symlink()
 
 
 def test_check_wild_usable_missing_wild_raises(monkeypatch):

@@ -103,7 +103,6 @@ class TestParseOrderMacroBug(BaseCompileToolsTestCase):
 
         # Clear parsers between tests to avoid configargparse conflicts
         uth.delete_existing_parsers()
-        compiletools.apptools.resetcallbacks()
 
         # Entry point 2: Process via intermediate (may find different headers due to parse order)
         hunter2, _ = self._create_hunter([str(self.entry_point_2_cpp)], parser_name="test_parser_2")

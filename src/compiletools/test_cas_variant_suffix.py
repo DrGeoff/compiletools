@@ -41,11 +41,9 @@ PINNED_VARIANT = "test.suffix.variant"
 def _clear_apptools_cache():  # pyright: ignore[reportUnusedFunction]
     apptools.clear_cache()
     uth.delete_existing_parsers()
-    apptools.resetcallbacks()
     yield
     apptools.clear_cache()
     uth.delete_existing_parsers()
-    apptools.resetcallbacks()
 
 
 @pytest.fixture

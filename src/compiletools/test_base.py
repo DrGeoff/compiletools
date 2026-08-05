@@ -37,13 +37,11 @@ class BaseCompileToolsTestCase:
         self._temp_context = uth.TempDirectoryContext(change_dir=True)
         self._tmpdir = self._temp_context.__enter__()
         uth.delete_existing_parsers()
-        compiletools.apptools.resetcallbacks()
 
     def teardown_method(self):
         if hasattr(self, "_temp_context"):
             self._temp_context.__exit__(None, None, None)
         uth.delete_existing_parsers()
-        compiletools.apptools.resetcallbacks()
         self._clear_all_caches()  # Clear after teardown
 
     def _verify_one_exe_per_main(self, relativepaths, search_dir=None):

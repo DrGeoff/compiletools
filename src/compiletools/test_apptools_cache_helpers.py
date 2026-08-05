@@ -18,7 +18,6 @@ import pytest
 import stringzilla as sz
 
 import compiletools.apptools
-import compiletools.apptools as apptools
 import compiletools.configutils
 import compiletools.testhelper as uth
 import compiletools.utils as utils
@@ -181,10 +180,8 @@ class TestArgsTokensAfterParseargs:
     @pytest.fixture(autouse=True)
     def _reset_parsers(self):
         uth.delete_existing_parsers()
-        apptools.resetcallbacks()
         yield
         uth.delete_existing_parsers()
-        apptools.resetcallbacks()
 
     def _parse(self, extra_args=None, tempdir=None):
         """Run parseargs end-to-end against the standard test parser.

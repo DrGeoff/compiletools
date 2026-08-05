@@ -5,7 +5,7 @@ byte-identical CAS-layer outputs, so two users sharing a cas-objdir on
 NFS get true cross-user cache hits. Round 3 design doc:
 docs/superpowers/specs/2026-05-12-round3-workspace-relative-compile-paths-design.md
 
-Mechanism (under test): apptools._inject_ffile_prefix_map appends
+Mechanism (under test): build_state.stage_prefix_map appends
 ``-ffile-prefix-map=<gitroot>=<target>`` (default target ``.``) to
 CXXFLAGS / CFLAGS so paths the compiler emits (debug info, __FILE__,
 .d output) are anchor-relative. Link rules pass ldflags through

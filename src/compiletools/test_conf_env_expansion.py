@@ -52,13 +52,11 @@ def _clear_apptools_cache(monkeypatch, _functional_cxx):  # pyright: ignore[repo
     parseargs' compiler auto-detection (see _functional_cxx)."""
     apptools.clear_cache()
     uth.delete_existing_parsers()
-    apptools.resetcallbacks()
     if _functional_cxx:
         monkeypatch.setenv("CXX", _functional_cxx)
     yield
     apptools.clear_cache()
     uth.delete_existing_parsers()
-    apptools.resetcallbacks()
 
 
 @pytest.fixture

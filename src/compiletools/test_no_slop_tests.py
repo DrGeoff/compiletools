@@ -79,10 +79,6 @@ import re
 # enumerated, reviewed exceptions, not a blanket exemption.
 _R1_NO_VERIFICATION_ALLOWLIST: frozenset[str] = frozenset(
     {
-        # _substitute_CXX_for_missing / _deduplicate_all_flags must not raise on
-        # the missing-attribute inputs these two feed them.
-        "test_apptools.py::test_no_ld_attribute_ok",
-        "test_apptools.py::test_missing_flag_ok",
         # BazelBackend success path returns quietly (no exception, no output).
         "test_bazel_backend.py::test_success_returns_quietly",
         # clean()/realclean() must silently skip absent dirs/files.

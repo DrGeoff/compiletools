@@ -29,10 +29,8 @@ def parsers_reset():
     """Wipe the global configargparse parser cache + apptools callbacks
     around tests that go through ``parseargs`` end-to-end."""
     uth.delete_existing_parsers()
-    compiletools.apptools.resetcallbacks()
     yield
     uth.delete_existing_parsers()
-    compiletools.apptools.resetcallbacks()
 
 
 def _parseargs_with_temp_config(tmp_path, description):
