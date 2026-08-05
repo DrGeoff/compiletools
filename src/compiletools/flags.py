@@ -6,9 +6,10 @@ historically scattered across apptools, build_backend, and magicflags:
 tokenization, -D/-U stripping, hash-relevance filtering, and include-
 path inspection.
 
-Flags is INSTANTIATED ONCE per build (at parseargs end) and stored on
-args.flags. Existing args.CPPFLAGS / args.CPPFLAGS_tokens etc. are
-kept for backward compat. New code should prefer args.flags.
+Flags is INSTANTIATED ONCE per build, inside
+``build_state.compute_build_state``; consumers reach it as
+``get_build_state(args).flags`` (``args.flags`` is the legacy alias
+``populate_args`` maintains for unmigrated readers).
 
 Flags is frozen and uses tuple slots so it is hashable, equality-safe,
 and immune to in-place mutation by consumers. Mutation-style helpers
@@ -21,7 +22,6 @@ import dataclasses
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
-from compiletools.apptools_compiler import compiler_identity
 from compiletools.flag_ops import (
     dedup_include_paths_to_append,
     extract_include_paths_from_tokens,
@@ -45,35 +45,6 @@ class Flags:
     cxx: tuple[str, ...] = field(default_factory=tuple)
     ld: tuple[str, ...] = field(default_factory=tuple)
     compiler_identity: str = ""
-
-    @classmethod
-    def from_args(cls, args) -> Flags:
-        """Build a Flags from a parsed args object.
-
-        Requires args.{CPPFLAGS,CFLAGS,CXXFLAGS,LDFLAGS}_tokens to have
-        been populated (parseargs does this; testhelper.create_args
-        mirrors it). Raises AttributeError otherwise -- callers must go
-        through parseargs / create_args, not construct args ad hoc.
-
-        The compiler_identity is computed against the gitroot anchor so
-        in-workspace wrapper scripts (coverage / sccache / distcc shims)
-        canonicalise to ``<GITROOT>/...`` instead of leaking the per-
-        checkout absolute path into every downstream cache key.
-        """
-        # ``compiler_identity`` is a module-level import (apptools_compiler is a
-        # leaf). ``find_git_root`` stays deferred: git_utils imports apptools, so
-        # a top-level import here would reintroduce the flags<->apptools cycle.
-        from compiletools.git_utils import find_git_root
-
-        cxx_command = getattr(args, "CXX", "") or ""
-        anchor_root = find_git_root() or ""
-        return cls(
-            cpp=tuple(args.CPPFLAGS_tokens),
-            c=tuple(args.CFLAGS_tokens),
-            cxx=tuple(args.CXXFLAGS_tokens),
-            ld=tuple(args.LDFLAGS_tokens),
-            compiler_identity=compiler_identity(cxx_command, anchor_root=anchor_root),
-        )
 
     def hash_relevant(self, slot: str) -> list[str]:
         """Return tokens for the given slot with -D/-U and diagnostic-only

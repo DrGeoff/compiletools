@@ -6,18 +6,18 @@ from unittest import mock
 
 import pytest
 
-from compiletools.flags import Flags
+import compiletools.testhelper as uth
 from compiletools.preprocessor import PreProcessor
-from compiletools.utils import split_command_cached
 
 
 def _make_args(cpp="cpp", cppflags="", verbose=0):
-    return types.SimpleNamespace(
+    args = types.SimpleNamespace(
         CPP=cpp,
         CPPFLAGS=cppflags,
-        flags=Flags(cpp=tuple(split_command_cached(cppflags))),
         verbose=verbose,
     )
+    uth.finalize_flag_state(args)
+    return args
 
 
 @pytest.fixture
@@ -110,16 +110,11 @@ class TestPreProcessorProcess:
         assert "-DBAR" in cmd
 
     def test_flags_cpp_tokens_used_verbatim(self, mock_check_output):
-        """The argv takes args.flags.cpp tokens as-is: a token with an
-        embedded space (a shlex.join'd raw string would carry it quoted)
+        """The argv takes the build state's cpp tokens as-is: a token with
+        an embedded space (a shlex.join'd raw string would carry it quoted)
         arrives as ONE argv element, and CPP/extraargs are shlex-split so
         quoted segments in either survive as single elements."""
-        args = types.SimpleNamespace(
-            CPP="ccache 'my cpp'",
-            CPPFLAGS="-DMSG='hello world'",
-            flags=Flags(cpp=("-DMSG=hello world",)),
-            verbose=0,
-        )
+        args = _make_args(cpp="ccache 'my cpp'", cppflags="-DMSG='hello world'")
         PreProcessor(args).process("/tmp/foo.cpp", "-include 'weird dir/pre.h'")
         cmd = mock_check_output.call_args[0][0]
         assert cmd[:2] == ["ccache", "my cpp"]

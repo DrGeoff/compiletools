@@ -26,13 +26,15 @@ from compiletools.build_context import BuildContext
 
 
 def _make_args(cppflags="", cflags="", cxxflags=""):
-    return SimpleNamespace(
+    args = SimpleNamespace(
         CPPFLAGS=cppflags,
         CFLAGS=cflags,
         CXXFLAGS=cxxflags,
         CXX=None,
         verbose=0,
     )
+    uth.finalize_flag_state(args)
+    return args
 
 
 class TestCmdlineDMacroNames:
@@ -71,7 +73,7 @@ class TestCmdlineDMacroNames:
 
     def test_cmdline_d_macro_names_strips_value_from_attached_form(self):
         """The set contains the macro NAME only -- never the `=value` half."""
-        args = SimpleNamespace(CPPFLAGS="-DFOO=bar -DBAZ=qux", CFLAGS="", CXXFLAGS="", verbose=0)
+        args = _make_args(cppflags="-DFOO=bar -DBAZ=qux")
         result = cmdline_d_macro_names(args)
         assert result == frozenset({sz.Str("FOO"), sz.Str("BAZ")})
         # Specifically guard against accidentally including the value half:

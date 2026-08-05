@@ -2,6 +2,7 @@ import subprocess
 import sys
 
 import compiletools.apptools
+import compiletools.build_apply
 import compiletools.utils
 
 
@@ -16,13 +17,15 @@ class PreProcessor:
         compiletools.apptools.add_common_arguments(cap)
 
     def process(self, realpath, extraargs, redirect_stderr_to_stdout=False):
-        # args.CPP is an exe-name string (outside args.flags); the cpp flag
-        # tokens come from the frozen args.flags. Never .split() a raw string
-        # that may be shlex.join'd -- quoted tokens would become literal-quote
-        # argv garbage -- so the two raw strings go through shlex splitting.
+        # args.CPP is an exe-name string (outside the BuildState); the cpp
+        # flag tokens come from the stashed state. Never .split() a raw
+        # string that may be shlex.join'd -- quoted tokens would become
+        # literal-quote argv garbage -- so the two raw strings go through
+        # shlex splitting.
+        state = compiletools.build_apply.get_build_state(self.args)
         cmd = (
             compiletools.utils.split_command_cached(self.args.CPP)
-            + list(self.args.flags.cpp)
+            + list(state.flags.cpp)
             + compiletools.utils.split_command_cached(extraargs)
         )
         if compiletools.utils.is_header(realpath):

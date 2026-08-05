@@ -302,9 +302,6 @@ from compiletools.apptools_validate import (
 from compiletools.flag_ops import (
     dedup_include_paths_to_append as dedup_include_paths_to_append,
 )
-from compiletools.flag_ops import (
-    extract_include_paths_from_tokens as extract_include_paths_from_tokens,
-)
 
 # Re-exported from the leaf flag_ops module so existing
 # ``apptools.<name>`` call sites and test/patch targets keep working with
@@ -312,8 +309,13 @@ from compiletools.flag_ops import (
 # pure re-export (no internal apptools caller), hence the explicit
 # redundant alias to mark it as an intentional re-export for linters.
 from compiletools.flag_ops import (
+    extract_d_macros,
     filter_hash_irrelevant_tokens,
     strip_d_u_tokens,
+    system_include_paths_from_tokens,
+)
+from compiletools.flag_ops import (
+    extract_include_paths_from_tokens as extract_include_paths_from_tokens,
 )
 from compiletools.utils import split_command_cached
 
@@ -705,12 +707,32 @@ def reanchor_config_for_discovered_targets(args):
     return parseargs(cap, argv, context=args._context)
 
 
+_FLAG_SOURCE_TO_SLOT = {"CPPFLAGS": "cpp", "CFLAGS": "c", "CXXFLAGS": "cxx", "LDFLAGS": "ld"}
+
+
+def _state_slot_tokens(args, flag_sources):
+    """(legacy slot name, token tuple) pairs read from the stashed BuildState.
+
+    The flag helpers below keep their historical ``flag_sources`` vocabulary
+    (legacy slot names) but read the authoritative token tuples from
+    ``args._build_state`` instead of re-tokenizing the legacy raw strings.
+    Namespaces that never went through populate_args get the named
+    ``get_build_state`` error pointing at ``testhelper.finalize_flag_state``.
+    """
+    import compiletools.build_apply
+
+    flags = compiletools.build_apply.get_build_state(args).flags
+    return [(name, getattr(flags, _FLAG_SOURCE_TO_SLOT[name])) for name in flag_sources]
+
+
 def extract_system_include_paths(args, flag_sources=None, verbose=0):
-    """Extract -I and -isystem include paths from command-line flags.
+    """Extract -I and -isystem include paths from the build-state flags.
 
     Args:
-        args: Parsed arguments object with flag attributes (CPPFLAGS, CFLAGS, CXXFLAGS)
-        flag_sources: List of flag names to extract from (default: ['CPPFLAGS', 'CXXFLAGS'])
+        args: Namespace carrying a stashed BuildState (post parseargs /
+            testhelper.finalize_flag_state)
+        flag_sources: List of legacy slot names to extract from
+            (default: ['CPPFLAGS', 'CXXFLAGS'])
         verbose: Verbosity level for debugging
 
     Returns:
@@ -719,49 +741,10 @@ def extract_system_include_paths(args, flag_sources=None, verbose=0):
     if flag_sources is None:
         flag_sources = ["CPPFLAGS", "CXXFLAGS"]
 
-    include_paths = []
-
-    for flag_name in flag_sources:
-        flag_value = getattr(args, flag_name, "")
-        if not flag_value:
-            continue
-
-        # Use existing shlex functionality from split_command_cached
-        try:
-            tokens = split_command_cached(flag_value)
-        except ValueError:
-            # Fall back to simple split if shlex fails
-            tokens = flag_value.split()
-
-        # Process tokens to find -I and -isystem flags
-        i = 0
-        while i < len(tokens):
-            token = tokens[i]
-
-            if token == "-I" or token == "-isystem":
-                # Next token should be the path
-                if i + 1 < len(tokens):
-                    include_paths.append(tokens[i + 1])
-                    i += 2
-                else:
-                    i += 1
-            elif token.startswith("-I"):
-                # -Ipath format
-                path = token[2:]
-                if path:  # Make sure it's not just "-I"
-                    include_paths.append(path)
-                i += 1
-            elif token.startswith("-isystem"):
-                # -isystempath format (though this is unusual)
-                path = token[8:]
-                if path:  # Make sure it's not just "-isystem"
-                    include_paths.append(path)
-                i += 1
-            else:
-                i += 1
-
-    # Remove duplicates while preserving order using existing ordered_unique
-    include_paths = compiletools.utils.ordered_unique(include_paths)
+    tokens = []
+    for _, slot_tokens in _state_slot_tokens(args, flag_sources):
+        tokens.extend(slot_tokens)
+    include_paths = system_include_paths_from_tokens(tokens)
 
     if verbose >= 9 and include_paths:
         print(f"Extracted system include paths: {include_paths}")
@@ -794,11 +777,13 @@ def find_system_header(header_name, args, verbose=0):
 
 
 def extract_command_line_macros(args, flag_sources=None, include_compiler_macros=True, verbose=0):
-    """Extract -D macro definitions from command line flags.
+    """Extract -D macro definitions from the build-state flags.
 
     Args:
-        args: Parsed arguments object with flag attributes (CPPFLAGS, CFLAGS, CXXFLAGS)
-        flag_sources: List of flag names to extract from (default: ['CPPFLAGS', 'CFLAGS', 'CXXFLAGS'])
+        args: Namespace carrying a stashed BuildState (post parseargs /
+            testhelper.finalize_flag_state)
+        flag_sources: List of legacy slot names to extract from
+            (default: ['CPPFLAGS', 'CFLAGS', 'CXXFLAGS'])
         include_compiler_macros: Whether to include compiler/platform macros
         verbose: Verbosity level (uses args.verbose if 0)
 
@@ -813,60 +798,15 @@ def extract_command_line_macros(args, flag_sources=None, include_compiler_macros
 
     macros = {}
 
-    # Extract -D macros from specified flag sources
-    for flag_name in flag_sources:
-        flag_value = getattr(args, flag_name, None)
-        if not flag_value:
-            continue
-
-        # Handle both string and list types for flag_value
-        if isinstance(flag_value, list):
-            flag_string = " ".join(flag_value)
-        else:
-            flag_string = flag_value
-
-        # Use shlex.split for robust parsing
-        try:
-            flags = split_command_cached(flag_string)
-        except ValueError:
-            # Fallback to simple split if shlex fails on malformed input
-            flags = flag_string.split()
-
-        # Walk tokens recognizing both attached (-DFOO, -DFOO=val) and
-        # detached (-D FOO, -D FOO=val) forms. Both forms must be recognized
-        # here because cmdline_d_macro_names recognizes both: a macro this
-        # walk misses would be absent from one macro universe but present in
-        # the other, defeating the cache-key scoping.
-        i = 0
-        n = len(flags)
-        while i < n:
-            flag = flags[i]
-            macro_def = None
-            if flag == "-D":
-                # Detached: name (and optional =value) is the next token.
-                if i + 1 < n:
-                    macro_def = flags[i + 1]
-                i += 2
-            elif flag.startswith("-D"):
-                macro_def = flag[2:]
-                i += 1
-            else:
-                i += 1
-                continue
-
-            if not macro_def:
-                continue
-
-            if "=" in macro_def:
-                macro_name, macro_value = macro_def.split("=", 1)
-            else:
-                macro_name = macro_def
-                macro_value = "1"  # Default value for macros without explicit values
-
-            if macro_name:
-                macros[macro_name] = macro_value
-                if verbose >= 9:
-                    print(f"extract_command_line_macros: added macro {macro_name} = {macro_value} from {flag_name}")
+    # extract_d_macros recognizes attached and detached -D forms; it must
+    # stay form-consistent with cmdline_d_macro_names or a macro would be
+    # absent from one macro universe but present in the other, defeating
+    # the cache-key scoping.
+    for flag_name, slot_tokens in _state_slot_tokens(args, flag_sources):
+        for macro_name, macro_value in extract_d_macros(slot_tokens).items():
+            macros[macro_name] = macro_value
+            if verbose >= 9:
+                print(f"extract_command_line_macros: added macro {macro_name} = {macro_value} from {flag_name}")
 
     # Add compiler, platform, and architecture macros if requested
     if include_compiler_macros:
@@ -946,8 +886,9 @@ def cmdline_d_macro_names(args, flag_sources=None, verbose=0) -> frozenset[sz.St
     here -- only the name matters for the scope-filter universe.
 
     Args:
-        args: Parsed arguments object (must have CPPFLAGS/CFLAGS/CXXFLAGS attrs)
-        flag_sources: List of flag names to extract from
+        args: Namespace carrying a stashed BuildState (post parseargs /
+            testhelper.finalize_flag_state)
+        flag_sources: List of legacy slot names to extract from
             (default: ['CPPFLAGS', 'CFLAGS', 'CXXFLAGS'])
         verbose: Verbosity level (uses args.verbose if 0)
 
@@ -961,46 +902,11 @@ def cmdline_d_macro_names(args, flag_sources=None, verbose=0) -> frozenset[sz.St
         flag_sources = ["CPPFLAGS", "CFLAGS", "CXXFLAGS"]
 
     names = set()
-    for flag_name in flag_sources:
-        flag_value = getattr(args, flag_name, None)
-        if not flag_value:
-            continue
-
-        if isinstance(flag_value, list):
-            flag_string = " ".join(flag_value)
-        else:
-            flag_string = flag_value
-
-        try:
-            tokens = split_command_cached(flag_string)
-        except ValueError:
-            tokens = flag_string.split()
-
-        i = 0
-        n = len(tokens)
-        while i < n:
-            tok = tokens[i]
-            macro_def = None
-            if tok == "-D":
-                # Detached form: name is the next token.
-                if i + 1 < n:
-                    macro_def = tokens[i + 1]
-                i += 2
-            elif tok.startswith("-D"):
-                macro_def = tok[2:]
-                i += 1
-            else:
-                i += 1
-                continue
-
-            if not macro_def:
-                continue
-            eq_pos = macro_def.find("=")
-            macro_name = macro_def[:eq_pos] if eq_pos >= 0 else macro_def
-            if macro_name:
-                names.add(macro_name)
-                if verbose >= 9:
-                    print(f"cmdline_d_macro_names: added {macro_name} from {flag_name}")
+    for flag_name, slot_tokens in _state_slot_tokens(args, flag_sources):
+        for macro_name in extract_d_macros(slot_tokens):
+            names.add(macro_name)
+            if verbose >= 9:
+                print(f"cmdline_d_macro_names: added {macro_name} from {flag_name}")
 
     return frozenset(sz.Str(name) for name in names)
 
@@ -1337,22 +1243,12 @@ def resubstitute(args) -> None:
     gather is a pure function of the (possibly caller-mutated) namespace,
     any observed change reflects the caller's own edit, never corruption.
     """
-    from compiletools.build_apply import apply_effects, populate_args
+    from compiletools.build_apply import apply_effects, get_build_state, populate_args
     from compiletools.build_inputs import gather_inputs
-    from compiletools.build_state import NameState, cache_naming_view, compute_build_state
+    from compiletools.build_state import cache_naming_view, compute_build_state
 
     context = args._context
-    prior_view = (
-        args.flags,
-        NameState(
-            variant=args.variant,
-            bindir=args.bindir,
-            cas_objdir=args.cas_objdir,
-            cas_pchdir=args.cas_pchdir,
-            cas_pcmdir=args.cas_pcmdir,
-            cas_exedir=args.cas_exedir,
-        ),
-    )
+    prior_view = cache_naming_view(get_build_state(args))
 
     inputs = gather_inputs(args, context)
     state = compute_build_state(inputs)

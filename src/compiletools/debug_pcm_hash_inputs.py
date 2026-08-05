@@ -13,8 +13,9 @@ Output is a single JSON object on stdout with the six fields that
 * ``compiler_identity`` — ``realpath|size|mtime_ns`` of ``args.CXX``,
   canonicalised against the gitroot anchor.
 * ``cxx_command`` — canonicalised ``args.CXX``.
-* ``cxxflags_tokens`` — ``args.flags.hash_relevant("cxx")`` (frozen
-  per-build, set once at parseargs end).
+* ``cxxflags_tokens`` — the stashed BuildState's
+  ``flags.hash_relevant("cxx")`` (frozen per-build, set once at
+  parseargs end).
 * ``magic_cpp_flags`` / ``magic_cxx_flags`` — per-file flags from
   ``hunter.magicflags(source)`` after the same canonicalisation the
   hash function applies.
@@ -97,7 +98,9 @@ def _gather_inputs(args, hunter, source_filename: str, stage: str) -> dict:
     magic_cpp = magicflags.get(sz.Str("CPPFLAGS"), [])
     magic_cxx = magicflags.get(sz.Str("CXXFLAGS"), [])
 
-    cxxflags_tokens = list(args.flags.hash_relevant("cxx"))
+    from compiletools.build_apply import get_build_state
+
+    cxxflags_tokens = list(get_build_state(args).flags.hash_relevant("cxx"))
     source_realpath = wrappedos.realpath(source_filename)
 
     cxx_command_canon = canonicalize_path_for_cache_key(args.CXX, anchor_root)

@@ -19,11 +19,6 @@ from compiletools.build_context import BuildContext
 from compiletools.flags import Flags
 
 
-def _make_args(**kwargs) -> types.SimpleNamespace:
-    """Build a bare args namespace with the given attributes."""
-    return types.SimpleNamespace(**kwargs)
-
-
 @pytest.fixture
 def parsers_reset():
     """Wipe the global configargparse parser cache + apptools callbacks
@@ -49,30 +44,6 @@ def _parseargs_with_temp_config(tmp_path, description):
     compiletools.apptools.add_common_arguments(cap)
     compiletools.apptools.add_link_arguments(cap)
     return compiletools.apptools.parseargs(cap, argv, context=BuildContext())
-
-
-def test_flags_from_args_reads_tokens():
-    args = _make_args(
-        CPPFLAGS_tokens=["-O2", "-Wall"],
-        CFLAGS_tokens=[],
-        CXXFLAGS_tokens=[],
-        LDFLAGS_tokens=[],
-        CXX="",
-    )
-    flags = Flags.from_args(args)
-    assert flags.cpp == ("-O2", "-Wall")
-
-
-def test_flags_from_args_populates_compiler_identity():
-    args = _make_args(
-        CPPFLAGS_tokens=[],
-        CFLAGS_tokens=[],
-        CXXFLAGS_tokens=[],
-        LDFLAGS_tokens=[],
-        CXX=sys.executable,
-    )
-    flags = Flags.from_args(args)
-    assert flags.compiler_identity != ""
 
 
 @pytest.mark.parametrize(

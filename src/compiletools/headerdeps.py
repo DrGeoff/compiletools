@@ -282,10 +282,8 @@ class DirectHeaderDeps(HeaderDepsBase):
             # local re-import — the local re-import shadows the module-level
             # ``compiletools`` binding for the type checker, breaking access to
             # sibling submodules like ``compiletools.git_utils`` below.)
-            # NOTE: extract_command_line_macros still reads the legacy
-            # args.<SLOT> attrs (shared with un-migrated callers);
-            # value-identical to the stashed BuildState today. It migrates
-            # with the apptools helpers, not with this module.
+            # extract_command_line_macros reads the stashed BuildState's
+            # flag tokens (flag_sources names select slots, not legacy attrs).
             raw_macros = compiletools.apptools.extract_command_line_macros(
                 self.args,
                 flag_sources=["CPPFLAGS", "CFLAGS", "CXXFLAGS"],

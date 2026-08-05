@@ -178,13 +178,13 @@ class TestFindSystemHeader:
 
     def test_header_found(self, tmp_path):
         (tmp_path / "myheader.h").write_text("// header\n")
-        args = SimpleNamespace(CPPFLAGS=f"-I{tmp_path}", CFLAGS="", CXXFLAGS="", INCLUDE="")
+        args = _finalized_args(CPPFLAGS=f"-I{tmp_path}", CFLAGS="", CXXFLAGS="", INCLUDE="")
         result = find_system_header("myheader.h", args)
         assert result is not None
         assert result.endswith("myheader.h")
 
     def test_header_not_found(self, tmp_path):
-        args = SimpleNamespace(CPPFLAGS=f"-I{tmp_path}", CFLAGS="", CXXFLAGS="", INCLUDE="")
+        args = _finalized_args(CPPFLAGS=f"-I{tmp_path}", CFLAGS="", CXXFLAGS="", INCLUDE="")
         result = find_system_header("nonexistent.h", args)
         assert result is None
 
@@ -366,67 +366,75 @@ class TestGatherGitrootIncludeOrderDeterministic:
         assert len(set(outputs)) == 1, f"Non-deterministic git-root ordering across PYTHONHASHSEEDs: {outputs!r}"
 
 
+def _finalized_args(**slots):
+    """SimpleNamespace routed through finalize_flag_state so the
+    BuildState-reading apptools helpers accept it."""
+    args = SimpleNamespace(verbose=0, **slots)
+    uth.finalize_flag_state(args)
+    return args
+
+
 class TestExtractSystemIncludePaths:
     def test_dash_I_attached(self):
-        args = SimpleNamespace(CPPFLAGS="-I/foo/bar", CXXFLAGS="")
+        args = _finalized_args(CPPFLAGS="-I/foo/bar", CXXFLAGS="")
         result = extract_system_include_paths(args)
         assert "/foo/bar" in result
 
     def test_dash_I_detached(self):
-        args = SimpleNamespace(CPPFLAGS="-I /foo/bar", CXXFLAGS="")
+        args = _finalized_args(CPPFLAGS="-I /foo/bar", CXXFLAGS="")
         result = extract_system_include_paths(args)
         assert "/foo/bar" in result
 
     def test_isystem_detached(self):
-        args = SimpleNamespace(CPPFLAGS="-isystem /foo/bar", CXXFLAGS="")
+        args = _finalized_args(CPPFLAGS="-isystem /foo/bar", CXXFLAGS="")
         result = extract_system_include_paths(args)
         assert "/foo/bar" in result
 
     def test_no_flags(self):
-        args = SimpleNamespace(CPPFLAGS="", CXXFLAGS="")
+        args = _finalized_args(CPPFLAGS="", CXXFLAGS="")
         result = extract_system_include_paths(args)
         assert result == []
 
     def test_deduplicates(self):
-        args = SimpleNamespace(CPPFLAGS="-I/foo", CXXFLAGS="-I/foo")
+        args = _finalized_args(CPPFLAGS="-I/foo", CXXFLAGS="-I/foo")
         result = extract_system_include_paths(args)
         assert result.count("/foo") == 1
 
     def test_custom_flag_sources(self):
-        args = SimpleNamespace(CFLAGS="-I/bar")
+        args = _finalized_args(CFLAGS="-I/bar")
         result = extract_system_include_paths(args, flag_sources=["CFLAGS"])
         assert "/bar" in result
 
     def test_missing_attribute(self):
-        args = SimpleNamespace()
+        args = _finalized_args()
         result = extract_system_include_paths(args, flag_sources=["CPPFLAGS"])
         assert result == []
 
 
 class TestExtractCommandLineMacros:
     def test_basic_define(self):
-        args = SimpleNamespace(CPPFLAGS="-DFOO=bar", CFLAGS="", CXXFLAGS="", verbose=0, CXX="g++")
+        args = _finalized_args(CPPFLAGS="-DFOO=bar", CFLAGS="", CXXFLAGS="", CXX="g++")
         result = extract_command_line_macros(args, include_compiler_macros=False)
         assert result["FOO"] == "bar"
 
     def test_define_no_value(self):
-        args = SimpleNamespace(CPPFLAGS="-DFOO", CFLAGS="", CXXFLAGS="", verbose=0, CXX="g++")
+        args = _finalized_args(CPPFLAGS="-DFOO", CFLAGS="", CXXFLAGS="", CXX="g++")
         result = extract_command_line_macros(args, include_compiler_macros=False)
         assert result["FOO"] == "1"
 
-    def test_list_flags(self):
-        args = SimpleNamespace(CPPFLAGS=["-DA=1", "-DB=2"], CFLAGS="", CXXFLAGS="", verbose=0, CXX="g++")
+    def test_multiple_defines(self):
+        args = _finalized_args(CPPFLAGS="-DA=1 -DB=2", CFLAGS="", CXXFLAGS="", CXX="g++")
         result = extract_command_line_macros(args, include_compiler_macros=False)
         assert result["A"] == "1"
         assert result["B"] == "2"
 
     def test_empty_flags(self):
-        args = SimpleNamespace(CPPFLAGS="", CFLAGS="", CXXFLAGS="", verbose=0, CXX="g++")
+        args = _finalized_args(CPPFLAGS="", CFLAGS="", CXXFLAGS="", CXX="g++")
         result = extract_command_line_macros(args, include_compiler_macros=False)
         assert result == {}
 
     def test_non_define_ignored(self):
-        args = SimpleNamespace(CPPFLAGS="-Wall -O2", CFLAGS="", CXXFLAGS="", verbose=0, CXX="g++")
+        args = _finalized_args(CPPFLAGS="-Wall -O2", CFLAGS="", CXXFLAGS="", CXX="g++")
         result = extract_command_line_macros(args, include_compiler_macros=False)
         assert result == {}
 
@@ -434,7 +442,7 @@ class TestExtractCommandLineMacros:
         """Detached -D form (separate -D and value tokens) was previously
         silently dropped by extract_command_line_macros. Must now be
         recognized so it's consistent with cmdline_d_macro_names."""
-        args = SimpleNamespace(CPPFLAGS="-D FOO=1 -D BAR", CFLAGS="", CXXFLAGS="", verbose=0, CXX=None)
+        args = _finalized_args(CPPFLAGS="-D FOO=1 -D BAR", CFLAGS="", CXXFLAGS="", CXX=None)
         macros = extract_command_line_macros(args, include_compiler_macros=False)
         assert macros == {"FOO": "1", "BAR": "1"}  # bare -D BAR defaults value to "1"
 

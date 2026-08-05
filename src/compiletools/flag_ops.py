@@ -62,6 +62,75 @@ def dedup_include_paths_to_append(existing_tokens, new_paths) -> list[str]:
     return out
 
 
+def extract_d_macros(tokens: Sequence[str]) -> dict[str, str]:
+    """Collect ``-D`` macro definitions from a pre-tokenized flag sequence.
+
+    The collect half of :func:`strip_d_u_tokens`' ``-D`` handling: both
+    walks must recognize the same forms or a macro would be stripped
+    from the hashed tokens without landing in the macro universe.
+    Recognizes attached (``-DFOO``, ``-DFOO=val``) and detached
+    (``-D FOO``, ``-D FOO=val``) forms. A macro without an explicit
+    value maps to ``"1"`` (the compiler default). Later occurrences
+    overwrite earlier ones, matching the compiler's last-wins rule.
+    ``-U`` is ignored (as are all non ``-D`` tokens).
+    """
+    macros: dict[str, str] = {}
+    i = 0
+    n = len(tokens)
+    while i < n:
+        tok = tokens[i]
+        macro_def = None
+        if tok == "-D":
+            # Detached form: name (and optional =value) is the next token.
+            if i + 1 < n:
+                macro_def = tokens[i + 1]
+            i += 2
+        elif tok.startswith("-D"):
+            macro_def = tok[2:]
+            i += 1
+        else:
+            i += 1
+            continue
+        if not macro_def:
+            continue
+        name, sep, value = macro_def.partition("=")
+        if name:
+            macros[name] = value if sep else "1"
+    return macros
+
+
+def system_include_paths_from_tokens(tokens: Sequence[str]) -> list[str]:
+    """Ordered unique ``-I`` / ``-isystem`` paths in a token sequence.
+
+    Recognizes attached (``-I/p``, ``-isystem/p``) and detached
+    (``-I /p``, ``-isystem /p``) forms. First occurrence wins the
+    ordering; duplicates are dropped. Unlike
+    :func:`extract_include_paths_from_tokens` (a set, ``-I`` only) this
+    preserves search order and includes ``-isystem``, because callers
+    walk the result looking for the first directory containing a header.
+    """
+    paths: list[str] = []
+    i = 0
+    n = len(tokens)
+    while i < n:
+        tok = tokens[i]
+        if tok in ("-I", "-isystem"):
+            if i + 1 < n:
+                paths.append(tokens[i + 1])
+                i += 2
+            else:
+                i += 1
+        elif tok.startswith("-isystem") and len(tok) > 8:
+            paths.append(tok[8:])
+            i += 1
+        elif tok.startswith("-I") and len(tok) > 2:
+            paths.append(tok[2:])
+            i += 1
+        else:
+            i += 1
+    return list(dict.fromkeys(paths))
+
+
 def strip_d_u_tokens(tokens: Sequence[str]) -> list[str]:
     """Strip ``-D`` and ``-U`` entries (in both attached and detached
     forms) from a pre-tokenized flag sequence.

@@ -15,17 +15,20 @@ def _make_partial(cls_name: str = "MagicFlagsBase", **args_attrs):
 
     ``__init__`` is patched to a no-op so the test can side-step the full
     parser/headerdeps wiring. The returned instance has only
-    ``obj._args = Namespace(verbose=0, **args_attrs)`` set; the test body
-    is responsible for any other attributes it needs (``defined_macros``,
-    ``_final_macro_states``, etc.).
+    ``obj._args = Namespace(verbose=0, **args_attrs)`` set (finalized so
+    BuildState-reading helpers like ``find_system_header`` accept it);
+    the test body is responsible for any other attributes it needs
+    (``defined_macros``, ``_final_macro_states``, etc.).
     """
     import compiletools.magicflags as mf
+    import compiletools.testhelper as uth
 
     cls = getattr(mf, cls_name)
     args_attrs.setdefault("verbose", 0)
     with patch.object(cls, "__init__", lambda self, *a, **kw: None):
         obj = cls.__new__(cls)
         obj._args = Namespace(**args_attrs)
+        uth.finalize_flag_state(obj._args)
         return obj
 
 
