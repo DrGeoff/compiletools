@@ -72,8 +72,9 @@ particularly for C++.
 With ct-cake, you only pull in what is strictly necessary to what you need to
 run right now. Say, you are testing a particular tool in a large project, with
 a large base of 2000 library files for string handling, sockets, etc. There
-is simply no Makefile (by default ct-cake generates one behind the scenes, but
-you can also use ``--backend`` to target Ninja, CMake, Bazel, or Shake).
+is simply no Makefile (by default ct-cake executes the build itself via the
+builtin Shake backend, but you can also use ``--backend`` to target Make,
+Ninja, CMake, or Bazel).
 You might want to create a build.sh for regression testing, but it's not
 essential.
 
@@ -107,7 +108,7 @@ that indicate needed link and compile flags.  Then it recurses through the
 dependencies of the cpp file, and uses this spidering to generate complete
 dependency information for the application. This information is collected into a
 backend-agnostic build graph, which is then handed to the selected backend
-(Make by default) to generate native build files and execute the build.
+(Shake by default) to generate native build files and execute the build.
 
 Magic Comments / Magic Flags
 ============================
@@ -365,7 +366,7 @@ Performance
 
 ct-cake's dependency analysis is fast — one particular (old) example project took
 0.04 seconds to build if nothing is out of date, versus 2 seconds for, say,
-Boost.Build. The default Make backend is about as fast as a handrolled Makefile
+Boost.Build. The Make backend is about as fast as a handrolled Makefile
 that uses the same lazily generated dependencies; alternative backends like Ninja
 can be even faster for large incremental rebuilds.
 
@@ -885,8 +886,8 @@ Common Options
     Example: ``ct-cake main.cpp -o myapp``
 
 **--backend**
-    Build system backend to use. Choices: ``make`` (default), ``ninja``,
-    ``cmake``, ``bazel``, ``shake``.
+    Build system backend to use. Choices: ``shake`` (default), ``make``,
+    ``ninja``, ``cmake``, ``bazel``.
     Example: ``ct-cake --backend=ninja``
 
 **--clean**

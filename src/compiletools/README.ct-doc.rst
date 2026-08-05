@@ -111,8 +111,8 @@ KEY FEATURES
     Use ``--variant=release`` to select. See ct-config(1).
 
 **Pluggable Build Backends**
-    Choose from Make (default), Ninja, CMake, Bazel, or the builtin
-    Shake backend.  Use ``--backend=<name>`` to select.  See ct-backends(7).
+    Choose from the builtin Shake backend (default), Make, Ninja, CMake,
+    or Bazel.  Use ``--backend=<name>`` to select.  See ct-backends(7).
 
 **Content-Addressable Caching**
     Objects, precompiled headers, C++20 module BMIs, and the linker

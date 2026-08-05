@@ -586,7 +586,7 @@ class TestCake(BaseCompileToolsTestCase):
     def test_hide_makefilename_moves_makefile(self):
         """Test that _hide_makefilename moves the makefile into executable_dir."""
         with self._tmpdir_with_config():
-            args = self._make_cake_args()
+            args = self._make_cake_args(["--backend=make"])
             # Set verbose > 4 to cover the print branch
             args.verbose = 5
             args.makefilename = "Makefile"

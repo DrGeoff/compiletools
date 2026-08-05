@@ -43,7 +43,7 @@ class Cake:
         self.context.timer = BuildTimer(
             enabled=timing_enabled,
             variant=getattr(args, "variant", ""),
-            backend=getattr(args, "backend", "make"),
+            backend=getattr(args, "backend", "shake"),
         )
 
         self.namer: Optional[compiletools.namer.Namer] = None
@@ -60,7 +60,7 @@ class Cake:
         guard makes a second application a no-op. Only applies when using
         the make backend.
         """
-        if getattr(args, "backend", "make") != "make":
+        if getattr(args, "backend", "shake") != "make":
             return
         # Namespaces that never registered bindir/makefilename aren't cake
         # parses — leave them untouched.
@@ -375,9 +375,9 @@ class Cake:
 
         cap.add_argument(
             "--backend",
-            default="make",
+            default="shake",
             choices=known_backend_names(),
-            help="Build system backend to use (default: make).",
+            help="Build system backend to use (default: shake).",
         )
 
         cap.add_argument(
@@ -684,7 +684,7 @@ class Cake:
                 pass
             os.environ["CT_RULE_OUTCOMES_LOG"] = self._rule_outcomes_log_path
 
-        backend_name = getattr(self.args, "backend", "make")
+        backend_name = getattr(self.args, "backend", "shake")
         BackendClass = get_backend_class(backend_name)
         backend = BackendClass(args=self.args, hunter=self.hunter, context=self.context)
 

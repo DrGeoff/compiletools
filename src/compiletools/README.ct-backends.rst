@@ -97,13 +97,13 @@ Notes:
 BACKENDS
 ========
 
-make (default)
---------------
+make
+----
 
 Generates a non-recursive Makefile following Peter Miller's *Recursive Make
 Considered Harmful* design.
 
-**When to use:** General-purpose default.  Widely available, well-understood
+**When to use:** Widely available, well-understood
 output, good diagnostic support via ``--trace`` (GNU Make 4.0+).
 
 **Features:**
@@ -190,8 +190,8 @@ hermetic sandbox and the build fails to resolve their headers; pass
 ct-fetch(1), "Externals directory").  ``-isystem`` paths outside the
 workspace are rejected for the same reason.
 
-shake (builtin)
----------------
+shake (builtin, default)
+------------------------
 
 A self-executing backend implementing the *Build Systems a la Carte*
 (Mokhov, Mitchell, Jones 2018) rebuild strategy with verifying traces and
@@ -308,7 +308,7 @@ CHOOSING A BACKEND
 =================================  ==================================
 Scenario                           Recommended backend
 =================================  ==================================
-General-purpose builds             ``make`` (default)
+General-purpose builds             ``shake`` (default)
 Large incremental rebuilds         ``ninja``
 Shared multi-user caches           ``shake`` or ``make --file-locking``
 CMake IDE integration              ``cmake``

@@ -1092,20 +1092,18 @@ class BuildBackend(abc.ABC):
         # reference it before the file is materialised. The file itself
         # is written at the end of the modules pre-pass once every
         # mapper entry is known.
-        # Place the mapper next to the makefile rather than under
-        # cas-objdir. cas-objdir is shared across every build that
-        # targets the same variant; two parallel `ct-cake` invocations
-        # writing to ``<cas-objdir>/.module-mapper.txt`` would race
+        # Place the mapper next to the makefile (or in bindir for
+        # backends without a makefile) rather than under cas-objdir.
+        # cas-objdir is shared across every build that targets the same
+        # variant; two parallel `ct-cake` invocations writing to
+        # ``<cas-objdir>/.module-mapper.txt`` would race
         # (last-rename-wins, but a gcc subprocess from invocation A
         # could see invocation B's overwrite). The makefile path
-        # (``args.makefilename``) is per-invocation-unique by build
-        # config, so co-locating the mapper with it pins one mapper
-        # per generated makefile and avoids the race entirely.
-        # Fall back to cas-objdir when ``makefilename`` is unset OR is
-        # a bare basename with no dirname component (some non-make
-        # backends and a few integration-test fixtures).
+        # (``args.makefilename``) and bindir are both unique per build
+        # config, so either pins one mapper per generated build and
+        # avoids the race.
         if compiler_kind == "gcc" and self._module_pcm_cache_root:
-            mapper_dir = self._build_state.names.cas_objdir
+            mapper_dir = self._build_state.names.bindir
             mf = getattr(self.args, "makefilename", None)
             if mf:
                 d = os.path.dirname(mf)
@@ -2789,7 +2787,7 @@ class BuildBackend(abc.ABC):
 
         Called after ``_module_iface_gcm`` and ``_header_unit_artefact``
         are populated. The mapper file lives at
-        ``<cas-objdir>/.module-mapper.txt`` (per-build, regenerated
+        ``self._gcc_module_mapper_path`` (per-build, regenerated
         each ``ct-cake`` invocation). Each line is ``<key> <gcm-path>``
         where the key is:
 
