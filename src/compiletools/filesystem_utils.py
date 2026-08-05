@@ -14,7 +14,6 @@ import subprocess
 import tempfile
 from collections.abc import Callable
 from functools import lru_cache
-from pathlib import Path
 
 
 def _umask_default_file_mode() -> int:
@@ -151,10 +150,12 @@ def get_filesystem_type(path: str) -> str:
         # Sort by length descending to find most specific mount
         mounts.sort(key=lambda x: len(x[0]), reverse=True)
 
-        # Find matching mount point
-        path_obj = Path(path)
+        # Find matching mount point. Plain string-prefix comparison on the
+        # realpath'd input: hosts can have 400+ mount entries, so per-entry
+        # Path construction is too slow for this loop.
         for mountpoint, fstype in mounts:
-            if path_obj.is_relative_to(mountpoint):
+            trimmed = mountpoint.rstrip("/")
+            if path == trimmed or path.startswith(trimmed + "/"):
                 return fstype
 
     except (FileNotFoundError, PermissionError, OSError):
