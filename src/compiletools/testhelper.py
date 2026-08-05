@@ -1195,6 +1195,19 @@ def finalize_flag_state(args) -> None:
     populate_args(args, state)
 
 
+def stub_build_state(args, **names):
+    """Point a MagicMock args' BuildState stash at real name values.
+
+    MagicMock auto-creates ``args._build_state`` as a mock, so backends'
+    state reads "work" but return mock objects; tests that need REAL
+    paths (cas_objdir under a tmp dir, etc.) set them here. One home for
+    the private-attr knowledge: if the stash shape changes, this is the
+    only test-side line that needs to follow.
+    """
+    for field, value in names.items():
+        setattr(args._build_state.names, field, value)
+
+
 def add_backend_arguments(cap):
     """Add the argparse surface needed to drive Hunter + backend.build_graph()
     from real ``argv``. Backend classes are imported lazily so this helper

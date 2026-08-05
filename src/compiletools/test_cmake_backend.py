@@ -380,7 +380,7 @@ class TestCMakeExecute:
         args.CXX = CXX
         args.CC = CC
         args.cas_objdir = str(tmp_path / "obj")
-        args._build_state.names.cas_objdir = args.cas_objdir
+        uth.stub_build_state(args, cas_objdir=args.cas_objdir)
         args.parallel = 0
         args.output = str(tmp_path / "out")
         os.makedirs(args.cas_objdir, exist_ok=True)
@@ -571,7 +571,7 @@ class TestCMakeExecute:
             args.CXX = "g++"
             args.CC = "gcc"
             args.cas_objdir = str(tmp_path / "obj")
-            args._build_state.names.cas_objdir = args.cas_objdir
+            uth.stub_build_state(args, cas_objdir=args.cas_objdir)
             args.parallel = 0
             args.output = str(tmp_path / "out")
             os.makedirs(args.cas_objdir, exist_ok=True)
@@ -627,7 +627,7 @@ class TestCMakeExecute:
         args.CXX = "g++"
         args.CC = "gcc"
         args.cas_objdir = str(tmp_path / "obj")
-        args._build_state.names.cas_objdir = args.cas_objdir
+        uth.stub_build_state(args, cas_objdir=args.cas_objdir)
         args.parallel = 0
         args.output = str(tmp_path / "out")
         os.makedirs(args.cas_objdir, exist_ok=True)
@@ -670,7 +670,7 @@ class TestCMakeExecute:
         args.CXX = "g++"
         args.CC = "gcc"
         args.cas_objdir = str(tmp_path / "obj")
-        args._build_state.names.cas_objdir = args.cas_objdir
+        uth.stub_build_state(args, cas_objdir=args.cas_objdir)
         args.parallel = 0
         args.output = str(tmp_path / "out")
         os.makedirs(args.cas_objdir, exist_ok=True)
@@ -714,7 +714,7 @@ class TestCMakeExecute:
         args.CXX = "g++"
         args.CC = "gcc"
         args.cas_objdir = str(tmp_path / "obj")
-        args._build_state.names.cas_objdir = args.cas_objdir
+        uth.stub_build_state(args, cas_objdir=args.cas_objdir)
         args.parallel = 0
         args.output = str(tmp_path / "out")
         os.makedirs(args.cas_objdir, exist_ok=True)

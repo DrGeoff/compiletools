@@ -24,21 +24,22 @@ class Namer:
         self.context = context
         self._cached_macros = None
 
-    def _name(self, field):
-        """Read a cell-naming value (bindir / cas_*dir) for this namespace.
-
-        Prefers the stashed BuildState's names (pipeline flows: parseargs /
-        resubstitute populated it). Falls back to the legacy attr for
-        namespaces that never gather — the diagnostic tools
-        (ct-cleanup-locks, ct-cache-report, ct-trim-cache) parse with
-        ``resolve_cas_directory_arguments`` only, by design (swap-inventory
-        row 17), so unlike the backends this fallback is PERMANENT, not
-        transition-period tolerance.
-        """
+    # Cell-naming reads prefer the stashed BuildState (pipeline flows:
+    # parseargs / resubstitute populated it) and fall back to the legacy
+    # attr for namespaces that never gather — the diagnostic tools
+    # (ct-cleanup-locks, ct-cache-report, ct-trim-cache) parse with
+    # ``resolve_cas_directory_arguments`` only, by design (swap-inventory
+    # row 17), so unlike the backends this fallback is PERMANENT, not
+    # transition-period tolerance.
+    @property
+    def _bindir(self):
         state = getattr(self.args, "_build_state", None)
-        if state is not None:
-            return getattr(state.names, field)
-        return getattr(self.args, field)
+        return state.names.bindir if state is not None else self.args.bindir
+
+    @property
+    def _cas_objdir(self):
+        state = getattr(self.args, "_build_state", None)
+        return state.names.cas_objdir if state is not None else self.args.cas_objdir
 
     @staticmethod
     def add_arguments(cap, argv=None, variant=None):
@@ -62,9 +63,10 @@ class Namer:
             bin.special/gcc.release → "bin.special/"
             /opt/local/bin → "/opt/local/bin"
         """
-        if not os.path.isabs(self._name("bindir")) and os.sep in self._name("bindir"):
-            return self._name("bindir").split(os.sep)[0] + os.sep
-        return self._name("bindir")
+        bindir = self._bindir
+        if not os.path.isabs(bindir) and os.sep in bindir:
+            return bindir.split(os.sep)[0] + os.sep
+        return bindir
 
     @functools.cached_property
     def _mirror_anchor(self):
@@ -136,8 +138,8 @@ class Namer:
         ``realclean()`` and by ``trim_cache`` as its scan root.
         """
         if file_hash is not None:
-            return os.path.join(self._name("cas_objdir"), file_hash[:2])
-        return self._name("cas_objdir")
+            return os.path.join(self._cas_objdir, file_hash[:2])
+        return self._cas_objdir
 
     def compute_dep_hash(self, header_list):
         """Compute 14-char hash of header dependencies.
@@ -276,8 +278,8 @@ class Namer:
         if sourcefilename:
             subdir = self._exe_mirror_subdir(sourcefilename)
             if subdir:
-                return os.path.join(self._name("bindir"), subdir)
-        return self._name("bindir")
+                return os.path.join(self._bindir, subdir)
+        return self._bindir
 
     @functools.cache
     def executable_name(self, sourcefilename):

@@ -183,10 +183,11 @@ class FindTargets:
         else:
             # Non-git directory: fall back to os.walk
             bindir = self.namer.topbindir()
+            cas_objdir = compiletools.build_apply.get_build_state(self._args).names.cas_objdir
 
             def _walk_source_files():
                 for root, _dirs, files in os.walk(path):
-                    if bindir in root or compiletools.build_apply.get_build_state(self._args).names.cas_objdir in root:
+                    if bindir in root or cas_objdir in root:
                         continue
                     for fname in files:
                         pathname = compiletools.wrappedos.realpath(os.path.join(root, fname))

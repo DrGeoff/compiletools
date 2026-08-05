@@ -177,6 +177,10 @@ class MagicFlagsBase:
             verbose=self._args.verbose,
         )
 
+        # All flag state (raw strings, structured Flags, compiler identity)
+        # comes from the stashed BuildState -- the one authoritative
+        # artifact; args.flags is merely its alias on the legacy surface.
+        #
         # Hashing tokens (instead of raw strings) lets the scope filter
         # actually take effect: cmdline -D macros are hashed via core, and
         # stripping them from the token list keeps them from leaking back
@@ -184,26 +188,23 @@ class MagicFlagsBase:
         # folds the binary's realpath/size/mtime_ns into the same hash
         # (symmetric with the PCH cache key) so an in-place toolchain swap
         # that leaves args.CXX unchanged still invalidates the cache.
-        cppflags_tokens = compiletools.apptools.strip_d_u_tokens(self._args.flags.cpp)
-        cflags_tokens = compiletools.apptools.strip_d_u_tokens(self._args.flags.c)
-        cxxflags_tokens = compiletools.apptools.strip_d_u_tokens(self._args.flags.cxx)
-        compiler_identity = self._args.flags.compiler_identity
+        state = compiletools.build_apply.get_build_state(self._args)
+        cppflags_tokens = compiletools.apptools.strip_d_u_tokens(state.flags.cpp)
+        cflags_tokens = compiletools.apptools.strip_d_u_tokens(state.flags.c)
+        cxxflags_tokens = compiletools.apptools.strip_d_u_tokens(state.flags.cxx)
+        compiler_identity = state.flags.compiler_identity
 
         # Create MacroState with core macros, empty variable macros.
         # anchor_root is the gitroot used to canonicalize -I/etc. tokens
         # in the cache-key hash (decouples cache from absolute workspace
         # path so identical TUs in /run-1/... and /run-2/... share entries).
-        # Raw flag strings come from the stashed BuildState (consumer
-        # migration off the legacy args.CPPFLAGS surface); args.flags is
-        # already BuildState data.
-        build_state = compiletools.build_apply.get_build_state(self._args)
         return MacroState(
             core_macros,
             {},
             compiler_path=self._args.CXX,
-            cppflags=build_state.cppflags,
-            cflags=build_state.cflags,
-            cxxflags=build_state.cxxflags,
+            cppflags=state.cppflags,
+            cflags=state.cflags,
+            cxxflags=state.cxxflags,
             cmdline_origin=cmdline_origin,
             cppflags_tokens=cppflags_tokens,
             cflags_tokens=cflags_tokens,
@@ -582,9 +583,10 @@ class MagicFlagsBase:
         # args.flags is the canonical source (populated by parseargs /
         # testhelper.finalize_flag_state). list(...) wraps the tuples so
         # the +-with-magic-tokens concat below stays a list operation.
-        args_cpp_tokens = list(self._args.flags.cpp)
-        args_c_tokens = list(self._args.flags.c)
-        args_cxx_tokens = list(self._args.flags.cxx)
+        state = compiletools.build_apply.get_build_state(self._args)
+        args_cpp_tokens = list(state.flags.cpp)
+        args_c_tokens = list(state.flags.c)
+        args_cxx_tokens = list(state.flags.cxx)
 
         # Strip -D/-U so per-file magic `-D`s don't smuggle themselves into
         # the build-context portion of the hash. Magic-flag macros are
