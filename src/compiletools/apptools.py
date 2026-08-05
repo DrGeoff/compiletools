@@ -741,10 +741,13 @@ def extract_system_include_paths(args, flag_sources=None, verbose=0):
     if flag_sources is None:
         flag_sources = ["CPPFLAGS", "CXXFLAGS"]
 
-    tokens = []
+    # Walk each slot separately -- concatenating the slots would let a
+    # malformed dangling -I at the end of one slot swallow the first
+    # token of the next. Dedup across slots at the end.
+    include_paths = []
     for _, slot_tokens in _state_slot_tokens(args, flag_sources):
-        tokens.extend(slot_tokens)
-    include_paths = system_include_paths_from_tokens(tokens)
+        include_paths.extend(system_include_paths_from_tokens(slot_tokens))
+    include_paths = list(dict.fromkeys(include_paths))
 
     if verbose >= 9 and include_paths:
         print(f"Extracted system include paths: {include_paths}")

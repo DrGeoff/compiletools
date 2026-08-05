@@ -1149,9 +1149,9 @@ def finalize_flag_state(args) -> None:
     The synthesis reads the namespace's raw values (registered slot set,
     slot strings tokenized via the same ``split_command_cached`` the
     gather boundary uses, ``Flags`` with the same gitroot-anchored
-    compiler identity ``Flags.from_args`` computes) and routes the
-    resulting state through the REAL ``populate_args`` -- one writer for
-    the namespace surface, so the stash, snapshot, and slot attrs can
+    ``compiler_identity`` gather computes) and routes the resulting
+    state through the REAL ``populate_args`` -- one writer for the
+    namespace surface, so the stash, snapshot, and slot attrs can
     never drift from what production writes. It does NOT run gather (no
     pkg-config, no git subprocess for flags, no env): ``pkg_config_path``
     is None and ``effects`` is empty in the synthesized state -- a

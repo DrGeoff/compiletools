@@ -410,6 +410,13 @@ class TestExtractSystemIncludePaths:
         result = extract_system_include_paths(args, flag_sources=["CPPFLAGS"])
         assert result == []
 
+    def test_dangling_flag_does_not_swallow_next_slot(self):
+        """Slot boundaries are walk boundaries: a malformed dangling -I at
+        the end of CPPFLAGS must not consume the first CXXFLAGS token."""
+        args = _finalized_args(CPPFLAGS="-DFOO -I", CXXFLAGS="/spurious -I/real")
+        result = extract_system_include_paths(args)
+        assert result == ["/real"]
+
 
 class TestExtractCommandLineMacros:
     def test_basic_define(self):
