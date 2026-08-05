@@ -241,12 +241,15 @@ class ShakeBackend(BuildBackend):
         """Content-addressable output path for a link/library rule.
 
         Hashes sorted inputs + command (with output path stripped to avoid
-        circularity).  The CA filename lives alongside the human-readable
-        output so directory creation is already handled.
+        circularity), both anchor-canonicalized so two workspaces sharing
+        a cas-exedir produce the same CA filename — raw absolute paths
+        would fork the name per checkout.  The CA filename lives alongside
+        the human-readable output so directory creation is already handled.
         """
         assert rule.command is not None, "_ca_target only applies to link/library rules"
-        cmd_filtered = [a for a in rule.command if a != rule.output]
-        key = json.dumps({"inputs": sorted(rule.inputs), "cmd": cmd_filtered}, sort_keys=True)
+        cmd_filtered = _canonicalize_cmd_for_hash([a for a in rule.command if a != rule.output], self._anchor_root)
+        inputs = compiletools.apptools.canonicalize_paths_for_cache_key(sorted(rule.inputs), self._anchor_root)
+        key = json.dumps({"inputs": inputs, "cmd": cmd_filtered}, sort_keys=True)
         h = hashlib.sha256(key.encode()).hexdigest()[:20]
         base = os.path.basename(rule.output)
         name, ext = os.path.splitext(base)

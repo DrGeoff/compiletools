@@ -1247,6 +1247,7 @@ class TestCALinkShortCircuit:
         b = ShakeBackend.__new__(ShakeBackend)
         b.args = mock.MagicMock()
         b.args.cas_objdir = str(tmp_path)
+        b._anchor_root = ""
         uth.stub_build_state(b.args, cas_objdir=str(tmp_path))
         return b
 

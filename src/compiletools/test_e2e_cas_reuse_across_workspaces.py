@@ -218,7 +218,9 @@ def test_use_mtime_true_restores_legacy_rebuild_on_source_touch(tmp_path):
     shutil.copytree(sample_src, ws)
 
     def _build():
-        _assert_build_ok(_run_ct_cake(ws, "--use-mtime"), ws)
+        # --use-mtime is only honored by make/ninja; the default backend
+        # (shake) rejects it with a hard ValueError.
+        _assert_build_ok(_run_ct_cake(ws, "--backend=make", "--use-mtime"), ws)
 
     def _object_mtimes() -> dict[str, float]:
         cache_root = ws / "cas-objdir"
