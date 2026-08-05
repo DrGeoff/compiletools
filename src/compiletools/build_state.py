@@ -251,9 +251,8 @@ class BuildState:
 
 
 def compute_build_state(inputs: BuildInputs) -> BuildState:
-    """The pure pipeline. Stage order is load-bearing (mirrors
-    _commonsubstitutions: unify -> inject -> unify keeps the injected
-    prefix-map in CPPFLAGS within one pass)."""
+    """The pure pipeline. Stage order is load-bearing: unify -> inject ->
+    unify keeps the injected prefix-map in CPPFLAGS within one pass."""
     ts = stage_defaults(inputs)
     ts = stage_xxpend(inputs, ts)
     ts = stage_include_paths(inputs, ts)

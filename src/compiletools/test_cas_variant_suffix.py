@@ -11,8 +11,8 @@ Tests always pass ``--variant=<pin>`` so the assertions are
 deterministic regardless of the host's ct.conf default.
 
 Tests are parametrized over **both** parse paths:
-    - ``parseargs`` — heavyweight path used by ct-cake; runs
-      ``_commonsubstitutions`` which applies the suffix.
+    - ``parseargs`` — heavyweight path used by ct-cake; the
+      gather/compute pipeline applies the suffix.
     - ``direct_parse_plus_resolver`` — lightweight path used by
       ct-cache-report and ct-trim-cache; ``cap.parse_args(argv)`` plus
       ``apptools.resolve_cas_directory_arguments(args)``.
@@ -84,7 +84,7 @@ def _parse_with_variant_via_direct_parse(
 
     Same code path used by ct-cache-report and ct-trim-cache: skip the
     heavyweight ``apptools.parseargs`` (no flag-string finalisation, no
-    BuildContext, no ``_inject_ffile_prefix_map``) but still get the
+    BuildContext, no ``stage_prefix_map``) but still get the
     cas-dir variant suffix via the dedicated resolver."""
     monkeypatch.chdir(str(third_cwd))
     monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)

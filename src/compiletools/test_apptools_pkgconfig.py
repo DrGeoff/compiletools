@@ -83,12 +83,12 @@ def test_tokenize_pkg_config_specs_treats_comma_as_a_hard_boundary(raw, expected
 def test_add_flags_fallback_uses_real_package_specs(monkeypatch):
     """The per-package fallback probes each spec, never the whole list joined.
 
-    ``args.pkg_config`` is built the way production builds it — already
-    tokenized by ``_tier_one_modifications``, which ``_commonsubstitutions``
-    runs unconditionally before any of this. Handing this test the raw conf
-    shape ``['present missing']`` would only be testing that
+    ``args.pkg_config`` is built the way callers must build it — already
+    tokenized, the shape ``build_inputs._merged_pkg_config_specs`` produces
+    from the raw conf attrs. Handing this test the raw conf shape
+    ``['present missing']`` would only be testing that
     ``_add_flags_from_pkg_config`` re-tokenizes defensively, which is a
-    property production does not need and should not have to keep.
+    property its callers do not need and should not have to keep.
     """
     calls: list[list[str]] = []
 

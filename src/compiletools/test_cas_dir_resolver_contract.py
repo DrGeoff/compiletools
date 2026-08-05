@@ -1,13 +1,14 @@
 """Lint-test: every consumer of ``add_cas_directory_arguments`` must
-follow up with either ``apptools.parseargs(...)`` (which runs
-``_commonsubstitutions`` and therefore the resolver) or an explicit
+follow up with either ``apptools.parseargs(...)`` (whose
+gather/compute pipeline performs the same resolution) or an explicit
 call to ``apptools.resolve_cas_directory_arguments(...)``.
 
 This contract exists because the variant-suffix auto-append for the
 four ``cas-*dir`` paths lives inside ``resolve_cas_directory_arguments``
-(called from ``_commonsubstitutions``). Tools that bypass
-``apptools.parseargs`` and call ``cap.parse_args(argv)`` directly will
-see unsuffixed paths and silently read the wrong (parent) directory.
+(mirrored by ``gather_inputs``/``stage_resolve_names`` inside
+``parseargs``). Tools that bypass ``apptools.parseargs`` and call
+``cap.parse_args(argv)`` directly will see unsuffixed paths and
+silently read the wrong (parent) directory.
 
 Mirrors the grep-based pattern of ``test_anchor_root_required.py``:
 the contract is static, so a file-text check is enough and avoids
@@ -41,7 +42,7 @@ def _production_python_files():
 _RESOLVER_EXEMPT: frozenset[str] = frozenset({"namer.py", "timing_report.py"})
 
 
-# apptools itself chains these through _commonsubstitutions, and
+# apptools itself chains these through parseargs' pre-gather block, and
 # apptools_argparse.py is where ``add_cas_directory_arguments`` /
 # ``add_output_directory_arguments`` / ``resolve_cas_directory_arguments`` are
 # now DEFINED (extracted from apptools.py; apptools re-exports them
@@ -74,8 +75,9 @@ def test_every_add_cas_directory_arguments_caller_resolves_or_parseargs():
     Why this matters: ``add_cas_directory_arguments`` only registers
     argparse defaults. The variant-suffix auto-append and the
     ``unsupplied``-sentinel fallback both live in
-    ``apptools.resolve_cas_directory_arguments`` (called by
-    ``_commonsubstitutions`` inside ``apptools.parseargs``). A tool
+    ``apptools.resolve_cas_directory_arguments`` (the same resolution
+    ``gather_inputs``/``stage_resolve_names`` perform inside
+    ``apptools.parseargs``). A tool
     that parses with bare ``cap.parse_args(argv)`` and skips both
     follow-ups will silently read unsuffixed cas-dir paths — the bug
     that made ``ct-cache-report`` report 0 entries against a

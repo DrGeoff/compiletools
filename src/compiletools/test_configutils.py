@@ -936,7 +936,7 @@ class TestVariant:
 
         The full parseargs flow calls into the resolver several times per
         invocation: extract_variant -> resolve_variant -> canonicalize -> a
-        second resolve_variant from _commonsubstitutions. Without caching,
+        second resolve_variant from parseargs' pre-gather block. Without caching,
         each call re-opens ct.conf and re-parses every touched axis conf,
         compounding the I/O cost on a 5-axis variant.
 

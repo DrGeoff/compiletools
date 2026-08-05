@@ -444,7 +444,7 @@ class MacroState:
             return canonicalize_for_cache_key(filter_hash_irrelevant_tokens(toks), self.anchor_root)
 
         # The cpp slot is hashed as dedup(cpp + cxx) — the same merge
-        # _unify_cpp_cxx_flags applies — so key equality tracks argv
+        # build_state.stage_unify applies — so key equality tracks argv
         # equality: raw CPPFLAGS never reaches a compile line on its own
         # (the C++ argv is CXX + cxxflags; the C argv is CC + cflags).
         # Argv equality is sufficient for safety: configs this key

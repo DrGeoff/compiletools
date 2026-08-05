@@ -137,12 +137,6 @@ def _parseargs_with_pkg_config_conf(ct_conf_line, *, axis_conf_line=""):
     )
 
 
-def _stub_gitroot_and_chdir(monkeypatch, target):
-    """Stub git_utils.find_git_root to return str(target) and chdir into target."""
-    monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: str(target))
-    monkeypatch.chdir(target)
-
-
 class TestExtractCommandLineMacrosSz:
     """Test extract_command_line_macros_sz()."""
 
@@ -314,41 +308,6 @@ class TestUnsuppliedReplacement:
         with patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
             unsupplied_replacement(apptools._UNSUPPLIED_USE_CXX, "g++", 6, "CPP")
         assert "unsupplied" in mock_stdout.getvalue()
-
-
-class TestSubstituteCXXForMissing:
-    def _args(self, *, cpp, cppflags):
-        """Build the SimpleNamespace shape that ``_substitute_CXX_for_missing`` expects.
-
-        verbose / CXX / CXXFLAGS are invariant across this class's tests; only
-        CPP and CPPFLAGS (whose sentinel values are the function-under-test's
-        whole point) ever vary at every site. LD / LDFLAGS are deliberately
-        omitted — test_no_ld_attribute_ok asserts the function handles their
-        absence, so callers that need them set the attrs explicitly post-build."""
-        return SimpleNamespace(
-            verbose=0,
-            CXX="g++",
-            CXXFLAGS="-Wall",
-            CPP=cpp,
-            CPPFLAGS=cppflags,
-        )
-
-
-class TestAddIncludePathsToFlags:
-    def _args(self, *, cppflags="-Wall", verbose=0):
-        """Build the SimpleNamespace shape that ``_add_include_paths_to_flags`` expects.
-
-        INCLUDE / CFLAGS / CXXFLAGS are invariant across this class's tests; only
-        CPPFLAGS (to seed an existing -I entry) and verbose (to trigger the print
-        path) ever vary. Helper hides those 3 invariants so call sites highlight
-        the per-test deviation."""
-        return SimpleNamespace(
-            INCLUDE="/tmp/inc",
-            CPPFLAGS=cppflags,
-            CFLAGS="-Wall",
-            CXXFLAGS="-Wall",
-            verbose=verbose,
-        )
 
 
 class TestGatherGitrootIncludeOrderDeterministic:
@@ -545,21 +504,21 @@ class TestStripQuotes:
         assert args.foo is None
 
     def test_private_stashes_pass_through_untouched(self):
-        """A namespace that has already been through substitutions() carries
-        dict/tuple private stashes (_substitution_seed, _registered_flag_slots,
+        """A namespace that has already been through populate_args carries
+        dict/tuple private stashes (_raw_flag_slots, _registered_flag_slots,
         _flag_string_snapshot). Iterating-and-assigning those crashes (dict:
         RuntimeError from mid-iteration key inserts; tuple: TypeError on item
         assignment), so _strip_quotes must skip private attributes entirely."""
-        seed = {"CPPFLAGS": '"-DFOO"'}
+        record = {"CPPFLAGS": '"-DFOO"'}
         args = SimpleNamespace(
             CPPFLAGS='"-DFOO"',
-            _substitution_seed=seed,
+            _raw_flag_slots=record,
             _registered_flag_slots=("CPPFLAGS",),
             _flag_string_snapshot=(("CPPFLAGS", '"-DFOO"'),),
         )
         _strip_quotes(args)
         assert args.CPPFLAGS == "-DFOO"
-        assert args._substitution_seed == {"CPPFLAGS": '"-DFOO"'}
+        assert args._raw_flag_slots == {"CPPFLAGS": '"-DFOO"'}
         assert args._registered_flag_slots == ("CPPFLAGS",)
         assert args._flag_string_snapshot == (("CPPFLAGS", '"-DFOO"'),)
 
@@ -655,10 +614,10 @@ class TestAddArguments:
         before the variant has been resolved) passes ``variant="unsupplied"``
         through to ``add_output_directory_arguments``. The bindir default
         must register as the bare sentinel ``"unsupplied"`` -- NOT
-        ``"bin/unsupplied"`` -- so the post-parse
-        ``unsupplied_replacement(args.bindir, "bin/<variant>", ...)`` in
-        ``_commonsubstitutions`` actually fires (exact-membership check
-        against ``_UNSUPPLIED_SENTINELS``). Otherwise every build lands in
+        ``"bin/unsupplied"`` -- so gather's ``_raw_dir_value`` maps it to
+        unsupplied (exact-membership check against
+        ``_UNSUPPLIED_SENTINELS``) and ``stage_resolve_names`` applies the
+        ``bin/<variant>`` default. Otherwise every build lands in
         ``bin/unsupplied/`` instead of ``bin/<variant>/``.
         """
         cap = configargparse.ArgParser(default_config_files=[])
@@ -728,26 +687,6 @@ class TestAddArguments:
         _add_xxpend_argument(cap, "linkflags", destname="ldflags", extrahelp="Synonym.")
         args = cap.parse_args([])
         assert args.prepend_ldflags == []
-
-
-class TestProjectVersionAndNameOptIn:
-    """--project-{version,name}{,-cmd} are opt-in: no flag specified -> no
-    cmdline -D injection. This keeps the cmdline -D macro set clean for
-    TUs that don't need these macros, so the byte-level scope filter has
-    no needle to scan for in unrelated headers."""
-
-    def _make_args(self, **kwargs):
-        cap = configargparse.ArgParser(default_config_files=[])
-        add_target_arguments_ex(cap)
-        argv = []
-        for key, value in kwargs.items():
-            argv.append(f"--{key}={value}")
-        args = cap.parse_args(argv)
-        args.CPPFLAGS = ""
-        args.CFLAGS = ""
-        args.CXXFLAGS = ""
-        args.verbose = 0
-        return args
 
 
 class TestFilterPkgConfigCflagsExtended:
@@ -1271,8 +1210,8 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
         but registers a different option string (``--append-INCLUDE``). The
         fix must handle every ``--append-*`` / ``--prepend-*`` option that
         ``_add_xxpend_arguments`` registers, not just the FLAGS family.
-        ``args.append_include`` reaches the final ``args.INCLUDE`` via
-        ``_do_xxpend('INCLUDE')`` in ``_tier_one_modifications``.
+        ``args.append_include`` reaches the computed include paths via
+        gather's ``_include_paths_with_gitroots``.
         """
 
         with _temp_repo_with_ct_conf("gcc.release.extras", "gcc, release, extras") as (repo_root, conf_d):
@@ -1983,7 +1922,7 @@ class TestVariantResolutionRespectsArgv:
 
     def test_argv_composite_variant_is_canonicalized(self):
         """A composite --variant on the CLI (comma/space separated) is
-        canonicalized to its dotted form by _commonsubstitutions, so
+        canonicalized to its dotted form by stage_resolve_names, so
         downstream consumers see the canonical name in args.variant."""
 
         with uth.TempDirContext():
@@ -2337,7 +2276,7 @@ class TestCompilerSupportsRequestedStandard:
 class TestFfilePrefixMapTargetArg:
     """The --ffile-prefix-map-target CLI argument controls the RHS of the
     auto-injected ``-ffile-prefix-map=<gitroot>=<target>`` flag added to
-    CXXFLAGS / CFLAGS in :func:`apptools._inject_ffile_prefix_map`.
+    the cxx/c token slots by ``build_state.stage_prefix_map``.
 
     Default ``.`` matches the Debian fixfilepath convention; gdb resolves
     via ``$cwd`` when run from the workspace. VSCode-heavy teams may
@@ -2367,26 +2306,6 @@ class TestFfilePrefixMapTargetArg:
         cap = self._build_parser()
         args = cap.parse_args(["--ffile-prefix-map-target="])
         assert args.ffile_prefix_map_target == ""
-
-
-class TestInjectFfilePrefixMap:
-    """``_inject_ffile_prefix_map`` appends
-    ``-ffile-prefix-map=<gitroot>=<target>`` to args.CXXFLAGS / args.CFLAGS
-    when the user has not already specified any prefix-map flag (per
-    slot independently). The injection is a no-op when no git root is
-    resolvable (find_git_root returns the cwd as a fallback root, but
-    the helper treats that case the same — see below).
-    """
-
-    def _make_args(self, **overrides):
-        defaults = dict(
-            ffile_prefix_map_target=".",
-            CXXFLAGS="-O2 -g",
-            CFLAGS="-O2",
-            LDFLAGS="",
-        )
-        defaults.update(overrides)
-        return SimpleNamespace(**defaults)
 
 
 class TestConfFileEncodingTolerance:

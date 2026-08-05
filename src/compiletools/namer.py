@@ -272,7 +272,7 @@ class Namer:
         normpath here: a relative bindir stays relative so string
         comparisons against other bindir-derived paths hold. bindir
         itself is normalized once at parse time
-        (``apptools._commonsubstitutions``), so ``./bin/x`` and
+        (``build_state.stage_resolve_names``), so ``./bin/x`` and
         ``bin/x/`` never reach this method.
         """
         if sourcefilename:

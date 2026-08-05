@@ -66,11 +66,11 @@ class TestGatherInputs:
             assert "LDFLAGS" not in inputs.registered_slots
             assert "CXXFLAGS" in inputs.registered_slots
 
-    def test_registered_slots_prefer_sticky_tuple_over_post_finalize_hasattr(self):
-        """4d4cfd6d bug class: _finalize_flag_state materializes
+    def test_registered_slots_prefer_sticky_tuple_over_post_populate_hasattr(self):
+        """4d4cfd6d bug class: populate_args materializes
         args.LDFLAGS = "" for downstream consumers even when the CAP never
         registered LDFLAGS, so bare hasattr disagrees with the CAP's real
-        registration on a post-finalize namespace. _registered_flag_slots
+        registration on a populated namespace. _registered_flag_slots
         is the sticky, authoritative record and must win over hasattr."""
         with uth.TempDirContext():
             args = _minimal_args(

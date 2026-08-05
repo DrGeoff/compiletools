@@ -1137,7 +1137,7 @@ def make_backend_args(tmpdir, **overrides):
 
 
 def finalize_flag_state(args) -> None:
-    """Test-side wrapper for ``apptools._finalize_flag_state``.
+    """Synthesize a BuildState from a hand-built namespace and populate it.
 
     Use after ``cap.parse_args`` or after constructing a SimpleNamespace
     by hand, when the test then drives code that reads
@@ -1146,31 +1146,47 @@ def finalize_flag_state(args) -> None:
     backends. Production code never needs this -- ``parseargs`` already
     runs the full gather/compute/apply/populate pipeline.
 
-    Also stashes a synthesized ``BuildState`` view of the finalized
-    namespace on ``args._build_state`` so migrated consumers work on
-    hand-built fixtures. The synthesis builds the state from the
-    namespace's finalized values and then routes it through the REAL
-    ``populate_args`` -- one writer for the namespace surface, so the
-    stash, snapshot, and slot attrs can never drift from what production
-    writes (the round-trip is the identity because the state is built
-    from those same values). It does NOT run gather (no pkg-config, no
-    git, no env): ``pkg_config_path`` is None and ``effects`` is empty
-    in the synthesized state -- a consumer migrated onto either of
-    those fields will see the None/empty form in every fixture-driven
-    test, and a fixture wanting the real values must go through
-    ``parseargs``.
+    The synthesis reads the namespace's raw values (registered slot set,
+    slot strings tokenized via the same ``split_command_cached`` the
+    gather boundary uses, ``Flags`` with the same gitroot-anchored
+    compiler identity ``Flags.from_args`` computes) and routes the
+    resulting state through the REAL ``populate_args`` -- one writer for
+    the namespace surface, so the stash, snapshot, and slot attrs can
+    never drift from what production writes. It does NOT run gather (no
+    pkg-config, no git subprocess for flags, no env): ``pkg_config_path``
+    is None and ``effects`` is empty in the synthesized state -- a
+    consumer migrated onto either of those fields will see the None/empty
+    form in every fixture-driven test, and a fixture wanting the real
+    values must go through ``parseargs``.
     """
-    compiletools.apptools._finalize_flag_state(args)
-
+    from compiletools.apptools_compiler import compiler_identity
     from compiletools.build_apply import populate_args
     from compiletools.build_state import BuildState, NameState, TokenState
+    from compiletools.flags import Flags
+    from compiletools.git_utils import find_git_root
+    from compiletools.utils import split_command_cached
 
+    # Sticky registered-slot set: hasattr is only authoritative on the
+    # first call -- populate_args materializes all four slot attrs, so a
+    # recompute on a second call would silently widen the set.
+    registered = getattr(args, "_registered_flag_slots", None)
+    if registered is None:
+        registered = tuple(slot for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS") if hasattr(args, slot))
+    strings = {slot: (getattr(args, slot, "") or "") for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS")}
+    tokens = {slot: tuple(split_command_cached(raw)) for slot, raw in strings.items()}
+    flags = Flags(
+        cpp=tokens["CPPFLAGS"],
+        c=tokens["CFLAGS"],
+        cxx=tokens["CXXFLAGS"],
+        ld=tokens["LDFLAGS"],
+        compiler_identity=compiler_identity(getattr(args, "CXX", "") or "", anchor_root=find_git_root() or ""),
+    )
     state = BuildState(
         tokens=TokenState(
-            cpp=tuple(args.CPPFLAGS_tokens),
-            c=tuple(args.CFLAGS_tokens),
-            cxx=tuple(args.CXXFLAGS_tokens),
-            ld=tuple(args.LDFLAGS_tokens),
+            cpp=tokens["CPPFLAGS"],
+            c=tokens["CFLAGS"],
+            cxx=tokens["CXXFLAGS"],
+            ld=tokens["LDFLAGS"],
         ),
         names=NameState(
             variant=getattr(args, "variant", ""),
@@ -1180,14 +1196,14 @@ def finalize_flag_state(args) -> None:
             cas_pcmdir=getattr(args, "cas_pcmdir", ""),
             cas_exedir=getattr(args, "cas_exedir", ""),
         ),
-        flags=args.flags,
-        cppflags=args.CPPFLAGS,
-        cflags=args.CFLAGS,
-        cxxflags=args.CXXFLAGS,
-        ldflags=args.LDFLAGS,
+        flags=flags,
+        cppflags=strings["CPPFLAGS"],
+        cflags=strings["CFLAGS"],
+        cxxflags=strings["CXXFLAGS"],
+        ldflags=strings["LDFLAGS"],
         pkg_config_path=None,
         effects=(),
-        registered_slots=frozenset(args._registered_flag_slots),
+        registered_slots=frozenset(registered),
     )
     populate_args(args, state)
 

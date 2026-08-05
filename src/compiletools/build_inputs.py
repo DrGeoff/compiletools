@@ -338,14 +338,12 @@ def gather_inputs(args, context) -> BuildInputs:
     from compiletools.apptools_compiler import compiler_identity, compiler_kind
     from compiletools.git_utils import find_git_root
 
-    # Mirror _add_flags_from_pkg_config's posture (the 4d4cfd6d bug class):
-    # _finalize_flag_state materializes args.LDFLAGS = "" for downstream
-    # consumers even when the CAP never registered LDFLAGS, so bare hasattr
-    # disagrees with the real registration on a post-finalize namespace.
-    # _registered_flag_slots is the sticky, authoritative record when
-    # present; hasattr is only correct pre-finalize (first pass, no
-    # _finalize_flag_state run yet), so gather is safe on both namespace
-    # shapes.
+    # The 4d4cfd6d bug class: populate_args materializes args.LDFLAGS = ""
+    # for downstream consumers even when the CAP never registered LDFLAGS,
+    # so bare hasattr disagrees with the real registration on a populated
+    # namespace. _registered_flag_slots is the sticky, authoritative record
+    # when present; hasattr is only correct pre-populate (first pass), so
+    # gather is safe on both namespace shapes.
     slot_registration = getattr(args, "_registered_flag_slots", None)
     if slot_registration is not None:
         registered = frozenset(slot_registration)
@@ -358,9 +356,9 @@ def gather_inputs(args, context) -> BuildInputs:
     # which is fine for the repeated gitroot but wrong for a value read once).
     cwd_real = os.path.realpath(os.getcwd())
     # The --quiet latch, applied once by construction: gather never mutates
-    # args, and honours _commonsubstitutions' _quiet_applied marker in case
-    # the namespace already went through the old pipeline. No clamping --
-    # the original subtracts unguarded, so negative verbose is legal.
+    # args, and honours the _quiet_applied marker parseargs sets after
+    # folding --quiet into args.verbose. No clamping -- the subtraction is
+    # unguarded, so negative verbose is legal.
     if getattr(args, "_quiet_applied", False):
         verbose = getattr(args, "verbose", 0)
     else:

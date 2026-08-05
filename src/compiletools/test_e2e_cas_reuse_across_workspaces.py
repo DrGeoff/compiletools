@@ -454,7 +454,7 @@ def test_bundle_with_workspace_relative_wrapper_reuses_cache(tmp_path):
     resolver chains bundles correctly. This test stitches both:
 
       1. A multi-axis bundle resolves correctly through configargparse +
-         _commonsubstitutions.
+         the parseargs pipeline.
       2. The workspace-relative wrapper at --CXX=./tools/wrap.sh in each
          workspace is canonicalised against that workspace's gitroot.
       3. Object filenames in `cas-objdir/<variant>/` match across the

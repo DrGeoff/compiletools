@@ -65,7 +65,7 @@ __all__ = [
 # under --variable-handling-method=append
 # (apptools_argparse._fix_variable_handling_method), that cmake_backend scrubs
 # from the configure subprocess env for symmetry, and whose prepend-/append-
-# variants _tier_one_modifications folds via _do_xxpend.
+# variants build_state.stage_xxpend folds.
 FLAG_ENV_VAR_NAMES = ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS", "INCLUDE")
 
 # Module-level constant for C++ source extensions (lowercase)

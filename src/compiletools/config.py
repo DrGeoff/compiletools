@@ -25,8 +25,8 @@ def main(argv=None):
     # annoying.
     print()
     # The per-axis provenance trace is emitted unconditionally by
-    # parseargs() / _commonsubstitutions for every ct-* tool, so ct-config
-    # doesn't print it a second time here.
+    # parseargs() for every ct-* tool, so ct-config doesn't print it a
+    # second time here.
     return 0
 
 

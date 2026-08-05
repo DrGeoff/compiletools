@@ -586,8 +586,8 @@ def resolve_cas_directory_arguments(args):
     Uses ``args.variant`` (the post-parse value) rather than an
     early-extracted variant: ``configutils.extract_variant(argv)``
     can return a stale value when a ``--config`` file's basename is
-    interpreted as an axis (the working precedent inside
-    ``_commonsubstitutions`` always used ``args.variant``).
+    interpreted as an axis (the working precedent in the legacy
+    pipeline always used ``args.variant``).
 
     Missing attrs on ``args`` are tolerated — the resolver only
     touches attributes that were registered by
@@ -678,12 +678,11 @@ def add_output_directory_arguments(cap, variant):
     # When the caller hasn't resolved the variant yet (Namer.add_arguments
     # in cake.py / findtargets.py / makefile_backend.py passes the bare
     # ``"unsupplied"`` sentinel), the bindir default must register as the
-    # bare sentinel too -- NOT ``"bin/unsupplied"`` -- so the post-parse
-    # ``unsupplied_replacement(args.bindir, "bin/<variant>", ...)`` in
-    # ``_commonsubstitutions`` (which membership-tests against
-    # ``_UNSUPPLIED_SENTINELS``) actually swaps the default for the
-    # resolved-variant path. Otherwise every build lands in
-    # ``bin/unsupplied/``.
+    # bare sentinel too -- NOT ``"bin/unsupplied"`` -- so gather's
+    # ``_raw_dir_value`` (which membership-tests against
+    # ``_UNSUPPLIED_SENTINELS``) maps it to unsupplied and
+    # ``stage_resolve_names`` applies the resolved ``bin/<variant>``
+    # default. Otherwise every build lands in ``bin/unsupplied/``.
     bindir_default = "unsupplied" if variant in _apptools._UNSUPPLIED_SENTINELS else "".join(["bin/", variant])
     cap.add_argument(
         "--bindir",
@@ -1030,9 +1029,9 @@ def _fix_variable_handling_method(cap, argv, verbose):
             appendkey = f"APPEND_{key}"
             existing = env_vars.get(appendkey)
             # Existing APPEND_* first, re-routed bare value last: downstream
-            # _do_xxpend appends the merged string after config-derived flags,
-            # so under the compiler's last-token-wins rule the bare env var
-            # (the "stronger" of the two) wins conflicting tokens.
+            # stage_xxpend appends the merged tokens after config-derived
+            # flags, so under the compiler's last-token-wins rule the bare
+            # env var (the "stronger" of the two) wins conflicting tokens.
             merged = f"{existing} {value}" if existing else value
             if verbose_print:
                 print(f"Changing {key=} into {appendkey} with {value=} (existing {appendkey}={existing!r})")
@@ -1426,7 +1425,7 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
         )
 
         # Re-attach CLI values AFTER the conf-file values so the CLI tokens
-        # apply last in _do_xxpend (compilers honor the last occurrence of
+        # apply last in stage_xxpend (compilers honor the last occurrence of
         # conflicting flags — CLI override semantics preserved).
         for dest, values in captured_cli.items():
             existing = getattr(namespace, dest, None) or []

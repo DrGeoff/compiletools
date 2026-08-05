@@ -535,9 +535,11 @@ def _setup_pkg_config_overrides_locked(context, verbose, prepend_paths, append_p
 def _add_flags_from_pkg_config(args):
     """Add flags for the package specs already canonicalized on ``args``.
 
-    ``_tier_one_modifications`` tokenizes ``args.pkg_config`` before this
-    function runs; ``_commonsubstitutions`` calls the two unconditionally in
-    that order.
+    Legacy mutate-in-place writer with no production caller: the build
+    pipeline queries pkg-config in ``gather_inputs`` and folds the results
+    in ``build_state.stage_pkg_config_flags``. Kept (and re-exported from
+    ``apptools``) for tests and library embedders that drive it directly;
+    expects ``args.pkg_config`` to already be a tokenized list.
     """
     packages = list(args.pkg_config)
     if not packages:
@@ -546,12 +548,12 @@ def _add_flags_from_pkg_config(args):
     # Batch pkg-config calls: query all packages at once instead of one subprocess
     # per package.  Falls back to per-package calls if the batch fails (e.g. a
     # package is missing and we need to identify which one).
-    # Ask the CAP registration, not hasattr: _finalize_flag_state materializes
-    # args.LDFLAGS = "" for downstream consumers after pass 1. The seed restore
-    # in substitutions() deletes materialized slots on re-runs so hasattr would
-    # now agree, but the registration tuple is the authoritative "does this
-    # tool link?" answer and does not depend on that shape restore.
-    # None means finalize has not run yet (first pass) -- hasattr is correct there.
+    # Ask the CAP registration, not hasattr: populate_args materializes
+    # args.LDFLAGS = "" for downstream consumers after pass 1, so hasattr
+    # disagrees with the CAP's real registration on a populated namespace.
+    # The registration tuple is the authoritative "does this tool link?"
+    # answer. None means populate_args has not run yet (first pass) --
+    # hasattr is correct there.
     registered = getattr(args, "_registered_flag_slots", None)
     want_libs = "LDFLAGS" in registered if registered is not None else hasattr(args, "LDFLAGS")
 

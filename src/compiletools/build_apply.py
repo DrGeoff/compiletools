@@ -64,10 +64,11 @@ def populate_args(args, state: BuildState) -> None:
     """Write the post-parseargs legacy surface from a BuildState.
 
     All four slots' raw strings and *_tokens lists are materialized
-    unconditionally (matching _finalize_flag_state's "materialise for
-    all four, snapshot only the registered ones" split) so downstream
-    consumers that read an unregistered slot still see a well-formed
-    empty value rather than an AttributeError.
+    unconditionally, but only registered slots are snapshotted for
+    drift, so downstream consumers that read an unregistered slot still
+    see a well-formed empty value rather than an AttributeError while
+    check_flag_string_drift can distinguish "not applicable here" from
+    "mutated after parseargs".
 
     The shim preserves what it clobbers: gather_inputs reads the four
     raw slot attrs as raw input, and this function overwrites them with

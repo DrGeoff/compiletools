@@ -26,9 +26,9 @@ import :mod:`compiletools.apptools` at module scope -- ``apptools`` imports
 *this* module for re-export, so a module-scope back-import would form a cycle
 and crash at ``apptools`` initialisation.
 
-Two symbols these checks need still live in ``apptools.py`` because they have
-live internal callers there (``_normalize_wild_linker``) and belong with the
-argparse layer slated for a later split:
+Two symbols these checks need still live in ``apptools.py`` because they are
+shared with the gather boundary (``build_inputs.gather_inputs`` reads both
+helpers) and belong with the argparse layer slated for a later split:
 
 * the sentinels ``_UNSUPPLIED_USE_CXX`` / ``_UNSUPPLIED_USE_CXXFLAGS``
   (read by :func:`_check_resolved_compiler_available`), and
@@ -168,7 +168,7 @@ def _check_wild_linker_usable(args) -> None:
 
     Fires only when wild is the selected linker — either the LD tokens carry
     ``-fuse-ld=wild`` / ``--ld-path=wild`` (the ``wild`` axis; the clang
-    rewrite in ``_normalize_wild_linker`` runs before this), or the
+    rewrite in ``build_state.stage_wild_linker`` runs before this), or the
     ``wild-B`` axis is selected.
 
     Two failure modes:
@@ -180,11 +180,11 @@ def _check_wild_linker_usable(args) -> None:
     import shutil
 
     # Deferred import: ``_variant_has_axis`` / ``_effective_link_driver`` still
-    # live in ``apptools.py`` (they have live internal callers there in
-    # ``_normalize_wild_linker``). A module-scope ``import compiletools.apptools``
-    # would form the cycle apptools -> apptools_validate -> apptools. By call
-    # time every module is initialised; referencing them through the facade also
-    # honours any test that monkeypatches the ``compiletools.apptools`` attr.
+    # live in ``apptools.py`` (shared with the gather boundary). A module-scope
+    # ``import compiletools.apptools`` would form the cycle
+    # apptools -> apptools_validate -> apptools. By call time every module is
+    # initialised; referencing them through the facade also honours any test
+    # that monkeypatches the ``compiletools.apptools`` attr.
     import compiletools.apptools as _apptools
 
     ldflags = getattr(args, "LDFLAGS", "") or ""

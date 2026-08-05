@@ -18,12 +18,11 @@ import compiletools.apptools_compiler
 # Re-exported from the leaf apptools_pkgconfig module so existing
 # ``apptools.<name>`` call sites, ``from compiletools.apptools import ...``
 # importers, and test/patch targets keep working with identical object
-# identity. ``_setup_pkg_config_overrides`` and ``_add_flags_from_pkg_config``
-# both have live internal callers that stay in apptools
-# (``_commonsubstitutions``), so they are plain imports. The rest are pure
-# re-exports consumed only by external modules / tests, so they carry the
-# redundant ``name as name`` alias to mark them as intentional re-exports for
-# the F401 linter. ``_PKG_CONFIG_OVERRIDE_LOCK`` is the single
+# identity. All are pure re-exports consumed only by external modules /
+# tests (``_setup_pkg_config_overrides`` and ``_add_flags_from_pkg_config``
+# lost their internal callers when the legacy pipeline was deleted), so they
+# carry the redundant ``name as name`` alias to mark them as intentional
+# re-exports for the F401 linter. ``_PKG_CONFIG_OVERRIDE_LOCK`` is the single
 # ``threading.Lock`` instance defined in the leaf module; re-exporting it by
 # binding keeps ``apptools._PKG_CONFIG_OVERRIDE_LOCK`` and
 # ``apptools_pkgconfig._PKG_CONFIG_OVERRIDE_LOCK`` the SAME object (a copy
@@ -42,9 +41,8 @@ import compiletools.wrappedos
 # importers, and the many ``unittest.mock.patch("compiletools.apptools.<name>")``
 # targets keep working with identical object identity.
 #
-# ``resolve_cas_directory_arguments`` (called by ``_commonsubstitutions``) and
-# ``_fix_variable_handling_method`` (called by ``parseargs``) both have live
-# internal callers that stay in apptools, so they are plain imports referenced
+# ``_fix_variable_handling_method`` (called by ``parseargs``) has a live
+# internal caller that stays in apptools, so it is a plain import referenced
 # by bare name. Every other name is a pure re-export consumed only by entry
 # points / other modules / tests, so it carries the redundant ``name as name``
 # alias to mark it as an intentional re-export for the F401 linter. (ruff's
@@ -89,10 +87,9 @@ from compiletools.apptools_argparse import (
     _expand_env_and_user as _expand_env_and_user,
 )
 
-# The two names below are referenced by *bare name* from code that stays in
-# apptools (``resolve_cas_directory_arguments`` from ``_commonsubstitutions``,
-# ``_fix_variable_handling_method`` from ``parseargs``), hence no ``as`` alias.
-# See the re-export rationale comment above the first apptools_argparse import.
+# ``_fix_variable_handling_method`` is referenced by *bare name* from code
+# that stays in apptools (``parseargs``), hence no ``as`` alias. See the
+# re-export rationale comment above the first apptools_argparse import.
 from compiletools.apptools_argparse import (
     _fix_variable_handling_method,
 )
@@ -199,9 +196,9 @@ from compiletools.apptools_canonicalize import (
 # Re-exported from the leaf apptools_compiler module so existing
 # ``apptools.<name>`` call sites, ``from compiletools.apptools import ...``
 # importers, and test/patch targets keep working with identical object
-# identity. ``compiler_kind`` has a live internal caller that stays in
-# apptools (``_normalize_wild_linker``); the rest are
-# pure re-exports consumed only by external modules / docstrings, so they
+# identity. All are pure re-exports consumed only by external modules /
+# docstrings (``compiler_kind``'s production caller is
+# ``build_inputs.gather_inputs``, which imports the leaf directly), so they
 # carry the redundant ``name as name`` alias to mark them as intentional
 # re-exports for the F401 linter. ``apptools.clear_cache`` fans out to
 # ``compiletools.apptools_compiler.clear_cache`` (imported above as a
@@ -268,8 +265,8 @@ from compiletools.apptools_pkgconfig import (
 )
 
 # Re-exported from the leaf apptools_validate module so existing
-# ``apptools.<name>`` call sites (``parseargs`` / ``_commonsubstitutions``
-# read these as module globals), ``from compiletools.apptools import ...``
+# ``apptools.<name>`` call sites (``parseargs`` reads these as module
+# globals), ``from compiletools.apptools import ...``
 # importers, and test targets keep working with identical object identity.
 # All five checks are invoked by bare name from code that stays in apptools,
 # so the redundant ``name as name`` alias marks them as intentional re-exports
@@ -318,7 +315,6 @@ from compiletools.flag_ops import (
     filter_hash_irrelevant_tokens,
     strip_d_u_tokens,
 )
-from compiletools.flags import Flags
 from compiletools.utils import split_command_cached
 
 # ``DocumentationAction`` is only DEFINED in apptools_argparse when the optional
@@ -1118,13 +1114,13 @@ _PROJECT_MACRO_DEPRECATION_MESSAGE = (
 
 
 def _do_xxpend_list(args, name, destname=None):
-    """List-typed sibling of ``_do_xxpend`` for attrs whose canonical form
-    is a Python list (e.g. ``args.pkg_config``), not a flag string. The
-    base attr is read from ``args.<destname or name.replace('-','_')>``,
-    and the prepend/append sources from
-    ``args.{prepend,append}_<destname or name.replace('-','_')>``.
+    """List-typed sibling of ``build_state.stage_xxpend`` for attrs whose
+    canonical form is a Python list (e.g. ct-cake's hook-script lists),
+    not a flag string. The base attr is read from
+    ``args.<destname or name.replace('-','_')>``, and the prepend/append
+    sources from ``args.{prepend,append}_<destname or name.replace('-','_')>``.
 
-    Mirrors ``_do_xxpend``'s dedup-and-place rule (prepend leftmost,
+    Mirrors the stage's dedup-and-place rule (prepend leftmost,
     append rightmost, skip duplicates already present in the list
     accumulated so far — prepend extras merge into the base before the
     append pass, so append entries dedup against base *plus* prepend
@@ -1291,13 +1287,13 @@ def _flatten_variables(args):
 
     Uses ``shlex.join`` (not ``' '.join``) so that list elements containing
     shell-special characters (embedded spaces, double-quotes, etc.) survive the
-    subsequent ``shlex.split`` call in ``_finalize_flag_state``.  When the user
-    passes ``--CPPFLAGS '-DFOO=bar baz'`` on the CLI, the shell consumes the
-    outer quotes and argparse stores ``'-DFOO=bar baz'`` as a single list element;
-    ``' '.join`` would produce ``'-DFOO=bar baz -Wall'`` (unsplit on the space),
-    and ``shlex.split`` would then misparse it as three tokens.
-    ``_unify_cpp_cxx_flags`` and ``_deduplicate_all_flags`` apply the same
-    ``shlex.join`` rule.
+    subsequent ``split_command_cached`` tokenization in ``gather_inputs``.
+    When the user passes ``--CPPFLAGS '-DFOO=bar baz'`` on the CLI, the shell
+    consumes the outer quotes and argparse stores ``'-DFOO=bar baz'`` as a
+    single list element; ``' '.join`` would produce ``'-DFOO=bar baz -Wall'``
+    (unsplit on the space), and shlex-splitting would then misparse it as
+    three tokens. ``compute_build_state`` applies the same ``shlex.join`` rule
+    when deriving the slot strings from token tuples.
     """
     for varname in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "INCLUDE"):
         if isinstance(getattr(args, varname, None), list):
@@ -1464,19 +1460,20 @@ def graceful_shutdown(handler, *signums) -> Generator[None, None, None]:
 def _stash_private_attrs(args, cap, context, argv):
     """Attach the private post-parse attributes to a freshly parsed namespace.
 
-    Every namespace that flows into ``substitutions`` needs all three:
+    Every namespace ``parseargs`` finishes needs all three:
 
     * ``_parser`` — read by ``verboseprintconfig`` (``print_values()`` at
-      verbose >= 3) and passed into ``_setup_pkg_config_overrides`` for
-      conf-file provenance attribution at verbose >= 4.
-    * ``_context`` — read unconditionally in ``_commonsubstitutions`` for
-      the pkg-config override setup; missing it is an AttributeError.
-    * ``_argv`` — routes the second ``resolve_variant`` /
-      ``canonicalize_variant_input`` calls in ``_commonsubstitutions``
-      through the explicit_config branch when ``--config=path`` was
-      supplied, and lets a CLI ``--variant-canonical-order`` reach the
-      re-canonicalization (absent, the flag is silently ignored and the
-      canonical dotted variant — hence CAS dir suffixes — can shift).
+      verbose >= 3) and passed into ``_setup_pkg_config_overrides_locked``
+      for conf-file provenance attribution at verbose >= 4.
+    * ``_context`` — read unconditionally by the pkg-config override
+      setup in parseargs' pre-gather block and by ``resubstitute``;
+      missing it is an AttributeError.
+    * ``_argv`` — routes the pre-gather ``resolve_variant`` (the ``-vv``
+      provenance trace) through the explicit_config branch when
+      ``--config=path`` was supplied, and lets a CLI
+      ``--variant-canonical-order`` reach the re-canonicalization
+      (absent, the flag is silently ignored and the canonical dotted
+      variant — hence CAS dir suffixes — can shift).
 
     MUST be called after every ``cap.parse_args`` that produces the
     namespace ``parseargs`` returns. The append-mode reparse in
@@ -1662,41 +1659,6 @@ def parseargs(cap, argv, verbose=None, *, context):
     if verbose > 8:
         print("parseargs has completed.  Returning args")
     return args
-
-
-def _finalize_flag_state(args) -> None:
-    """Populate args.{*}_tokens, args.flags, and the drift snapshot.
-
-    Internal post-parseargs plumbing: called once at the end of
-    parseargs. Tests that bypass parseargs (constructing args via
-    cap.parse_args / SimpleNamespace) should go through
-    ``testhelper.finalize_flag_state`` rather than touching this
-    directly. After this returns, args.{*}_tokens lists and args.flags
-    (a Flags dataclass) reflect the slots registered by the caller's
-    CAP. Slots not registered (e.g. compilation_database omits LDFLAGS)
-    are left absent from the drift snapshot so check_flag_string_drift
-    can distinguish "not applicable here" from "mutated after parseargs".
-    Any subsequent in-place mutation of a registered raw string will be
-    flagged by check_flag_string_drift.
-    """
-    # Compute the CAP-registered slot set ONCE and make it sticky:
-    # the materialise step below synthesizes missing slot attributes for
-    # downstream consumers, so a recompute from hasattr on a later call
-    # would silently widen the registered set.
-    registered = getattr(args, "_registered_flag_slots", None)
-    if registered is None:
-        registered = tuple(slot for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS") if hasattr(args, slot))
-        args._registered_flag_slots = registered
-    # Materialise raw strings and *_tokens for ALL four slots so existing
-    # consumers (build_backend, magicflags, ...) don't need to handle the
-    # absent-slot case. Only registered slots are snapshotted for drift.
-    for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS"):
-        raw = getattr(args, slot, "") or ""
-        if not hasattr(args, slot):
-            setattr(args, slot, raw)
-        setattr(args, f"{slot}_tokens", compiletools.utils.split_command_cached(raw))
-    args.flags = Flags.from_args(args)
-    args._flag_string_snapshot = tuple((slot, getattr(args, slot)) for slot in registered)
 
 
 def check_flag_string_drift(args) -> None:

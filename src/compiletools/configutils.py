@@ -142,7 +142,7 @@ def _parse_conf_file_cached(path):
 
     The full parseargs flow walks the conf hierarchy several times per
     invocation (extract_variant, resolve_variant, canonicalize_variant_input,
-    a second resolve_variant from _commonsubstitutions). Each pass would
+    a second resolve_variant from parseargs' pre-gather block). Each pass would
     otherwise re-open and re-parse the same files. Caching the parsed dict
     keyed on absolute path collapses that to one open per file per process.
 
@@ -351,7 +351,7 @@ def canonicalize_variant_input(
     `gcc.debug.asan` (assuming the default canonical order). A single
     token round-trips unchanged.
 
-    Called from extract_variant() and from apptools._commonsubstitutions to
+    Called from extract_variant() and from parseargs' pre-gather block to
     canonicalize argparse-stored --variant values. When ``argv`` is supplied
     it is consulted for ``--variant-canonical-order=...`` (highest priority).
     """
