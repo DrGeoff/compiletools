@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
 
 import pytest
 
@@ -260,6 +261,13 @@ def test_link_artefact_reused_across_workspaces(tmp_path):
     can be fooled by a fast rebuild that produces the same second-
     granularity timestamp; same inode proves the second build did
     NOT do a temp+rename publish, only a hard-link reuse.
+
+    Reuse must also keep the entry warm. The entries are aged to 45 days
+    old between the two builds, and the second build must leave them
+    fresh: ``ct-cas-publish`` freshens the entry's mtime under its lock,
+    so ``ct-trim-cache --max-age`` and the oldest-first ``--max-size``
+    budget rank an entry every build still publishes as recently used
+    rather than as old as its creation.
     """
     sample_src = uth.example_path("factory")
     assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
@@ -277,6 +285,12 @@ def test_link_artefact_reused_across_workspaces(tmp_path):
     after_first = _cache_stats(shared_cas_exedir, ".exe")
     assert after_first, f"first build produced no .exe in {shared_cas_exedir}"
 
+    # Age every entry well past any plausible --max-age so the freshening
+    # check below cannot be satisfied by filesystem timestamp granularity.
+    aged_to = time.time() - 45 * 86400
+    for entry in shared_cas_exedir.rglob("*.exe"):
+        os.utime(entry, (aged_to, aged_to))
+
     _build(ws2)
     after_second = _cache_stats(shared_cas_exedir, ".exe")
 
@@ -288,18 +302,17 @@ def test_link_artefact_reused_across_workspaces(tmp_path):
     )
 
     # Same inode after the second build proves the link rule did not
-    # re-fire (which would temp+rename to a fresh inode). Mtime is the
-    # weaker consistency check — a fast rebuild can land in the same
-    # whole-second slot — but it's a useful additional signal.
+    # re-fire (which would temp+rename to a fresh inode).
     swapped_inode = {n for n in after_first if after_second[n][0] != after_first[n][0]}
     assert not swapped_inode, (
         f"second build re-linked {len(swapped_inode)} cached executable(s) "
         f"(inode swap proves a fresh temp+rename happened): {sorted(swapped_inode)}"
     )
-    advanced_mtime = {n for n in after_first if after_second[n][1] != after_first[n][1]}
-    assert not advanced_mtime, (
-        f"second build advanced the mtime on {len(advanced_mtime)} cached "
-        f"executable(s) without inode swap — unexpected: {sorted(advanced_mtime)}"
+    still_aged = {n for n in after_first if after_second[n][1] <= aged_to}
+    assert not still_aged, (
+        f"second build reused {len(still_aged)} cached executable(s) but left them "
+        f"45 days stale — publishing did not freshen the entry, so an age-gated "
+        f"trim would evict artefacts that are still in active use: {sorted(still_aged)}"
     )
 
 
