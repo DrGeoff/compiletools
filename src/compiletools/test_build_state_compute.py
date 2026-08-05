@@ -23,10 +23,10 @@ def test_pkg_config_block_lands_once_and_everywhere_it_should():
         pkg_config_results=(("zlib", PkgConfigResult(cflags=("-I/z",), libs=("-lz",))),),
     )
     state = compute_build_state(inputs)
-    assert state.tokens.cxx.count("-I/z") == 1
-    assert state.tokens.ld.count("-lz") == 1
-    assert "-ffile-prefix-map=/repo=." in state.tokens.cpp  # unified after inject
-    assert state.cxxflags == shlex.join(state.tokens.cxx)
+    assert state.flags.cxx.count("-I/z") == 1
+    assert state.flags.ld.count("-lz") == 1
+    assert "-ffile-prefix-map=/repo=." in state.flags.cpp  # unified after inject
+    assert state.cxxflags == shlex.join(state.flags.cxx)
     assert state.names.variant == "gcc.debug"
     assert state.names.bindir == "bin/gcc.debug"
 

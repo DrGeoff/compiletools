@@ -238,7 +238,6 @@ def stage_resolve_names(inputs: BuildInputs) -> NameState:
 
 @dataclass(frozen=True)
 class BuildState:
-    tokens: TokenState
     names: NameState
     flags: Flags
     cppflags: str
@@ -269,7 +268,6 @@ def compute_build_state(inputs: BuildInputs) -> BuildState:
         effects += (SetEnv(name="PKG_CONFIG_PATH", value=inputs.pkg_config_path),)
     effects += wild_effects
     return BuildState(
-        tokens=ts,
         names=names,
         flags=Flags(cpp=ts.cpp, c=ts.c, cxx=ts.cxx, ld=ts.ld, compiler_identity=inputs.compiler_identity),
         cppflags=shlex.join(ts.cpp),

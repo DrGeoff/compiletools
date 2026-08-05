@@ -1317,7 +1317,7 @@ class TestCompilerWrapperSplit:
 class TestWildBDashBToken:
     """The wild-B axis's ``-B<gitroot>/.ct-wild-ld`` token rides
     LDFLAGS end-to-end (``build_state.stage_wild_linker`` appends it to
-    ``state.tokens.ld``). It still needs bespoke handling in the
+    ``state.flags.ld``). It still needs bespoke handling in the
     link-rule builders: ``canonicalize_for_command`` rewrites absolute
     workspace-rooted paths to a target-relative form for cross-user
     byte-identical link output, but link rules don't run with

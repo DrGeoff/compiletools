@@ -215,7 +215,7 @@ def _extract_wild_b_argv(tokens: list[str]) -> tuple[list[str], list[str]]:
     """Split *tokens* into (everything else, wild-B ``-B<dir>`` tokens).
 
     ``stage_wild_linker`` appends ``-B<gitroot>/.ct-wild-ld`` directly into
-    ``state.tokens.ld`` (LDFLAGS), so it arrives here as an ordinary token
+    ``state.flags.ld`` (LDFLAGS), so it arrives here as an ordinary token
     in ``state.flags.ld`` rather than through a side channel. It still needs
     to be pulled out and appended AFTER the ``canonicalize_for_command``
     pass in the link-rule builders: that pass rewrites an absolute

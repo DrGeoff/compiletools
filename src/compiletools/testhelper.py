@@ -1159,7 +1159,7 @@ def finalize_flag_state(args) -> None:
     """
     from compiletools.apptools_compiler import compiler_identity
     from compiletools.build_apply import populate_args
-    from compiletools.build_state import BuildState, NameState, TokenState
+    from compiletools.build_state import BuildState, NameState
     from compiletools.flags import Flags
     from compiletools.git_utils import find_git_root
     from compiletools.utils import split_command_cached
@@ -1175,12 +1175,6 @@ def finalize_flag_state(args) -> None:
         compiler_identity=compiler_identity(getattr(args, "CXX", "") or "", anchor_root=find_git_root() or ""),
     )
     state = BuildState(
-        tokens=TokenState(
-            cpp=tokens["CPPFLAGS"],
-            c=tokens["CFLAGS"],
-            cxx=tokens["CXXFLAGS"],
-            ld=tokens["LDFLAGS"],
-        ),
         names=NameState(
             variant=getattr(args, "variant", ""),
             bindir=getattr(args, "bindir", ""),

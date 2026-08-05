@@ -60,13 +60,13 @@ def test_feeding_output_slots_back_as_inputs_is_a_fixed_point(inputs):
     state1 = compute_build_state(inputs)
     inputs2 = dataclasses.replace(
         inputs,
-        cppflags=state1.tokens.cpp,
-        cflags=state1.tokens.c,
-        cxxflags=state1.tokens.cxx,
-        ldflags=state1.tokens.ld,
+        cppflags=state1.flags.cpp,
+        cflags=state1.flags.c,
+        cxxflags=state1.flags.cxx,
+        ldflags=state1.flags.ld,
     )
     state2 = compute_build_state(inputs2)
-    assert state2.tokens == state1.tokens
+    assert state2.flags == state1.flags
 
 
 @settings(max_examples=200)
@@ -85,7 +85,7 @@ def test_dedup_tokens_is_idempotent_and_order_preserving(tokens):
 @given(st.just(False).flatmap(_inputs_strategy))
 def test_unified_mode_ends_with_cpp_equal_cxx(inputs):
     state = compute_build_state(inputs)
-    assert state.tokens.cpp == state.tokens.cxx
+    assert state.flags.cpp == state.flags.cxx
 
 
 @settings(max_examples=100)

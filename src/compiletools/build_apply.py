@@ -52,14 +52,6 @@ def apply_effects(state: BuildState, context) -> None:
                 os.symlink(resolved_target, link)
 
 
-_SLOT_TO_TOKENS = {
-    "CPPFLAGS": "cpp",
-    "CFLAGS": "c",
-    "CXXFLAGS": "cxx",
-    "LDFLAGS": "ld",
-}
-
-
 def populate_args(args, state: BuildState) -> None:
     """Stash the BuildState and write the resolved name attrs.
 
@@ -94,7 +86,7 @@ def get_build_state(args) -> BuildState:
     """Return the BuildState populate_args stashed on *args*.
 
     The single flag/name read path: consumers read
-    state.tokens/state.names/state.flags through this accessor.
+    state.names/state.flags through this accessor.
     Raises a named error (not a bare AttributeError) when the namespace
     never went through populate_args -- almost always a test fixture
     that built args by hand; route it through parseargs or

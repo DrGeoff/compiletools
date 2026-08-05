@@ -215,12 +215,12 @@ class TestStateTokensAfterParseargs:
         args = self._parse(tempdir=str(tmp_path))
         state = get_build_state(args)
 
-        # The string forms are shlex.join of the token tuples: splitting
-        # them back must reproduce the tokens exactly.
-        assert list(state.tokens.cpp) == utils.split_command_cached(state.cppflags)
-        assert list(state.tokens.c) == utils.split_command_cached(state.cflags)
-        assert list(state.tokens.cxx) == utils.split_command_cached(state.cxxflags)
-        assert list(state.tokens.ld) == utils.split_command_cached(state.ldflags)
+        # The string forms are shlex.join of the flag token tuples:
+        # splitting them back must reproduce the tokens exactly.
+        assert list(state.flags.cpp) == utils.split_command_cached(state.cppflags)
+        assert list(state.flags.c) == utils.split_command_cached(state.cflags)
+        assert list(state.flags.cxx) == utils.split_command_cached(state.cxxflags)
+        assert list(state.flags.ld) == utils.split_command_cached(state.ldflags)
 
     def test_state_tokens_reflect_appended_cppflags(self, tmp_path):
         """append-CPPFLAGS contributions must appear in the state tokens."""
@@ -228,7 +228,7 @@ class TestStateTokensAfterParseargs:
 
         args = self._parse(["--append-CPPFLAGS=-DAFTER_TOKENIZE=42"], tempdir=str(tmp_path))
 
-        assert "-DAFTER_TOKENIZE=42" in get_build_state(args).tokens.cpp, (
+        assert "-DAFTER_TOKENIZE=42" in get_build_state(args).flags.cpp, (
             "Appended -D entries must be present in the state's cpp tokens; "
             "the state is computed AFTER all gather-time contributions."
         )
