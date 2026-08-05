@@ -624,6 +624,7 @@ class TestTerminalColumns:
 class TestClearCache:
     def test_clear_cache_runs(self):
         # Populate the cache with a dummy call
+        clear_cache()
 
         with patch("subprocess.run", return_value=MagicMock(returncode=1)):
             with warnings.catch_warnings(record=True) as caught:
