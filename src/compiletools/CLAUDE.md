@@ -57,7 +57,7 @@ For PCH validation to actually succeed, the dialect bazel uses for the consumer 
 - **Opinionated bundles** (`dev`, `ci`, `production`, `safety`, `perf`, `secure`) are tiny `<name>.conf` files using `extends = ...` to compose curated axis sets.
 - **Legacy `variantaliases = {dict}`** is hard-failed by `_check_legacy_variant_config_keys` (byte-level scan, line-anchored). See `README.ct-config.rst` "Upgrading from variantaliases".
 
-The flow inside one parseargs invocation: `create_parser` → `extract_variant(argv)` → `resolve_variant(variant, argv)` (consults builtin/conf/env/CLI for canonical_order, resolves axes, returns `VariantResolution`). After configargparse parses, `_commonsubstitutions` re-runs `canonicalize_variant_input(args.variant, argv=args._argv)` and a second `resolve_variant(argv=args._argv)` to populate `args._variant_resolution` for the `-vv` provenance trace. The `_argv` stash on `args` is what lets the second resolve hit the `--config=path` short-circuit branch.
+The flow inside one parseargs invocation: `create_parser` → `extract_variant(argv)` → `resolve_variant(variant, argv)` (consults builtin/conf/env/CLI for canonical_order, resolves axes, returns `VariantResolution`). After configargparse parses, `parseargs`' pre-gather block runs a second `resolve_variant(argv=args._argv)` to populate `args._variant_resolution` for the `-vv` provenance trace; the canonical dotted variant the build uses comes from `stage_resolve_names` via `populate_args`. The `_argv` stash on `args` is what lets the second resolve hit the `--config=path` short-circuit branch.
 
 ## `${CONF_DIR}` placeholder + conf-file provenance
 
@@ -93,7 +93,7 @@ Why this is load-bearing (the bug it fixes): the precompile rules deliberately r
 
 `MacroState` in `preprocessing_cache.py` separates static compiler built-ins (~388 macros, immutable) from dynamic file `#define`s (variable). Cache keys only hash variable macros — ~80% reduction in key computation cost. Lazy frozenset computation with incremental updates for pure additions (the common case). The build-context portion of the hash also folds in `compiler_identity(args.CXX, anchor_root=...)` (a `realpath|size|mtime_ns` triple resolved via `apptools.compiler_identity`, exposed on `args.flags.compiler_identity`) so an in-place toolchain swap that leaves `args.CXX` unchanged still invalidates per-TU object cache entries (symmetric with the PCH cache key). The realpath segment is routed through `canonicalize_path_for_cache_key` so an in-workspace wrapper script (coverage shim, sccache/distcc wrapper) at e.g. `<gitroot>/tools/cxx-wrapper.sh` doesn't leak its per-checkout prefix into the cache key. The build-context hash also folds a snapshot of the CPATH-family env vars (`INCLUDE_PATH_ENV_VARS`: `CPATH`, `C_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH`, `OBJC_INCLUDE_PATH`; unset ≡ empty, matching `_link_environment_snapshot`) because they change which headers the compiler resolves without appearing in any flag string — ccache hashes the same four, though verbatim: compiletools runs each `os.pathsep` entry through `canonicalize_path_for_cache_key` first, so a gitroot-prefixed entry hashes identically across checkouts. `DirectHeaderDeps` symmetrically appends those directories to its flat include search list (after CPPFLAGS-derived `-I` dirs, CPATH first, mirroring gcc's `-I`-then-`-isystem` staging) so env-only headers are walked and content-hashed into `dep_hash`; the link-side `_LINK_ENVIRONMENT_VARS` list in `backend_command_args.py` is deliberately separate and must stay byte-stable.
 
-**Flag-slot hashing is argv-shaped, not slot-shaped.** `_get_build_context_hash` hashes the cpp part as `dedup(cpp + cxx)` (the same merge `_unify_cpp_cxx_flags` applies), NOT the raw CPPFLAGS slot: raw CPPFLAGS never reaches a compile line on its own (the C++ argv is `CXX + cxxflags`, the C argv is `CC + cflags`), so hashing the slot verbatim forked the object key space whenever a token was promoted between cpp and cxx without changing any argv (the `--auto` vs `--no-auto` ffile-prefix-map fork). The cflags/cxxflags parts must stay EXACT — each IS an argv, and both token order and c-vs-cxx placement are argv properties; collapsing them (e.g. a full three-slot union) would give equal keys for different compile commands, a silent miscompile since cas-objdir has no link-time verification. Contract pinned by `test_macrostate_build_context_union.py`; the upstream idempotence half lives at the shim boundary: `populate_args` records the pre-overwrite raw slot strings in `args._raw_flag_slots` and `gather_inputs` prefers the record over the live (derived) attrs, so every re-gather rebuilds from the same base — no caller-side seed/restore protocol, no drift check; the record dies with `populate_args` at consumer-migration end. Pinned by `test_substitutions_idempotency.py`.
+**Flag-slot hashing is argv-shaped, not slot-shaped.** `_get_build_context_hash` hashes the cpp part as `dedup(cpp + cxx)` (the same merge `build_state.stage_unify` applies), NOT the raw CPPFLAGS slot: raw CPPFLAGS never reaches a compile line on its own (the C++ argv is `CXX + cxxflags`, the C argv is `CC + cflags`), so hashing the slot verbatim forked the object key space whenever a token was promoted between cpp and cxx without changing any argv (the `--auto` vs `--no-auto` ffile-prefix-map fork). The cflags/cxxflags parts must stay EXACT — each IS an argv, and both token order and c-vs-cxx placement are argv properties; collapsing them (e.g. a full three-slot union) would give equal keys for different compile commands, a silent miscompile since cas-objdir has no link-time verification. Contract pinned by `test_macrostate_build_context_union.py`; the upstream idempotence half lives at the shim boundary: `populate_args` records the pre-overwrite raw slot strings in `args._raw_flag_slots` and `gather_inputs` prefers the record over the live (derived) attrs, so every re-gather rebuilds from the same base — no caller-side seed/restore protocol, no drift check; the record dies with `populate_args` at consumer-migration end. Pinned by `test_resubstitute_convergence.py`.
 
 ## Naming history
 
@@ -116,7 +116,7 @@ Prior to a rename, the object CAS was called `shared-objdir/` (default `{git_roo
 
 After `apptools.parseargs` returns, `args.flags` is a frozen `Flags` dataclass. Convenience methods: `hash_relevant(slot)` returns the slot's tokens with `-D`/`-U` and diagnostic-only flags removed (used by cache-key hashing); `existing_include_paths(slot)` and `append_include(path, slots=...)` form the include-path dedup API used by `apptools._add_include_paths_to_flags`. Because `Flags` is frozen and tuple-backed, instances are hashable and consumers cannot mutate the underlying tokens — `append_include` returns a new `Flags` via `dataclasses.replace`.
 
-**Mutation invariant.** `args.{CPPFLAGS,CFLAGS,CXXFLAGS,LDFLAGS}` raw strings, `args.{*}_tokens` lists, and `args.flags` are populated once at the end of `parseargs` and must not be mutated afterwards — `args.flags` would silently drift from the raw strings. All known mutation sites (`substitutions`, `_add_include_paths_to_flags`, project version macros, pkg-config, CPP/CXX unification) run BEFORE that point. `apptools.check_flag_string_drift(args)` compares the current raw flag strings against the snapshot recorded at parseargs end (`args._flag_string_snapshot`) and raises `RuntimeError` naming the offending slot if anything has changed.
+**Mutation invariant.** `args.{CPPFLAGS,CFLAGS,CXXFLAGS,LDFLAGS}` raw strings, `args.{*}_tokens` lists, and `args.flags` are populated once at the end of `parseargs` and must not be mutated afterwards — `args.flags` would silently drift from the raw strings. All flag derivation happens inside `compute_build_state` (pure stages over token tuples) before `populate_args` writes the surface. `apptools.check_flag_string_drift(args)` compares the current raw flag strings against the snapshot recorded at parseargs end (`args._flag_string_snapshot`) and raises `RuntimeError` naming the offending slot if anything has changed.
 
 ## `//#GIT=` external fetch (`fetch.py` + `cake._fetch_and_register_externals`)
 
@@ -188,19 +188,21 @@ Linker axis confs are otherwise purely declarative (`gold.conf` =
 `apptools`:
 
 - **`wild` axis** — `wild.conf` emits the canonical token `-fuse-ld=wild`
-  (what gcc ≥ 16.1 wants). `_normalize_wild_linker` (run in
-  `_commonsubstitutions`, before the `Flags` freeze) rewrites it to
+  (what gcc ≥ 16.1 wants). `build_state.stage_wild_linker` rewrites it to
   `--ld-path=wild` when the effective link driver (`_effective_link_driver`:
   `args.LD` else `args.CXX`) is clang — clang rejects `-fuse-ld=wild`
   ("invalid linker name") without an `ld.wild` symlink, and wild's installer
   doesn't make one. The bare name `wild` (not an abs path) keeps per-user
   paths out of the link key.
 - **`wild-B` axis** — a comment-only conf (like `ld.conf`). Selection is
-  detected via the variant token (`_variant_has_axis`), and
-  `_materialize_wild_b_searchdir` creates `<gitroot>/.ct-wild-ld/ld → wild`
-  and injects `-B<dir>`. Gitroot-anchored so `canonicalize_for_cache_key`
-  neutralises it in the link key. Works on any gcc (no `-fuse-ld=` support
-  needed).
+  detected via the variant token (`_variant_has_axis`, read by gather into
+  `inputs.wild_b_selected`); `stage_wild_linker` appends
+  `-B<gitroot>/.ct-wild-ld` to the ld tokens and emits an
+  `EnsureLinkerSymlinkDir` effect that `apply_effects` materializes as
+  `<gitroot>/.ct-wild-ld/ld → wild` (which()-resolved). Gitroot-anchored so
+  `canonicalize_for_cache_key` neutralises it in the link key; the emitted
+  link argv keeps the `-B` absolute (`_extract_wild_b_argv`). Works on any
+  gcc (no `-fuse-ld=` support needed).
 
 `_check_wild_linker_usable` (next to `_check_resolved_compiler_available`)
 fails fast: wild missing → install hint; `wild` axis + gcc < 16 → use clang /
