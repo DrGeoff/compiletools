@@ -453,8 +453,8 @@ def emit_pkg_config_path_provenance(
     existing, prepend_paths, append_paths, cwd_candidates, gitroot_candidates, verbose, args_parser=None
 ):
     """Print the ``Prepended/Appended pkg-config path: ...`` provenance
-    lines at ``verbose >= 4``. Shared by the legacy locked writer and the
-    new parseargs path (where gather computes the value and apply_effects
+    lines at ``verbose >= 4``. Shared by the locked writer and the
+    parseargs path (where gather computes the value and apply_effects
     performs the env write, so neither owns a natural print site)."""
     if verbose < 4:
         return

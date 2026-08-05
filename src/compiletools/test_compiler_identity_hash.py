@@ -1,5 +1,5 @@
 """Tests for the compiler_identity helper and its inclusion in MacroState's
-build-context hash (TOKEN-4).
+build-context hash.
 
 Symmetric to ``_pch_command_hash`` (which already folds in compiler identity
 via ``build_backend._compiler_identity``): the per-TU object cache key now
@@ -241,7 +241,7 @@ def _make_state(**kwargs):
 
 def test_macro_state_hash_changes_with_compiler_identity_change():
     """Two MacroStates that differ only in compiler_identity must produce
-    different full hashes — the whole point of TOKEN-4."""
+    different full hashes — the whole point of folding identity in."""
     a = _make_state(compiler_identity="/path/to/gcc-13|12345|99")
     b = _make_state(compiler_identity="/path/to/gcc-14|54321|100")
     assert a.get_hash(include_core=True) != b.get_hash(include_core=True)

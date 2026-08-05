@@ -1314,13 +1314,16 @@ def _augmented_headerdeps(args, context, *, externals_dir: str, resolved_roots: 
     can traverse INTO already-fetched externals (to discover their transitive
     ``#include`` graph and the further ``//#GIT=`` declarations it reaches).
 
-    The caller's *args* (and its frozen ``args.flags``) are never mutated and
+    The caller's *args* (and its stashed frozen BuildState) are never mutated and
     never copied — the extra dirs are threaded straight into the headerdeps
     instance's include list (``_initialize_includes_and_macros`` for
     DirectHeaderDeps) / preprocessor command (CppHeaderDeps), not back into
-    ``CPPFLAGS``. This is why ``BuildContext`` no longer needs a
-    ``__deepcopy__``: nothing here deep-copies an args namespace that would drag
-    the live context along.
+    ``CPPFLAGS``. Design pothole to avoid: deep-copying an args namespace
+    drags the live ``BuildContext`` along (``args._context`` owns a
+    ``threading.Lock`` and stringzilla caches that are not deep-copyable),
+    which would force a ``BuildContext.__deepcopy__`` identity hook — a
+    global aliasing trap on a shared type. Thread extra dirs as parameters
+    instead of copying args.
     """
     import compiletools.headerdeps
     import compiletools.wrappedos

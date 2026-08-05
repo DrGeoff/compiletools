@@ -86,9 +86,7 @@ def _xxpend_tokens(args, attr):
     """Flatten one --prepend-*/--append-* list into flag tokens.
 
     Each list element may carry several flags (one conf value arrives as
-    one element); the old pipeline space-joined elements into the raw
-    string and shlex-split later, so tokenizing per element is the
-    faithful port.
+    one element), so each element is tokenized individually.
     """
     from compiletools.utils import split_command_cached
 
@@ -161,8 +159,8 @@ def _query_pkg_config(packages, pkg_config_path, want_libs, verbose, context):
 
     ``_batch_pkg_config`` reads the global environment, so the computed
     PKG_CONFIG_PATH is set/restored around the query (temporary; the
-    apply layer owns the durable SetEnv, and the locked writer keeps its
-    own env mutation for the legacy pipeline).
+    apply layer owns the durable SetEnv, and the standalone locked
+    writer keeps its own env mutation).
 
     Note: ``_batch_pkg_config`` itself memoizes with ``functools.cache``
     keyed per ``(package, option)`` only -- no PKG_CONFIG_PATH in that
@@ -263,9 +261,8 @@ def _include_paths_with_gitroots(args, gitroot):
        include list, sorted, skipping already-present paths.
 
     gather computes the widened tuple instead of mutating args.INCLUDE.
-    An empty gitroot set silently no-ops (the legacy step raised
-    ValueError there; unreachable in production since find_git_root
-    falls back to the cwd).
+    An empty gitroot set silently no-ops (unreachable in production
+    since find_git_root falls back to the cwd).
     """
     from compiletools.git_utils import find_git_root
 
@@ -321,8 +318,8 @@ def gather_inputs(args, context) -> BuildInputs:
     ambient read (env, filesystem, git, pkg-config subprocesses) happens
     here; ``compute_build_state`` is a pure function of the result.
 
-    CPP/LD executable-name substitution stays in the old pipeline;
-    gather deliberately does not model it.
+    CPP/LD executable-name substitution happens in ``parseargs``'s
+    pre-gather namespace steps; gather deliberately does not model it.
     """
     import os
 
@@ -358,9 +355,8 @@ def gather_inputs(args, context) -> BuildInputs:
 
     project_version = _project_macro_value(args, "projectversion", "projectversioncmd", verbose)
     project_name = _project_macro_value(args, "projectname", "projectnamecmd", verbose)
-    # Deprecation warning fires on the raw opt-in (pre-D1-suppression),
-    # matching the old pipeline's trigger point in _set_project_version /
-    # _set_project_name. Context-level once-latch: gather never mutates args.
+    # Deprecation warning fires on the raw opt-in, before any
+    # suppression logic. Context-level once-latch: gather never mutates args.
     if (project_version is not None or project_name is not None) and not getattr(
         context, "_project_macro_deprecation_warned", False
     ):

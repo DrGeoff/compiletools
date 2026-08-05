@@ -68,7 +68,7 @@ class Cake:
             return
         # Cake namespaces always carry a BuildState (parseargs/re-anchor
         # both populate it); read the name from the state like every other
-        # migrated pipeline consumer.
+        # pipeline consumer.
         bindir = compiletools.build_apply.get_build_state(args).names.bindir
         if bindir not in args.makefilename:
             movedmakefile = os.path.join(bindir, args.makefilename)
@@ -223,9 +223,8 @@ class Cake:
             # exemarkers/testmarkers/disable-tests) shape the final set.
             self.args = compiletools.findtargets.discover_targets_and_reanchor(self.args, self.context)
             # The re-anchor path may return a FRESH namespace from a new
-            # parseargs run; re-apply the makefile relocation to it (direct
-            # post-parseargs call — the substitution-callback registry is
-            # retired). Idempotent on the unchanged-namespace path.
+            # parseargs run; re-apply the makefile relocation to it.
+            # Idempotent on the unchanged-namespace path.
             Cake._hide_makefilename(self.args)
             recreateobjs = True
 
@@ -1167,8 +1166,7 @@ def main(argv=None):
         # verbose >= 2 -- both propagate through main() untouched, same as
         # the validate_otel_timing_pair SystemExit below.
         args = compiletools.apptools.parseargs(cap, argv, context=context)
-        # Direct post-parseargs call replacing the retired substitution-
-        # callback registration: relocate the Makefile into the bindir.
+        # Relocate the Makefile into the bindir.
         Cake._hide_makefilename(args)
         compiletools.apptools.validate_otel_timing_pair(args)
 

@@ -586,8 +586,7 @@ def resolve_cas_directory_arguments(args):
     Uses ``args.variant`` (the post-parse value) rather than an
     early-extracted variant: ``configutils.extract_variant(argv)``
     can return a stale value when a ``--config`` file's basename is
-    interpreted as an axis (the working precedent in the legacy
-    pipeline always used ``args.variant``).
+    interpreted as an axis.
 
     Missing attrs on ``args`` are tolerated — the resolver only
     touches attributes that were registered by

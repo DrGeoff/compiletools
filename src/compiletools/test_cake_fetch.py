@@ -1,9 +1,9 @@
-"""Integration tests for ct-cake's //#GIT= external-fetch step (Task 11).
+"""Integration tests for ct-cake's //#GIT= external-fetch step.
 
 These exercise the real ``Cake._fetch_and_register_externals`` code path:
 collect targets -> ``fetch.fetch_externals`` -> append to ``args.INCLUDE`` ->
-re-run ``substitutions`` -> assert the frozen ``args.flags`` picked up the
-external's include dirs and that the populate-once/freeze invariant holds.
+re-run ``apptools.resubstitute`` -> assert the recomputed BuildState
+(``get_build_state(args).flags``) picked up the external's include dirs.
 
 All git operations stay local via ``file://`` bare repos (no network), under a
 neutralised git environment. A functional C++ compiler is required because the
@@ -122,8 +122,8 @@ def test_fetch_step_registers_external_include_dirs(monkeypatch) -> None:
         assert os.path.isfile(os.path.join(clone, "include", "extlib.h"))
 
         # INCLUDE now carries the external's include dir; re-run through
-        # resubstitute exactly as process() does (post-swap Task 9: re-gather
-        # + recompute) to redistribute it into the frozen flags.
+        # resubstitute exactly as process() does (re-gather + recompute)
+        # to redistribute it into the frozen flags.
         assert os.path.join(clone, "include") in args.INCLUDE.split()
         compiletools.apptools.resubstitute(args)
 

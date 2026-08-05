@@ -233,7 +233,7 @@ class TestPchScopeMacroHashEdgeCases:
         )
 
 
-# --- TOKEN-3: diagnostic-only flag tokens are excluded from PCH cache key ---
+# --- Diagnostic-only flag tokens are excluded from PCH cache key ---
 
 
 class _StubArgs:
@@ -266,10 +266,10 @@ def test_pch_cache_key_unchanged_with_w_warning_change():
     ``-Wall`` vs ``-Wextra`` inside ``cxxflags_tokens`` must produce
     the SAME PCH cache key.
 
-    TOKEN-5: ``_pch_command_hash`` no longer self-filters its
-    ``cxxflags_tokens`` parameter -- the caller is responsible (and
-    in production calls ``args.flags.hash_relevant("cxx")``). Mirror
-    that contract here by pre-filtering before each invocation.
+    ``_pch_command_hash`` does not self-filter its ``cxxflags_tokens``
+    parameter -- the caller is responsible (and in production calls
+    ``state.flags.hash_relevant("cxx")``). Mirror that contract here by
+    pre-filtering before each invocation.
     """
 
     def _hr(tokens):

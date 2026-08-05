@@ -160,7 +160,7 @@ class MagicFlagsBase:
 
         # Add command-line macros to core - they're also static for the
         # entire build. Both helpers read the stashed BuildState's flag
-        # tokens (flag_sources names select slots, not legacy attrs).
+        # tokens (flag_sources names select state slots).
         cmd_macros = compiletools.apptools.extract_command_line_macros(
             self._args, flag_sources=["CPPFLAGS", "CXXFLAGS"], include_compiler_macros=False, verbose=self._args.verbose
         )
@@ -177,7 +177,7 @@ class MagicFlagsBase:
 
         # All flag state (raw strings, structured Flags, compiler identity)
         # comes from the stashed BuildState -- the one authoritative
-        # artifact; args.flags is merely its alias on the legacy surface.
+        # artifact; the raw args attrs hold only the pre-gather values.
         #
         # Hashing tokens (instead of raw strings) lets the scope filter
         # actually take effect: cmdline -D macros are hashed via core, and
@@ -578,9 +578,9 @@ class MagicFlagsBase:
         magic_c_tokens = [str(f) for f in flagsforfilename.get(sz.Str("CFLAGS"), [])]
         magic_cxx_tokens = [str(f) for f in flagsforfilename.get(sz.Str("CXXFLAGS"), [])]
 
-        # args.flags is the canonical source (populated by parseargs /
-        # testhelper.finalize_flag_state). list(...) wraps the tuples so
-        # the +-with-magic-tokens concat below stays a list operation.
+        # The stashed BuildState's flags are the canonical source (via
+        # parseargs / testhelper.finalize_flag_state). list(...) wraps the
+        # tuples so the +-with-magic-tokens concat stays a list operation.
         state = compiletools.build_apply.get_build_state(self._args)
         args_cpp_tokens = list(state.flags.cpp)
         args_c_tokens = list(state.flags.c)

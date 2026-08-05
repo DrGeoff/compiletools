@@ -1026,15 +1026,15 @@ def test_cxx_modules_header_unit_pkg_config_builds_with_gcc(tmp_path, monkeypatc
     builds with gcc.
 
     Sibling regression guard to
-    ``test_cxx_modules_header_unit_isystem_builds_with_gcc``: pre-fix
-    the gcc header-unit precompile rule only honoured ``-isystem``
-    flags that lived in ``args.flags.cxx`` (the user-supplied
-    ``append-CXXFLAGS = -isystem ...``). Flags arriving via the
-    ``PKG-CONFIG = pkg`` magic-flag expansion (which
-    ``magicflags._handle_pkg_config`` adds to per-source CPPFLAGS /
-    CXXFLAGS, with ``filter_pkg_config_cflags`` converting ``-I`` to
-    ``-isystem``) were silently dropped from the precompile command,
-    so gcc failed with
+    ``test_cxx_modules_header_unit_isystem_builds_with_gcc``. Design
+    pothole: the gcc header-unit precompile rule builds its ``-isystem``
+    list separately from the TU-consumer compile, so any source of
+    ``-isystem`` honoured by one but not the other silently breaks the
+    precompile. Here the source is the ``PKG-CONFIG = pkg`` magic-flag
+    expansion (``magicflags._handle_pkg_config`` adds to per-source
+    CPPFLAGS / CXXFLAGS, with ``filter_pkg_config_cflags`` converting
+    ``-I`` to ``-isystem``); dropping it from the precompile command
+    makes gcc fail with
     ``cc1plus: fatal error: extlib/Exception.h: No such file or
     directory``. The sample self-configures pkg-config via
     ``prepend-PKG-CONFIG-PATH = ${CONF_DIR}/extlib_pc`` in its ct.conf,

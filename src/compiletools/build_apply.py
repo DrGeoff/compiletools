@@ -1,5 +1,5 @@
-"""Impure apply layer: executes BuildState.effects and populates the
-legacy args surface during the consumer-migration period."""
+"""Impure apply layer: executes BuildState.effects, stashes the
+BuildState on args, and writes the resolved name attrs."""
 
 from __future__ import annotations
 
@@ -93,9 +93,8 @@ def populate_args(args, state: BuildState) -> None:
 def get_build_state(args) -> BuildState:
     """Return the BuildState populate_args stashed on *args*.
 
-    The read-side of consumer migration: modules that used to read the
-    legacy args.{CPPFLAGS,...}/variant/bindir/cas-*dir surface read
-    state.tokens/state.names/state.flags through this accessor instead.
+    The single flag/name read path: consumers read
+    state.tokens/state.names/state.flags through this accessor.
     Raises a named error (not a bare AttributeError) when the namespace
     never went through populate_args -- almost always a test fixture
     that built args by hand; route it through parseargs or

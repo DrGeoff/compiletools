@@ -421,9 +421,9 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
         expected_includes = ["/path with spaces/include"]
 
         # Bypass command line parsing issues by setting the flag string
-        # directly. Post consumer-migration the extraction reads the stashed
-        # BuildState's cpp string, so the override goes there (a bare
-        # args.CPPFLAGS mutation is deliberately inert now).
+        # directly. The extraction reads the stashed BuildState's cpp
+        # string, so the override goes there (a bare args.CPPFLAGS
+        # mutation is deliberately inert).
         import dataclasses
 
         args = self._parse_args(["-q"])
@@ -487,12 +487,12 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
 
 
 class TestHeaderDepsReadsBuildState(tb.BaseCompileToolsTestCase):
-    """Consumer migration: DirectHeaderDeps' include-path extraction must
-    read the stashed BuildState's cpp string, not the legacy args.CPPFLAGS
-    attr. Pinned by mutating the legacy attr after parseargs: the include
+    """DirectHeaderDeps' include-path extraction must read the stashed
+    BuildState's cpp string, not the raw args.CPPFLAGS attr (pre-gather
+    values only). Pinned by mutating the raw attr after parseargs: the include
     list must reflect the state, not the mutation."""
 
-    def test_includes_come_from_build_state_not_legacy_attr(self, monkeypatch):
+    def test_includes_come_from_build_state_not_raw_attr(self, monkeypatch):
         _clear_include_env(monkeypatch)
         cap = configargparse.ArgumentParser(
             conflict_handler="resolve",
@@ -502,10 +502,10 @@ class TestHeaderDepsReadsBuildState(tb.BaseCompileToolsTestCase):
         compiletools.headerdeps.add_arguments(cap)
         compiletools.apptools.add_common_arguments(cap)
         args = compiletools.apptools.parseargs(cap, ["-q", "--CPPFLAGS=-I /state/include"], context=BuildContext())
-        args.CPPFLAGS = "-I /legacy/mutated"
+        args.CPPFLAGS = "-I /raw/mutated"
         deps = compiletools.headerdeps.DirectHeaderDeps(args, context=BuildContext())
         assert "/state/include" in deps.includes
-        assert "/legacy/mutated" not in deps.includes
+        assert "/raw/mutated" not in deps.includes
 
 
 class TestHeaderDepsUnitTests(tb.BaseCompileToolsTestCase):

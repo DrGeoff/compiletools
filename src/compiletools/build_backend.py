@@ -216,7 +216,7 @@ def _extract_wild_b_argv(tokens: list[str]) -> tuple[list[str], list[str]]:
 
     ``stage_wild_linker`` appends ``-B<gitroot>/.ct-wild-ld`` directly into
     ``state.tokens.ld`` (LDFLAGS), so it arrives here as an ordinary token
-    in ``args.flags.ld`` rather than through a side channel. It still needs
+    in ``state.flags.ld`` rather than through a side channel. It still needs
     to be pulled out and appended AFTER the ``canonicalize_for_command``
     pass in the link-rule builders: that pass rewrites an absolute
     workspace-rooted path to a target-relative form (``-B./.ct-wild-ld``),
@@ -296,9 +296,9 @@ class BuildBackend(abc.ABC):
         self._graph: BuildGraph | None = None
         self._dynamic_sources: set[str] = set()
         # C++20 modules state. Set here so every read site can use
-        # plain attribute access; ``_create_compile_rules`` populates
-        # them with their final values per build. Defensive ``getattr``
-        # at read sites is no longer needed.
+        # plain attribute access without defensive ``getattr``;
+        # ``_create_compile_rules`` populates them with their final
+        # values per build.
         self._module_compiler_kind: str | None = None
         self._module_pcm_cache_root: str | None = None
         self._module_pcm_dir: str | None = None
@@ -348,9 +348,9 @@ class BuildBackend(abc.ABC):
     def _build_state(self):
         """The BuildState the backend's flag/name reads come from.
 
-        Consumer migration: flag tokens and cas-dir/bindir names read
-        ``self._build_state.flags`` / ``.names``, never the legacy
-        ``args.<SLOT>`` / ``args.flags`` / ``args.cas_*dir`` attrs. A
+        Flag tokens and cas-dir/bindir names read
+        ``self._build_state.flags`` / ``.names``, never the raw
+        ``args.<SLOT>`` attrs (which hold only pre-gather values). A
         property, not a reference captured at __init__: resubstitute
         re-populates the stash on --auto//#GIT= re-runs and a captured
         reference would go stale mid-build.
@@ -952,7 +952,7 @@ class BuildBackend(abc.ABC):
                 # the cache key. Same fix applied to per-TU object
                 # hashing in Hunter.macro_state_hash.
                 #
-                # Uses args.flags.hash_relevant("cxx") which strips -D/-U
+                # Uses the state flags' hash_relevant("cxx") which strips -D/-U
                 # AND filters diagnostic-only flags in one pass; _pch_command_hash
                 # trusts its caller to pre-filter the cxxflags_tokens parameter.
                 cxxflags_tokens = self._build_state.flags.hash_relevant("cxx")
@@ -1231,12 +1231,12 @@ class BuildBackend(abc.ABC):
         # Union of per-source magic CPPFLAGS / CXXFLAGS system-include
         # tokens (``-isystem`` / ``-isysroot`` / ``-iframework`` /
         # ``-idirafter`` / ``--sysroot=``). The header-unit precompile
-        # path otherwise only walks ``args.flags.cxx``, so a header
+        # path otherwise only walks ``state.flags.cxx``, so a header
         # reached only through a per-source ``//#PKG-CONFIG=lib`` magic
         # flag (which ``magicflags._handle_pkg_config`` expands to
         # ``-isystem <pkg-include>``) would never become resolvable --
         # gcc fails with ``fatal error: <h>: No such file or directory``.
-        # Same allowed flag families as ``args.flags.cxx`` because the
+        # Same allowed flag families as ``state.flags.cxx`` because the
         # ``-isystem`` immutability contract still applies (see
         # ``_extract_system_include_path_flags``). Order-preserving
         # dedup so the precompile probe sees a stable flag list.
@@ -2548,7 +2548,7 @@ class BuildBackend(abc.ABC):
         injects_libcxx = self._build_imports_std() and not cxxflags_has_libcxx
         # Fold the unioned magic system-include flags into the cache key
         # the same way the precompile rule will see them (appended to
-        # ``args.flags.cxx`` in ``_create_header_unit_precompile_rule``).
+        # ``state.flags.cxx`` in ``_create_header_unit_precompile_rule``).
         # Without this, two builds whose pkg-config-derived ``-isystem``
         # paths differ would collide on the same cmd_hash. ``getattr``
         # guards callers that may run before the pre-pass populates it.
@@ -2761,7 +2761,7 @@ class BuildBackend(abc.ABC):
         assert cache_root is not None
         # Fold the unioned magic system-include flags into the cmd_hash
         # the same way the precompile rule will see them (appended to
-        # ``args.flags.cxx`` in ``_create_header_unit_precompile_rule``).
+        # ``state.flags.cxx`` in ``_create_header_unit_precompile_rule``).
         # Without this, two builds whose pkg-config-derived ``-isystem``
         # paths differ would collide on the same cmd_hash and import
         # the wrong BMI -- gcc's consume-time check is flag-aware, not
@@ -3076,7 +3076,7 @@ class BuildBackend(abc.ABC):
             # C++20 modules: any TU that participates in the module
             # graph (exports, implements, or imports a named module) needs
             # the compiler's modules-mode flag injected. We inject here
-            # rather than in args.flags so non-module TUs in the same
+            # rather than in the state's flags so non-module TUs in the same
             # build aren't tagged with -fmodules-ts (which would invalidate
             # their object cache) and so the user's ct.conf stays compiler-
             # agnostic at the C++20 level.

@@ -1,7 +1,7 @@
 """End-to-end tests for the ``//#GIT=`` multi-repo external-fetch feature.
 
 Unlike ``test_cake_fetch.py`` (which exercises ``Cake._fetch_and_register_externals``
-in-process and stops at the frozen ``args.flags`` level), these tests drive the
+in-process and stops at the recomputed BuildState level), these tests drive the
 real ``ct-cake`` entry point as a subprocess, so they cover the *whole* pipeline:
 auto-clone the external -> fold its include dirs into the compile -> discover the
 external's implied source -> compile -> link -> produce and RUN an executable.

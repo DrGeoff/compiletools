@@ -20,7 +20,7 @@ import compiletools.apptools_compiler
 # importers, and test/patch targets keep working with identical object
 # identity. All are pure re-exports consumed only by external modules /
 # tests (``_setup_pkg_config_overrides`` and ``_add_flags_from_pkg_config``
-# lost their internal callers when the legacy pipeline was deleted), so they
+# have no internal callers), so they
 # carry the redundant ``name as name`` alias to mark them as intentional
 # re-exports for the F401 linter. ``_PKG_CONFIG_OVERRIDE_LOCK`` is the single
 # ``threading.Lock`` instance defined in the leaf module; re-exporting it by
@@ -711,11 +711,11 @@ _FLAG_SOURCE_TO_SLOT = {"CPPFLAGS": "cpp", "CFLAGS": "c", "CXXFLAGS": "cxx", "LD
 
 
 def _state_slot_tokens(args, flag_sources):
-    """(legacy slot name, token tuple) pairs read from the stashed BuildState.
+    """(slot name, token tuple) pairs read from the stashed BuildState.
 
-    The flag helpers below keep their historical ``flag_sources`` vocabulary
-    (legacy slot names) but read the authoritative token tuples from
-    ``args._build_state`` instead of re-tokenizing the legacy raw strings.
+    The flag helpers below accept ``flag_sources`` as slot-name strings
+    (CPPFLAGS/CFLAGS/CXXFLAGS/LDFLAGS) and read the authoritative token
+    tuples from ``args._build_state``, never the raw slot strings.
     Namespaces that never went through populate_args get the named
     ``get_build_state`` error pointing at ``testhelper.finalize_flag_state``.
     """
@@ -731,7 +731,7 @@ def extract_system_include_paths(args, flag_sources=None, verbose=0):
     Args:
         args: Namespace carrying a stashed BuildState (post parseargs /
             testhelper.finalize_flag_state)
-        flag_sources: List of legacy slot names to extract from
+        flag_sources: List of slot names to extract from
             (default: ['CPPFLAGS', 'CXXFLAGS'])
         verbose: Verbosity level for debugging
 
@@ -785,7 +785,7 @@ def extract_command_line_macros(args, flag_sources=None, include_compiler_macros
     Args:
         args: Namespace carrying a stashed BuildState (post parseargs /
             testhelper.finalize_flag_state)
-        flag_sources: List of legacy slot names to extract from
+        flag_sources: List of slot names to extract from
             (default: ['CPPFLAGS', 'CFLAGS', 'CXXFLAGS'])
         include_compiler_macros: Whether to include compiler/platform macros
         verbose: Verbosity level (uses args.verbose if 0)
@@ -891,7 +891,7 @@ def cmdline_d_macro_names(args, flag_sources=None, verbose=0) -> frozenset[sz.St
     Args:
         args: Namespace carrying a stashed BuildState (post parseargs /
             testhelper.finalize_flag_state)
-        flag_sources: List of legacy slot names to extract from
+        flag_sources: List of slot names to extract from
             (default: ['CPPFLAGS', 'CFLAGS', 'CXXFLAGS'])
         verbose: Verbosity level (uses args.verbose if 0)
 
@@ -1077,9 +1077,8 @@ def _note_shadowed_bare_hook_values(args, name, dest):
 
     Must run AFTER ``_do_xxpend_list`` for *name* so values that lost the
     bare-key contest but re-entered via ``append-``/``prepend-`` are not
-    misreported as discarded. Emits at most once per (args, key):
-    ``substitutions()`` re-runs tier-one after external fetches widen
-    INCLUDE, and the note would otherwise repeat.
+    misreported as discarded. Emits at most once per (args, key) so a
+    repeated parse over the same namespace does not repeat the note.
     """
     if getattr(args, "verbose", 0) < 1:
         return
@@ -1213,8 +1212,7 @@ def resubstitute(args) -> None:
     re-run path (cake's second-stage target discovery, the //#GIT=
     external fetch, compilation_database's --auto refresh).
 
-    Post-swap this is re-gather + recompute, not a legacy
-    ``substitutions()`` replay. None of ``parseargs``'s pre-gather
+    This is re-gather + recompute. None of ``parseargs``'s pre-gather
     namespace steps (quiet latch, variant-resolution stash, CPP/LD
     exe-name substitution, hook-script lists, preprocess/magic aliasing,
     test-xml-dir anchoring) need replaying here: none of them feed
@@ -1234,9 +1232,8 @@ def resubstitute(args) -> None:
     --auto and --no-auto builds of the same sources.) ``args.INCLUDE``
     is the one genuine between-pass input.
 
-    The re-run is therefore a fixed point BY CONSTRUCTION, not by a
-    seed-restore-and-diff guard: the ``RuntimeError`` drift check the
-    legacy path enforced here is retired. ``cache_naming_view`` is logged
+    The re-run is therefore a fixed point BY CONSTRUCTION — no
+    seed-restore protocol or drift guard. ``cache_naming_view`` is logged
     at ``verbose >= 2`` as an informational before/after diff — since
     gather is a pure function of the (possibly caller-mutated) namespace,
     any observed change reflects the caller's own edit, never corruption.
@@ -1388,9 +1385,6 @@ def parseargs(cap, argv, verbose=None, *, context):
     Runs the pure build-state core: parse -> pre-gather namespace steps ->
     ``gather_inputs`` (the impure boundary) -> ``compute_build_state``
     (pure) -> ``apply_effects`` / ``populate_args`` -> compiler checks.
-    The legacy ``substitutions()`` pipeline is no longer called here; it
-    remains as the reference pipeline for the differential suite and the
-    transition-period ``resubstitute`` re-run path.
 
     Args:
         context: BuildContext for per-build state. Stored as args._context;
@@ -1458,7 +1452,7 @@ def parseargs(cap, argv, verbose=None, *, context):
         else:
             raise RuntimeError("No functional C++ compiler detected. Please set CXX explicitly.")
 
-    # ---- Pre-gather namespace steps (see the swap inventory) -------------
+    # ---- Pre-gather namespace steps ---------------------------------------
     # Each mutates args state that is out of BuildState's cell-naming scope
     # (or is an impure diagnostic); gather_inputs reads the result.
 
@@ -1518,9 +1512,9 @@ def parseargs(cap, argv, verbose=None, *, context):
     # gather_inputs owns every ambient read (env, filesystem, git,
     # pkg-config subprocesses); compute_build_state is a pure function of
     # the result; apply_effects executes the effects (PKG_CONFIG_PATH
-    # SetEnv, wild-B symlink dir); populate_args writes the legacy args
-    # surface (raw slot strings, *_tokens, args.flags, variant/bindir/
-    # cas-*dir names, the drift snapshot).
+    # SetEnv, wild-B symlink dir); populate_args stashes the state on
+    # args._build_state and writes the resolved name attrs
+    # (variant/bindir/cas-*dirs) -- never the raw flag slots.
     inputs = gather_inputs(args, context)
     state = compute_build_state(inputs)
     apply_effects(state, context)

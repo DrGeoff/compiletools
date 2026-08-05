@@ -52,10 +52,10 @@ The seven hash inputs (the same set ``_pcm_command_hash`` consumes):
     The CXX command string, canonicalised against the gitroot anchor.
 
 ``cxxflags_tokens``
-    ``args.flags.hash_relevant("cxx")`` -- the user's CXXFLAGS with
-    ``-D``/``-U`` and diagnostic-only flags stripped, then
-    canonicalised. The frozen ``Flags`` dataclass is set once per
-    parseargs; two back-to-back runs MUST agree on this tuple unless
+    ``get_build_state(args).flags.hash_relevant("cxx")`` -- the user's
+    CXXFLAGS with ``-D``/``-U`` and diagnostic-only flags stripped,
+    then canonicalised. The frozen ``Flags`` dataclass is computed once
+    per parseargs; two back-to-back runs MUST agree on this tuple unless
     something outside compiletools is mutating the env between runs.
 
 ``magic_cpp_flags`` / ``magic_cxx_flags``

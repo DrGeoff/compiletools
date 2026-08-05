@@ -33,7 +33,7 @@ the consumer object cache.
 
 Source-code review of `_pcm_command_hash` (`build_backend.py`) showed
 all hash inputs as deterministic functions of source bytes, compiler
-identity, and frozen `args.flags`, and the `FileAnalyzer` does not
+identity, and the frozen `Flags` on the stashed BuildState, and the `FileAnalyzer` does not
 distinguish the two syntactic forms — both yield the same
 `module_exports = ("myproj.util.rounding",)` with no other module
 fields touched. So the reported drift, if real, would have to come

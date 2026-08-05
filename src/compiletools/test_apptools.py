@@ -115,8 +115,8 @@ def _parseargs_with_pkg_config_conf(ct_conf_line, *, axis_conf_line=""):
     warning assertions would see nothing. ``simplefilter('always')`` defeats
     the per-location ``__warningregistry__`` dedup for the same reason.
 
-    Link arguments are added so ``args.LDFLAGS`` exists and
-    ``_add_flags_from_pkg_config`` takes its ``want_libs`` branch.
+    Link arguments are added so LDFLAGS is a registered slot and
+    gather's ``want_libs`` branch queries ``pkg-config --libs``.
     """
     with _temp_repo_with_ct_conf("gcc", "gcc") as (repo_root, conf_d):
         with open(os.path.join(repo_root, "ct.conf"), "a") as fh:
@@ -1282,10 +1282,9 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
             argv = ["--variant=gcc,release,extras", "--no-git-root"]
             args = _parseargs_for_variant(repo_root, argv)
 
-            # Task 8 swap: args.INCLUDE keeps the un-merged raw string (the
-            # xxpend merge happens inside gather_inputs — swap-inventory row
-            # 28), so the observable is the -I tokens the core folded into
-            # the compile slots.
+            # args.INCLUDE keeps the un-merged raw string (the xxpend
+            # merge happens inside gather_inputs), so the observable is the
+            # -I tokens the core folded into the compile slots.
             for inc_dir in (inc_a, inc_b, inc_c):
                 assert inc_dir in get_build_state(args).flags.cpp, (
                     f"{inc_dir} missing from get_build_state(args).flags.cpp={get_build_state(args).flags.cpp!r}; "
@@ -1401,9 +1400,8 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
             argv = ["--variant=gcc,release,extras", "--no-git-root"]
             args = _parseargs_for_variant(repo_root, argv)
 
-            # Task 8 swap: the composed list is produced by gather from the
-            # raw attrs (swap-inventory row 6); args.pkg_config keeps the
-            # un-merged conf shape.
+            # The composed list is produced by gather from the raw
+            # attrs; args.pkg_config keeps the un-merged conf shape.
             from compiletools.build_inputs import _merged_pkg_config_specs
 
             composed = _merged_pkg_config_specs(args)
@@ -1440,7 +1438,7 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
             ]
             args = _parseargs_for_variant(repo_root, argv)
 
-            # Task 8 swap: composed at gather (swap-inventory row 6).
+            # Composed at gather from the raw attrs.
             from compiletools.build_inputs import _merged_pkg_config_specs
 
             composed = _merged_pkg_config_specs(args)
@@ -1475,7 +1473,7 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
             ]
             args = _parseargs_for_variant(repo_root, argv)
 
-            # Task 8 swap: composed at gather (swap-inventory row 6).
+            # Composed at gather from the raw attrs.
             from compiletools.build_inputs import _merged_pkg_config_specs
 
             pkgs = list(_merged_pkg_config_specs(args))
@@ -1567,42 +1565,26 @@ class TestPkgConfigConfValueSplitting:
             )
 
     @pytest.mark.parametrize(
-        ("ct_conf_line", "axis_conf_line", "expected", "expected_source_attrs"),
+        ("ct_conf_line", "axis_conf_line", "expected"),
         [
-            ("pkg-config = conditional nested", "", ["conditional", "nested"], {}),
-            ("pkg-config = conditional, nested", "", ["conditional", "nested"], {}),
-            ("pkg-config = [conditional, nested]", "", ["conditional", "nested"], {}),
-            ("pkg-config = conditional >= 1.0.0, nested", "", ["conditional >= 1.0.0", "nested"], {}),
-            (
-                "",
-                "append-PKG-CONFIG = conditional nested",
-                ["conditional", "nested"],
-                {"append_pkg_config": ["conditional", "nested"]},
-            ),
-            (
-                "",
-                "prepend-PKG-CONFIG = conditional nested",
-                ["conditional", "nested"],
-                {"prepend_pkg_config": ["conditional", "nested"]},
-            ),
+            ("pkg-config = conditional nested", "", ["conditional", "nested"]),
+            ("pkg-config = conditional, nested", "", ["conditional", "nested"]),
+            ("pkg-config = [conditional, nested]", "", ["conditional", "nested"]),
+            ("pkg-config = conditional >= 1.0.0, nested", "", ["conditional >= 1.0.0", "nested"]),
+            ("", "append-PKG-CONFIG = conditional nested", ["conditional", "nested"]),
+            ("", "prepend-PKG-CONFIG = conditional nested", ["conditional", "nested"]),
         ],
     )
     def test_namespace_carries_one_element_per_spec_after_parseargs(
-        self, pkgconfig_env, ct_conf_line, axis_conf_line, expected, expected_source_attrs
+        self, pkgconfig_env, ct_conf_line, axis_conf_line, expected
     ):
-        """The composed pkg-config list holds one element per specification
-        on every surface that feeds it.
+        """The composed pkg-config list holds one element per specification.
 
-        Task 8 swap: the old pipeline's ``_tier_one_modifications`` wrote
-        the tokenized+merged list back onto ``args.pkg_config``; the new
-        core never mutates the namespace — the raw attrs keep the conf
+        The core never mutates the namespace — the raw attrs keep the conf
         shape and ``build_inputs._merged_pkg_config_specs`` owns the
-        tokenize+merge at the point of consumption (swap-inventory row 6).
-        The shape contract therefore holds on the composed list gather
-        produces from the post-parseargs namespace, not on the namespace
-        attrs themselves; ``expected_source_attrs`` (the per-accumulator
-        normalization the old pipeline performed) is retired with the
-        write-back and is no longer asserted.
+        tokenize+merge at the point of consumption. The shape contract
+        therefore holds on the composed list gather produces from the
+        post-parseargs namespace, not on the namespace attrs themselves.
 
         A version constraint keeps its internal space: ``conditional >=
         1.0.0`` is one specification, not three. Constraint *spelling* is
@@ -1612,7 +1594,6 @@ class TestPkgConfigConfValueSplitting:
         """
         from compiletools.build_inputs import _merged_pkg_config_specs
 
-        del expected_source_attrs
         result = _parseargs_with_pkg_config_conf(ct_conf_line, axis_conf_line=axis_conf_line)
 
         composed = _merged_pkg_config_specs(result.args)
@@ -1945,17 +1926,16 @@ class TestPkgConfigConfValueSplitting:
 
 @pytest.mark.usefixtures("parsers_reset")
 class TestVariantResolutionRespectsArgv:
-    """Regression tests for the substitutions() variant-from-sys.argv bug.
-
-    Historically _commonsubstitutions called extract_variant() with no argv,
-    so it read sys.argv even when parseargs had been given a custom argv.
-    This caused embedded callers and test harnesses to see args.variant
-    reset to whatever sys.argv implied. Both tests below exercise the
-    parseargs pipeline with argv that does NOT match sys.argv.
+    """parseargs must resolve the variant from ITS OWN argv, never from
+    ambient sys.argv — a design pothole to guard: any variant-resolution
+    helper that defaults its argv (extract_variant with no argument reads
+    sys.argv) silently clobbers the parsed value for embedded callers and
+    test harnesses whose argv differs from the process's. Both tests
+    exercise the parseargs pipeline with argv that does NOT match sys.argv.
     """
 
     def test_argv_variant_preserved_when_not_aliased(self):
-        """A --variant=<canonical-name> in argv survives substitutions even
+        """A --variant=<canonical-name> in argv survives parseargs even
         when sys.argv does not contain that flag."""
 
         with uth.TempDirContext():
@@ -1972,9 +1952,9 @@ class TestVariantResolutionRespectsArgv:
                 with uth.ParserContext():
                     args = apptools.parseargs(cap, argv, context=BuildContext())
                 assert args.variant == "gcc.debug", (
-                    f"Expected --variant=gcc.debug from argv to survive substitutions, "
-                    f"got {args.variant!r}. The pre-fix code re-read sys.argv (which "
-                    f"lacks --variant in pytest) and clobbered the parsed value."
+                    f"Expected --variant=gcc.debug from argv to survive parseargs, "
+                    f"got {args.variant!r}. Reading sys.argv (which lacks --variant "
+                    f"in pytest) would clobber the parsed value."
                 )
 
     def test_argv_composite_variant_is_canonicalized(self):

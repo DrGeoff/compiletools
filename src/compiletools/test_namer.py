@@ -129,17 +129,16 @@ def test_executable_dir_no_arg_returns_base_bindir():
 
 
 def test_names_come_from_build_state_when_stashed():
-    """Consumer migration: on a pipeline namespace (BuildState stashed) the
-    Namer reads names from the state — a legacy-attr mutation is inert.
-    On a state-less namespace (diagnostic tools; resolver-only parse) the
-    legacy attr remains authoritative — that fallback is PERMANENT, per
-    swap-inventory row 17."""
+    """On a pipeline namespace (BuildState stashed) the Namer reads names
+    from the state — a raw-attr mutation is inert. On a state-less
+    namespace (diagnostic tools; resolver-only parse) the plain attr
+    remains authoritative — that fallback is PERMANENT."""
     args, namer = _make_namer("TestNamerStateSource")
     from compiletools.build_apply import get_build_state
 
     state = get_build_state(args)
-    args.bindir = "legacy/mutated"
-    args.cas_objdir = "/legacy/mutated-obj"
+    args.bindir = "raw/mutated"
+    args.cas_objdir = "/raw/mutated-obj"
     assert namer.executable_dir() == state.names.bindir
     assert namer.object_dir() == state.names.cas_objdir
 

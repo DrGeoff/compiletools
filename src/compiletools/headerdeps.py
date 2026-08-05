@@ -79,8 +79,9 @@ def create(args, context, *, extra_include_dirs=None):
         args:    Parsed args namespace.
         context: The :class:`~compiletools.build_context.BuildContext`.
         extra_include_dirs: Optional list of additional ``-I`` search
-            directories to widen the header walk beyond what ``args.CPPFLAGS``
-            declares (used by ``fetch._augmented_headerdeps`` to reach INTO
+            directories to widen the header walk beyond what the build
+            state's cpp flags declare (used by
+            ``fetch._augmented_headerdeps`` to reach INTO
             already-fetched externals without deep-copying / mutating *args*).
     """
     classname = args.headerdeps.title() + "HeaderDeps"
@@ -122,11 +123,11 @@ class HeaderDepsBase:
     def __init__(self, args, context, *, extra_include_dirs=None):
         self.args = args
         self.context = context
-        # Extra -I search dirs appended to whatever args.CPPFLAGS declares.
+        # Extra -I search dirs appended to whatever the state's cpp flags declare.
         # This is the supported way to widen the header search without mutating
         # or deep-copying args (see fetch._augmented_headerdeps): the list is
         # threaded straight into the derived class's include list / preprocessor
-        # command, never back into args.CPPFLAGS.
+        # command, never back into args.
         self._extra_include_dirs: list[str] = list(extra_include_dirs or [])
         # Set analyzer args for file_analyzer caching
         set_analyzer_args(args, context)
@@ -138,9 +139,9 @@ class HeaderDepsBase:
     def _cpp_flag_string(self) -> str:
         """The preprocessor flag string the include-path extraction reads.
 
-        Consumer migration: reads the stashed BuildState's cpp string, not
-        the legacy ``args.CPPFLAGS`` attr. Strict (same contract as
-        magicflags): a namespace without a state is a fixture gap —
+        Reads the stashed BuildState's cpp string, not the raw
+        ``args.CPPFLAGS`` attr (pre-gather values only). Strict (same
+        contract as magicflags): a namespace without a state is a fixture gap —
         ``get_build_state`` raises a named error pointing at
         ``testhelper.finalize_flag_state``.
         """
@@ -283,7 +284,7 @@ class DirectHeaderDeps(HeaderDepsBase):
             # ``compiletools`` binding for the type checker, breaking access to
             # sibling submodules like ``compiletools.git_utils`` below.)
             # extract_command_line_macros reads the stashed BuildState's
-            # flag tokens (flag_sources names select slots, not legacy attrs).
+            # flag tokens (flag_sources names select state slots).
             raw_macros = compiletools.apptools.extract_command_line_macros(
                 self.args,
                 flag_sources=["CPPFLAGS", "CFLAGS", "CXXFLAGS"],
@@ -539,7 +540,7 @@ class CppHeaderDeps(HeaderDepsBase):
     def __init__(self, args, context, *, extra_include_dirs=None):
         HeaderDepsBase.__init__(self, args, context=context, extra_include_dirs=extra_include_dirs)
         self.preprocessor = compiletools.preprocessor.PreProcessor(args)
-        # CppHeaderDeps drives cpp -MM off args.CPPFLAGS directly; feed extra
+        # CppHeaderDeps drives cpp -MM off the state's cpp flags; feed extra
         # -I dirs to the preprocessor command line rather than args (no mutation).
         # PreProcessor.process naively .split()s its args (as it already does for
         # CPPFLAGS), so these are emitted unquoted for consistency — a space in

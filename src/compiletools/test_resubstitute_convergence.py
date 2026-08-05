@@ -211,7 +211,7 @@ class TestCdbAutoConverges:
             )
 
     @uth.requires_functional_compiler
-    def test_default_verbosity_succeeds(self, tmp_path, monkeypatch, capsys):
+    def test_default_verbosity_succeeds(self, tmp_path, monkeypatch):
         self._write_overlapping_pc_files(tmp_path)
         monkeypatch.setenv("PKG_CONFIG_PATH", str(tmp_path))
         with uth.TempDirContext():
@@ -221,8 +221,6 @@ class TestCdbAutoConverges:
                 result = self._run(temp_config_name)
 
         assert result == 0
-        err = capsys.readouterr().err
-        assert "unexplained flag drift" not in err, f"Unexpected drift message on stderr: {err!r}"
 
     @uth.requires_functional_compiler
     def test_verbose_two_also_succeeds(self, tmp_path, monkeypatch):

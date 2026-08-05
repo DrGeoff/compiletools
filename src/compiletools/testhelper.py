@@ -1083,17 +1083,16 @@ def make_stub_backend_class():
 def make_backend_args(tmpdir, **overrides):
     """Create a SimpleNamespace with standard backend args rooted in tmpdir.
 
-    Mirrors ``apptools.parseargs`` by populating the raw flag strings
-    (CPPFLAGS / CFLAGS / CXXFLAGS / LDFLAGS), their pre-tokenized
-    siblings (``*_tokens``), and the structured ``args.flags`` view
-    (``Flags`` from ``compiletools.flags``, populated at parseargs end
-    by TOKEN-5). Production code that consumes ``args.flags.cxx`` etc.
+    Mirrors ``apptools.parseargs`` by setting the raw flag strings
+    (CPPFLAGS / CFLAGS / CXXFLAGS / LDFLAGS) and then synthesizing and
+    stashing a ``BuildState`` via ``finalize_flag_state``. Production
+    code that consumes ``get_build_state(args).flags.cxx`` etc.
     (build_backend compile commands, magicflags._parse) thus works
     without re-tokenizing in the test fixtures.
 
     Also sets ``_context`` (a fresh ``BuildContext``), ``variant``, and
-    ``cas_pcmdir`` -- ``apptools.resubstitute`` (the post-swap pure
-    build-state re-run path that ``cake._discover_targets`` drives) reads
+    ``cas_pcmdir`` -- ``apptools.resubstitute`` (the pure build-state
+    re-run path that ``cake._discover_targets`` drives) reads
     all three unconditionally, so any test that calls ``cake.process()``
     through ``CakeTestContext`` needs them present even when the
     resubstitute call itself is mocked out.
@@ -1151,10 +1150,10 @@ def finalize_flag_state(args) -> None:
     gather computes) and routes the resulting state through the REAL
     ``populate_args`` -- one writer for the stash and name attrs, so
     they can never drift from what production writes; the raw slot
-    attrs are never touched (populate_args no longer writes them). It
+    attrs are never touched (populate_args never writes them). It
     does NOT run gather (no pkg-config, no git subprocess for flags, no
     env): ``pkg_config_path`` is None and ``effects`` is empty in the
-    synthesized state -- a consumer migrated onto either of those
+    synthesized state -- a consumer of either of those
     fields will see the None/empty form in every fixture-driven test,
     and a fixture wanting the real values must go through ``parseargs``.
     """

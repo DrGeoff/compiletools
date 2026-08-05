@@ -25,12 +25,11 @@ class Namer:
         self._cached_macros = None
 
     # Cell-naming reads prefer the stashed BuildState (pipeline flows:
-    # parseargs / resubstitute populated it) and fall back to the legacy
+    # parseargs / resubstitute populated it) and fall back to the plain
     # attr for namespaces that never gather — the diagnostic tools
     # (ct-cleanup-locks, ct-cache-report, ct-trim-cache) parse with
-    # ``resolve_cas_directory_arguments`` only, by design (swap-inventory
-    # row 17), so unlike the backends this fallback is PERMANENT, not
-    # transition-period tolerance.
+    # ``resolve_cas_directory_arguments`` only, by design, so this
+    # fallback is PERMANENT.
     @property
     def _bindir(self):
         state = getattr(self.args, "_build_state", None)

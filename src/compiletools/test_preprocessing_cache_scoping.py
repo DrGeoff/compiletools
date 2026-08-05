@@ -345,7 +345,7 @@ def test_filter_only_includes_names_in_intersection():
     assert h_base == h_change_b  # B is not in filter -> excluded
 
 
-# --- TOKEN-3: diagnostic-only flag tokens are excluded from build-context hash ---
+# --- Diagnostic-only flag tokens are excluded from build-context hash ---
 
 
 def test_macro_state_hash_unchanged_with_w_warning_change():

@@ -64,12 +64,12 @@ class TestInitialMacroStateWiring(tb.BaseCompileToolsTestCase):
         assert sz.Str("BAR") in origin
 
     def test_initial_macro_state_reads_raw_strings_from_build_state(self):
-        """Consumer migration: the MacroState's raw-string fields must come
-        from the stashed BuildState (get_build_state(args).cppflags etc.),
-        not the legacy args.CPPFLAGS attrs. Value-identical today
-        (populate_args writes state.cppflags onto args.CPPFLAGS), so pin
-        identity of SOURCE by mutating the legacy attr after parseargs and
-        asserting the MacroState still carries the state's string."""
+        """The MacroState's raw-string fields must come from the stashed
+        BuildState (get_build_state(args).cppflags etc.), not the raw
+        args.CPPFLAGS attrs — the raw attrs keep their pre-gather values
+        and a post-parse mutation of them is inert. Pin the SOURCE by
+        mutating the raw attr after parseargs and asserting the
+        MacroState still carries the state's derived string."""
         parser = _make_parser(
             ["--append-CPPFLAGS=-DFROMSTATE"],
             tempdir=self._tmpdir,

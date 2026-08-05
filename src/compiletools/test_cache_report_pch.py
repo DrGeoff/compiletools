@@ -203,9 +203,8 @@ def test_cli_both_flags(tmp_path, capsys):
 
 
 def test_cli_no_args_scans_variant_defaults(monkeypatch, tmp_path, capsys):
-    """Post-apptools migration: a no-args invocation no longer errors.
-
-    Instead it scans whichever variant-default CAS dirs exist on disk
+    """A no-args invocation must not error: it scans whichever
+    variant-default CAS dirs exist on disk
     (peer behaviour with ct-trim-cache). Run the test from an empty
     tmp_path so the variant-default paths resolve to non-existent
     directories — the report exits 0 cleanly and emits a friendly

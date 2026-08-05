@@ -8,8 +8,8 @@ path inspection.
 
 Flags is INSTANTIATED ONCE per build, inside
 ``build_state.compute_build_state``; consumers reach it as
-``get_build_state(args).flags`` (``args.flags`` is the legacy alias
-``populate_args`` maintains for unmigrated readers).
+``get_build_state(args).flags`` — the flag surface is state-only, so
+there is no ``args.flags`` attr.
 
 Flags is frozen and uses tuple slots so it is hashable, equality-safe,
 and immune to in-place mutation by consumers. Mutation-style helpers

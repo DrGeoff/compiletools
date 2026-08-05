@@ -1262,8 +1262,10 @@ def test_extract_git_allow_protocols_reads_declarations() -> None:
 
 @requires_functional_compiler
 def test_augmented_headerdeps_threads_include_dirs_without_deepcopy() -> None:
-    """_augmented_headerdeps no longer deep-copies args, and the external
-    include dirs (spaces and all) reach the headerdeps search list.
+    """_augmented_headerdeps must not deep-copy args (see the
+    fetch._augmented_headerdeps docstring for the BuildContext aliasing
+    trap), and the external include dirs (spaces and all) reach the
+    headerdeps search list.
 
     The extra dirs are passed through ``headerdeps.create(extra_include_dirs=)``
     and land directly on the DirectHeaderDeps include list as raw path strings —
@@ -1381,7 +1383,7 @@ def test_extract_git_externals_skips_non_git_flags() -> None:
 
 
 # ===========================================================================
-# Pure config helpers (Task 11): parse_git_path_overrides + resolve_externals_dir
+# Pure config helpers: parse_git_path_overrides + resolve_externals_dir
 # ===========================================================================
 
 
@@ -1495,7 +1497,7 @@ def test_resolve_externals_dir_default_is_parent_of_gitroot() -> None:
 
 
 # ===========================================================================
-# CLI surface (Task 11): add_fetch_arguments
+# CLI surface: add_fetch_arguments
 # ===========================================================================
 
 

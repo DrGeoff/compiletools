@@ -1,4 +1,4 @@
-"""Tests for ``apptools.filter_hash_irrelevant_tokens`` (TOKEN-3).
+"""Tests for ``apptools.filter_hash_irrelevant_tokens``.
 
 The filter strips diagnostic-only flag tokens (warnings, message
 formatting, ``-pipe``, ``-v``) from a flag-token list so they do NOT

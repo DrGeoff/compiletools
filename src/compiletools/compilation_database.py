@@ -416,8 +416,7 @@ def main(argv=None):
         args = compiletools.findtargets.discover_targets_and_reanchor(args, context)
         # Re-run the pure build-state core through the sanctioned re-run
         # path so the CDB's flags reflect the just-discovered targets. This
-        # is re-gather + recompute (Task 9), a fixed point by construction
-        # -- there is no drift left to render as a fatal error here.
+        # is re-gather + recompute, a fixed point by construction.
         compiletools.apptools.resubstitute(args)
 
     # Create and run the compilation database creator

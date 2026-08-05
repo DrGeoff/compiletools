@@ -646,11 +646,11 @@ class TestBuildGraphPopulation:
         for rule in mkdir_rules:
             assert "mkdir" in " ".join(_cmd(rule)), f"sharded bucket mkdir rule {rule.output!r} must invoke mkdir"
 
-    def test_flags_and_names_come_from_build_state_not_legacy_attrs(self, tmp_path):
-        """Consumer migration: the backend's flag/name reads must come from
-        the stashed BuildState, not attrs on args. Pin the SOURCE: mutate
-        the raw slot attr and the name attr after construction and assert
-        the compile command and cache-tree paths still reflect the state."""
+    def test_flags_and_names_come_from_build_state_not_raw_attrs(self, tmp_path):
+        """The backend's flag/name reads must come from the stashed
+        BuildState, not attrs on args. Pin the SOURCE: mutate the raw
+        slot attr and the name attr after construction and assert the
+        compile command and cache-tree paths still reflect the state."""
         args = make_backend_args(
             tmp_path,
             filename=["/src/main.cpp"],
@@ -1315,11 +1315,9 @@ class TestCompilerWrapperSplit:
 
 
 class TestWildBDashBToken:
-    """The wild-B axis's ``-B<gitroot>/.ct-wild-ld`` token now rides
+    """The wild-B axis's ``-B<gitroot>/.ct-wild-ld`` token rides
     LDFLAGS end-to-end (``build_state.stage_wild_linker`` appends it to
-    ``state.tokens.ld``) instead of the retired ``args._wild_b_search_dir``
-    side channel that ``build_backend`` used to read via
-    ``_wild_b_link_argv``. It still needs bespoke handling in the
+    ``state.tokens.ld``). It still needs bespoke handling in the
     link-rule builders: ``canonicalize_for_command`` rewrites absolute
     workspace-rooted paths to a target-relative form for cross-user
     byte-identical link output, but link rules don't run with
@@ -1969,7 +1967,7 @@ class TestHeaderUnitPrecompileCarriesProjectIncludePaths:
     -isystem /opt/extlib/include`` in ct.conf).
 
     Both consumer compiles and HU precompiles must source their include
-    flags from the same ``args.flags.cxx`` slot so the resolved header
+    flags from the same ``state.flags.cxx`` slot so the resolved header
     bytes match the consumer's view at BMI consume time."""
 
     def _make_backend(self, tmp_path, *, kind, extra_cxxflags=""):
@@ -2004,7 +2002,7 @@ class TestHeaderUnitPrecompileCarriesProjectIncludePaths:
             "-isystem" in pipeline and "/opt/extlib-1.0/include" in pipeline
         ), (
             f"gcc cache-mode HU precompile must carry project -isystem paths "
-            f"from args.flags.cxx; otherwise the precompile cannot find the "
+            f"from state.flags.cxx; otherwise the precompile cannot find the "
             f"imported header. Got pipeline: {pipeline!r}"
         )
 
@@ -2017,7 +2015,7 @@ class TestHeaderUnitPrecompileCarriesProjectIncludePaths:
         cmd = _cmd(rule)
         assert "-isystem" in cmd and "/opt/extlib-1.0/include" in cmd, (
             f"gcc fallback HU precompile must carry project -isystem paths "
-            f"from args.flags.cxx; otherwise the precompile cannot find the "
+            f"from state.flags.cxx; otherwise the precompile cannot find the "
             f"imported header. Got command: {cmd!r}"
         )
 
@@ -2029,7 +2027,7 @@ class TestHeaderUnitPrecompileCarriesProjectIncludePaths:
         cmd = _cmd(rule)
         assert "-isystem" in cmd and "/opt/extlib-1.0/include" in cmd, (
             f"clang HU precompile must carry project -isystem paths from "
-            f"args.flags.cxx; otherwise the precompile cannot find the "
+            f"state.flags.cxx; otherwise the precompile cannot find the "
             f"imported header. Got command: {cmd!r}"
         )
 

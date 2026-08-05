@@ -810,7 +810,7 @@ def test_file_locking_registered_in_apptools():
 
 
 def test_makefile_backend_main_entry_point_exists():
-    """ct-create-makefile should be importable from makefile_backend
-    once the shim is removed."""
+    """ct-create-makefile binds to makefile_backend.main (pyproject.toml);
+    the callable must exist at that import path."""
 
     assert callable(main)

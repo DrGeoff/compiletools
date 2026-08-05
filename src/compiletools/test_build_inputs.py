@@ -1,6 +1,6 @@
 """gather_inputs: the impure boundary. Tests use the real parser and a
 temp conf, mirroring _parseargs_in_temp_repo's setup, but stop at the
-parsed-namespace stage (no substitutions())."""
+parsed-namespace stage (no build-state computation)."""
 
 import os
 from types import SimpleNamespace

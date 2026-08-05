@@ -1,4 +1,4 @@
-"""Tests for compiletools.flags.Flags dataclass (TOKEN-5)."""
+"""Tests for compiletools.flags.Flags dataclass."""
 
 from __future__ import annotations
 

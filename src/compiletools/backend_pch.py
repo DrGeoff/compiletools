@@ -219,10 +219,11 @@ def _pch_command_hash(
        simpler. (An earlier exploration of refactoring PCM to the
        3-axis layout was reverted for this exact reason.)
 
-    ``cxxflags_tokens`` is the hash-relevant structured form of
-    ``args.CXXFLAGS`` -- the caller is responsible for pre-filtering
-    via ``args.flags.hash_relevant("cxx")`` (which strips ``-D``/``-U``
-    AND drops diagnostic-only flags). This function does NOT re-filter
+    ``cxxflags_tokens`` is the hash-relevant structured form of the
+    state's cxx tokens -- the caller is responsible for pre-filtering
+    via ``get_build_state(args).flags.hash_relevant("cxx")`` (which
+    strips ``-D``/``-U`` AND drops diagnostic-only flags). This
+    function does NOT re-filter
     that parameter; only the per-file ``magic_cpp_flags`` /
     ``magic_cxx_flags`` (which arrive un-filtered from the magic-flag
     pipeline) are filtered here. The cmdline ``-D`` macros relevant to
@@ -259,7 +260,7 @@ def _pch_command_hash(
         "compiler_identity": _compiler_identity(args.CXX, anchor_root=anchor_root),
         "cxx_command": compiletools.apptools.canonicalize_path_for_cache_key(args.CXX, anchor_root),
         # Structured tokens with -D/-U stripped AND diagnostic-only flags
-        # removed; pre-filtered by caller via args.flags.hash_relevant("cxx").
+        # removed; pre-filtered by caller via the state flags' hash_relevant("cxx").
         # Cmdline -D macros are captured by ``scope_macro_hash`` after
         # per-PCH-header scoping.
         "CXXFLAGS_TOKENS": compiletools.apptools.canonicalize_for_cache_key(list(cxxflags_tokens), anchor_root),

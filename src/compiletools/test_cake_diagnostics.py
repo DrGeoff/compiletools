@@ -261,8 +261,8 @@ def test_otel_export_implies_timing(tmp_path):
 
 
 def test_otel_export_with_timing_no_warning(monkeypatch, tmp_path, capsys):
-    """Sanity: ``--otel-export --timing`` proceeds without the legacy
-    'no spans to export' warning and without raising."""
+    """Sanity: ``--otel-export --timing`` proceeds without warning and
+    without raising."""
     bindir = tmp_path / "bin"
     objdir = tmp_path / "obj"
     argv = [
