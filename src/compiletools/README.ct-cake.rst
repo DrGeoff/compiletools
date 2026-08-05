@@ -868,13 +868,20 @@ Common Options
 **--auto-exclude PATTERN**
     Skip files during ``--auto`` discovery. Repeatable, and settable as
     ``auto-exclude`` in any ct.conf. A pattern containing a path separator
-    matches the gitroot-relative and absolute paths -- by glob, or as a
-    directory prefix, so ``src/legacy`` and ``src/legacy/*`` both exclude
-    that subtree. A pattern without a separator matches any single path
-    component, so ``vendor`` excludes every file under any ``vendor``
-    directory (never ``vendorlib`` -- components match whole) and
-    ``test_*.cpp`` excludes by basename. Targets named explicitly on the
-    command line are never filtered.
+    matches the gitroot-relative path, that path with a leading ``/``
+    (the gitignore spelling, so ``/src/legacy`` anchors at the gitroot),
+    and the absolute path -- each as a glob and as a directory prefix, so
+    ``src/legacy`` and ``src/legacy/*`` both exclude that subtree. ``*``
+    spans separators, so ``*/legacy`` excludes a ``legacy`` subtree at any
+    depth, while ``src/legacy`` never reaches ``src/legacyish``. A pattern
+    without a separator matches any single component of the
+    gitroot-relative path, so ``vendor`` excludes every file under any
+    ``vendor`` directory (never ``vendorlib`` -- components match whole)
+    and ``test_*.cpp`` excludes by basename. Directories ABOVE the gitroot
+    are deliberately never scanned by a separator-free pattern, so a
+    ``tmp`` or username component in the absolute path cannot silently
+    exclude a whole tree. Targets named explicitly on the command line are
+    never filtered.
 
     Conf files have two spellings, the same pair ``pkg-config`` has. The
     bare ``auto-exclude`` key is last-writer-wins: a subproject's value

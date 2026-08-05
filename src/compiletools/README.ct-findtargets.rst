@@ -45,12 +45,16 @@ be reported as a test, unless --no-filenametestmatch is set.
 
 --auto-exclude drops files from the search. Give it multiple times to build
 up a list, or set it in a ct.conf. A pattern containing a path separator
-matches the gitroot-relative and absolute paths; a pattern without one
-matches any single path component, whole. So ``vendor`` excludes every file
-under any ``vendor`` directory but never ``vendorlib``, ``test_*.cpp``
-excludes by basename, and both ``src/legacy`` and ``src/legacy/*`` exclude
-that subtree. ``*`` spans separators, so ``*/legacy`` excludes a ``legacy``
-subtree at any depth. ct-cake and ct-filelist share this search, so an exclusion set
+matches the gitroot-relative path (a leading ``/`` anchors there, as in
+gitignore) and the absolute path; a pattern without one matches any single
+component of the gitroot-relative path, whole. So ``vendor`` excludes every
+file under any ``vendor`` directory but never ``vendorlib``, ``test_*.cpp``
+excludes by basename, and ``src/legacy``, ``/src/legacy`` and
+``src/legacy/*`` all exclude that subtree. ``*`` spans separators, so
+``*/legacy`` excludes a ``legacy`` subtree at any depth, while
+``src/legacy`` never reaches ``src/legacyish``. Directories above the
+gitroot are never scanned by a separator-free pattern.
+ct-cake and ct-filelist share this search, so an exclusion set
 in a ct.conf applies to all three; targets those tools are told to build by
 name are never filtered.
 

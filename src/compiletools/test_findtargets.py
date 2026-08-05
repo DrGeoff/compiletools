@@ -438,12 +438,22 @@ class TestAutoExcludeMatching:
         absolute pattern that must still match."""
         assert self._excluded(tmp_path, os.path.realpath(str(tmp_path)) + "/legacy/*", "legacy/old.cpp")
 
-    def test_outside_the_anchor_falls_back_to_absolute_components(self, tmp_path):
-        """A target outside the gitroot has no anchor-relative form; the
-        bare-name rule still applies to its absolute components."""
-        assert compiletools.findtargets.is_auto_excluded(
-            str(tmp_path / "vendor" / "main.cpp"), ("vendor",), anchor_root=str(tmp_path / "elsewhere")
-        )
+    def test_leading_separator_anchors_at_the_gitroot(self, tmp_path):
+        """``/src/legacy`` is the spelling a gitignore-trained user reaches
+        for. It must mean the anchored pattern it looks like, not nothing."""
+        assert self._excluded(tmp_path, "/src/legacy", "src/legacy/old.cpp")
+        assert self._excluded(tmp_path, "/src/legacy/*", "src/legacy/old.cpp")
+        assert not self._excluded(tmp_path, "/src/legacy", "other/src/legacy/old.cpp")
+
+    def test_outside_the_anchor_offers_only_the_basename_to_bare_patterns(self, tmp_path):
+        """A file whose realpath escapes the gitroot (an in-tree symlink) must
+        not have its ancestor directories scanned: a bare pattern would then
+        match a ``tmp`` or username component the project never chose."""
+        outside = str(tmp_path / "vendor" / "main.cpp")
+        elsewhere = str(tmp_path / "elsewhere")
+        assert not compiletools.findtargets.is_auto_excluded(outside, ("vendor",), anchor_root=elsewhere)
+        assert compiletools.findtargets.is_auto_excluded(outside, ("main.cpp",), anchor_root=elsewhere)
+        assert compiletools.findtargets.is_auto_excluded(outside, ("*/vendor/*",), anchor_root=elsewhere)
 
     def test_no_patterns_excludes_nothing(self, tmp_path):
         assert not compiletools.findtargets.is_auto_excluded(str(tmp_path / "main.cpp"), ())

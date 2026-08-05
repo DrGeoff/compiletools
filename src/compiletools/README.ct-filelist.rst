@@ -86,12 +86,15 @@ OPTIONS
 --auto-exclude PATTERN
                     Glob excluding files from ``--auto`` discovery. Can be
                     specified multiple times. A pattern containing a path
-                    separator matches the gitroot-relative and absolute paths;
-                    a pattern without one matches any single path component,
-                    whole. So ``vendor`` excludes every file under any
-                    ``vendor`` directory but never ``vendorlib``,
-                    ``test_*.cpp`` excludes by basename, and both
-                    ``src/legacy`` and ``src/legacy/*`` exclude that subtree.
+                    separator matches the gitroot-relative path (a leading
+                    ``/`` anchors there, as in gitignore) and the absolute
+                    path; a pattern without one matches any single component
+                    of the gitroot-relative path, whole. So ``vendor``
+                    excludes every file under any ``vendor`` directory but
+                    never ``vendorlib``, ``test_*.cpp`` excludes by basename,
+                    and ``src/legacy``, ``/src/legacy`` and ``src/legacy/*``
+                    all exclude that subtree. ``*`` spans separators, so
+                    ``*/legacy`` matches at any depth.
                     Explicitly named targets are never filtered. In a ct.conf
                     the bare ``auto-exclude`` key is last-writer-wins; use
                     ``append-AUTO-EXCLUDE`` (uppercase) to accumulate

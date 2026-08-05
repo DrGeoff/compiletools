@@ -51,9 +51,10 @@ def add_discovery_arguments(cap):
         dest="auto_exclude",
         action="append",
         help="Glob excluding files from --auto discovery. A pattern with a path separator "
-        "matches the gitroot-relative and absolute paths; a pattern without one matches "
-        "any single path component. Explicitly named targets are never filtered. "
-        'e.g., "vendor", "test_*.cpp", "src/legacy/*"',
+        "matches the gitroot-relative path (a leading / anchors there), and the absolute "
+        "path; a directory name excludes its whole subtree. A pattern without a separator "
+        "matches any single component of the gitroot-relative path, whole. Explicitly named "
+        'targets are never filtered. e.g., "vendor", "test_*.cpp", "src/legacy", "/src/legacy/*"',
     )
     compiletools.apptools._add_xxpend_argument(
         cap,
@@ -110,16 +111,24 @@ def add_arguments(cap):
 def is_auto_excluded(filepath, patterns, anchor_root=""):
     """True when *filepath* is excluded from ``--auto`` discovery.
 
-    A pattern containing a path separator is matched against both the
-    *anchor_root*-relative path and the absolute path -- either directly
-    or with ``/*`` appended, so a directory name excludes its whole
-    subtree. A pattern without a separator is fnmatched against each
-    individual path component. So ``vendor`` excludes every file under any
-    ``vendor`` directory (and never ``vendorlib`` -- components match
-    whole), ``test_*.cpp`` excludes by basename, and both ``src/legacy``
-    and ``src/legacy/*`` exclude that one subtree. Both halves are
-    ``fnmatch``, whose ``*`` spans separators, so ``*/src/legacy`` excludes
-    that subtree at any depth.
+    A pattern containing a path separator is matched against the
+    *anchor_root*-relative path, that path rooted at ``/`` (the gitignore
+    spelling, so ``/src/legacy`` is the anchored form it looks like), and
+    the absolute path. Each is tried directly and with ``/*`` appended, so
+    a directory name excludes its whole subtree without one. Both halves
+    are ``fnmatch``, whose ``*`` spans separators, so ``*/src/legacy``
+    excludes that subtree at any depth and ``src/legacy`` never reaches
+    ``src/legacyish``.
+
+    A pattern without a separator is fnmatched against each component of
+    the *anchor_root*-relative path -- so ``vendor`` excludes every file
+    under any ``vendor`` directory (never ``vendorlib``: components match
+    whole) and ``test_*.cpp`` excludes by basename. Deliberately only the
+    relative components: scanning an absolute path would let a pattern
+    match ancestor directories the project never chose (a ``tmp`` or a
+    username component above the gitroot). A file whose realpath escapes
+    *anchor_root* -- reachable via an in-tree symlink -- therefore offers
+    only its basename to the separator-free patterns.
     """
     if not patterns:
         return False
@@ -129,7 +138,8 @@ def is_auto_excluded(filepath, patterns, anchor_root=""):
         anchor = compiletools.wrappedos.realpath(anchor_root)
         if absolute.startswith(anchor + os.sep):
             relative = absolute[len(anchor) + 1 :]
-    candidates = [absolute] if relative is None else [absolute, relative]
+    candidates = [absolute] if relative is None else [absolute, relative, os.sep + relative]
+    components = (relative or compiletools.wrappedos.basename(absolute)).split(os.sep)
     for pattern in patterns:
         if os.sep in pattern:
             subtree = pattern.rstrip(os.sep)
@@ -138,7 +148,7 @@ def is_auto_excluded(filepath, patterns, anchor_root=""):
                 for candidate in candidates
             ):
                 return True
-        elif any(fnmatch.fnmatch(component, pattern) for component in (relative or absolute).split(os.sep)):
+        elif any(fnmatch.fnmatch(component, pattern) for component in components):
             return True
     return False
 
