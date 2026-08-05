@@ -72,16 +72,22 @@ _LOCK_UNHOSTABLE_ERRNOS = frozenset({errno.EACCES, errno.EPERM, errno.EROFS, err
 
 
 class ConcurrentTrimError(Exception):
-    """The CAS entry vanished before it could be published.
+    """The CAS entry was missing when the publish tried to link it.
 
     Raised when the under-lock existence re-check finds the entry gone, or
     when ``os.link`` reports ``ENOENT`` for it (the residual window on a pool
-    where the lock could not be taken). Both mean the same recoverable thing:
-    ``ct-trim-cache`` evicted the artefact, and rerunning the build rebuilds it.
+    where the lock could not be taken). A concurrent ``ct-trim-cache`` eviction
+    is the reachable cause and rerunning the build rebuilds the artefact; a
+    producer rule that exits 0 without writing its output reaches the same
+    state, so the message names the missing entry rather than asserting an
+    actor it cannot distinguish.
     """
 
     def __init__(self, cas_path: str):
-        super().__init__(f"CAS entry removed by a concurrent trim; rerun the build: {cas_path}")
+        super().__init__(
+            f"CAS entry missing at publish ({cas_path}): removed by a concurrent trim, "
+            "or never produced; rerun the build"
+        )
         self.cas_path = cas_path
 
 

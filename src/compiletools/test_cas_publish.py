@@ -505,6 +505,10 @@ class TestConcurrentTrimLossReporting:
         assert "concurrent trim" in err.lower()
         assert missing in err
         assert "rerun" in err.lower(), "the message must tell the user what to do"
+        assert "never produced" in err.lower(), (
+            "a producer rule that exits 0 without writing its output reaches this same "
+            "state, so the message must not assert trim as the only cause"
+        )
 
     def test_main_exits_zero_on_a_normal_publish(self, cas, user, capsys):
         rc = compiletools.cas_publish.main(["--cas-path", str(cas), "--user-path", str(user)])

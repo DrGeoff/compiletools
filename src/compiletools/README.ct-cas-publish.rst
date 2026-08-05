@@ -59,8 +59,9 @@ The whole sequence runs while holding the ``<cas-path>.lock`` sidecar,
 the same lock ``ct-trim-cache`` takes before evicting an entry, so a
 publish and a concurrent trim of the same CAS entry are totally
 ordered. Trim first leaves nothing to publish: the helper reports
-``CAS entry removed by a concurrent trim; rerun the build`` and exits
-``3``, and the next build rebuilds the artefact. Publish first raises
+``CAS entry missing at publish (<path>): removed by a concurrent trim,
+or never produced; rerun the build`` and exits ``3``, and the next
+build rebuilds the artefact. Publish first raises
 the entry's ``nlink`` to 2, which trim's hard-link protection honours.
 Those are the only two outcomes.
 
@@ -136,10 +137,13 @@ EXIT CODES
     from ``link()`` / ``symlink()`` / ``rename()``. The ``user_path``
     is never left in a partial state.
 3
-    The CAS entry was evicted by a concurrent ``ct-trim-cache`` before
-    it could be published. Recoverable: rerun the build and the
-    artefact is relinked into the cache. Distinct from ``1`` so a
-    wrapper can retry this case without retrying real errors.
+    The CAS entry was missing when the publish tried to link it. A
+    concurrent ``ct-trim-cache`` eviction is the reachable cause, and it
+    is recoverable: rerun the build and the artefact is relinked into
+    the cache. A producer rule that exits 0 without writing its output
+    lands here too, which a rerun will not fix, so the message names
+    both. Distinct from ``1`` so a wrapper can retry this case without
+    retrying real errors.
 
 CONCURRENCY
 ===========
