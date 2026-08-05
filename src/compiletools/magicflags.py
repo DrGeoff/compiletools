@@ -521,7 +521,7 @@ class MagicFlagsBase:
                 all_macros,
                 verbose=self._args.verbose,
                 compiler_path=getattr(self._args, "CXX", ""),
-                cppflags=getattr(self._args, "CPPFLAGS", ""),
+                cppflags=compiletools.build_apply.get_build_state(self._args).cppflags,
             )
 
         for file_data in file_analysis_data:

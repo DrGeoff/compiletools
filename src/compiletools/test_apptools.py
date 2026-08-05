@@ -2417,7 +2417,9 @@ class TestConfFileEncodingTolerance:
 
 def _wild_args(cxx, ldflags, variant="gcc.wild.release"):
     """Minimal namespace for unit-testing the wild normalization helpers."""
-    return SimpleNamespace(CXX=cxx, LDFLAGS=ldflags, variant=variant)
+    args = SimpleNamespace(CXX=cxx, LDFLAGS=ldflags, variant=variant, verbose=0)
+    uth.finalize_flag_state(args)
+    return args
 
 
 def test_check_wild_b_with_bazel_backend_raises(monkeypatch):

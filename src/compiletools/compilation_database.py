@@ -5,6 +5,7 @@ from typing import Any, Optional
 import stringzilla as sz
 
 import compiletools.apptools
+import compiletools.build_apply
 import compiletools.filesystem_utils
 import compiletools.findtargets
 import compiletools.headerdeps
@@ -96,20 +97,21 @@ class CompilationDatabaseCreator:
             magic_flags = {}
 
         # Combine and deduplicate all flag sources
+        state_flags = compiletools.build_apply.get_build_state(self.args).flags
         if compiletools.utils.is_cpp_source(source_file):
-            # C++ source: combine CPPFLAGS + CXXFLAGS from both args and magic flags
+            # C++ source: combine cpp + cxx tokens from both the build state and magic flags
             combined_flags = compiletools.utils.combine_and_deduplicate_compiler_flags(
-                getattr(self.args, "CPPFLAGS", None),
+                list(state_flags.cpp),
                 magic_flags.get(sz.Str("CPPFLAGS"), []),
-                getattr(self.args, "CXXFLAGS", None),
+                list(state_flags.cxx),
                 magic_flags.get(sz.Str("CXXFLAGS"), []),
             )
         else:
-            # C source: combine CPPFLAGS + CFLAGS from both args and magic flags
+            # C source: combine cpp + c tokens from both the build state and magic flags
             combined_flags = compiletools.utils.combine_and_deduplicate_compiler_flags(
-                getattr(self.args, "CPPFLAGS", None),
+                list(state_flags.cpp),
                 magic_flags.get(sz.Str("CPPFLAGS"), []),
-                getattr(self.args, "CFLAGS", None),
+                list(state_flags.c),
                 magic_flags.get(sz.Str("CFLAGS"), []),
             )
 

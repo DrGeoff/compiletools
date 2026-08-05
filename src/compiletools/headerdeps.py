@@ -312,7 +312,7 @@ class DirectHeaderDeps(HeaderDepsBase):
             self._core_macros,
             variable_macros,
             compiler_path=getattr(self.args, "CXX", ""),
-            cppflags=getattr(self.args, "CPPFLAGS", ""),
+            cppflags=self._cpp_flag_string(),
             compiler_identity="",
             anchor_root=self._anchor_root,
         )

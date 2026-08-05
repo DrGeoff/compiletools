@@ -3,6 +3,7 @@
 import contextlib
 import io
 import os
+import shlex
 import shutil
 import subprocess
 from io import StringIO
@@ -41,6 +42,9 @@ def _make_bazelrc_backend(*, ldflags="", jvm_stack="256k", parallel: "int | None
     args.CC = ""
     args.CXX = ""
     args.tests = []
+    # _user_set_fuse_ld reads the stashed state's ld tokens; a bare
+    # MagicMock iterates empty, silently disabling the linker check.
+    args._build_state.flags.ld = tuple(shlex.split(ldflags))
     backend = BazelBackend(args=args, hunter=MagicMock())
     backend._graph = graph
     return backend

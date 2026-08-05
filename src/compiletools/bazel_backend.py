@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import collections
 import os
-import shlex
 import shutil
 import subprocess
 import sys
@@ -1356,21 +1355,14 @@ class BazelBackend(BuildBackend):
     def _user_set_fuse_ld(self) -> bool:
         """Return True if the user has already chosen a linker via -fuse-ld=...
 
-        Checks LDFLAGS (CLI/config) and any per-target link command in the
-        graph (covers magic-flag-injected linker choices). Tokenises LDFLAGS
-        with shlex so quoted strings like ``-DSOMETHING="-fuse-ld=lld"``
-        don't false-positive — a token only triggers if it is itself a
-        linker flag, not if one is embedded inside it.
+        Checks the build state's ld tokens (CLI/config) and any per-target
+        link command in the graph (covers magic-flag-injected linker
+        choices). Token-shaped so quoted strings like
+        ``-DSOMETHING="-fuse-ld=lld"`` don't false-positive — a token only
+        triggers if it is itself a linker flag, not if one is embedded
+        inside it.
         """
-        ldflags = getattr(self.args, "LDFLAGS", "") or ""
-        try:
-            ldflags_tokens = shlex.split(ldflags)
-        except ValueError:
-            # Malformed (unmatched quote, etc.); fall back to whitespace
-            # split — the explicit user choice is more important than
-            # precise tokenisation when LDFLAGS itself is broken.
-            ldflags_tokens = ldflags.split()
-        if any(self._token_picks_linker(t) for t in ldflags_tokens):
+        if any(self._token_picks_linker(t) for t in self._build_state.flags.ld):
             return True
         if self._graph is not None:
             for rule in self._graph.rules:

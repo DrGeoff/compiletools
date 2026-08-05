@@ -186,9 +186,9 @@ def _check_wild_linker_usable(args) -> None:
     # initialised; referencing them through the facade also honours any test
     # that monkeypatches the ``compiletools.apptools`` attr.
     import compiletools.apptools as _apptools
+    import compiletools.build_apply
 
-    ldflags = getattr(args, "LDFLAGS", "") or ""
-    ld_tokens = split_command_cached(ldflags)
+    ld_tokens = compiletools.build_apply.get_build_state(args).flags.ld
     wild_axis = "-fuse-ld=wild" in ld_tokens or "--ld-path=wild" in ld_tokens
     wild_b_axis = _apptools._variant_has_axis(args, "wild-B")
     if not (wild_axis or wild_b_axis):
