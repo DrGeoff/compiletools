@@ -206,15 +206,15 @@ def test_missing_constrained_package_warning_names_the_bare_package(monkeypatch)
 
 
 @pytest.mark.parametrize(
-    "spec",
+    ("spec", "category"),
     [
-        "zlib >=",
-        "missing",
-        "zlib >= 999",
-        "ghost >= 1.0",
+        ("zlib >=", "malformed package specification"),
+        ("missing", "not found"),
+        ("zlib >= 999", "version requirement"),
+        ("ghost >= 1.0", "while evaluating"),
     ],
 )
-def test_pkg_config_error_mode_promotes_every_failure_category(monkeypatch, spec):
+def test_pkg_config_error_mode_promotes_every_failure_category(monkeypatch, spec, category):
     """Strict mode uses the same four stable diagnostics as warn mode."""
 
     def fake_run(cmd, **_kwargs):
@@ -233,7 +233,7 @@ def test_pkg_config_error_mode_promotes_every_failure_category(monkeypatch, spec
         CXXFLAGS="",
     )
 
-    with pytest.raises(pkgconfig.PkgConfigError, match="pkg-config"):
+    with pytest.raises(pkgconfig.PkgConfigError, match=category):
         pkgconfig._add_flags_from_pkg_config(args)
 
 

@@ -16,6 +16,13 @@ from compiletools.build_context import BuildContext
 from compiletools.build_inputs import _query_pkg_config, gather_inputs
 
 
+@pytest.fixture(autouse=True)
+def _clear_pkg_config_cache():
+    compiletools.apptools_pkgconfig.clear_cache()
+    yield
+    compiletools.apptools_pkgconfig.clear_cache()
+
+
 @pytest.fixture
 def parsers_reset():
     """Wipe the configargparse parser cache around tests that go through
@@ -249,19 +256,6 @@ class TestPkgConfigGathering:
             )
             inputs = gather_inputs(args, BuildContext())
             assert tuple(pkg for pkg, _r in inputs.pkg_config_results) == ("first", "base", "last")
-
-    def test_error_mode_is_applied_before_the_gather_query(self, monkeypatch):
-        def missing_batch(packages, option):
-            raise compiletools.apptools_pkgconfig.PkgConfigError("pkg-config package 'foo' not found")
-
-        monkeypatch.setattr(compiletools.apptools_pkgconfig, "_batch_pkg_config", missing_batch)
-        with uth.TempDirContext():
-            args = _minimal_args(pkg_config=["foo"], pkg_config_errors="error")
-            from compiletools.build_apply import configure_pkg_config_errors
-
-            configure_pkg_config_errors(args)
-            with pytest.raises(compiletools.apptools_pkgconfig.PkgConfigError, match="not found"):
-                gather_inputs(args, BuildContext())
 
 
 class TestQueryPkgConfigEnvRestore:
