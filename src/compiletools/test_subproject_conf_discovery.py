@@ -1319,7 +1319,7 @@ class TestAutoDiscoveryReanchor:
         with uth.DirectoryContext(str(monorepo)):
             reanchored = compiletools.apptools.reanchor_config_for_discovered_targets(args)
         assert reanchored is not None
-        assert "-DAPPBETA_EXTRA" in reanchored.CPPFLAGS
+        assert "-DAPPBETA_EXTRA" in get_build_state(reanchored).cppflags
         # Pure config re-anchor: discovered targets are NOT re-applied; the
         # discover_targets_and_reanchor driver re-discovers them under the
         # widened config so freshly loaded markers can shape the set.
@@ -1435,7 +1435,7 @@ class TestAutoDiscoveryReanchor:
         args = _parse_cake_args(monorepo, [*_ARGV_BASE, "--auto"])
         with uth.DirectoryContext(str(monorepo)):
             final = compiletools.findtargets.discover_targets_and_reanchor(args, args._context)
-        assert "-DAPPBETA_EXTRA" in final.CPPFLAGS
+        assert "-DAPPBETA_EXTRA" in get_build_state(final).cppflags
         assert not final.tests
         assert any(f.endswith(os.path.join("appbeta", "main.cpp")) for f in final.filename)
 
@@ -1453,7 +1453,7 @@ class TestAutoDiscoveryReanchor:
         args = _parse_cake_args(monorepo, [*_ARGV_BASE, "--auto"])
         with uth.DirectoryContext(str(monorepo)):
             final = compiletools.findtargets.discover_targets_and_reanchor(args, args._context)
-        assert "-DAPPBETA_EXTRA" in final.CPPFLAGS  # the layer WAS loaded
+        assert "-DAPPBETA_EXTRA" in get_build_state(final).cppflags  # the layer WAS loaded
         assert not any(f.endswith(os.path.join("appbeta", "main.cpp")) for f in final.filename)
 
     def test_round_two_discovered_layer_contradicting_round_one_layer_errors(self, monorepo):
@@ -1486,7 +1486,7 @@ class TestAutoDiscoveryReanchor:
         args = _parse_cake_args(monorepo, [*_ARGV_BASE, "--auto"])
         with uth.DirectoryContext(str(monorepo)):
             final = compiletools.findtargets.discover_targets_and_reanchor(args, args._context)
-        assert "-DAPPBETA_EXTRA" in final.CPPFLAGS  # the widening round ran
+        assert "-DAPPBETA_EXTRA" in get_build_state(final).cppflags  # the widening round ran
         beta_main = [f for f in final.filename if f.endswith(os.path.join("appbeta", "main.cpp"))]
         assert len(beta_main) == 1
         assert len(final.filename) == len(set(final.filename))

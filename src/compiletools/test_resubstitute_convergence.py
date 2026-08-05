@@ -93,15 +93,13 @@ class TestResubstitute:
             )
 
     def test_include_widening_converges_with_fresh_single_pass_under_separate_flags(self):
-        """Same convergence oracle under --separate-flags-CPP-CXX. This mode
-        is the one where the _raw_flag_slots record's CONTENT (not just
-        gather preferring it over the live derived strings) is
-        load-bearing: with stage_unify skipped, CPPFLAGS can still carry
-        the raw _UNSUPPLIED_USE_CXXFLAGS sentinel when populate_args
-        records the pre-overwrite slots, and gather must map that recorded
-        sentinel back to unsupplied on every re-run rather than reading the
-        since-materialized concrete string, or the widened run's cppflags
-        would permanently diverge from a fresh single pass'."""
+        """Same convergence oracle under --separate-flags-CPP-CXX. This
+        mode is the one where the untouched raw slot is load-bearing:
+        with stage_unify skipped, args.CPPFLAGS can still hold the raw
+        _UNSUPPLIED_USE_CXXFLAGS sentinel post-parse (populate_args never
+        materializes a concrete string over it), and gather must map that
+        sentinel to unsupplied on every re-run, or the widened run's
+        cppflags would permanently diverge from a fresh single pass'."""
         with uth.TempDirContext():
             newdir = os.path.join(os.getcwd(), "external_inc")
             os.makedirs(newdir)

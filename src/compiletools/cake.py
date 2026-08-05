@@ -87,13 +87,12 @@ class Cake:
 
         Returns ``True`` if anything was appended to ``args.INCLUDE`` (so the
         caller re-runs ``apptools.resubstitute`` to re-gather and recompute
-        the build state, redistributing INCLUDE into the *FLAGS and
-        re-finalizing the frozen ``args.flags``), else ``False``.
+        the build state, redistributing INCLUDE into the flag tokens),
+        else ``False``.
 
-        Mutating ``args.INCLUDE`` (not a frozen flag slot) and letting the
+        Mutating ``args.INCLUDE`` (a raw gather input) and letting the
         downstream ``resubstitute`` re-run is the sanctioned way to widen
-        the include path post-parseargs without tripping
-        ``check_flag_string_drift``.
+        the include path post-parseargs.
 
         ``--filelist`` is a read-only query (list the source files that WOULD
         be built) and must not have a surprising network side effect. In that
@@ -234,9 +233,8 @@ class Cake:
         # list and register their include dirs. Must run AFTER single-lib
         # expansion and --auto discovery (so the target set is settled) but
         # BEFORE the recreateobjs re-substitution: it mutates args.INCLUDE only,
-        # and the resubstitute re-run below redistributes INCLUDE into the
-        # *FLAGS and re-finalizes the frozen args.flags -- the sanctioned path
-        # that keeps check_flag_string_drift happy.
+        # and the resubstitute re-run below re-gathers and recomputes the
+        # BuildState with INCLUDE redistributed into the flag tokens.
         externals_changed = self._fetch_and_register_externals()
         if externals_changed:
             recreateobjs = True

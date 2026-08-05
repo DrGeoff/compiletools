@@ -548,14 +548,10 @@ def _add_flags_from_pkg_config(args):
     # Batch pkg-config calls: query all packages at once instead of one subprocess
     # per package.  Falls back to per-package calls if the batch fails (e.g. a
     # package is missing and we need to identify which one).
-    # Ask the CAP registration, not hasattr: populate_args materializes
-    # args.LDFLAGS = "" for downstream consumers after pass 1, so hasattr
-    # disagrees with the CAP's real registration on a populated namespace.
-    # The registration tuple is the authoritative "does this tool link?"
-    # answer. None means populate_args has not run yet (first pass) --
-    # hasattr is correct there.
-    registered = getattr(args, "_registered_flag_slots", None)
-    want_libs = "LDFLAGS" in registered if registered is not None else hasattr(args, "LDFLAGS")
+    # hasattr IS the CAP registration: populate_args never materializes
+    # slot attrs, so an unregistered LDFLAGS stays absent and hasattr
+    # answers "does this tool link?" on any namespace shape.
+    want_libs = hasattr(args, "LDFLAGS")
 
     batch_cflags = _batch_pkg_config(packages, "--cflags")
     batch_libs = _batch_pkg_config(packages, "--libs") if want_libs else {}

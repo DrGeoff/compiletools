@@ -173,10 +173,10 @@ class TestStripDUTokens:
         assert strip_d_u_tokens(tokens) == expected
 
 
-class TestArgsTokensAfterParseargs:
-    """args.*_tokens must be populated AFTER parseargs() returns and
-    must reflect the final, post-substitution state of the raw flag
-    strings.
+class TestStateTokensAfterParseargs:
+    """The stashed BuildState's token tuples must reflect the final,
+    post-compute flag state (env var append, INCLUDE injection,
+    pkg-config), and the string forms must round-trip the tokens.
     """
 
     @pytest.fixture(autouse=True)
@@ -209,27 +209,26 @@ class TestArgsTokensAfterParseargs:
         compiletools.apptools.add_link_arguments(cap)
         return compiletools.apptools.parseargs(cap, argv, context=BuildContext())
 
-    def test_args_get_tokens_after_parseargs(self, tmp_path):
+    def test_state_tokens_round_trip_the_strings(self, tmp_path):
+        from compiletools.build_apply import get_build_state
+
         args = self._parse(tempdir=str(tmp_path))
+        state = get_build_state(args)
 
-        # All four token attributes must exist and be lists.
-        for attr in ("CPPFLAGS_tokens", "CFLAGS_tokens", "CXXFLAGS_tokens", "LDFLAGS_tokens"):
-            assert hasattr(args, attr), f"args missing {attr}"
-            assert isinstance(getattr(args, attr), list), f"{attr} is not a list"
+        # The string forms are shlex.join of the token tuples: splitting
+        # them back must reproduce the tokens exactly.
+        assert list(state.tokens.cpp) == utils.split_command_cached(state.cppflags)
+        assert list(state.tokens.c) == utils.split_command_cached(state.cflags)
+        assert list(state.tokens.cxx) == utils.split_command_cached(state.cxxflags)
+        assert list(state.tokens.ld) == utils.split_command_cached(state.ldflags)
 
-        # Tokens must equal split_command_cached on the FINAL raw string
-        # -- i.e., reflect every post-parseargs mutation
-        # (env var append, INCLUDE injection, project version, pkg-config).
-        assert args.CPPFLAGS_tokens == utils.split_command_cached(args.CPPFLAGS)
-        assert args.CFLAGS_tokens == utils.split_command_cached(args.CFLAGS)
-        assert args.CXXFLAGS_tokens == utils.split_command_cached(args.CXXFLAGS)
-        assert args.LDFLAGS_tokens == utils.split_command_cached(args.LDFLAGS)
+    def test_state_tokens_reflect_appended_cppflags(self, tmp_path):
+        """append-CPPFLAGS contributions must appear in the state tokens."""
+        from compiletools.build_apply import get_build_state
 
-    def test_args_tokens_reflect_appended_cppflags(self, tmp_path):
-        """append-CPPFLAGS contributions must appear in the token list."""
         args = self._parse(["--append-CPPFLAGS=-DAFTER_TOKENIZE=42"], tempdir=str(tmp_path))
 
-        assert "-DAFTER_TOKENIZE=42" in args.CPPFLAGS_tokens, (
-            "Appended -D entries must be present in CPPFLAGS_tokens; "
-            "tokens must be populated AFTER all parseargs mutations."
+        assert "-DAFTER_TOKENIZE=42" in get_build_state(args).tokens.cpp, (
+            "Appended -D entries must be present in the state's cpp tokens; "
+            "the state is computed AFTER all gather-time contributions."
         )

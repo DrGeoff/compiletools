@@ -61,54 +61,33 @@ _SLOT_TO_TOKENS = {
 
 
 def populate_args(args, state: BuildState) -> None:
-    """Write the post-parseargs legacy surface from a BuildState.
+    """Stash the BuildState and write the resolved name attrs.
 
-    All four slots' raw strings and *_tokens lists are materialized
-    unconditionally, but only registered slots are snapshotted for
-    drift, so downstream consumers that read an unregistered slot still
-    see a well-formed empty value rather than an AttributeError while
-    check_flag_string_drift can distinguish "not applicable here" from
-    "mutated after parseargs".
+    The flag surface is state-only: consumers read
+    ``get_build_state(args).flags`` / ``.cppflags`` etc., and the raw
+    ``args.{CPPFLAGS,...}`` attrs keep their pre-gather values — never
+    overwritten — so ``gather_inputs`` re-reads the same base on every
+    re-run (resubstitute's fixed point needs no record/restore
+    machinery, and an unsupplied sentinel survives on the attr with its
+    meaning intact).
 
-    The shim preserves what it clobbers: gather_inputs reads the four
-    raw slot attrs as raw input, and this function overwrites them with
-    derived output (unified, prefix-map-injected, pkg-config-merged).
-    Before the first overwrite the pre-call values are recorded in
-    args._raw_flag_slots, and gather_inputs prefers that record — so a
-    re-gather always rebuilds from the same base and no caller has to
-    run a snapshot/restore protocol. First call only: a second
-    populate_args on the same namespace (re-run flows) must not replace
-    the record with pass 1's derived output. hasattr-filtered so an
-    absent slot stays absent (its unsuppliedness survives the record).
-    The record dies with this function at consumer-migration end.
+    The name attrs (variant, bindir, cas-*dirs) ARE written: they are
+    idempotent under re-gather (canonical variant re-canonicalizes to
+    itself; resolved dirs pass through the sentinel checks unchanged)
+    and have live consumers outside the state — diagnostics.py reads
+    ``args.bindir``, Namer's permanent fallback reads ``args.bindir`` /
+    ``args.cas_objdir`` for resolver-only diagnostic tools.
+
+    The stash is refreshed on EVERY call so consumers always see the
+    current pass's state after a re-run.
     """
-    if getattr(args, "_raw_flag_slots", None) is None:
-        args._raw_flag_slots = {slot: getattr(args, slot) for slot in _SLOT_TO_TOKENS if hasattr(args, slot)}
-    # The consumer-migration surface: migrated consumers read the state
-    # directly via get_build_state(args) instead of the legacy slot attrs.
-    # Refreshed on EVERY call (unlike _raw_flag_slots) so consumers always
-    # see the current pass's state after a re-run.
     args._build_state = state
-    strings = {
-        "CPPFLAGS": state.cppflags,
-        "CFLAGS": state.cflags,
-        "CXXFLAGS": state.cxxflags,
-        "LDFLAGS": state.ldflags,
-    }
-    for slot, ts_field in _SLOT_TO_TOKENS.items():
-        setattr(args, slot, strings[slot])
-        setattr(args, f"{slot}_tokens", list(getattr(state.tokens, ts_field)))
-    args.flags = state.flags
     args.variant = state.names.variant
     args.bindir = state.names.bindir
     args.cas_objdir = state.names.cas_objdir
     args.cas_pchdir = state.names.cas_pchdir
     args.cas_pcmdir = state.names.cas_pcmdir
     args.cas_exedir = state.names.cas_exedir
-    args._flag_string_snapshot = tuple(
-        (slot, strings[slot]) for slot in _SLOT_TO_TOKENS if slot in state.registered_slots
-    )
-    args._registered_flag_slots = tuple(slot for slot in _SLOT_TO_TOKENS if slot in state.registered_slots)
 
 
 def get_build_state(args) -> BuildState:

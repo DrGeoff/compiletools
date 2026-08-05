@@ -1123,11 +1123,10 @@ def _strip_quotes(args):
     vs. part of the actual content. Also strips extraneous whitespace.
 
     Private attributes (leading underscore) are internal stashes, not
-    user-supplied argument values, and are skipped: _raw_flag_slots is a
-    dict (iterating-and-assigning inserts keys mid-iteration and raises
-    RuntimeError), _registered_flag_slots and _flag_string_snapshot are
-    tuples (item assignment raises TypeError), and _argv must stay verbatim
-    for the variant re-resolve.
+    user-supplied argument values, and are skipped: iterating-and-
+    assigning a dict stash inserts keys mid-iteration (RuntimeError), a
+    tuple stash rejects item assignment (TypeError), and _argv must stay
+    verbatim for the variant re-resolve.
     """
     for name in vars(args):
         if name.startswith("_"):
@@ -1223,21 +1222,17 @@ def resubstitute(args) -> None:
     ``BuildInputs`` — so their absence changes nothing gather reads.
 
     The four raw flag slots (CPPFLAGS/CFLAGS/CXXFLAGS/LDFLAGS) need no
-    handling here at all: by the time this runs they hold the FIRST
-    pass's derived output (unified, prefix-map-injected,
-    pkg-config-merged), but ``populate_args`` recorded the pre-overwrite
-    raw values in ``args._raw_flag_slots`` and ``gather_inputs`` prefers
-    that record over the live attrs — the shim preserves what it
-    clobbers, so every re-gather rebuilds from the same base without any
-    caller-side snapshot/restore protocol. (Re-gathering from the
-    derived strings instead would reproduce the same token SET but a
-    different token ORDER — a genuine first pass lands
-    ``stage_include_paths``' ``-I`` pairs ahead of the accumulated
-    CXXFLAGS tail because CPPFLAGS is still short pre-unify — and since
-    flag-slot hashing is argv-shaped, that reorder would fork the object
-    CAS key between --auto and --no-auto builds of the same sources.)
-    ``args.INCLUDE`` is the one genuine between-pass input and is read
-    live, never from the record.
+    handling here at all: ``populate_args`` never writes them (the
+    derived surface lives only on the stashed BuildState), so the live
+    attrs still hold the pre-parse raw values and ``gather_inputs``
+    rebuilds from the same base by construction. (Re-gathering from
+    derived strings would reproduce the same token SET but a different
+    token ORDER — a genuine first pass lands ``stage_include_paths``'
+    ``-I`` pairs ahead of the accumulated CXXFLAGS tail because CPPFLAGS
+    is still short pre-unify — and since flag-slot hashing is
+    argv-shaped, that reorder would fork the object CAS key between
+    --auto and --no-auto builds of the same sources.) ``args.INCLUDE``
+    is the one genuine between-pass input.
 
     The re-run is therefore a fixed point BY CONSTRUCTION, not by a
     seed-restore-and-diff guard: the ``RuntimeError`` drift check the
@@ -1547,10 +1542,10 @@ def parseargs(cap, argv, verbose=None, *, context):
     # All three checks emit a clear diagnostic naming the variant and
     # suggesting either a different variant or a toolchain upgrade.
     #
-    # WARNING: do not mutate args.{CPPFLAGS,CFLAGS,CXXFLAGS,LDFLAGS}
-    # after parseargs returns. args.{*}_tokens and args.flags are
-    # populated once (by populate_args above) and will silently drift
-    # from the raw strings if those strings are modified later.
+    # The raw args.{CPPFLAGS,...} attrs keep their pre-gather values --
+    # populate_args stashes the derived state on args._build_state and
+    # never overwrites the slots, so a later resubstitute re-gathers
+    # from the same base by construction.
     _check_resolved_compiler_available(args)
     _check_wild_linker_usable(args)
     _check_compiler_supports_requested_standard(args)
@@ -1558,36 +1553,6 @@ def parseargs(cap, argv, verbose=None, *, context):
     if verbose > 8:
         print("parseargs has completed.  Returning args")
     return args
-
-
-def check_flag_string_drift(args) -> None:
-    """Verify args.{CPPFLAGS,...} have not been mutated since parseargs end.
-
-    parseargs records a snapshot of the raw flag strings as
-    ``args._flag_string_snapshot`` immediately after populating
-    ``args.{*}_tokens`` and ``args.flags``. If anything later assigns to
-    ``args.CPPFLAGS`` (etc.) the tokens and flags will silently drift
-    out of sync with the raw string. This function compares the current
-    raw strings to the snapshot and raises ``RuntimeError`` if they
-    differ, naming the offending slot.
-
-    Call this from any consumer that wants to assert the invariant
-    holds. Tests in particular should call it before reading
-    ``args.flags`` if they construct ``args`` via a path that may
-    mutate flag strings.
-    """
-    snapshot = getattr(args, "_flag_string_snapshot", None)
-    if snapshot is None:
-        return
-    for slot, expected in snapshot:
-        actual = getattr(args, slot, None)
-        if actual != expected:
-            raise RuntimeError(
-                f"args.{slot} mutated after parseargs end: "
-                f"args.flags and args.{slot}_tokens are now stale. "
-                f"All mutations to compile-flag raw strings must occur "
-                f"BEFORE parseargs returns."
-            )
 
 
 def terminalcolumns():

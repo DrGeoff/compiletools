@@ -66,19 +66,22 @@ class TestGatherInputs:
             assert "LDFLAGS" not in inputs.registered_slots
             assert "CXXFLAGS" in inputs.registered_slots
 
-    def test_registered_slots_prefer_sticky_tuple_over_post_populate_hasattr(self):
-        """4d4cfd6d bug class: populate_args materializes
-        args.LDFLAGS = "" for downstream consumers even when the CAP never
-        registered LDFLAGS, so bare hasattr disagrees with the CAP's real
-        registration on a populated namespace. _registered_flag_slots
-        is the sticky, authoritative record and must win over hasattr."""
+    def test_registered_slots_hasattr_is_authoritative_after_populate(self):
+        """4d4cfd6d bug class, closed structurally: populate_args never
+        materializes slot attrs, so hasattr IS the CAP registration on
+        every namespace shape — an unregistered LDFLAGS stays absent
+        through populate and re-gather."""
+        from compiletools.build_apply import populate_args
+        from compiletools.build_state import BuildInputs, compute_build_state
+
         with uth.TempDirContext():
-            args = _minimal_args(
-                _registered_flag_slots=("CPPFLAGS", "CFLAGS", "CXXFLAGS"),
-                LDFLAGS="",
-            )
+            args = _minimal_args()
+            state = compute_build_state(BuildInputs(registered_slots=frozenset({"CFLAGS", "CXXFLAGS"})))
+            populate_args(args, state)
+            assert not hasattr(args, "LDFLAGS")
             inputs = gather_inputs(args, BuildContext())
-            assert inputs.registered_slots == frozenset({"CPPFLAGS", "CFLAGS", "CXXFLAGS"})
+            assert "LDFLAGS" not in inputs.registered_slots
+            assert "CXXFLAGS" in inputs.registered_slots
 
     def test_gitroot_and_identity_are_gathered(self, parsers_reset):
         with uth.TempDirContext():
@@ -130,43 +133,31 @@ class TestSlotSentinelMapping:
 
 
 @pytest.mark.usefixtures("parsers_reset")
-class TestRawSlotRecordPreferred:
-    """gather_inputs prefers args._raw_flag_slots (the pre-populate_args
-    values populate_args recorded) over the live slot attrs, so a
-    re-gather on a populated namespace rebuilds from the same base
-    instead of compounding pass 1's derived output."""
+class TestRawSlotsAreGatherInput:
+    """The raw slot attrs are gather's alone: populate_args never writes
+    them, so the live attr is the pre-parse raw value on every pass and
+    a re-gather rebuilds from the same base by construction."""
 
-    def test_record_value_wins_over_live_derived_string(self):
-        with uth.TempDirContext():
-            args = _minimal_args(CXXFLAGS="-DDERIVED")
-            args._raw_flag_slots = {"CXXFLAGS": "-DRAW", "CFLAGS": "-fPIC -g -Wall"}
-            inputs = gather_inputs(args, BuildContext())
-            assert inputs.cxxflags == ("-DRAW",)
+    def test_regather_after_populate_reads_the_same_raw_base(self):
+        """Populate with a state carrying derived tokens, then re-gather:
+        the inputs must reflect the untouched raw attr, not the state."""
+        import dataclasses
 
-    def test_slot_absent_from_record_is_unsupplied(self):
-        """A record without LDFLAGS beats a live materialized LDFLAGS="":
-        the pre-populate namespace never had the slot, so its
-        unsuppliedness must survive (stage_defaults fallback semantics),
-        even though populate_args materialized an empty string for
-        downstream consumers."""
-        with uth.TempDirContext():
-            args = _minimal_args(LDFLAGS="")
-            args._raw_flag_slots = {"CXXFLAGS": "-fPIC -g -Wall", "CFLAGS": "-fPIC -g -Wall"}
-            args._registered_flag_slots = ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS")
-            inputs = gather_inputs(args, BuildContext())
-            assert inputs.ldflags is None
+        from compiletools.build_apply import populate_args
+        from compiletools.build_state import compute_build_state
 
-    def test_record_sentinel_flows_through_sentinel_mapping(self):
-        """Record values can legitimately hold the unsupplied sentinels
-        (that is what the slot held pre-populate); they must take the
-        same sentinel mapping as live values."""
         with uth.TempDirContext():
-            args = _minimal_args(CPPFLAGS="-DDERIVED")
-            args._raw_flag_slots = {
-                "CPPFLAGS": apptools._UNSUPPLIED_USE_CXXFLAGS,
-                "CXXFLAGS": "-fPIC -g -Wall",
-                "CFLAGS": "-fPIC -g -Wall",
-            }
+            args = _minimal_args(CXXFLAGS="-DRAW")
+            first = gather_inputs(args, BuildContext())
+            populate_args(args, compute_build_state(dataclasses.replace(first, cxxflags=("-DDERIVED",))))
+            second = gather_inputs(args, BuildContext())
+            assert second.cxxflags == first.cxxflags == ("-DRAW",)
+
+    def test_live_sentinel_flows_through_sentinel_mapping(self):
+        """Slot attrs can hold the unsupplied sentinels (the parse-time
+        default); they must map to unsupplied on every pass."""
+        with uth.TempDirContext():
+            args = _minimal_args(CPPFLAGS=apptools._UNSUPPLIED_USE_CXXFLAGS)
             inputs = gather_inputs(args, BuildContext())
             assert inputs.cppflags is None
 

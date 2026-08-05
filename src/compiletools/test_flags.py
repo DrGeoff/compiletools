@@ -6,7 +6,6 @@ import dataclasses
 import os
 import shutil
 import sys
-import types
 
 import configargparse
 import pytest
@@ -126,52 +125,23 @@ def test_flags_is_frozen_and_hashable():
 
 
 @pytest.mark.usefixtures("parsers_reset")
-def test_args_has_flags_attribute_after_parseargs(tmp_path):
-    """parseargs must populate args.flags as a Flags instance whose
-    cpp slot mirrors args.CPPFLAGS_tokens (tuple-vs-list aware)."""
-    args = _parseargs_with_temp_config(tmp_path, "test_args_has_flags_attribute_after_parseargs")
+def test_parseargs_stashes_flags_and_leaves_slots_raw(tmp_path):
+    """parseargs must stash a BuildState whose flags is a Flags instance,
+    and must NOT write derived flag attrs onto the namespace — the raw
+    args.{*FLAGS} strings stay gather's input, so a token the pure core
+    derives (unify copies cxx into cpp) is present in the state but
+    absent from the raw attr."""
+    from compiletools.build_apply import get_build_state
 
-    assert hasattr(args, "flags"), "parseargs must populate args.flags"
-    assert isinstance(args.flags, Flags)
-    assert args.flags.cpp == tuple(args.CPPFLAGS_tokens)
-    assert args.flags.c == tuple(args.CFLAGS_tokens)
-    assert args.flags.cxx == tuple(args.CXXFLAGS_tokens)
-    assert args.flags.ld == tuple(args.LDFLAGS_tokens)
+    args = _parseargs_with_temp_config(tmp_path, "test_parseargs_stashes_flags_and_leaves_slots_raw")
+
+    flags = get_build_state(args).flags
+    assert isinstance(flags, Flags)
+    assert flags.cpp, "expected the unified cpp slot to carry tokens"
+    assert not hasattr(args, "flags"), "populate_args must not write args.flags"
+    assert not hasattr(args, "CPPFLAGS_tokens"), "populate_args must not write *_tokens"
     # Sanity: utils import keeps lint happy and confirms the helper is reachable.
     assert utils.split_command_cached("-O2") == ["-O2"]
-
-
-@pytest.mark.usefixtures("parsers_reset")
-def test_check_flag_string_drift_clean(tmp_path):
-    """check_flag_string_drift is a no-op when args.{*FLAGS} match the
-    snapshot taken at parseargs end."""
-    args = _parseargs_with_temp_config(tmp_path, "test_check_flag_string_drift_clean")
-    # No mutation -> no raise.
-    compiletools.apptools.check_flag_string_drift(args)
-
-
-def test_check_flag_string_drift_detects_mutation():
-    """check_flag_string_drift raises RuntimeError if any *FLAGS string
-    has been mutated after the snapshot was recorded."""
-    args = types.SimpleNamespace(
-        CPPFLAGS="-O2",
-        CFLAGS="-O2",
-        CXXFLAGS="-O2",
-        LDFLAGS="",
-        _flag_string_snapshot=(("CPPFLAGS", "-O2"), ("CFLAGS", "-O2"), ("CXXFLAGS", "-O2"), ("LDFLAGS", "")),
-    )
-    compiletools.apptools.check_flag_string_drift(args)  # baseline ok
-    args.CXXFLAGS = "-O2 -DLATE_MUTATION"
-    with pytest.raises(RuntimeError, match="CXXFLAGS mutated after parseargs end"):
-        compiletools.apptools.check_flag_string_drift(args)
-
-
-def test_check_flag_string_drift_no_snapshot_is_noop():
-    """If args has no _flag_string_snapshot (e.g. args constructed
-    without going through parseargs), the check is a no-op."""
-    args = types.SimpleNamespace(CPPFLAGS="-O2")
-    # Should not raise even though there's no snapshot.
-    compiletools.apptools.check_flag_string_drift(args)
 
 
 def test_compiler_identity_distinguishes_two_real_binaries(tmp_path):

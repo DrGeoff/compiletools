@@ -247,18 +247,20 @@ def _check_compiler_supports_requested_standard(args) -> None:
     cross-toolchains / unrecognised wrappers don't trigger spurious
     failures).
     """
-    flags_to_check: list[tuple[str, str]] = []  # [(flag-slot-name, attr)]
+    import compiletools.build_apply
+
+    state = compiletools.build_apply.get_build_state(args)
+    flags_to_check: list[tuple[str, str]] = []  # [(compiler-slot-name, state flag string)]
     if getattr(args, "CXX", None):
-        flags_to_check.append(("CXX", "CXXFLAGS"))
+        flags_to_check.append(("CXX", state.cxxflags))
     if getattr(args, "CC", None):
-        flags_to_check.append(("CC", "CFLAGS"))
+        flags_to_check.append(("CC", state.cflags))
 
     variant = getattr(args, "variant", "<unknown>")
     import re as _re
 
-    for compiler_slot, flags_slot in flags_to_check:
+    for compiler_slot, flags_str in flags_to_check:
         compiler = getattr(args, compiler_slot, None)
-        flags_str = getattr(args, flags_slot, "")
         if not compiler or not flags_str:
             continue
         m = _re.search(r"-std=(c(?:\+\+)?\w+)", flags_str)

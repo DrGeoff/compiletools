@@ -98,7 +98,7 @@ def _build_cake_args(main_repo: str, extra_argv: list[str], context: BuildContex
 @requires_functional_compiler
 def test_fetch_step_registers_external_include_dirs(monkeypatch) -> None:
     """End-to-end: a //#GIT= main gets the external cloned and its include dir
-    folded into the stashed BuildState, with no flag-string drift."""
+    folded into the stashed BuildState."""
     with tempfile.TemporaryDirectory() as root:
         ext = _make_bare_with_files(root, "extlib", {"include/extlib.h": "#pragma once\nint extfn();\n"})
         externals_dir = os.path.join(root, "externals")
@@ -112,9 +112,6 @@ def test_fetch_step_registers_external_include_dirs(monkeypatch) -> None:
 
         context = BuildContext()
         args = _build_cake_args(main_repo, ["--filename", "main.cpp", "--externals-dir", externals_dir], context)
-
-        # No flag drift right after parseargs.
-        compiletools.apptools.check_flag_string_drift(args)
 
         cake = compiletools.cake.Cake(args, context=context)
         changed = cake._fetch_and_register_externals()
@@ -137,9 +134,6 @@ def test_fetch_step_registers_external_include_dirs(monkeypatch) -> None:
         joined = " ".join(cxx_tokens)
         assert os.path.join(clone, "include") in joined
         assert clone in joined
-
-        # (3) The populate-once/freeze invariant still holds.
-        compiletools.apptools.check_flag_string_drift(args)
 
 
 @requires_functional_compiler

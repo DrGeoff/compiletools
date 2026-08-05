@@ -67,23 +67,16 @@ def _slot_tokens(args, name):
     CFLAGS/CXXFLAGS. An explicit empty string is (), never None -- the
     sentinel semantics of unsupplied_replacement, not emptiness.
 
-    When args._raw_flag_slots exists (populate_args recorded the
-    pre-overwrite slot values before writing derived output onto these
-    same attrs), the record is preferred over the live attr: a re-gather
-    on a populated namespace must rebuild from the same raw base, not
-    compound pass 1's unified/injected/merged output into pass 2's
-    input. A slot absent from a present record was absent pre-populate
-    -- its unsuppliedness survives even though populate_args
-    materialized a live empty string for downstream consumers. Record
-    values can hold the unsupplied sentinels and flow through the same
-    mapping as live values.
+    The raw attrs are gather's alone: populate_args never writes the
+    flag slots (the derived surface lives on the stashed BuildState), so
+    the live attr IS the pre-parse raw value on every pass and a
+    re-gather rebuilds from the same base by construction.
     """
     import compiletools.apptools as apptools
     from compiletools.utils import split_command_cached
 
     unsupplied = None if name in _FALLBACK_SLOTS else ()
-    record = getattr(args, "_raw_flag_slots", None)
-    raw = record.get(name) if record is not None else getattr(args, name, None)
+    raw = getattr(args, name, None)
     if raw is None or raw in apptools._UNSUPPLIED_SENTINELS:
         return unsupplied
     return tuple(split_command_cached(raw))
@@ -338,17 +331,11 @@ def gather_inputs(args, context) -> BuildInputs:
     from compiletools.apptools_compiler import compiler_identity, compiler_kind
     from compiletools.git_utils import find_git_root
 
-    # The 4d4cfd6d bug class: populate_args materializes args.LDFLAGS = ""
-    # for downstream consumers even when the CAP never registered LDFLAGS,
-    # so bare hasattr disagrees with the real registration on a populated
-    # namespace. _registered_flag_slots is the sticky, authoritative record
-    # when present; hasattr is only correct pre-populate (first pass), so
-    # gather is safe on both namespace shapes.
-    slot_registration = getattr(args, "_registered_flag_slots", None)
-    if slot_registration is not None:
-        registered = frozenset(slot_registration)
-    else:
-        registered = frozenset(s for s in _SLOT_NAMES if hasattr(args, s))
+    # hasattr IS the CAP registration (the 4d4cfd6d bug class is closed
+    # structurally): populate_args never materializes slot attrs, so an
+    # unregistered slot stays absent on every pass and no sticky record
+    # is needed to distinguish "registered empty" from "never registered".
+    registered = frozenset(s for s in _SLOT_NAMES if hasattr(args, s))
 
     gitroot = find_git_root() or ""
     # One-off direct read of the live cwd, NOT cached -- mirrors

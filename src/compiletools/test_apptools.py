@@ -520,23 +520,22 @@ class TestStripQuotes:
         assert args.foo is None
 
     def test_private_stashes_pass_through_untouched(self):
-        """A namespace that has already been through populate_args carries
-        dict/tuple private stashes (_raw_flag_slots, _registered_flag_slots,
-        _flag_string_snapshot). Iterating-and-assigning those crashes (dict:
-        RuntimeError from mid-iteration key inserts; tuple: TypeError on item
-        assignment), so _strip_quotes must skip private attributes entirely."""
-        record = {"CPPFLAGS": '"-DFOO"'}
+        """Private attrs are internal stashes, not user-supplied values.
+        Iterating-and-assigning a dict stash crashes (RuntimeError from
+        mid-iteration key inserts) and a tuple stash rejects item
+        assignment (TypeError), so _strip_quotes must skip private
+        attributes entirely."""
         args = SimpleNamespace(
             CPPFLAGS='"-DFOO"',
-            _raw_flag_slots=record,
-            _registered_flag_slots=("CPPFLAGS",),
-            _flag_string_snapshot=(("CPPFLAGS", '"-DFOO"'),),
+            _dict_stash={"CPPFLAGS": '"-DFOO"'},
+            _tuple_stash=(("CPPFLAGS", '"-DFOO"'),),
+            _argv=['--CPPFLAGS="-DFOO"'],
         )
         _strip_quotes(args)
         assert args.CPPFLAGS == "-DFOO"
-        assert args._raw_flag_slots == {"CPPFLAGS": '"-DFOO"'}
-        assert args._registered_flag_slots == ("CPPFLAGS",)
-        assert args._flag_string_snapshot == (("CPPFLAGS", '"-DFOO"'),)
+        assert args._dict_stash == {"CPPFLAGS": '"-DFOO"'}
+        assert args._tuple_stash == (("CPPFLAGS", '"-DFOO"'),)
+        assert args._argv == ['--CPPFLAGS="-DFOO"']
 
 
 class TestDeriveCCompilerFromCxx:
@@ -2221,9 +2220,11 @@ class TestResolvedCompilerAvailable:
 
 
 def _std_check_args(*, variant="x", cc="g++", cxx="g++", cflags="-O0", cxxflags=""):
-    """SimpleNamespace for _check_compiler_supports_requested_standard.
+    """Finalized namespace for _check_compiler_supports_requested_standard.
     Defaults match the most common shape (gcc-style driver, -O0 cflags)."""
-    return SimpleNamespace(variant=variant, CC=cc, CXX=cxx, CFLAGS=cflags, CXXFLAGS=cxxflags)
+    args = SimpleNamespace(variant=variant, CC=cc, CXX=cxx, CFLAGS=cflags, CXXFLAGS=cxxflags, verbose=0)
+    uth.finalize_flag_state(args)
+    return args
 
 
 class TestCompilerSupportsRequestedStandard:
@@ -2487,8 +2488,10 @@ def test_check_wild_usable_not_selected_noop(monkeypatch):
     def _boom(name):
         raise AssertionError("should not probe when wild is not selected")
 
-    monkeypatch.setattr(shutil, "which", _boom)
+    # Build the fixture BEFORE arming the probe trap: finalize_flag_state
+    # legitimately resolves the compiler identity via shutil.which.
     args = _wild_args("g++", "-O2 -lm", "gcc.release")
+    monkeypatch.setattr(shutil, "which", _boom)
     apptools._check_wild_linker_usable(args)  # returns before any probe
 
 

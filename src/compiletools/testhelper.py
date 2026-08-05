@@ -1137,27 +1137,26 @@ def make_backend_args(tmpdir, **overrides):
 
 
 def finalize_flag_state(args) -> None:
-    """Synthesize a BuildState from a hand-built namespace and populate it.
+    """Synthesize a BuildState from a hand-built namespace and stash it.
 
     Use after ``cap.parse_args`` or after constructing a SimpleNamespace
     by hand, when the test then drives code that reads
-    ``args.{*}_tokens``, ``args.flags``, or (post consumer migration)
     ``build_apply.get_build_state(args)`` -- Hunter, MagicFlags, build
     backends. Production code never needs this -- ``parseargs`` already
     runs the full gather/compute/apply/populate pipeline.
 
-    The synthesis reads the namespace's raw values (registered slot set,
-    slot strings tokenized via the same ``split_command_cached`` the
-    gather boundary uses, ``Flags`` with the same gitroot-anchored
-    ``compiler_identity`` gather computes) and routes the resulting
-    state through the REAL ``populate_args`` -- one writer for the
-    namespace surface, so the stash, snapshot, and slot attrs can
-    never drift from what production writes. It does NOT run gather (no
-    pkg-config, no git subprocess for flags, no env): ``pkg_config_path``
-    is None and ``effects`` is empty in the synthesized state -- a
-    consumer migrated onto either of those fields will see the None/empty
-    form in every fixture-driven test, and a fixture wanting the real
-    values must go through ``parseargs``.
+    The synthesis reads the namespace's raw values (slot strings
+    tokenized via the same ``split_command_cached`` the gather boundary
+    uses, ``Flags`` with the same gitroot-anchored ``compiler_identity``
+    gather computes) and routes the resulting state through the REAL
+    ``populate_args`` -- one writer for the stash and name attrs, so
+    they can never drift from what production writes; the raw slot
+    attrs are never touched (populate_args no longer writes them). It
+    does NOT run gather (no pkg-config, no git subprocess for flags, no
+    env): ``pkg_config_path`` is None and ``effects`` is empty in the
+    synthesized state -- a consumer migrated onto either of those
+    fields will see the None/empty form in every fixture-driven test,
+    and a fixture wanting the real values must go through ``parseargs``.
     """
     from compiletools.apptools_compiler import compiler_identity
     from compiletools.build_apply import populate_args
@@ -1166,12 +1165,7 @@ def finalize_flag_state(args) -> None:
     from compiletools.git_utils import find_git_root
     from compiletools.utils import split_command_cached
 
-    # Sticky registered-slot set: hasattr is only authoritative on the
-    # first call -- populate_args materializes all four slot attrs, so a
-    # recompute on a second call would silently widen the set.
-    registered = getattr(args, "_registered_flag_slots", None)
-    if registered is None:
-        registered = tuple(slot for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS") if hasattr(args, slot))
+    registered = tuple(slot for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS") if hasattr(args, slot))
     strings = {slot: (getattr(args, slot, "") or "") for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS")}
     tokens = {slot: tuple(split_command_cached(raw)) for slot, raw in strings.items()}
     flags = Flags(

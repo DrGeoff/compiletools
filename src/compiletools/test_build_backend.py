@@ -648,12 +648,9 @@ class TestBuildGraphPopulation:
 
     def test_flags_and_names_come_from_build_state_not_legacy_attrs(self, tmp_path):
         """Consumer migration: the backend's flag/name reads must come from
-        the stashed BuildState, not the legacy args attrs. Value-identical
-        in production, so pin the SOURCE: mutate the legacy attrs after
-        construction and assert the compile command and cache-tree paths
-        still reflect the state."""
-        import dataclasses
-
+        the stashed BuildState, not attrs on args. Pin the SOURCE: mutate
+        the raw slot attr and the name attr after construction and assert
+        the compile command and cache-tree paths still reflect the state."""
         args = make_backend_args(
             tmp_path,
             filename=["/src/main.cpp"],
@@ -661,8 +658,8 @@ class TestBuildGraphPopulation:
         )
         backend = self._make_backend(tmp_path, args=args)
         state = args._build_state
-        # Legacy-attr mutations must now be inert for backend reads.
-        args.flags = dataclasses.replace(args.flags, cxx=("-DLEGACY_MUTATION",))
+        # Attr mutations must be inert for backend reads.
+        args.CXXFLAGS = "-DLEGACY_MUTATION"
         args.cas_objdir = str(tmp_path / "legacy-mutated-obj")
 
         graph = backend.build_graph()
@@ -675,20 +672,17 @@ class TestBuildGraphPopulation:
         assert state.names.cas_objdir in compile_rules[0].output
         assert "legacy-mutated-obj" not in compile_rules[0].output
 
-    def test_compile_command_uses_tokens_from_args(self, tmp_path):
-        """build_graph() compile commands must contain the tokens from
-        args.CXXFLAGS_tokens verbatim. This proves that build_backend
-        consumes the pre-tokenized cache instead of re-running
-        split_command_cached on the raw string at each call site.
+    def test_compile_command_uses_state_tokens(self, tmp_path):
+        """build_graph() compile commands must contain the stashed state's
+        cxx tokens verbatim. This proves that build_backend consumes the
+        pre-tokenized state instead of re-running split_command_cached on
+        a raw string at each call site.
         """
         args = make_backend_args(
             tmp_path,
             filename=["/src/main.cpp"],
             CXXFLAGS="-O2 -std=c++17 -DSPECIAL_TOKEN",
         )
-        # TOKEN-2: callers populate this on real args; tests using
-        # make_backend_args get it via the same helper.
-        assert hasattr(args, "CXXFLAGS_tokens"), "make_backend_args must populate CXXFLAGS_tokens"
         backend = self._make_backend(tmp_path, args=args)
 
         graph = backend.build_graph()
@@ -696,9 +690,11 @@ class TestBuildGraphPopulation:
         compile_rules = [r for r in graph.rules if r.rule_type == "compile" and r.output.endswith("main.o")]
         assert len(compile_rules) == 1
         cmd = _cmd(compile_rules[0])
-        # Each token from CXXFLAGS_tokens must appear in the compile cmd.
-        for token in args.CXXFLAGS_tokens:
-            assert token in cmd, f"CXXFLAGS token {token!r} missing from compile command {cmd!r}"
+        # Each token from the state's cxx slot must appear in the compile cmd.
+        state_cxx_tokens = args._build_state.flags.cxx
+        assert state_cxx_tokens, "fixture must carry cxx tokens or the loop below is vacuous"
+        for token in state_cxx_tokens:
+            assert token in cmd, f"state cxx token {token!r} missing from compile command {cmd!r}"
 
     def test_tests_produce_link_rules(self, tmp_path):
         """build_graph() should create link rules for args.tests."""

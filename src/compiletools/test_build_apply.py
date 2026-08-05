@@ -81,13 +81,25 @@ class TestApplyEffects:
 
 
 class TestPopulateArgs:
-    def test_legacy_surface_is_complete(self):
+    def test_flag_slots_are_never_written(self):
+        """The flag surface is state-only: populate_args must not create
+        or overwrite any raw slot attr, so gather re-reads the same base
+        on every pass and no record/restore machinery exists."""
+        state = _state(cxxflags=("-DDERIVED",), gitroot="/repo")
+        args = argparse.Namespace(verbose=0, CXXFLAGS="-O2 raw")
+        populate_args(args, state)
+        assert args.CXXFLAGS == "-O2 raw"
+        assert not hasattr(args, "CPPFLAGS")
+        assert not hasattr(args, "CXXFLAGS_tokens")
+        assert not hasattr(args, "flags")
+        assert not hasattr(args, "_raw_flag_slots")
+        assert not hasattr(args, "_flag_string_snapshot")
+        assert not hasattr(args, "_registered_flag_slots")
+
+    def test_name_attrs_are_written(self):
         state = _state(cxxflags=("-O2",), gitroot="/repo")
         args = argparse.Namespace(verbose=0)
         populate_args(args, state)
-        assert state.cxxflags == args.CXXFLAGS
-        assert list(args.CXXFLAGS_tokens) == list(state.tokens.cxx)
-        assert args.flags == state.flags
         assert args.variant == "gcc.debug"
         assert args.bindir == "bin/gcc.debug"
 
@@ -102,49 +114,24 @@ class TestPopulateArgs:
         assert args.cas_pcmdir == state.names.cas_pcmdir
         assert args.cas_exedir == state.names.cas_exedir
 
-    def test_flag_string_snapshot_matches_written_strings(self):
-        state = _state(cxxflags=("-O2",))
-        args = argparse.Namespace(verbose=0)
-        populate_args(args, state)
-        snapshot = dict(args._flag_string_snapshot)
-        assert snapshot["CXXFLAGS"] == args.CXXFLAGS
-
-    def test_flag_string_snapshot_only_covers_registered_slots(self):
-        state = _state(cxxflags=("-O2",), registered_slots=frozenset({"CXXFLAGS"}))
-        args = argparse.Namespace(verbose=0)
-        populate_args(args, state)
-        snapshot = dict(args._flag_string_snapshot)
-        assert set(snapshot) == {"CXXFLAGS"}
-        # all four slots are still materialized as raw strings/tokens for
-        # downstream consumers even though only CXXFLAGS is registered.
-        assert state.cppflags == args.CPPFLAGS
-        assert list(args.CPPFLAGS_tokens) == list(state.tokens.cpp)
-
-    def test_registered_flag_slots_written_in_canonical_order(self):
-        state = _state(registered_slots=frozenset({"CPPFLAGS", "CFLAGS", "CXXFLAGS"}))
-        args = argparse.Namespace(verbose=0)
-        populate_args(args, state)
-        assert args._registered_flag_slots == ("CPPFLAGS", "CFLAGS", "CXXFLAGS")
-
     def test_round_trip_through_gather_keeps_ldflags_unregistered(self):
         """want_libs loop closure: a populate_args'd namespace fed back to
-        gather_inputs must report LDFLAGS unregistered even though
-        populate_args materialized args.LDFLAGS for downstream consumers."""
+        gather_inputs must report LDFLAGS unregistered — structural now,
+        since populate_args never materializes slot attrs."""
         from compiletools.build_inputs import gather_inputs
 
         state = _state(registered_slots=frozenset({"CPPFLAGS", "CFLAGS", "CXXFLAGS"}))
         args = argparse.Namespace(verbose=0)
         populate_args(args, state)
-        assert hasattr(args, "LDFLAGS")
+        assert not hasattr(args, "LDFLAGS")
         inputs = gather_inputs(args, BuildContext())
         assert "LDFLAGS" not in inputs.registered_slots
 
     def test_stashes_build_state_on_namespace(self):
-        """Consumer-migration surface: populate_args stashes the BuildState
-        itself so migrated consumers read args._build_state instead of the
-        legacy slot attrs. Refreshed on every call (unlike _raw_flag_slots,
-        which is first-call-only): consumers must see the CURRENT pass's
-        state after a re-run."""
+        """Consumer surface: populate_args stashes the BuildState itself so
+        consumers read args._build_state via get_build_state. Refreshed on
+        every call: consumers must see the CURRENT pass's state after a
+        re-run."""
         state1 = _state(cxxflags=("-DPASS1",))
         args = argparse.Namespace(verbose=0)
         populate_args(args, state1)
@@ -173,11 +160,9 @@ class TestPopulateArgs:
     def test_finalize_flag_state_routes_through_populate_args(self):
         """testhelper.finalize_flag_state must not hand-mirror
         populate_args' namespace writes: it builds a synthetic state and
-        routes it through the REAL populate_args (one writer). Pinned by
-        checking the fixture namespace carries populate_args' full
-        surface — including fields only populate_args writes
-        (_registered_flag_slots ordering, _flag_string_snapshot) — and
-        that the stashed state round-trips the fixture's own values."""
+        routes it through the REAL populate_args (one writer). The stash
+        round-trips the fixture's own values and the raw slot attrs are
+        untouched."""
         import compiletools.testhelper as uth
         from compiletools.build_apply import get_build_state
 
@@ -185,30 +170,20 @@ class TestPopulateArgs:
         uth.finalize_flag_state(args)
         state = get_build_state(args)
         assert state.cxxflags == "-O2"
+        assert state.cppflags == "-DFIX"
+        assert state.registered_slots == frozenset({"CPPFLAGS", "CFLAGS", "CXXFLAGS"})
         assert args.CXXFLAGS == "-O2"
-        assert dict(args._flag_string_snapshot)["CPPFLAGS"] == "-DFIX"
-        assert args._registered_flag_slots == ("CPPFLAGS", "CFLAGS", "CXXFLAGS")
-        assert list(args.CXXFLAGS_tokens) == list(state.tokens.cxx)
+        assert not hasattr(args, "CXXFLAGS_tokens")
 
-    def test_records_pre_overwrite_raw_slots(self):
-        """The shim preserves what it clobbers: the slot strings present
-        BEFORE populate_args overwrites them land in args._raw_flag_slots,
-        hasattr-filtered (a slot absent pre-call stays absent from the
-        record so its unsuppliedness survives)."""
-        state = _state(cxxflags=("-DDERIVED",))
-        args = argparse.Namespace(verbose=0, CXXFLAGS="-O2 raw", CPPFLAGS="unsupplied")
-        populate_args(args, state)
-        assert args._raw_flag_slots == {"CXXFLAGS": "-O2 raw", "CPPFLAGS": "unsupplied"}
-        assert state.cxxflags == args.CXXFLAGS
+    def test_repopulate_from_untouched_raw_slots_is_idempotent(self):
+        """The re-run loop closure without any record: because the slots
+        are never overwritten, gather on a populated namespace reads the
+        same raw values as the first pass and produces equal inputs."""
+        from compiletools.build_inputs import gather_inputs
 
-    def test_raw_slot_record_is_first_call_only(self):
-        """A second populate_args (re-run flow) must not overwrite the
-        record with pass 1's derived output — that would reintroduce the
-        compounding the record exists to prevent."""
-        state1 = _state(cxxflags=("-DPASS1",))
-        args = argparse.Namespace(verbose=0, CXXFLAGS="-O2 raw")
-        populate_args(args, state1)
-        state2 = _state(cxxflags=("-DPASS2",))
-        populate_args(args, state2)
-        assert args._raw_flag_slots == {"CXXFLAGS": "-O2 raw"}
-        assert state2.cxxflags == args.CXXFLAGS
+        args = argparse.Namespace(verbose=0, CXXFLAGS="-O2 -Wall", CPPFLAGS="unsupplied")
+        first = gather_inputs(args, BuildContext())
+        populate_args(args, _state(cxxflags=("-DDERIVED",)))
+        second = gather_inputs(args, BuildContext())
+        assert first.cxxflags == second.cxxflags == ("-O2", "-Wall")
+        assert first.cppflags is None and second.cppflags is None
