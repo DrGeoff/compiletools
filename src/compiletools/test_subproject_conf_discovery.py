@@ -16,6 +16,7 @@ import compiletools.configutils
 import compiletools.findtargets
 import compiletools.testhelper as uth
 import compiletools.utils
+from compiletools.build_apply import get_build_state
 from compiletools.build_context import BuildContext
 from compiletools.configutils import (
     ConfContradictionError,
@@ -866,20 +867,20 @@ class TestParseargsTargetAnchoring:
         """The bug: invoking from gitroot with a target inside appbeta/ must
         load appbeta/ct.conf."""
         args = _parse_cake_args(monorepo, [*_ARGV_BASE, os.path.join("appbeta", "main.cpp")])
-        assert "-DAPPBETA_EXTRA" in args.CPPFLAGS
+        assert "-DAPPBETA_EXTRA" in get_build_state(args).cppflags
 
     def test_control_cwd_inside_subproject_picks_up_its_ct_conf(self, monorepo):
         args = _parse_cake_args(monorepo / "appbeta", [*_ARGV_BASE, "main.cpp"])
-        assert "-DAPPBETA_EXTRA" in args.CPPFLAGS
+        assert "-DAPPBETA_EXTRA" in get_build_state(args).cppflags
 
     def test_control_subproject_flags_apply_invocation_globally(self, monorepo):
         """Pins invocation-global application (spec: no per-TU scoping)."""
         args = _parse_cake_args(monorepo / "appbeta", [*_ARGV_BASE, os.path.join("..", "libcore", "util.cpp")])
-        assert "-DAPPBETA_EXTRA" in args.CPPFLAGS
+        assert "-DAPPBETA_EXTRA" in get_build_state(args).cppflags
 
     def test_no_subproject_conf_means_no_extra_parse_effects(self, monorepo):
         args = _parse_cake_args(monorepo, [*_ARGV_BASE, os.path.join("libcore", "util.cpp")])
-        assert "-DAPPBETA_EXTRA" not in args.CPPFLAGS
+        assert "-DAPPBETA_EXTRA" not in get_build_state(args).cppflags
 
     def test_unregistered_key_conflict_does_not_block_ct_cake(self, monorepo):
         # A key ct-cake never registered (another ct-* tool's key) differing
@@ -968,7 +969,7 @@ class TestParseargsTargetAnchoring:
         deep.mkdir(parents=True)
         (deep / "prog.cpp").write_text("int main() { return 0; }\n")
         args = _parse_cake_args(monorepo, [*_ARGV_BASE, os.path.join("appbeta", "src", "deep", "prog.cpp")])
-        assert "-DAPPBETA_EXTRA" in args.CPPFLAGS
+        assert "-DAPPBETA_EXTRA" in get_build_state(args).cppflags
 
     def test_ct_conf_d_only_subproject_is_loaded(self, monorepo):
         appgamma = monorepo / "appgamma"
@@ -977,7 +978,7 @@ class TestParseargsTargetAnchoring:
         (conf_d / "ct.conf").write_text("append-CPPFLAGS = -DAPPGAMMA_EXTRA\n")
         (appgamma / "main.cpp").write_text("int main() { return 0; }\n")
         args = _parse_cake_args(monorepo, [*_ARGV_BASE, os.path.join("appgamma", "main.cpp")])
-        assert "-DAPPGAMMA_EXTRA" in args.CPPFLAGS
+        assert "-DAPPGAMMA_EXTRA" in get_build_state(args).cppflags
 
     def test_case_mismatched_key_in_target_layer_gets_did_you_mean_note(self, monorepo, capsys):
         """Conf keys are case-sensitive; configargparse silently ignores
@@ -986,7 +987,7 @@ class TestParseargsTargetAnchoring:
         spelling, so the resulting no-op is self-diagnosing."""
         (monorepo / "appbeta" / "ct.conf").write_text("append-cppflags = -DAPPBETA_EXTRA\n")
         args = _parse_cake_args(monorepo, [*_ARGV_BASE, "-v", os.path.join("appbeta", "main.cpp")])
-        assert "-DAPPBETA_EXTRA" not in args.CPPFLAGS  # still ignored -- the note is diagnostic only
+        assert "-DAPPBETA_EXTRA" not in get_build_state(args).cppflags  # still ignored -- the note is diagnostic only
         err = capsys.readouterr().err
         assert "append-cppflags" in err
         assert "append-CPPFLAGS" in err
@@ -1039,7 +1040,7 @@ class TestParseargsTargetAnchoring:
             monorepo,
             [*_ARGV_BASE, os.path.join("appbeta", "main.cpp"), os.path.join("appdelta", "main.cpp")],
         )
-        assert args.CPPFLAGS.count("-DAPPBETA_EXTRA") == 1
+        assert get_build_state(args).cppflags.count("-DAPPBETA_EXTRA") == 1
 
     def test_two_harmonious_subprojects_merge(self, monorepo):
         appalpha = monorepo / "appalpha"
@@ -1050,7 +1051,7 @@ class TestParseargsTargetAnchoring:
             monorepo,
             [*_ARGV_BASE, os.path.join("appalpha", "main.cpp"), os.path.join("appbeta", "main.cpp")],
         )
-        assert "-DAPPBETA_EXTRA" in args.CPPFLAGS
+        assert "-DAPPBETA_EXTRA" in get_build_state(args).cppflags
 
     def test_cwd_conf_vs_target_conf_conflict_errors(self, monorepo):
         appalpha = monorepo / "appalpha"
@@ -1125,8 +1126,8 @@ class TestParseargsTargetAnchoring:
             "append-CPPFLAGS = -DAPPBETA_EXTRA\ntests = [${CONF_DIR}/../appgamma/test_gamma.cpp]\n"
         )
         args = _parse_cake_args(monorepo, [*_ARGV_BASE, os.path.join("appbeta", "main.cpp")])
-        assert "-DAPPBETA_EXTRA" in args.CPPFLAGS
-        assert "-DAPPGAMMA_EXTRA" in args.CXXFLAGS
+        assert "-DAPPBETA_EXTRA" in get_build_state(args).cppflags
+        assert "-DAPPGAMMA_EXTRA" in get_build_state(args).cxxflags
         assert any(t.endswith("test_gamma.cpp") for t in args.tests)
 
     def test_conf_injected_targets_terminate_on_mutual_injection(self, monorepo):
@@ -1144,8 +1145,8 @@ class TestParseargsTargetAnchoring:
             "append-CPPFLAGS = -DAPPBETA_EXTRA\ntests = [${CONF_DIR}/../appgamma/test_gamma.cpp]\n"
         )
         args = _parse_cake_args(monorepo, [*_ARGV_BASE, os.path.join("appbeta", "main.cpp")])
-        assert "-DAPPBETA_EXTRA" in args.CPPFLAGS
-        assert "-DAPPGAMMA_EXTRA" in args.CXXFLAGS
+        assert "-DAPPBETA_EXTRA" in get_build_state(args).cppflags
+        assert "-DAPPGAMMA_EXTRA" in get_build_state(args).cxxflags
         assert any(t.endswith("libbeta.cpp") for t in args.dynamic)
 
     def test_rejected_layers_do_not_persist_on_parser(self, monorepo):
@@ -1193,7 +1194,7 @@ class TestParseargsTargetAnchoring:
             src.write_text(f"// level {level}\nint main() {{ return 0; }}\n")
             targets.append(os.path.relpath(str(src), str(root)))
         args = _parse_cake_args(root, [*_ARGV_BASE, *targets])
-        assert args.CPPFLAGS.count("-DCHAIN") == 1
+        assert get_build_state(args).cppflags.count("-DCHAIN") == 1
         loaded = {os.path.realpath(p) for p in args._parser._default_config_files}
         for conf in conf_paths:
             assert os.path.realpath(conf) in loaded
@@ -1224,8 +1225,8 @@ class TestParseargsTargetAnchoring:
         (fakehome / "ct.conf").write_text(f"append-CPPFLAGS = -DSTRAY\ntests = [{sub / 't2.cpp'}]\n")
         (src / "main.cpp").write_text("int main() { return 0; }\n")
         args = _parse_cake_args(work, [*_ARGV_BASE, os.path.join("..", "src", "main.cpp")])
-        assert "-DSTRAY" in args.CPPFLAGS
-        assert "-DSUB_EXTRA" in args.CXXFLAGS  # round two loaded sub's layer
+        assert "-DSTRAY" in get_build_state(args).cppflags
+        assert "-DSUB_EXTRA" in get_build_state(args).cxxflags  # round two loaded sub's layer
         err = capsys.readouterr().err
         assert err.count("home directory or above") == 1
 
@@ -1289,7 +1290,7 @@ class TestParseargsTargetAnchoring:
         # Corrected conf: the same walk now validates, and the warning fires once.
         (sub / "ct.conf").write_text("append-CPPFLAGS = -DSTRAY\n")
         args = _parse_cake_args(work, [*_ARGV_BASE, *targets])
-        assert "-DSTRAY" in args.CPPFLAGS
+        assert "-DSTRAY" in get_build_state(args).cppflags
         assert capsys.readouterr().err.count("home directory or above") == 1
 
     def test_round_two_layer_contradicting_round_one_layer_errors(self, monorepo):
@@ -1313,7 +1314,7 @@ class TestAutoDiscoveryReanchor:
         """Simulates the cake --auto flow: parse with no targets, then
         assign discovered targets and re-anchor."""
         args = _parse_cake_args(monorepo, [*_ARGV_BASE])
-        assert "-DAPPBETA_EXTRA" not in args.CPPFLAGS
+        assert "-DAPPBETA_EXTRA" not in get_build_state(args).cppflags
         args.filename = [str(monorepo / "appbeta" / "main.cpp")]
         with uth.DirectoryContext(str(monorepo)):
             reanchored = compiletools.apptools.reanchor_config_for_discovered_targets(args)

@@ -98,7 +98,7 @@ def _build_cake_args(main_repo: str, extra_argv: list[str], context: BuildContex
 @requires_functional_compiler
 def test_fetch_step_registers_external_include_dirs(monkeypatch) -> None:
     """End-to-end: a //#GIT= main gets the external cloned and its include dir
-    folded into the frozen args.flags, with no flag-string drift."""
+    folded into the stashed BuildState, with no flag-string drift."""
     with tempfile.TemporaryDirectory() as root:
         ext = _make_bare_with_files(root, "extlib", {"include/extlib.h": "#pragma once\nint extfn();\n"})
         externals_dir = os.path.join(root, "externals")
@@ -130,8 +130,10 @@ def test_fetch_step_registers_external_include_dirs(monkeypatch) -> None:
         assert os.path.join(clone, "include") in args.INCLUDE.split()
         compiletools.apptools.resubstitute(args)
 
-        # (2) args.flags (frozen) carries -I entries pointing at the external.
-        cxx_tokens = list(args.flags.cxx)
+        # (2) The stashed BuildState carries -I entries pointing at the external.
+        from compiletools.build_apply import get_build_state
+
+        cxx_tokens = list(get_build_state(args).flags.cxx)
         joined = " ".join(cxx_tokens)
         assert os.path.join(clone, "include") in joined
         assert clone in joined

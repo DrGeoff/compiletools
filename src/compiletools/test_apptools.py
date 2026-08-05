@@ -54,6 +54,7 @@ from compiletools.apptools import (
     verbose_print_args,
     verboseprintconfig,
 )
+from compiletools.build_apply import get_build_state
 from compiletools.build_context import BuildContext
 
 
@@ -1078,7 +1079,7 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
 
     def test_three_axis_append_cxxflags_all_present(self):
         """All three axis confs' ``append-CXXFLAGS`` values reach
-        ``args.append_cxxflags`` (and therefore the final ``args.CXXFLAGS``).
+        ``args.append_cxxflags`` (and therefore the final ``get_build_state(args).cxxflags``).
         """
 
         with uth.TempDirContextNoChange() as repo_root:
@@ -1087,14 +1088,14 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
             args = _parseargs_for_variant(repo_root, argv)
 
             for marker in ("-DFROM_GCC_AXIS", "-DFROM_RELEASE_AXIS", "-DFROM_EXTRAS_AXIS"):
-                assert marker in args.CXXFLAGS, (
-                    f"{marker} missing from args.CXXFLAGS={args.CXXFLAGS!r}. "
+                assert marker in get_build_state(args).cxxflags, (
+                    f"{marker} missing from cxxflags={get_build_state(args).cxxflags!r}. "
                     f"Multi-conf append-CXXFLAGS composition is broken — only "
                     f"the highest-priority conf's value survived. "
                     f"args.append_cxxflags={args.append_cxxflags!r}"
                 )
-                assert marker in args.CFLAGS, (
-                    f"{marker} missing from args.CFLAGS={args.CFLAGS!r}; "
+                assert marker in get_build_state(args).cflags, (
+                    f"{marker} missing from cflags={get_build_state(args).cflags!r}; "
                     f"append-CFLAGS suffers the same bug as append-CXXFLAGS."
                 )
 
@@ -1103,7 +1104,7 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
         file's ``append-CXXFLAGS`` rather than replacing it.
 
         With three conf files contributing append values and one CLI value,
-        all four should reach the final ``args.CXXFLAGS``. (Stock
+        all four should reach the final ``get_build_state(args).cxxflags``. (Stock
         configargparse drops the conf-file values when the CLI flag is
         present too.)
         """
@@ -1120,11 +1121,11 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
             # The CLI value is always honored. The three conf values are
             # the regression target: at least one of them MUST survive
             # alongside the CLI value (this is the user's reported bug).
-            assert "-DFROM_CLI" in args.CXXFLAGS, args.CXXFLAGS
+            assert "-DFROM_CLI" in get_build_state(args).cxxflags, get_build_state(args).cxxflags
             for marker in ("-DFROM_GCC_AXIS", "-DFROM_RELEASE_AXIS", "-DFROM_EXTRAS_AXIS"):
-                assert marker in args.CXXFLAGS, (
+                assert marker in get_build_state(args).cxxflags, (
                     f"CLI --append-CXXFLAGS swallowed {marker} from the conf "
-                    f"hierarchy. CXXFLAGS={args.CXXFLAGS!r}, "
+                    f"hierarchy. CXXFLAGS={get_build_state(args).cxxflags!r}, "
                     f"append_cxxflags={args.append_cxxflags!r}"
                 )
 
@@ -1150,8 +1151,8 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
             args = _parseargs_for_variant(repo_root, argv, add_link=True)
 
             for marker in ("-Wl,--build-id", "-Wl,-O1", "-Wl,--as-needed"):
-                assert marker in args.LDFLAGS, (
-                    f"{marker} missing from LDFLAGS={args.LDFLAGS!r}; "
+                assert marker in get_build_state(args).ldflags, (
+                    f"{marker} missing from LDFLAGS={get_build_state(args).ldflags!r}; "
                     f"append-LDFLAGS did not accumulate across the hierarchy. "
                     f"args.append_ldflags={args.append_ldflags!r}"
                 )
@@ -1178,8 +1179,8 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
             args = _parseargs_for_variant(repo_root, argv)
 
             for marker in ("-DSCALAR_FROM_GCC", "-DLIST_VAL1", "-DLIST_VAL2"):
-                assert marker in args.CXXFLAGS, (
-                    f"{marker} missing from CXXFLAGS={args.CXXFLAGS!r}; "
+                assert marker in get_build_state(args).cxxflags, (
+                    f"{marker} missing from CXXFLAGS={get_build_state(args).cxxflags!r}; "
                     f"list-form syntax may have broken the accumulating "
                     f"parser. args.append_cxxflags={args.append_cxxflags!r}"
                 )
@@ -1190,7 +1191,7 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
         wins" rule resolves conflicting flags (e.g. ``-O0`` vs ``-O3``) in
         favor of the higher-priority axis. With the conf-file hierarchy
         ``gcc < release < extras``, an ``-O0`` in gcc.conf must end up to
-        the LEFT of an ``-O3`` in release.conf in args.CXXFLAGS.
+        the LEFT of an ``-O3`` in release.conf in get_build_state(args).cxxflags.
         """
 
         with _temp_repo_with_ct_conf("gcc.release.extras", "gcc, release, extras") as (repo_root, conf_d):
@@ -1205,7 +1206,7 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
             argv = ["--variant=gcc,release,extras", "--no-git-root"]
             args = _parseargs_for_variant(repo_root, argv)
 
-            cxx = args.CXXFLAGS
+            cxx = get_build_state(args).cxxflags
             o0 = cxx.find("-O0")
             o3 = cxx.find("-O3")
             os_ = cxx.find("-Os")
@@ -1251,8 +1252,8 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
             # 28), so the observable is the -I tokens the core folded into
             # the compile slots.
             for inc_dir in (inc_a, inc_b, inc_c):
-                assert inc_dir in args.CPPFLAGS_tokens, (
-                    f"{inc_dir} missing from args.CPPFLAGS_tokens={args.CPPFLAGS_tokens!r}; "
+                assert inc_dir in get_build_state(args).flags.cpp, (
+                    f"{inc_dir} missing from get_build_state(args).flags.cpp={get_build_state(args).flags.cpp!r}; "
                     f"append-include did not accumulate across the hierarchy. "
                     f"args.append_include={args.append_include!r}"
                 )
@@ -1274,11 +1275,11 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
             ]
             args = _parseargs_for_variant(repo_root, argv)
 
-            assert "-DFROM_CLI_SPACE" in args.CXXFLAGS, args.CXXFLAGS
+            assert "-DFROM_CLI_SPACE" in get_build_state(args).cxxflags, get_build_state(args).cxxflags
             for marker in ("-DFROM_GCC_AXIS", "-DFROM_RELEASE_AXIS", "-DFROM_EXTRAS_AXIS"):
-                assert marker in args.CXXFLAGS, (
+                assert marker in get_build_state(args).cxxflags, (
                     f"Space-form CLI --append-CXXFLAGS swallowed {marker}. "
-                    f"args.CXXFLAGS={args.CXXFLAGS!r}, "
+                    f"cxxflags={get_build_state(args).cxxflags!r}, "
                     f"args.append_cxxflags={args.append_cxxflags!r}"
                 )
 
@@ -1286,7 +1287,7 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
         """``prepend-CXXFLAGS`` follows the same accumulation rule as
         ``append-CXXFLAGS``: when three axis confs each ``prepend-CXXFLAGS``,
         all three values reach ``args.prepend_cxxflags`` and the final
-        ``args.CXXFLAGS``. ``prepend-*`` uses ``action='append'`` under the
+        ``get_build_state(args).cxxflags``. ``prepend-*`` uses ``action='append'`` under the
         hood (same as ``append-*``), so the underlying configargparse bug
         affects both — and the fix must cover both.
         """
@@ -1304,8 +1305,8 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
             args = _parseargs_for_variant(repo_root, argv)
 
             for marker in ("-DPREPEND_GCC", "-DPREPEND_RELEASE", "-DPREPEND_EXTRAS"):
-                assert marker in args.CXXFLAGS, (
-                    f"{marker} missing from args.CXXFLAGS={args.CXXFLAGS!r}. "
+                assert marker in get_build_state(args).cxxflags, (
+                    f"{marker} missing from cxxflags={get_build_state(args).cxxflags!r}. "
                     f"prepend-CXXFLAGS values are not accumulating across the "
                     f"conf hierarchy. args.prepend_cxxflags={args.prepend_cxxflags!r}"
                 )
@@ -1511,21 +1512,23 @@ class TestPkgConfigConfValueSplitting:
         whitespace = _parseargs_with_pkg_config_conf(f"pkg-config = conditional nested {self.MISSING}")
         listliteral = _parseargs_with_pkg_config_conf(f"pkg-config = [conditional, nested, {self.MISSING}]")
 
-        assert uth.without_prefix_map(whitespace.args.CPPFLAGS) == uth.without_prefix_map(listliteral.args.CPPFLAGS), (
+        assert uth.without_prefix_map(get_build_state(whitespace.args).cppflags) == uth.without_prefix_map(
+            get_build_state(listliteral.args).cppflags
+        ), (
             f"whitespace and list-literal conf forms produced different CPPFLAGS.\n"
             f"  whitespace  args.pkg_config={whitespace.args.pkg_config!r}\n"
-            f"              CPPFLAGS={whitespace.args.CPPFLAGS!r}\n"
+            f"              CPPFLAGS={get_build_state(whitespace.args).cppflags!r}\n"
             f"  listliteral args.pkg_config={listliteral.args.pkg_config!r}\n"
-            f"              CPPFLAGS={listliteral.args.CPPFLAGS!r}"
+            f"              CPPFLAGS={get_build_state(listliteral.args).cppflags!r}"
         )
-        assert whitespace.args.LDFLAGS == listliteral.args.LDFLAGS, (
+        assert get_build_state(whitespace.args).ldflags == get_build_state(listliteral.args).ldflags, (
             f"whitespace and list-literal conf forms produced different LDFLAGS.\n"
-            f"  whitespace  LDFLAGS={whitespace.args.LDFLAGS!r}\n"
-            f"  listliteral LDFLAGS={listliteral.args.LDFLAGS!r}"
+            f"  whitespace  LDFLAGS={get_build_state(whitespace.args).ldflags!r}\n"
+            f"  listliteral LDFLAGS={get_build_state(listliteral.args).ldflags!r}"
         )
         for marker in ("-DTEST_PKG_ENABLED", "-DTEST_PKG1_ENABLED"):
-            assert marker in whitespace.args.CPPFLAGS, (
-                f"{marker} missing from the whitespace form: {whitespace.args.CPPFLAGS!r}"
+            assert marker in get_build_state(whitespace.args).cppflags, (
+                f"{marker} missing from the whitespace form: {get_build_state(whitespace.args).cppflags!r}"
             )
 
     @pytest.mark.parametrize(
@@ -1597,15 +1600,17 @@ class TestPkgConfigConfValueSplitting:
         comma = _parseargs_with_pkg_config_conf(f"pkg-config = conditional, nested, {self.MISSING}")
         whitespace = _parseargs_with_pkg_config_conf(f"pkg-config = conditional nested {self.MISSING}")
 
-        assert uth.without_prefix_map(comma.args.CPPFLAGS) == uth.without_prefix_map(whitespace.args.CPPFLAGS), (
+        assert uth.without_prefix_map(get_build_state(comma.args).cppflags) == uth.without_prefix_map(
+            get_build_state(whitespace.args).cppflags
+        ), (
             f"comma and whitespace conf forms produced different CPPFLAGS.\n"
             f"  comma      args.pkg_config={comma.args.pkg_config!r}\n"
-            f"             CPPFLAGS={comma.args.CPPFLAGS!r}\n"
-            f"  whitespace CPPFLAGS={whitespace.args.CPPFLAGS!r}"
+            f"             CPPFLAGS={get_build_state(comma.args).cppflags!r}\n"
+            f"  whitespace CPPFLAGS={get_build_state(whitespace.args).cppflags!r}"
         )
-        assert comma.args.LDFLAGS == whitespace.args.LDFLAGS, (
+        assert get_build_state(comma.args).ldflags == get_build_state(whitespace.args).ldflags, (
             f"comma and whitespace conf forms produced different LDFLAGS: "
-            f"{comma.args.LDFLAGS!r} vs {whitespace.args.LDFLAGS!r}"
+            f"{get_build_state(comma.args).ldflags!r} vs {get_build_state(whitespace.args).ldflags!r}"
         )
         assert not [c for c in self._categories(comma.warnings) if "," in c], (
             f"a comma survived into a queried package name: {comma.warnings!r}"
@@ -1631,12 +1636,14 @@ class TestPkgConfigConfValueSplitting:
         bracket = _parseargs_with_pkg_config_conf("pkg-config = [conditional >= 1.0.0, nested]")
 
         for marker in ("-DTEST_PKG_ENABLED", "-DTEST_PKG1_ENABLED"):
-            assert marker in bare.args.CPPFLAGS, (
+            assert marker in get_build_state(bare.args).cppflags, (
                 f"{marker} missing from the bare constraint+comma form. "
-                f"args.pkg_config={bare.args.pkg_config!r}, CPPFLAGS={bare.args.CPPFLAGS!r}"
+                f"args.pkg_config={bare.args.pkg_config!r}, CPPFLAGS={get_build_state(bare.args).cppflags!r}"
             )
-        assert uth.without_prefix_map(bare.args.CPPFLAGS) == uth.without_prefix_map(bracket.args.CPPFLAGS), (
-            f"bare and bracket forms disagree: {bare.args.CPPFLAGS!r} vs {bracket.args.CPPFLAGS!r}"
+        assert uth.without_prefix_map(get_build_state(bare.args).cppflags) == uth.without_prefix_map(
+            get_build_state(bracket.args).cppflags
+        ), (
+            f"bare and bracket forms disagree: {get_build_state(bare.args).cppflags!r} vs {get_build_state(bracket.args).cppflags!r}"
         )
         assert not bare.warnings, f"a documented equivalent form must warn about nothing, got {bare.warnings!r}"
 
@@ -1650,13 +1657,13 @@ class TestPkgConfigConfValueSplitting:
         """
         result = _parseargs_with_pkg_config_conf(f"pkg-config = conditional {self.MISSING}")
 
-        assert "-DTEST_PKG_ENABLED" in result.args.CPPFLAGS, (
+        assert "-DTEST_PKG_ENABLED" in get_build_state(result.args).cppflags, (
             f"conditional's cflags were discarded because {self.MISSING!r} is absent. "
-            f"args.pkg_config={result.args.pkg_config!r}, CPPFLAGS={result.args.CPPFLAGS!r}"
+            f"args.pkg_config={result.args.pkg_config!r}, CPPFLAGS={get_build_state(result.args).cppflags!r}"
         )
-        assert "-ltestpkg" in result.args.LDFLAGS, (
+        assert "-ltestpkg" in get_build_state(result.args).ldflags, (
             f"conditional's libs were discarded because {self.MISSING!r} is absent. "
-            f"args.pkg_config={result.args.pkg_config!r}, LDFLAGS={result.args.LDFLAGS!r}"
+            f"args.pkg_config={result.args.pkg_config!r}, LDFLAGS={get_build_state(result.args).ldflags!r}"
         )
 
     def test_missing_package_warning_names_only_the_missing_package(self, pkgconfig_env):
@@ -1694,11 +1701,11 @@ class TestPkgConfigConfValueSplitting:
         """
         result = _parseargs_with_pkg_config_conf("pkg-config = conditional >= 1.0.0")
 
-        assert "-DTEST_PKG_ENABLED" in result.args.CPPFLAGS, (
-            f"satisfied version floor did not resolve: CPPFLAGS={result.args.CPPFLAGS!r}"
+        assert "-DTEST_PKG_ENABLED" in get_build_state(result.args).cppflags, (
+            f"satisfied version floor did not resolve: CPPFLAGS={get_build_state(result.args).cppflags!r}"
         )
-        assert "-ltestpkg" in result.args.LDFLAGS, (
-            f"satisfied version floor did not resolve: LDFLAGS={result.args.LDFLAGS!r}"
+        assert "-ltestpkg" in get_build_state(result.args).ldflags, (
+            f"satisfied version floor did not resolve: LDFLAGS={get_build_state(result.args).ldflags!r}"
         )
         assert not result.warnings, f"a satisfied version floor must warn about nothing, got {result.warnings!r}"
 
@@ -1733,9 +1740,9 @@ class TestPkgConfigConfValueSplitting:
         """
         result = _parseargs_with_pkg_config_conf(f"pkg-config = conditional >= 1.0.0 {self.MISSING}")
 
-        assert "-DTEST_PKG_ENABLED" in result.args.CPPFLAGS, (
+        assert "-DTEST_PKG_ENABLED" in get_build_state(result.args).cppflags, (
             f"version-constrained spec lost its flags on the fallback path. "
-            f"args.pkg_config={result.args.pkg_config!r}, CPPFLAGS={result.args.CPPFLAGS!r}"
+            f"args.pkg_config={result.args.pkg_config!r}, CPPFLAGS={get_build_state(result.args).cppflags!r}"
         )
         assert any(self.MISSING in w for w in result.warnings), (
             f"no warning names the absent package {self.MISSING!r}: {result.warnings!r}"
@@ -1778,9 +1785,9 @@ class TestPkgConfigConfValueSplitting:
         )
 
         categories = self._categories(result.warnings)
-        assert "-DTEST_PKG1_ENABLED" in result.args.CPPFLAGS, (
+        assert "-DTEST_PKG1_ENABLED" in get_build_state(result.args).cppflags, (
             f"'nested' was absorbed by the preceding entry's dangling operator. "
-            f"args.pkg_config={result.args.pkg_config!r}, CPPFLAGS={result.args.CPPFLAGS!r}"
+            f"args.pkg_config={result.args.pkg_config!r}, CPPFLAGS={get_build_state(result.args).cppflags!r}"
         )
         assert "pkg-config malformed package specification 'conditional >='" in categories, (
             f"the dangling operator was not reported as malformed: {categories!r}"
@@ -1804,9 +1811,9 @@ class TestPkgConfigConfValueSplitting:
         result = _parseargs_with_pkg_config_conf("pkg-config = conditional >=, nested")
 
         categories = self._categories(result.warnings)
-        assert "-DTEST_PKG1_ENABLED" in result.args.CPPFLAGS, (
+        assert "-DTEST_PKG1_ENABLED" in get_build_state(result.args).cppflags, (
             f"'nested' was swallowed as a version operand across the comma. "
-            f"args.pkg_config={result.args.pkg_config!r}, CPPFLAGS={result.args.CPPFLAGS!r}"
+            f"args.pkg_config={result.args.pkg_config!r}, CPPFLAGS={get_build_state(result.args).cppflags!r}"
         )
         assert "pkg-config malformed package specification 'conditional >='" in categories, (
             f"the dangling operator was not reported as malformed: {categories!r}"
@@ -1838,9 +1845,9 @@ class TestPkgConfigConfValueSplitting:
         """
         result = _parseargs_with_pkg_config_conf("pkg-config = conditional >=2.0.0")
 
-        assert "-DTEST_PKG_ENABLED" not in result.args.CPPFLAGS, (
+        assert "-DTEST_PKG_ENABLED" not in get_build_state(result.args).cppflags, (
             f"a 2.0.0 floor resolved against the 1.0.0 fixture — the floor was dropped. "
-            f"args.pkg_config={result.args.pkg_config!r}, CPPFLAGS={result.args.CPPFLAGS!r}"
+            f"args.pkg_config={result.args.pkg_config!r}, CPPFLAGS={get_build_state(result.args).cppflags!r}"
         )
         assert result.warnings, "an unmet version floor produced no diagnostic at all"
         assert "pkg-config malformed package specification 'conditional >=2.0.0'" in self._categories(
@@ -1875,9 +1882,9 @@ class TestPkgConfigConfValueSplitting:
         """
         result = _parseargs_with_pkg_config_conf("", axis_conf_line=f"append-PKG-CONFIG = conditional {self.MISSING}")
 
-        assert "-DTEST_PKG_ENABLED" in result.args.CPPFLAGS, (
+        assert "-DTEST_PKG_ENABLED" in get_build_state(result.args).cppflags, (
             f"append-PKG-CONFIG dropped the present package. "
-            f"args.pkg_config={result.args.pkg_config!r}, CPPFLAGS={result.args.CPPFLAGS!r}"
+            f"args.pkg_config={result.args.pkg_config!r}, CPPFLAGS={get_build_state(result.args).cppflags!r}"
         )
         assert not [w for w in result.warnings if f"conditional {self.MISSING}" in w], (
             f"append-PKG-CONFIG warned about the collapsed value: {result.warnings!r}"
@@ -1892,9 +1899,9 @@ class TestPkgConfigConfValueSplitting:
         """
         result = _parseargs_with_pkg_config_conf("", axis_conf_line=f"prepend-PKG-CONFIG = conditional {self.MISSING}")
 
-        assert "-DTEST_PKG_ENABLED" in result.args.CPPFLAGS, (
+        assert "-DTEST_PKG_ENABLED" in get_build_state(result.args).cppflags, (
             f"prepend-PKG-CONFIG dropped the present package. "
-            f"args.pkg_config={result.args.pkg_config!r}, CPPFLAGS={result.args.CPPFLAGS!r}"
+            f"args.pkg_config={result.args.pkg_config!r}, CPPFLAGS={get_build_state(result.args).cppflags!r}"
         )
         assert not [w for w in result.warnings if f"conditional {self.MISSING}" in w], (
             f"prepend-PKG-CONFIG warned about the collapsed value: {result.warnings!r}"
@@ -1999,16 +2006,16 @@ class TestVariableHandlingMethod:
         """Default method: env CXXFLAGS replaces the conf-file value."""
         args, _, _ = self._parse_with_env_cxxflags("override")
         assert args.variable_handling_method == "override"
-        assert "-DVARFROMENV" in args.CXXFLAGS
-        assert "-DVARFROMFILE" not in args.CXXFLAGS
+        assert "-DVARFROMENV" in get_build_state(args).cxxflags
+        assert "-DVARFROMFILE" not in get_build_state(args).cxxflags
 
     def test_environment_appends_config(self):
         """Append method: env CXXFLAGS accumulates onto the conf-file value.
         This is the test whose deletion opened the regression window."""
         args, _, _ = self._parse_with_env_cxxflags("append")
         assert args.variable_handling_method == "append"
-        assert "-DVARFROMENV" in args.CXXFLAGS
-        assert "-DVARFROMFILE" in args.CXXFLAGS
+        assert "-DVARFROMENV" in get_build_state(args).cxxflags
+        assert "-DVARFROMFILE" in get_build_state(args).cxxflags
 
     def test_append_mode_at_high_verbosity(self, capsys):
         """verboseprintconfig (cake.py calls it post-parseargs at verbose>=3)
@@ -2016,7 +2023,7 @@ class TestVariableHandlingMethod:
         regression (1237b7b3). The reparse namespace must carry the _parser
         stash for this not to crash with AttributeError."""
         args, _, _ = self._parse_with_env_cxxflags("append", extra_argv=["-vvv"])
-        assert "-DVARFROMENV" in args.CXXFLAGS
+        assert "-DVARFROMENV" in get_build_state(args).cxxflags
         apptools.verboseprintconfig(args)  # crashed pre-fix: no args._parser
         out = capsys.readouterr().out
         assert "Using variant =" in out
@@ -2083,7 +2090,7 @@ class TestVariableHandlingMethod:
                 apptools.add_common_arguments(cap, argv=argv)
                 with uth.ParserContext():
                     args = apptools.parseargs(cap, argv, context=BuildContext())
-                assert "-DVARFROMENV" in args.CXXFLAGS
+                assert "-DVARFROMENV" in get_build_state(args).cxxflags
                 assert os.environ.get("CXXFLAGS") == "-DVARFROMENV", (
                     "parseargs in append mode mutated os.environ: CXXFLAGS "
                     f"is now {os.environ.get('CXXFLAGS')!r}. Children launched "
@@ -2110,19 +2117,19 @@ class TestVariableHandlingMethod:
                 apptools.add_common_arguments(cap, argv=argv)
                 with uth.ParserContext():
                     args = apptools.parseargs(cap, argv, context=BuildContext())
-                assert "-DVARFROMENV" in args.CXXFLAGS, (
-                    f"Expected re-routed CXXFLAGS value in args.CXXFLAGS={args.CXXFLAGS!r}"
+                assert "-DVARFROMENV" in get_build_state(args).cxxflags, (
+                    f"Expected re-routed CXXFLAGS value in cxxflags={get_build_state(args).cxxflags!r}"
                 )
-                assert "-DFROMAPPENDENV" in args.CXXFLAGS, (
+                assert "-DFROMAPPENDENV" in get_build_state(args).cxxflags, (
                     "Pre-existing APPEND_CXXFLAGS was discarded when CXXFLAGS was "
-                    f"re-routed onto it: args.CXXFLAGS={args.CXXFLAGS!r}"
+                    f"re-routed onto it: cxxflags={get_build_state(args).cxxflags!r}"
                 )
                 # Merge order is policy: existing APPEND_* first, re-routed
                 # bare value last, so the bare env var wins conflicting
                 # tokens under the compiler's last-token-wins rule.
-                assert args.CXXFLAGS.index("-DFROMAPPENDENV") < args.CXXFLAGS.index("-DVARFROMENV"), (
-                    f"Merge order flipped: args.CXXFLAGS={args.CXXFLAGS!r}"
-                )
+                assert get_build_state(args).cxxflags.index("-DFROMAPPENDENV") < get_build_state(args).cxxflags.index(
+                    "-DVARFROMENV"
+                ), f"Merge order flipped: cxxflags={get_build_state(args).cxxflags!r}"
 
     def test_append_mode_via_cli_flag(self):
         """--variable-handling-method=append on the CLI (not just conf file)
@@ -2141,8 +2148,8 @@ class TestVariableHandlingMethod:
                 apptools.add_common_arguments(cap, argv=argv)
                 with uth.ParserContext():
                     args = apptools.parseargs(cap, argv, context=BuildContext())
-                assert "-DVARFROMENV" in args.CXXFLAGS
-                assert "-DVARFROMFILE" in args.CXXFLAGS
+                assert "-DVARFROMENV" in get_build_state(args).cxxflags
+                assert "-DVARFROMFILE" in get_build_state(args).cxxflags
 
 
 def _resolved_compiler_args(value, *, variant="gcc.debug"):

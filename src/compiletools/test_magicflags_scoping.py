@@ -218,18 +218,18 @@ class TestParsePropagation(tb.BaseCompileToolsTestCase):
         assert "-D" not in cppflags_tokens
 
     def test_parse_uses_global_tokens_directly(self):
-        """The final state's cppflags_tokens must equal
-        ``args.CPPFLAGS_tokens + magic_cpp_tokens`` with -D/-U stripped.
+        """The final state's cppflags_tokens must equal the build state's
+        cpp tokens + magic_cpp_tokens with -D/-U stripped.
 
         This is the contract that lets _parse() avoid the
         list -> join -> concat -> tokenize round-trip per TU: the
         global tokens are reused directly, only the magic-flag
         contribution is appended.
         """
+        from compiletools.build_apply import get_build_state
+
         parser = _make_parser([], tempdir=self._tmpdir)
-        # The args object owned by the parser must have the global
-        # token cache populated by parseargs (TOKEN-2).
-        assert hasattr(parser._args, "CPPFLAGS_tokens"), "parseargs must populate args.CPPFLAGS_tokens"
+        global_cpp_tokens = get_build_state(parser._args).flags.cpp
 
         src_path = self._make_magic_d_source()
         _parse_or_skip(parser, src_path)
@@ -237,9 +237,9 @@ class TestParsePropagation(tb.BaseCompileToolsTestCase):
         abs_path = compiletools.wrappedos.realpath(src_path)
         final_ms = parser._final_macro_states[abs_path]
 
-        # Expected = strip_d_u(args tokens + magic tokens). For this
+        # Expected = strip_d_u(state tokens + magic tokens). For this
         # test the only magic CPPFLAG is -DMAGIC_DEFINE=1, which the
         # strip filter removes; the result must equal the stripped
-        # form of args.CPPFLAGS_tokens.
-        expected = compiletools.apptools.strip_d_u_tokens(list(parser._args.CPPFLAGS_tokens) + ["-DMAGIC_DEFINE=1"])
+        # form of the state's cpp tokens.
+        expected = compiletools.apptools.strip_d_u_tokens(list(global_cpp_tokens) + ["-DMAGIC_DEFINE=1"])
         assert final_ms.cppflags_tokens == expected

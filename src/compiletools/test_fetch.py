@@ -1269,7 +1269,7 @@ def test_augmented_headerdeps_threads_include_dirs_without_deepcopy() -> None:
     and land directly on the DirectHeaderDeps include list as raw path strings —
     no shlex round-trip through CPPFLAGS — so a path with a space survives. And
     because there is no deepcopy, the headerdeps instance holds the caller's
-    real args object, and args.CPPFLAGS is left untouched.
+    real args object, and the build state's cppflags is left untouched.
     """
     from compiletools.fetch import _augmented_headerdeps
 
@@ -1280,7 +1280,9 @@ def test_augmented_headerdeps_threads_include_dirs_without_deepcopy() -> None:
         os.makedirs(space_root)
 
         args = _make_args()
-        cppflags_before = args.CPPFLAGS
+        from compiletools.build_apply import get_build_state
+
+        cppflags_before = get_build_state(args).cppflags
         hd = _augmented_headerdeps(
             args,
             BuildContext(),
@@ -1291,7 +1293,7 @@ def test_augmented_headerdeps_threads_include_dirs_without_deepcopy() -> None:
         # No deepcopy: the headerdeps holds the caller's real args object.
         assert hd.args is args
         # The caller's flags are not mutated.
-        assert cppflags_before == args.CPPFLAGS
+        assert cppflags_before == get_build_state(args).cppflags
 
         # The extra include dirs are threaded through verbatim...
         assert externals in hd._extra_include_dirs

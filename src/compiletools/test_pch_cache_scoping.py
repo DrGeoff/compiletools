@@ -18,6 +18,7 @@ import pytest
 import stringzilla as sz
 
 import compiletools.apptools
+import compiletools.build_apply
 import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.magicflags
@@ -91,7 +92,9 @@ def _hash_pch_with_app_name(value, sample_rel, temp_config):
     # Sanity: cmdline_origin actually contains APP_NAME.
     assert sz.Str("APP_NAME") in hntr.magicparser._initial_macro_state.cmdline_origin
 
-    cxxflags_tokens = compiletools.apptools.tokenize_compile_flags("", "", hntr.args.CXXFLAGS)[2]
+    cxxflags_tokens = compiletools.apptools.strip_d_u_tokens(
+        compiletools.build_apply.get_build_state(hntr.args).flags.cxx
+    )
     scope_macro_hash = _pch_scope_macro_hash(hntr, sample)
     return _pch_command_hash(
         hntr.args,
@@ -201,7 +204,7 @@ class TestPchScopeMacroHashEdgeCases:
         assert scope_hash == "0" * 16
 
         # Full pch hash is stable across calls with same inputs.
-        tokens = compiletools.apptools.tokenize_compile_flags("", "", hntr.args.CXXFLAGS)[2]
+        tokens = compiletools.apptools.strip_d_u_tokens(compiletools.build_apply.get_build_state(hntr.args).flags.cxx)
         h1 = _pch_command_hash(
             hntr.args, sample, [], [], cxxflags_tokens=tokens, scope_macro_hash=scope_hash, anchor_root=""
         )

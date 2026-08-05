@@ -19,6 +19,7 @@ import compiletools.apptools as apptools
 import compiletools.compilation_database as cdb
 import compiletools.hunter
 import compiletools.testhelper as uth
+from compiletools.build_apply import get_build_state
 from compiletools.build_context import BuildContext
 
 
@@ -63,15 +64,16 @@ class TestResubstitute:
             os.makedirs(newdir)
             args.INCLUDE = (args.INCLUDE + " " + newdir).strip()
             apptools.resubstitute(args)
-            assert newdir in args.flags.cpp, (
+            cpp_tokens = get_build_state(args).flags.cpp
+            assert newdir in cpp_tokens, (
                 f"Precondition failed: the re-run did not land the -I pair, so the "
-                f"no-raise outcome would be vacuous. cpp slot: {args.flags.cpp}"
+                f"no-raise outcome would be vacuous. cpp slot: {cpp_tokens}"
             )
 
     def test_include_widening_converges_with_fresh_single_pass(self):
         """The --auto (two-pass: parse, then widen INCLUDE and resubstitute)
         vs --no-auto (one pass, INCLUDE known up front) convergence:
-        re-gather + recompute must land on exactly the same args.flags a
+        re-gather + recompute must land on exactly the same Flags a
         fresh single-pass parseargs would compute over equivalent inputs."""
         with uth.TempDirContext():
             newdir = os.path.join(os.getcwd(), "external_inc")
@@ -83,9 +85,11 @@ class TestResubstitute:
 
             fresh = _parseargs_in_temp_repo(extra_argv=[f"--append-INCLUDE={newdir}"])
 
-            assert widened.flags == fresh.flags, (
+            widened_flags = get_build_state(widened).flags
+            fresh_flags = get_build_state(fresh).flags
+            assert widened_flags == fresh_flags, (
                 f"--auto (widen + resubstitute) diverged from a fresh single-pass parse:\n"
-                f"  widened: {widened.flags}\n  fresh:   {fresh.flags}"
+                f"  widened: {widened_flags}\n  fresh:   {fresh_flags}"
             )
 
     def test_include_widening_converges_with_fresh_single_pass_under_separate_flags(self):
@@ -108,9 +112,11 @@ class TestResubstitute:
 
             fresh = _parseargs_in_temp_repo(extra_argv=["--separate-flags-CPP-CXX", f"--append-INCLUDE={newdir}"])
 
-            assert widened.flags == fresh.flags, (
+            widened_flags = get_build_state(widened).flags
+            fresh_flags = get_build_state(fresh).flags
+            assert widened_flags == fresh_flags, (
                 f"--auto (widen + resubstitute) diverged from a fresh single-pass parse "
-                f"under --separate-flags-CPP-CXX:\n  widened: {widened.flags}\n  fresh:   {fresh.flags}"
+                f"under --separate-flags-CPP-CXX:\n  widened: {widened_flags}\n  fresh:   {fresh_flags}"
             )
 
     def test_auto_rerun_with_overlapping_pkg_config_converges(self, tmp_path, monkeypatch):
@@ -127,27 +133,29 @@ class TestResubstitute:
         monkeypatch.setenv("PKG_CONFIG_PATH", str(tmp_path))
         with uth.TempDirContext():
             args = _parseargs_in_temp_repo(extra_argv=["--pkg-config=ctresub9alpha ctresub9beta"])
-            assert args.CFLAGS_tokens.count("-DCTRESUB9_COMMON") == 1, (
+            flags = get_build_state(args).flags
+            assert flags.c.count("-DCTRESUB9_COMMON") == 1, (
                 "Precondition failed: pass 1's core did not dedup the shared cflags token."
             )
-            assert args.LDFLAGS_tokens.count("-lctresub9common") == 1, (
+            assert flags.ld.count("-lctresub9common") == 1, (
                 "Precondition failed: pass 1's core did not dedup the shared libs token."
             )
 
             apptools.resubstitute(args)
 
-            assert args.CFLAGS_tokens.count("-DCTRESUB9_COMMON") == 1
-            assert args.LDFLAGS_tokens.count("-lctresub9common") == 1
-            assert args.LDFLAGS_tokens.count("-L/usr/local/lib") == 1
+            flags = get_build_state(args).flags
+            assert flags.c.count("-DCTRESUB9_COMMON") == 1
+            assert flags.ld.count("-lctresub9common") == 1
+            assert flags.ld.count("-L/usr/local/lib") == 1
 
     def test_rerun_when_nothing_changed_is_the_identity(self):
-        """resubstitute on an unmodified namespace reproduces args.flags
+        """resubstitute on an unmodified namespace reproduces the Flags
         exactly — f(x) == f(x), no seed choreography required."""
         with uth.TempDirContext():
             args = _parseargs_in_temp_repo()
-            first_flags = args.flags
+            first_flags = get_build_state(args).flags
             apptools.resubstitute(args)
-            assert args.flags == first_flags, (
+            assert get_build_state(args).flags == first_flags, (
                 "resubstitute must converge to the same flags when nothing input-affecting changed."
             )
 
@@ -163,17 +171,20 @@ class TestThreeSlotCapRerun:
         with uth.TempDirContext():
             args = _parseargs_in_temp_repo(extra_argv=["--pkg-config=nested"], register_link_args=False)
 
-            assert "LDFLAGS" not in args._registered_flag_slots, (
+            state = get_build_state(args)
+            assert "LDFLAGS" not in state.registered_slots, (
                 "Precondition failed: LDFLAGS unexpectedly registered; this test would be vacuous."
             )
-            assert "testpkg1" in args.CFLAGS, (
+            assert any("testpkg1" in tok for tok in state.flags.c), (
                 "Precondition failed: pkg-config --cflags did not land, so the re-run would be vacuous."
             )
-            assert args.LDFLAGS == "", "Precondition failed: pass 1 must not land --libs in the unregistered slot."
+            assert state.flags.ld == (), "Precondition failed: pass 1 must not land --libs in the unregistered slot."
 
             apptools.resubstitute(args)
 
-            assert args.LDFLAGS == "", "Re-run landed pkg-config --libs in the unregistered LDFLAGS slot."
+            assert get_build_state(args).flags.ld == (), (
+                "Re-run landed pkg-config --libs in the unregistered LDFLAGS slot."
+            )
 
 
 class TestCdbAutoConverges:
