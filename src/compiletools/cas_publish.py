@@ -59,9 +59,13 @@ import compiletools.locking
 EXIT_CONCURRENT_TRIM = 3
 
 # Lock-acquisition errnos that mean "this pool cannot host a lock sidecar at
-# all" (read-only or permission-denied cas dir). Publishing unlocked is safe
-# for exactly these: a pool where the sidecar cannot be created is a pool where
-# trim cannot unlink either, so the race being defended against cannot occur.
+# all" (read-only or permission-denied cas dir). Creating the sidecar and
+# unlinking the entry both need write permission on the cas directory, so a
+# trim running as this uid cannot evict what this publish cannot lock. That
+# implication is per-uid: a directory some other user can write but this one
+# cannot leaves their trim free to evict mid-publish, where a hardlinked
+# user_path survives on the pinned inode and only the cache name is lost, but
+# the EXDEV symlink fallback can be left dangling.
 # Every other errno propagates — swallowing a transient EIO or ENOSPC into an
 # unlocked publish would hide real trouble.
 _LOCK_UNHOSTABLE_ERRNOS = frozenset({errno.EACCES, errno.EPERM, errno.EROFS, errno.ENOTSUP})

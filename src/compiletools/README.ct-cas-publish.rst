@@ -113,11 +113,16 @@ ATOMICITY CONTRACT
 
 If the lock sidecar cannot be created at all (``EACCES``, ``EPERM``,
 ``EROFS``, ``ENOTSUP`` — a read-only or permission-denied pool), the
-helper warns and publishes unlocked. That is safe for exactly those
-errnos: a pool where the sidecar cannot be created is a pool where
-trim cannot unlink either, so the race being defended against cannot
-occur there. Any other lock error propagates rather than being hidden
-behind a silently unlocked publish.
+helper warns and publishes unlocked. Creating the sidecar and
+unlinking the entry both require write permission on the cas
+directory, so a trim running as the same uid cannot evict what this
+publish cannot lock. The implication is per-uid, not absolute: on a
+shared pool whose directory another user can write and this one
+cannot, that user's trim can still evict mid-publish. A hardlinked
+``user_path`` survives it — ``nlink`` pins the inode, so only the
+cache name is lost — but a publish that fell back to ``symlink()``
+under ``EXDEV`` can be left dangling. Any other lock error propagates
+rather than being hidden behind a silently unlocked publish.
 
 EXIT CODES
 ==========
