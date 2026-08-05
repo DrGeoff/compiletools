@@ -49,7 +49,8 @@ matches the gitroot-relative and absolute paths; a pattern without one
 matches any single path component, whole. So ``vendor`` excludes every file
 under any ``vendor`` directory but never ``vendorlib``, ``test_*.cpp``
 excludes by basename, and both ``src/legacy`` and ``src/legacy/*`` exclude
-that subtree. ct-cake and ct-filelist share this search, so an exclusion set
+that subtree. ``*`` spans separators, so ``*/legacy`` excludes a ``legacy``
+subtree at any depth. ct-cake and ct-filelist share this search, so an exclusion set
 in a ct.conf applies to all three; targets those tools are told to build by
 name are never filtered.
 

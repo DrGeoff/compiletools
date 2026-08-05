@@ -427,6 +427,12 @@ class TestAutoExcludeMatching:
         assert self._excluded(tmp_path, "src/legacy", "src/legacy/deep/old.cpp")
         assert not self._excluded(tmp_path, "src/legacy", "src/legacyish/old.cpp")
 
+    def test_globbed_directory_name_also_excludes_its_subtree(self, tmp_path):
+        """The subtree rule is fnmatch on both halves, so it survives a glob
+        in the pattern: ``*/legacy`` must behave like ``src/legacy`` does."""
+        assert self._excluded(tmp_path, "*/legacy", "src/legacy/deep/old.cpp")
+        assert not self._excluded(tmp_path, "*/legacy", "src/legacyish/old.cpp")
+
     def test_slashed_pattern_matches_the_absolute_path(self, tmp_path):
         """A conf file writes ``${CONF_DIR}/legacy/*``, which expands to an
         absolute pattern that must still match."""

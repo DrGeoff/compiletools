@@ -111,14 +111,15 @@ def is_auto_excluded(filepath, patterns, anchor_root=""):
     """True when *filepath* is excluded from ``--auto`` discovery.
 
     A pattern containing a path separator is matched against both the
-    *anchor_root*-relative path and the absolute path -- by ``fnmatch``,
-    or as a directory prefix so a plain directory name excludes its whole
+    *anchor_root*-relative path and the absolute path -- either directly
+    or with ``/*`` appended, so a directory name excludes its whole
     subtree. A pattern without a separator is fnmatched against each
     individual path component. So ``vendor`` excludes every file under any
     ``vendor`` directory (and never ``vendorlib`` -- components match
     whole), ``test_*.cpp`` excludes by basename, and both ``src/legacy``
-    and ``src/legacy/*`` exclude that one subtree. ``fnmatch``'s ``*``
-    spans separators, so a leading ``*`` matches at any depth.
+    and ``src/legacy/*`` exclude that one subtree. Both halves are
+    ``fnmatch``, whose ``*`` spans separators, so ``*/src/legacy`` excludes
+    that subtree at any depth.
     """
     if not patterns:
         return False
@@ -133,7 +134,7 @@ def is_auto_excluded(filepath, patterns, anchor_root=""):
         if os.sep in pattern:
             subtree = pattern.rstrip(os.sep)
             if any(
-                fnmatch.fnmatch(candidate, pattern) or (subtree and candidate.startswith(subtree + os.sep))
+                fnmatch.fnmatch(candidate, pattern) or (subtree and fnmatch.fnmatch(candidate, subtree + os.sep + "*"))
                 for candidate in candidates
             ):
                 return True
