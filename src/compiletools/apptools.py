@@ -1492,6 +1492,12 @@ def parseargs(cap, argv, verbose=None, *, context):
         _do_xxpend_list(args, "postbuild-script", destname="postbuild-scripts")
         _note_shadowed_bare_hook_values(args, "postbuild-script", "postbuild_scripts")
 
+    # findtargets' --auto-exclude list: same bare-key-clobbers /
+    # append-accumulates split. hasattr-guarded because only the --auto
+    # consumers register it.
+    if hasattr(args, "auto_exclude"):
+        _do_xxpend_list(args, "auto-exclude")
+
     # Cake used preprocess to mean both magic flag preprocess and headerdeps preprocess
     if hasattr(args, "preprocess") and args.preprocess:
         args.magic = "cpp"

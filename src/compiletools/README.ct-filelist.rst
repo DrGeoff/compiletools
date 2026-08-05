@@ -83,6 +83,20 @@ OPTIONS
                     ``--static`` / ``--dynamic`` / ``--tests``) suppress
                     discovery. (default: True)
 
+--auto-exclude PATTERN
+                    Glob excluding files from ``--auto`` discovery. Can be
+                    specified multiple times. A pattern containing a path
+                    separator matches the gitroot-relative and absolute paths;
+                    a pattern without one matches any single path component,
+                    whole. So ``vendor`` excludes every file under any
+                    ``vendor`` directory but never ``vendorlib``,
+                    ``test_*.cpp`` excludes by basename, and both
+                    ``src/legacy`` and ``src/legacy/*`` exclude that subtree.
+                    Explicitly named targets are never filtered. In a ct.conf
+                    the bare ``auto-exclude`` key is last-writer-wins; use
+                    ``append-AUTO-EXCLUDE`` (uppercase) to accumulate
+                    exclusions across the conf hierarchy. See ``ct-cake`` (1).
+
 --dynamic LIB.cpp
                     Include files needed for building a dynamic/shared library.
 
@@ -156,6 +170,12 @@ Basic usage - list all dependencies:
 .. code-block:: bash
 
     ct-filelist myfile.cpp
+
+List everything ``ct-cake --auto`` would build, skipping a vendored subtree:
+
+.. code-block:: bash
+
+    ct-filelist --auto-exclude=vendor
 
 Show only header files (useful for packaging headers separately):
 

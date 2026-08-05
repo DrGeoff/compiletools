@@ -1491,6 +1491,100 @@ class TestAutoDiscoveryReanchor:
         assert len(beta_main) == 1
         assert len(final.filename) == len(set(final.filename))
 
+    def test_auto_exclude_from_cli_drops_the_target(self, monorepo):
+        args = _parse_cake_args(monorepo, [*_ARGV_BASE, "--auto", f"--auto-exclude={monorepo / 'appbeta'}"])
+        with uth.DirectoryContext(str(monorepo)):
+            final = compiletools.findtargets.discover_targets_and_reanchor(args, args._context)
+        assert not any(f.endswith(os.path.join("appbeta", "main.cpp")) for f in final.filename)
+
+    def test_auto_exclude_from_discovered_subproject_conf_matches_the_cli_target_set(self, monorepo):
+        """The fixpoint contract: an ``append-AUTO-EXCLUDE`` that only
+        becomes visible once a discovered target anchors its subproject
+        conf must produce the SAME target set as the same exclusion given
+        on the CLI.
+
+        Round one discovers appbeta/main.cpp with no exclusions in force
+        and re-anchors onto appbeta/ct.conf; round two re-discovers under
+        the widened config, where that conf's exclusion now applies. The
+        oracle run supplies the identical exclusion on the CLI, so it
+        never loads appbeta's layer at all -- the two runs agree on
+        targets, which is what the flag promises.
+        """
+        (monorepo / "appbeta" / "ct.conf").write_text(
+            "append-CPPFLAGS = -DAPPBETA_EXTRA\nappend-AUTO-EXCLUDE = ${CONF_DIR}/legacy\n"
+        )
+        legacy = monorepo / "appbeta" / "legacy"
+        legacy.mkdir()
+        (legacy / "old.cpp").write_text("// legacy\nint main() { return 0; }\n")
+
+        args = _parse_cake_args(monorepo, [*_ARGV_BASE, "--auto"])
+        with uth.DirectoryContext(str(monorepo)):
+            final = compiletools.findtargets.discover_targets_and_reanchor(args, args._context)
+        # The conf layer WAS loaded (round one discovered appbeta/main.cpp)...
+        assert "-DAPPBETA_EXTRA" in get_build_state(final).cppflags
+        # ...and its exclusion retro-applies to the round-one discoveries.
+        assert not any(f.endswith(os.path.join("legacy", "old.cpp")) for f in final.filename)
+
+        oracle_args = _parse_cake_args(monorepo, [*_ARGV_BASE, "--auto", f"--auto-exclude={legacy}"])
+        with uth.DirectoryContext(str(monorepo)):
+            oracle = compiletools.findtargets.discover_targets_and_reanchor(oracle_args, oracle_args._context)
+        assert sorted(final.filename) == sorted(oracle.filename)
+        assert sorted(final.tests or []) == sorted(oracle.tests or [])
+
+    def test_append_auto_exclude_accumulates_across_the_conf_hierarchy(self, monorepo):
+        """The documented way a subproject ADDS exclusions: the gitroot
+        conf's ``append-AUTO-EXCLUDE`` and appbeta's both survive."""
+        (monorepo / "ct.conf").write_text(
+            (monorepo / "ct.conf").read_text() + "append-AUTO-EXCLUDE = ${CONF_DIR}/vendored\n"
+        )
+        (monorepo / "appbeta" / "ct.conf").write_text(
+            "append-CPPFLAGS = -DAPPBETA_EXTRA\nappend-AUTO-EXCLUDE = ${CONF_DIR}/legacy\n"
+        )
+        for subdir, stem in (("vendored", "third_party"), (os.path.join("appbeta", "legacy"), "old")):
+            (monorepo / subdir).mkdir(parents=True)
+            (monorepo / subdir / f"{stem}.cpp").write_text(f"// {stem}\nint main() {{ return 0; }}\n")
+
+        args = _parse_cake_args(monorepo, [*_ARGV_BASE, "--auto"])
+        with uth.DirectoryContext(str(monorepo)):
+            final = compiletools.findtargets.discover_targets_and_reanchor(args, args._context)
+        assert "-DAPPBETA_EXTRA" in get_build_state(final).cppflags
+        assert not any(f.endswith(os.path.join("vendored", "third_party.cpp")) for f in final.filename)
+        assert not any(f.endswith(os.path.join("legacy", "old.cpp")) for f in final.filename)
+        # The unexcluded target is still there, so this isn't a vacuous pass.
+        assert any(f.endswith(os.path.join("appbeta", "main.cpp")) for f in final.filename)
+
+    def test_bare_auto_exclude_key_is_clobbered_by_a_higher_priority_conf(self, monorepo):
+        """The bare key is last-writer-wins, exactly like the sibling
+        ``pkg-config`` / ``exemarkers`` keys -- appbeta's value REPLACES
+        the gitroot's rather than adding to it. This is why
+        ``append-AUTO-EXCLUDE`` is the documented spelling for a
+        subproject; the difference is pinned here so it stays a contract
+        instead of folklore."""
+        (monorepo / "ct.conf").write_text((monorepo / "ct.conf").read_text() + "auto-exclude = ${CONF_DIR}/vendored\n")
+        (monorepo / "appbeta" / "ct.conf").write_text(
+            "append-CPPFLAGS = -DAPPBETA_EXTRA\nauto-exclude = ${CONF_DIR}/legacy\n"
+        )
+        for subdir, stem in (("vendored", "third_party"), (os.path.join("appbeta", "legacy"), "old")):
+            (monorepo / subdir).mkdir(parents=True)
+            (monorepo / subdir / f"{stem}.cpp").write_text(f"// {stem}\nint main() {{ return 0; }}\n")
+
+        args = _parse_cake_args(monorepo, [*_ARGV_BASE, "--auto"])
+        with uth.DirectoryContext(str(monorepo)):
+            final = compiletools.findtargets.discover_targets_and_reanchor(args, args._context)
+        assert "-DAPPBETA_EXTRA" in get_build_state(final).cppflags
+        assert not any(f.endswith(os.path.join("legacy", "old.cpp")) for f in final.filename)
+        # Clobbered: the gitroot conf's exclusion did NOT survive.
+        assert any(f.endswith(os.path.join("vendored", "third_party.cpp")) for f in final.filename)
+
+    def test_auto_exclude_never_filters_an_explicit_target(self, monorepo):
+        """``--auto-exclude`` scopes discovery only: a target the user named
+        on the command line survives a pattern that matches it."""
+        target = os.path.join("appbeta", "main.cpp")
+        args = _parse_cake_args(monorepo, [*_ARGV_BASE, target, f"--auto-exclude={monorepo / 'appbeta'}"])
+        with uth.DirectoryContext(str(monorepo)):
+            final = compiletools.findtargets.discover_targets_and_reanchor(args, args._context)
+        assert any(f.endswith(target) for f in final.filename)
+
     def test_cake_auto_conflicting_subprojects_error(self, monorepo):
         appalpha = monorepo / "appalpha"
         appalpha.mkdir()

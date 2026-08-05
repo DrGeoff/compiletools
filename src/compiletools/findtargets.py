@@ -1,9 +1,11 @@
+import fnmatch
 import os
 import sys
 
 import compiletools.apptools
 import compiletools.build_apply
 import compiletools.file_analyzer
+import compiletools.git_utils
 import compiletools.namer
 import compiletools.utils
 import compiletools.wrappedos
@@ -44,6 +46,30 @@ def add_discovery_arguments(cap):
         "C/C++ files with main functions and unit tests",
     )
 
+    cap.add_argument(
+        "--auto-exclude",
+        dest="auto_exclude",
+        action="append",
+        help="Glob excluding files from --auto discovery. A pattern with a path separator "
+        "matches the gitroot-relative and absolute paths; a pattern without one matches "
+        "any single path component. Explicitly named targets are never filtered. "
+        'e.g., "vendor", "test_*.cpp", "src/legacy/*"',
+    )
+    compiletools.apptools._add_xxpend_argument(
+        cap,
+        "auto-exclude",
+        extrahelp=(
+            "Merged into the --auto-exclude pattern list. Use the "
+            "append-AUTO-EXCLUDE / prepend-AUTO-EXCLUDE form in conf files "
+            "(uppercase -- the lowercase append-auto-exclude spelling is "
+            "silently ignored) so a subproject ADDS exclusions instead of "
+            "last-writer-wins clobbering the whole list, and so a CLI "
+            "append does not suppress the conf values. Order is irrelevant "
+            "for an exclusion set, so prepend and append differ only in "
+            "spelling."
+        ),
+    )
+
     compiletools.utils.add_flag_argument(
         parser=cap,
         name="disable-tests",
@@ -79,6 +105,41 @@ def add_arguments(cap):
         return
     # Style choices come from the explicit registry below.
     cap.add_argument("--style", choices=list(_STYLE_REGISTRY), default="indent", help="Output formatting style")
+
+
+def is_auto_excluded(filepath, patterns, anchor_root=""):
+    """True when *filepath* is excluded from ``--auto`` discovery.
+
+    A pattern containing a path separator is matched against both the
+    *anchor_root*-relative path and the absolute path -- by ``fnmatch``,
+    or as a directory prefix so a plain directory name excludes its whole
+    subtree. A pattern without a separator is fnmatched against each
+    individual path component. So ``vendor`` excludes every file under any
+    ``vendor`` directory (and never ``vendorlib`` -- components match
+    whole), ``test_*.cpp`` excludes by basename, and both ``src/legacy``
+    and ``src/legacy/*`` exclude that one subtree. ``fnmatch``'s ``*``
+    spans separators, so a leading ``*`` matches at any depth.
+    """
+    if not patterns:
+        return False
+    absolute = compiletools.wrappedos.realpath(filepath)
+    relative = None
+    if anchor_root:
+        anchor = compiletools.wrappedos.realpath(anchor_root)
+        if absolute.startswith(anchor + os.sep):
+            relative = absolute[len(anchor) + 1 :]
+    candidates = [absolute] if relative is None else [absolute, relative]
+    for pattern in patterns:
+        if os.sep in pattern:
+            subtree = pattern.rstrip(os.sep)
+            if any(
+                fnmatch.fnmatch(candidate, pattern) or (subtree and candidate.startswith(subtree + os.sep))
+                for candidate in candidates
+            ):
+                return True
+        elif any(fnmatch.fnmatch(component, pattern) for component in (relative or absolute).split(os.sep)):
+            return True
+    return False
 
 
 class NullStyle:
@@ -191,9 +252,26 @@ class FindTargets:
         if not prefix.endswith(os.sep):
             prefix += os.sep
 
+        # Excluded files are dropped before analyze_file, so an excluded
+        # subtree costs one fnmatch per path and nothing else. The patterns
+        # are read here rather than in __init__ because the re-anchor
+        # driver re-discovers under a namespace whose auto_exclude may have
+        # grown a subproject conf's values since the last round.
+        exclude = tuple(self._args.auto_exclude or ())
+        anchor_root = compiletools.git_utils.find_git_root() if exclude else ""
+
+        def _included(filepath):
+            if not is_auto_excluded(filepath, exclude, anchor_root):
+                return True
+            if self._args.verbose >= 3:
+                print("Excluded from discovery by --auto-exclude: " + filepath)
+            return False
+
         if tracked:
             source_files = (
-                (fp, h) for fp, h in tracked.items() if fp.startswith(prefix) and compiletools.utils.is_source(fp)
+                (fp, h)
+                for fp, h in tracked.items()
+                if fp.startswith(prefix) and compiletools.utils.is_source(fp) and _included(fp)
             )
         else:
             # Non-git directory: fall back to os.walk
@@ -206,7 +284,7 @@ class FindTargets:
                         continue
                     for fname in files:
                         pathname = compiletools.wrappedos.realpath(os.path.join(root, fname))
-                        if compiletools.utils.is_source(pathname):
+                        if compiletools.utils.is_source(pathname) and _included(pathname):
                             try:
                                 yield pathname, get_file_hash(pathname, self.context)
                             except FileNotFoundError:
@@ -277,6 +355,16 @@ def discover_targets_and_reanchor(args, context):
     markers -- is baked into cached ``FileAnalysisResult`` objects keyed
     only by content hash; without the clear, re-discovery would replay
     round-one classifications and marker changes would be invisible.
+
+    ``--auto-exclude`` needs no retro-filtering of earlier rounds for the
+    same reason: an exclusion that only becomes visible once a discovered
+    target anchors its subproject conf arrives with a widened config set,
+    so the round that reads it starts from the fresh namespace and
+    re-discovers everything under the new exclusion. The residue is that
+    the excluded target's conf layer stays loaded (the config set is
+    monotone -- that monotonicity is what bounds this loop), so such a run
+    agrees with the equivalent CLI ``--auto-exclude`` on TARGETS while
+    still carrying the layer's flags.
 
     Terminates because each re-anchor strictly widens the parser's config
     set (bounded by the targets' ancestor conf files); exhaustion raises

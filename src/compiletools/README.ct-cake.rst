@@ -865,6 +865,34 @@ Common Options
     When enabled, ct-cake searches for source files containing exemarkers
     (like ``main(``) and testmarkers (like ``unit_test.hpp``).
 
+**--auto-exclude PATTERN**
+    Skip files during ``--auto`` discovery. Repeatable, and settable as
+    ``auto-exclude`` in any ct.conf. A pattern containing a path separator
+    matches the gitroot-relative and absolute paths -- by glob, or as a
+    directory prefix, so ``src/legacy`` and ``src/legacy/*`` both exclude
+    that subtree. A pattern without a separator matches any single path
+    component, so ``vendor`` excludes every file under any ``vendor``
+    directory (never ``vendorlib`` -- components match whole) and
+    ``test_*.cpp`` excludes by basename. Targets named explicitly on the
+    command line are never filtered.
+
+    Conf files have two spellings, the same pair ``pkg-config`` has. The
+    bare ``auto-exclude`` key is last-writer-wins: a subproject's value
+    replaces a higher-level one wholesale, and a command-line
+    ``--auto-exclude`` suppresses the conf values entirely. Use
+    ``append-AUTO-EXCLUDE`` (uppercase) to ADD exclusions instead, which
+    accumulates across the whole conf hierarchy and survives a
+    command-line append. ``prepend-AUTO-EXCLUDE`` is a synonym -- order
+    carries no meaning for an exclusion set.
+
+    A subproject ct.conf can therefore contribute exclusions: discovery
+    and config re-anchoring iterate to a fixpoint, so an exclusion that
+    only becomes visible once a discovered target loads its subproject
+    layer still applies to that round's discoveries. The excluded
+    target's conf layer stays loaded (the config-file set only grows), so
+    such a build carries the layer's flags while agreeing with the
+    equivalent command-line ``--auto-exclude`` on which targets it builds.
+
 **--disable-tests**
     When ``--auto`` is specified, skip automatic building and running of tests.
     Useful when you only want to build executables.

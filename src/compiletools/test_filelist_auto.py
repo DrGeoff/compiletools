@@ -68,6 +68,17 @@ def test_no_auto_keeps_a_bare_invocation_silent(capsys: Any) -> None:
     assert capsys.readouterr().out.strip() == ""
 
 
+def test_auto_exclude_drops_a_discovered_target(capsys: Any) -> None:
+    """The excluded file is a discovered TEST here, so dropping it also
+    drops ct-filelist's "every file beside a test" extras rule -- which is
+    what makes the exclusion observable in the output at all."""
+    sample_dir = example_path("simple")
+    _run_filelist(sample_dir, ["--auto", "--auto-exclude=test_*.c"])
+    listed = {line.strip() for line in capsys.readouterr().out.splitlines() if line.strip()}
+    assert os.path.realpath(os.path.join(sample_dir, "helloworld_cpp.cpp")) in listed
+    assert os.path.realpath(os.path.join(sample_dir, "test_cflags.c")) not in listed
+
+
 def test_explicit_target_and_auto_do_not_both_apply(capsys: Any) -> None:
     """Same gate as cake.py: an explicit target suppresses discovery, so
     the output stays scoped to what the caller asked for."""
