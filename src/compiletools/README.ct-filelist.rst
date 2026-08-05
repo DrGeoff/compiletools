@@ -15,13 +15,15 @@ Determine header and source dependencies of a C/C++ file by following headers an
 
 SYNOPSIS
 ========
-ct-filelist [OPTION] filename [filename ...]
+ct-filelist [OPTION] [filename ...]
 
 DESCRIPTION
 ===========
 ct-filelist uses the given variants/configs, command line arguments,
 environment variables, and most importantly one or more filenames to determine
-the list of files that are required to build the given filename(s). For example,
+the list of files that are required to build the given filename(s). With no
+filenames it discovers them itself (``--auto``, the default), reporting the
+files required to build everything ``ct-cake --auto`` would build. For example,
 if myfile.cpp includes myfile.hpp and myfile.hpp in turn includes awesome.h
 
 .. code-block:: text
@@ -69,6 +71,17 @@ OPTIONS
                     (default: True)
 
 **Build Targets**
+
+--auto
+                    With no filenames given, search the filesystem from the
+                    current working directory for C/C++ files with main
+                    functions and unit tests, and report the files needed to
+                    build them. This is the same discovery ``ct-cake --auto``
+                    performs, through the same driver, so the two agree on
+                    which targets exist. Use ``--no-auto`` to keep a bare
+                    ct-filelist silent. Explicitly named filenames (or
+                    ``--static`` / ``--dynamic`` / ``--tests``) suppress
+                    discovery. (default: True)
 
 --dynamic LIB.cpp
                     Include files needed for building a dynamic/shared library.

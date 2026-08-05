@@ -2,6 +2,7 @@ import os
 import sys
 
 import compiletools.apptools
+import compiletools.findtargets
 import compiletools.git_utils
 import compiletools.headerdeps
 import compiletools.hunter
@@ -100,6 +101,9 @@ class Filelist:
 
         compiletools.utils.add_flag_argument(cap, "merge", default=True, help="Merge all outputs into a single list")
         compiletools.hunter.add_arguments(cap)
+        # Discovery half only: findtargets' own --style formats its target
+        # report and its choices are incompatible with the ones above.
+        compiletools.findtargets.add_discovery_arguments(cap)
 
     def process(self):
         filterclass = _FILTER_REGISTRY[self.args.filter.lower()]
@@ -183,6 +187,16 @@ def main(argv=None):
 
     context = BuildContext()
     args = compiletools.apptools.parseargs(cap, argv, context=context)
+
+    # Same gate as cake.process(): with no explicit targets, discover them
+    # through the shared driver so the file list covers exactly what
+    # ct-cake --auto would build, under the same re-anchored config.
+    if args.auto and not any([args.filename, args.static, args.dynamic, args.tests]):
+        args = compiletools.findtargets.discover_targets_and_reanchor(args, context)
+        # Re-gather and recompute over the widened namespace so the
+        # dependency walk below uses the discovered targets' flags.
+        compiletools.apptools.resubstitute(args)
+
     headerdeps = compiletools.headerdeps.create(args, context=context)
     magicparser = compiletools.magicflags.create(args, headerdeps, context=context)
     hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=context)

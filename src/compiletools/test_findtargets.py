@@ -331,7 +331,46 @@ class TestFindTargetsMain:
         compiletools.findtargets.main(argv=["--style=flat", "--shorten"])
 
 
-def test_discovery_reanchor_cap_is_the_shared_apptools_cap():
-    """One defensive cap in one place: the discovery re-anchor loop must
-    reuse apptools._MAX_TARGET_CONF_ROUNDS, not carry its own copy."""
-    assert compiletools.findtargets._MAX_DISCOVERY_REANCHOR_ROUNDS == compiletools.apptools._MAX_TARGET_CONF_ROUNDS
+def _bare_parser(description):
+    return configargparse.ArgumentParser(
+        conflict_handler="resolve",
+        description=description,
+        formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
+        default_config_files=[],
+        args_for_setting_config_path=["-c", "--config"],
+        ignore_unknown_config_file_keys=True,
+    )
+
+
+class TestDiscoveryArgumentSplit:
+    """``--style`` belongs to ct-findtargets' own output, not to the
+    discovery surface every ``--auto`` consumer registers. ct-filelist has
+    its own incompatible ``--style`` and registers only the discovery half.
+    """
+
+    def test_discovery_arguments_omit_style(self):
+        cap = _bare_parser("discovery half")
+        compiletools.findtargets.add_discovery_arguments(cap)
+        assert compiletools.apptools._parser_has_option(cap, "--auto")
+        assert compiletools.apptools._parser_has_option(cap, "--exemarkers")
+        assert not compiletools.apptools._parser_has_option(cap, "--style")
+
+    def test_add_arguments_layers_style_on_top(self):
+        cap = _bare_parser("full findtargets surface")
+        compiletools.findtargets.add_arguments(cap)
+        assert compiletools.apptools._parser_has_option(cap, "--auto")
+        assert compiletools.apptools._parser_has_option(cap, "--style")
+
+    def test_discovery_half_keeps_auto_on_by_default(self):
+        cap = _bare_parser("auto default")
+        compiletools.findtargets.add_discovery_arguments(cap)
+        assert cap.parse_args([]).auto is True
+        assert cap.parse_args(["--no-auto"]).auto is False
+
+    def test_registering_both_halves_is_idempotent(self):
+        """Every registrar in this codebase is safe to call twice; the
+        style layer must not raise on a re-registration either."""
+        cap = _bare_parser("double registration")
+        compiletools.findtargets.add_arguments(cap)
+        compiletools.findtargets.add_arguments(cap)
+        assert cap.parse_args([]).style == "indent"

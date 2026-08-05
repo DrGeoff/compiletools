@@ -10,8 +10,14 @@ import compiletools.wrappedos
 from compiletools.file_analyzer import MarkerType
 
 
-def add_arguments(cap):
-    """Add the command line arguments that findtargets requires.
+def add_discovery_arguments(cap):
+    """Add the ``--auto`` discovery arguments.
+
+    This is the surface every ``--auto`` consumer registers (ct-cake,
+    ct-compilation-database, ct-filelist). ``--style`` is deliberately NOT
+    here: it formats ct-findtargets' own output and its choices conflict
+    with ct-filelist's. ``add_arguments`` layers it on for the tools that
+    want it.
 
     Safe to call more than once on the same parser.
     """
@@ -55,15 +61,24 @@ def add_arguments(cap):
         "(Useful for automatically building tests)",
     )
 
-    # Style choices come from the explicit registry below.
-    cap.add_argument("--style", choices=list(_STYLE_REGISTRY), default="indent", help="Output formatting style")
-
     compiletools.utils.add_flag_argument(
         parser=cap,
         name="filenametestmatch",
         default=True,
         help="Identify tests based on filename in addition to testmarkers",
     )
+
+
+def add_arguments(cap):
+    """Add the discovery arguments plus ct-findtargets' own ``--style``.
+
+    Safe to call more than once on the same parser.
+    """
+    add_discovery_arguments(cap)
+    if compiletools.apptools._parser_has_option(cap, "--style"):
+        return
+    # Style choices come from the explicit registry below.
+    cap.add_argument("--style", choices=list(_STYLE_REGISTRY), default="indent", help="Output formatting style")
 
 
 class NullStyle:
