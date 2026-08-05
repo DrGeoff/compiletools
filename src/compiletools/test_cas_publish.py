@@ -425,8 +425,8 @@ class TestPublishVersusConcurrentTrim:
 
 class TestConcurrentTrimLossReporting:
     def test_missing_cas_entry_raises_concurrent_trim_error(self, tmp_path):
-        """The under-lock existence re-check turns a vanished entry into the
-        named error, never a raw FileNotFoundError out of os.link."""
+        """A vanished entry surfaces as the named error, never a raw
+        FileNotFoundError out of os.link."""
         missing = str(tmp_path / "cas" / "already-trimmed")
         os.makedirs(os.path.dirname(missing))
         user = tmp_path / "bin" / "main"
@@ -436,6 +436,31 @@ class TestConcurrentTrimLossReporting:
 
         assert missing in str(excinfo.value)
         assert not user.exists()
+
+    def test_a_vanished_entry_is_reported_before_any_destination_work(self, tmp_path):
+        """The existence re-check under the lock, not the ENOENT that os.link
+        would eventually raise, is what reports the loss.
+
+        Discriminated by making the destination unwritable: reaching
+        atomic_replace at all would mkstemp there and report a PermissionError
+        naming the destination, burying the real cause. Publishing must name
+        the trim instead.
+        """
+        missing = str(tmp_path / "cas" / "already-trimmed")
+        os.makedirs(os.path.dirname(missing))
+        bindir = tmp_path / "bin"
+        bindir.mkdir()
+        os.chmod(bindir, 0o500)
+        if os.access(bindir, os.W_OK):
+            pytest.skip("destination stayed writable after chmod; cannot discriminate (running as root?)")
+
+        try:
+            with pytest.raises(ConcurrentTrimError) as excinfo:
+                publish(missing, str(bindir / "main"))
+        finally:
+            os.chmod(bindir, 0o700)
+
+        assert missing in str(excinfo.value)
 
     @pytest.mark.skipif(not hasattr(os, "link"), reason="platform lacks os.link; the ENOENT branch is unreachable")
     def test_enoent_from_link_maps_to_concurrent_trim_error(self, cas, user, monkeypatch):
