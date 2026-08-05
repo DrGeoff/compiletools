@@ -646,6 +646,35 @@ class TestBuildGraphPopulation:
         for rule in mkdir_rules:
             assert "mkdir" in " ".join(_cmd(rule)), f"sharded bucket mkdir rule {rule.output!r} must invoke mkdir"
 
+    def test_flags_and_names_come_from_build_state_not_legacy_attrs(self, tmp_path):
+        """Consumer migration: the backend's flag/name reads must come from
+        the stashed BuildState, not the legacy args attrs. Value-identical
+        in production, so pin the SOURCE: mutate the legacy attrs after
+        construction and assert the compile command and cache-tree paths
+        still reflect the state."""
+        import dataclasses
+
+        args = make_backend_args(
+            tmp_path,
+            filename=["/src/main.cpp"],
+            CXXFLAGS="-O2 -std=c++17 -DSTATE_TOKEN",
+        )
+        backend = self._make_backend(tmp_path, args=args)
+        state = args._build_state
+        # Legacy-attr mutations must now be inert for backend reads.
+        args.flags = dataclasses.replace(args.flags, cxx=("-DLEGACY_MUTATION",))
+        args.cas_objdir = str(tmp_path / "legacy-mutated-obj")
+
+        graph = backend.build_graph()
+
+        compile_rules = [r for r in graph.rules if r.rule_type == "compile" and r.output.endswith("main.o")]
+        assert len(compile_rules) == 1
+        cmd = _cmd(compile_rules[0])
+        assert "-DSTATE_TOKEN" in cmd
+        assert "-DLEGACY_MUTATION" not in cmd
+        assert state.names.cas_objdir in compile_rules[0].output
+        assert "legacy-mutated-obj" not in compile_rules[0].output
+
     def test_compile_command_uses_tokens_from_args(self, tmp_path):
         """build_graph() compile commands must contain the tokens from
         args.CXXFLAGS_tokens verbatim. This proves that build_backend

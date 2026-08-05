@@ -46,6 +46,9 @@ def _make_bare_shake_backend(tmp_path, *, cas_subdir=None, context=None):
     backend.args = mock.MagicMock()
     cas_path = tmp_path / cas_subdir if cas_subdir else tmp_path
     backend.args.cas_objdir = str(cas_path)
+    # Backends read cas_objdir through the BuildState stash now; align the
+    # MagicMock's auto-created stash with the same real path.
+    backend.args._build_state.names.cas_objdir = str(cas_path)
     backend.context = context if context is not None else BuildContext()
     return backend
 
@@ -1246,6 +1249,7 @@ class TestCALinkShortCircuit:
         b = ShakeBackend.__new__(ShakeBackend)
         b.args = mock.MagicMock()
         b.args.cas_objdir = str(tmp_path)
+        b.args._build_state.names.cas_objdir = str(tmp_path)
         return b
 
     def test_ca_target_deterministic(self, backend):

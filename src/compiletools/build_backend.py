@@ -26,6 +26,7 @@ from collections.abc import Mapping
 from types import MappingProxyType
 
 import compiletools.apptools
+import compiletools.build_apply
 import compiletools.diagnostics
 import compiletools.file_analyzer
 import compiletools.filesystem_utils
@@ -342,6 +343,19 @@ class BuildBackend(abc.ABC):
         from compiletools.build_timer import get_timer
 
         return get_timer(self.context)
+
+    @property
+    def _build_state(self):
+        """The BuildState the backend's flag/name reads come from.
+
+        Consumer migration: flag tokens and cas-dir/bindir names read
+        ``self._build_state.flags`` / ``.names``, never the legacy
+        ``args.<SLOT>`` / ``args.flags`` / ``args.cas_*dir`` attrs. A
+        property, not a reference captured at __init__: resubstitute
+        re-populates the stash on --auto//#GIT= re-runs and a captured
+        reference would go stale mid-build.
+        """
+        return compiletools.build_apply.get_build_state(self.args)
 
     @staticmethod
     @abc.abstractmethod
@@ -864,9 +878,9 @@ class BuildBackend(abc.ABC):
         # Create objdir creation rule (needed by compile rules as order-only dep)
         graph.add_rule(
             BuildRule(
-                output=self.args.cas_objdir,
+                output=self._build_state.names.cas_objdir,
                 inputs=[],
-                command=["mkdir", "-p", self.args.cas_objdir],
+                command=["mkdir", "-p", self._build_state.names.cas_objdir],
                 rule_type="mkdir",
             )
         )
@@ -880,7 +894,7 @@ class BuildBackend(abc.ABC):
         for source in list(self.args.static or []) + list(self.args.dynamic or []):
             exe_dirs.add(self.namer.executable_dir(compiletools.wrappedos.realpath(source)))
         for exe_dir in sorted(exe_dirs):
-            if exe_dir == self.args.cas_objdir:
+            if exe_dir == self._build_state.names.cas_objdir:
                 continue
             graph.add_rule(
                 BuildRule(
@@ -941,7 +955,7 @@ class BuildBackend(abc.ABC):
                 # Uses args.flags.hash_relevant("cxx") which strips -D/-U
                 # AND filters diagnostic-only flags in one pass; _pch_command_hash
                 # trusts its caller to pre-filter the cxxflags_tokens parameter.
-                cxxflags_tokens = self.args.flags.hash_relevant("cxx")
+                cxxflags_tokens = self._build_state.flags.hash_relevant("cxx")
                 scope_macro_hash = _pch_scope_macro_hash(self.hunter, pch_header)
                 cmd_hash = _pch_command_hash(
                     self.args,
@@ -1008,12 +1022,14 @@ class BuildBackend(abc.ABC):
                 rule_cwd = None
             pch_cmd = (
                 compiletools.utils.split_command_cached(self.args.CXX)
-                + list(self.args.flags.cxx)
+                + list(self._build_state.flags.cxx)
                 + [str(f) for f in magic_cpp_flags]
                 + [str(f) for f in magic_cxx_flags]
                 + ["-x", "c++-header", pch_source_for_cmd, "-o", gch_path]
             )
-            order_deps = [os.path.join(pchdir, cmd_hash)] if pchdir and cmd_hash else [self.args.cas_objdir]
+            order_deps = (
+                [os.path.join(pchdir, cmd_hash)] if pchdir and cmd_hash else [self._build_state.names.cas_objdir]
+            )
             graph.add_rule(
                 BuildRule(
                     output=gch_path,
@@ -1089,7 +1105,7 @@ class BuildBackend(abc.ABC):
         # a bare basename with no dirname component (some non-make
         # backends and a few integration-test fixtures).
         if compiler_kind == "gcc" and self._module_pcm_cache_root:
-            mapper_dir = self.args.cas_objdir
+            mapper_dir = self._build_state.names.cas_objdir
             mf = getattr(self.args, "makefilename", None)
             if mf:
                 d = os.path.dirname(mf)
@@ -1103,7 +1119,9 @@ class BuildBackend(abc.ABC):
         # the cache for simplicity) have somewhere to land. Header-unit
         # caching can be added later by mirroring the cmd_hash machinery
         # below.
-        self._module_pcm_dir = os.path.join(self.args.cas_objdir, ".pcm") if compiler_kind == "clang" else None
+        self._module_pcm_dir = (
+            os.path.join(self._build_state.names.cas_objdir, ".pcm") if compiler_kind == "clang" else None
+        )
 
         return compiler_kind
 
@@ -1198,7 +1216,7 @@ class BuildBackend(abc.ABC):
         #
         # clang produces a real .pcm at a path we choose, so its
         # artefact IS the .pcm and there's no stamp shenanigan.
-        header_unit_flat_dir = os.path.join(self.args.cas_objdir, ".hu")
+        header_unit_flat_dir = os.path.join(self._build_state.names.cas_objdir, ".hu")
         self._header_unit_artefact = {}  # rebind: per-build_graph state
         # Per-token absolute-header-path resolution (gcc only; populated
         # when gcc + cas-pcmdir are both active so the mapper file can
@@ -1279,7 +1297,7 @@ class BuildBackend(abc.ABC):
                     # a gcc that rejects (say) -std=c++23 silently drops
                     # the mapper entry and the cache misses.
                     std_flag = next(
-                        (t for t in self.args.flags.cxx if str(t).startswith("-std=")),
+                        (t for t in self._build_state.flags.cxx if str(t).startswith("-std=")),
                         "-std=c++20",
                     )
                     # Pass the user's system-include flags so headers
@@ -1297,7 +1315,7 @@ class BuildBackend(abc.ABC):
                     # through the global-mapper path -- gcc reports
                     # the import as "unknown compiled module interface".
                     include_flags = (
-                        _extract_system_include_path_flags(self.args.flags.cxx)
+                        _extract_system_include_path_flags(self._build_state.flags.cxx)
                         + self._header_unit_extra_system_includes
                     )
                     abs_paths = _resolve_system_header_abs_paths(
@@ -1376,7 +1394,7 @@ class BuildBackend(abc.ABC):
         # proportional to source breadth and stays cheap on shared
         # filesystems too.
         for bucket_dir in sorted(compile_bucket_dirs):
-            if bucket_dir == self.args.cas_objdir:
+            if bucket_dir == self._build_state.names.cas_objdir:
                 continue  # already covered by the bare-objdir mkdir above
             graph.add_rule(
                 BuildRule(
@@ -1838,7 +1856,9 @@ class BuildBackend(abc.ABC):
         if getattr(self.args, "file_locking", False):
             if not check_lock_helper_available():
                 report_lock_helper_missing()
-            self._filesystem_type = compiletools.filesystem_utils.get_filesystem_type(self.args.cas_objdir)
+            self._filesystem_type = compiletools.filesystem_utils.get_filesystem_type(
+                self._build_state.names.cas_objdir
+            )
             if self.args.verbose >= 3:
                 print(f"Detected filesystem type: {self._filesystem_type}")
             self._validate_umask_for_file_locking()
@@ -2277,7 +2297,7 @@ class BuildBackend(abc.ABC):
             # is rejected as "not known to be a header unit". Gate
             # mirrors ``_create_header_unit_precompile_rule`` for HUs and
             # ``_system_module_extra_flags`` for ``import std;``.
-            cxxflags_has_libcxx = "-stdlib=libc++" in self.args.flags.cxx
+            cxxflags_has_libcxx = "-stdlib=libc++" in self._build_state.flags.cxx
             needs_libcxx = "std" in result.module_imports or bool(header_imports)
             if self._build_imports_std() and needs_libcxx and not cxxflags_has_libcxx:
                 extras.append("-stdlib=libc++")
@@ -2523,8 +2543,8 @@ class BuildBackend(abc.ABC):
         in ``_create_header_unit_precompile_rule`` so the cache key
         reflects exactly the flag set the compiler will see.
         """
-        cxxflags_tokens = self.args.flags.hash_relevant("cxx")
-        cxxflags_has_libcxx = "-stdlib=libc++" in self.args.flags.cxx
+        cxxflags_tokens = self._build_state.flags.hash_relevant("cxx")
+        cxxflags_has_libcxx = "-stdlib=libc++" in self._build_state.flags.cxx
         injects_libcxx = self._build_imports_std() and not cxxflags_has_libcxx
         # Fold the unioned magic system-include flags into the cache key
         # the same way the precompile rule will see them (appended to
@@ -2587,7 +2607,7 @@ class BuildBackend(abc.ABC):
 
         common_cmd = (
             compiletools.utils.split_command_cached(self.args.CXX)
-            + list(self.args.flags.cxx)
+            + list(self._build_state.flags.cxx)
             + list(getattr(self, "_header_unit_extra_system_includes", ()))
         )
 
@@ -2602,7 +2622,9 @@ class BuildBackend(abc.ABC):
             # this keeps the actual command consistent with what the cache
             # key claims.
             stdlib_extras = (
-                ["-stdlib=libc++"] if self._build_imports_std() and "-stdlib=libc++" not in self.args.flags.cxx else []
+                ["-stdlib=libc++"]
+                if self._build_imports_std() and "-stdlib=libc++" not in self._build_state.flags.cxx
+                else []
             )
             if stdlib_extras:
                 self._compile_used_libcxx = True
@@ -2750,7 +2772,7 @@ class BuildBackend(abc.ABC):
             self.args,
             source_path=token,
             transitive_content_hash="",  # implicit in compiler_identity
-            cxxflags_tokens=list(self.args.flags.hash_relevant("cxx")) + extra_si,
+            cxxflags_tokens=list(self._build_state.flags.hash_relevant("cxx")) + extra_si,
             magic_cpp_flags=[],
             magic_cxx_flags=[],
             extra_flags=[],
@@ -2870,7 +2892,7 @@ class BuildBackend(abc.ABC):
         magicflags = self.hunter.magicflags(source_filename)
         magic_cpp = magicflags.get(sz.Str("CPPFLAGS"), [])
         magic_cxx = magicflags.get(sz.Str("CXXFLAGS"), [])
-        cxxflags_tokens = self.args.flags.hash_relevant("cxx")
+        cxxflags_tokens = self._build_state.flags.hash_relevant("cxx")
         return _pcm_command_hash(
             self.args,
             source_path=compiletools.wrappedos.realpath(source_filename),
@@ -2926,7 +2948,7 @@ class BuildBackend(abc.ABC):
 
         common_cmd = (
             compiletools.utils.split_command_cached(self.args.CXX)
-            + list(self.args.flags.cxx)
+            + list(self._build_state.flags.cxx)
             + [str(flag) for flag in magic_cpp_flags]
             + [str(flag) for flag in magic_cxx_flags]
         )
@@ -3037,7 +3059,7 @@ class BuildBackend(abc.ABC):
             magic_c_flags = magicflags.get(sz.Str("CFLAGS"), [])
             compile_cmd = (
                 compiletools.utils.split_command_cached(self.args.CC)
-                + list(self.args.flags.c)
+                + list(self._build_state.flags.c)
                 + pch_include_flags
                 + [str(flag) for flag in magic_cpp_flags]
                 + [str(flag) for flag in magic_c_flags]
@@ -3046,7 +3068,7 @@ class BuildBackend(abc.ABC):
             magic_cxx_flags = magicflags.get(sz.Str("CXXFLAGS"), [])
             compile_cmd = (
                 compiletools.utils.split_command_cached(self.args.CXX)
-                + list(self.args.flags.cxx)
+                + list(self._build_state.flags.cxx)
                 + pch_include_flags
                 + [str(flag) for flag in magic_cpp_flags]
                 + [str(flag) for flag in magic_cxx_flags]
@@ -3387,7 +3409,7 @@ class BuildBackend(abc.ABC):
                     extra_link_argv.append(f"-l{lib_name}")
                 link_inputs_for_graph.append(lib_output)
 
-        ld_extra = list(self.args.flags.ld) if self.args.flags.ld else []
+        ld_extra = list(self._build_state.flags.ld) if self._build_state.flags.ld else []
         ld_extra.extend(self._link_libcxx_extras_if_needed(merged_ldflags, ld_extra))
 
         # Round 3: rewrite workspace-rooted paths in the EMITTED link
@@ -3601,7 +3623,9 @@ class BuildBackend(abc.ABC):
 
         merged_ldflags = self._merge_ldflags_for_sources(all_source_files)
         ld_argv = compiletools.utils.split_command_cached(self.args.LD)
-        ld_extra = list(self.args.flags.ld) if (self.args.LDFLAGS and self.args.flags.ld) else []
+        ld_extra = (
+            list(self._build_state.flags.ld) if (self._build_state.ldflags and self._build_state.flags.ld) else []
+        )
         ld_extra.extend(self._link_libcxx_extras_if_needed(merged_ldflags, ld_extra))
 
         # Round 3: rewrite workspace-rooted paths in the EMITTED argv;

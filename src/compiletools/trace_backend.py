@@ -289,7 +289,7 @@ class ShakeBackend(BuildBackend):
         # only trims the recursion fan-out, never the correctness inputs.
         self._rule_inputs = {r.output: [i for i in r.inputs if graph.get_rule(i) is not None] for r in graph.rules}
 
-        trace_path = os.path.join(self.args.cas_objdir, self.build_filename())
+        trace_path = os.path.join(self._build_state.names.cas_objdir, self.build_filename())
         traces = TraceStore(trace_path)
 
         parallel = getattr(self.args, "parallel", 1)
@@ -300,7 +300,7 @@ class ShakeBackend(BuildBackend):
         # effort) and precompute each rule's critical time (longest remaining
         # path to the target) so the PriorityGate starts long poles first. Any
         # failure degrades to an empty crit map -> priority 0 -> today's FIFO.
-        cost_path = os.path.join(self.args.cas_objdir, rule_cost.COST_FILE)
+        cost_path = os.path.join(self._build_state.names.cas_objdir, rule_cost.COST_FILE)
         try:
             history = rule_cost.load_cost_history(cost_path)
             crit = rule_cost.compute_critical_times(graph, lambda r: rule_cost.estimate_cost(r, history))

@@ -1199,7 +1199,7 @@ class BazelBackend(BuildBackend):
         # coherent dialect across ct-cake-driven and bazel-driven
         # steps.
         std_flag = next(
-            (str(t) for t in self.args.flags.cxx if str(t).startswith("-std=")),
+            (str(t) for t in self._build_state.flags.cxx if str(t).startswith("-std=")),
             None,
         )
         if std_flag is None:

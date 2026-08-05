@@ -128,6 +128,32 @@ def test_executable_dir_no_arg_returns_base_bindir():
     assert namer.executable_dir() == args.bindir
 
 
+def test_names_come_from_build_state_when_stashed():
+    """Consumer migration: on a pipeline namespace (BuildState stashed) the
+    Namer reads names from the state — a legacy-attr mutation is inert.
+    On a state-less namespace (diagnostic tools; resolver-only parse) the
+    legacy attr remains authoritative — that fallback is PERMANENT, per
+    swap-inventory row 17."""
+    args, namer = _make_namer("TestNamerStateSource")
+    from compiletools.build_apply import get_build_state
+
+    state = get_build_state(args)
+    args.bindir = "legacy/mutated"
+    args.cas_objdir = "/legacy/mutated-obj"
+    assert namer.executable_dir() == state.names.bindir
+    assert namer.object_dir() == state.names.cas_objdir
+
+    # State-less namespace: legacy attrs are the (permanent) source.
+    from types import SimpleNamespace
+
+    from compiletools.build_context import BuildContext
+    from compiletools.namer import Namer
+
+    bare = SimpleNamespace(verbose=0, bindir="diag/bin", cas_objdir="/diag/obj", git_root=True)
+    diag_namer = Namer(bare, context=BuildContext())
+    assert diag_namer.object_dir() == "/diag/obj"
+
+
 def test_library_pathnames_mirror_source_dir(tmp_path, monkeypatch):
     """Libraries follow the same layout rule as executables: the source
     directory mirrors under bindir."""

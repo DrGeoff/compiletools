@@ -46,7 +46,9 @@ def _default_ninja_args(**overrides):
         lock_cross_host_timeout=600,
     )
     defaults.update(overrides)
-    return SimpleNamespace(**defaults)
+    args = SimpleNamespace(**defaults)
+    uth.finalize_flag_state(args)
+    return args
 
 
 class TestNinjaBackendRegistered:

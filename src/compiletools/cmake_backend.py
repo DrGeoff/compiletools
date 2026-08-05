@@ -465,7 +465,7 @@ class CMakeBackend(BuildBackend):
         # blake2b (truncated to 6 bytes = 12 hex chars) avoids sha1's historical baggage and is
         # faster. Width is pinned at 12 hex chars to match the prior layout exactly.
         src_key = hashlib.blake2b(key_material.encode("utf-8"), digest_size=6).hexdigest()
-        build_dir = os.path.join(self.args.cas_objdir, f"cmake-build-{src_key}")
+        build_dir = os.path.join(self._build_state.names.cas_objdir, f"cmake-build-{src_key}")
         # Cross-repo collision guard. The workspace-invariant key deliberately
         # collides two checkouts of the *same* repo (preserving .o byte-identity
         # under a shared cas_objdir), but two *distinct* repos that share a
@@ -477,7 +477,7 @@ class CMakeBackend(BuildBackend):
         cached_home = _cmake_cache_home_dir(os.path.join(build_dir, "CMakeCache.txt"))
         if cached_home is not None and compiletools.wrappedos.realpath(cached_home) != source_dir:
             fallback_key = hashlib.blake2b(source_dir.encode("utf-8"), digest_size=6).hexdigest()
-            build_dir = os.path.join(self.args.cas_objdir, f"cmake-build-{fallback_key}")
+            build_dir = os.path.join(self._build_state.names.cas_objdir, f"cmake-build-{fallback_key}")
         os.makedirs(build_dir, exist_ok=True)
 
         # Configure — pass the user-configured compilers so CMake does not
