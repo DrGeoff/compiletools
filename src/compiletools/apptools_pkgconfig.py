@@ -62,6 +62,7 @@ from compiletools.utils import split_command_cached
 
 _PKG_CONFIG_COMPARISON_RE = re.compile(r"^(?:==|>=|<=|!=|=|<|>)(?P<operand>.*)$")
 _PKG_CONFIG_TRAILING_COMPARISON_RE = re.compile(r"^.+?(?:==|>=|<=|!=|=|<|>)$")
+_pkg_config_errors: Literal["warn", "error"] = "warn"
 
 
 def tokenize_pkg_config_specs(values: list[str]) -> list[str]:
@@ -121,6 +122,15 @@ def clear_cache():
     """
     cached_pkg_config.cache_clear()
     _cached_pkg_config_exists.cache_clear()
+    set_pkg_config_errors("warn")
+
+
+def set_pkg_config_errors(errors: Literal["warn", "error"]) -> None:
+    """Set the process-local failure policy for pkg-config consumers."""
+    if errors not in ("warn", "error"):
+        raise ValueError(f"unsupported pkg-config error mode: {errors!r}")
+    global _pkg_config_errors
+    _pkg_config_errors = errors
 
 
 def _pkg_config_constraint_package(spec: str) -> tuple[str | None, bool]:
@@ -150,9 +160,15 @@ def _pkg_config_stderr(result: subprocess.CompletedProcess[str]) -> str:
     return stderr.strip() if isinstance(stderr, str) else ""
 
 
+class PkgConfigError(RuntimeError):
+    """A pkg-config failure promoted by ``--pkg-config-errors=error``."""
+
+
 def _warn_pkg_config(message: str, detail: str = "") -> None:
     if detail:
         message = f"{message}: {detail}"
+    if _pkg_config_errors == "error":
+        raise PkgConfigError(message)
     warnings.warn(message, UserWarning, stacklevel=4)
 
 

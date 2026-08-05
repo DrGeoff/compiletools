@@ -9,6 +9,13 @@ import shutil
 from compiletools.build_state import BuildState, EnsureLinkerSymlinkDir, SetEnv
 
 
+def configure_pkg_config_errors(args) -> None:
+    """Apply the parsed pkg-config failure policy before any probes run."""
+    from compiletools.apptools_pkgconfig import set_pkg_config_errors
+
+    set_pkg_config_errors(getattr(args, "pkg_config_errors", "warn"))
+
+
 def apply_effects(state: BuildState, context) -> None:
     """Execute state.effects against the live process (env, filesystem).
 

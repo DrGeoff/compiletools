@@ -4,6 +4,7 @@ import warnings
 import pytest
 import stringzilla as sz
 
+import compiletools.apptools_pkgconfig as pkgconfig
 import compiletools.headerdeps
 import compiletools.magicflags
 import compiletools.test_base as tb
@@ -371,6 +372,18 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         assert self._check_flags(result, "LDFLAGS", [], ["-ltestpkg1"]), (
             "a malformed specification must not contribute link flags"
         )
+
+    def test_pkg_config_error_mode_is_enforced_for_magic_annotations(self):
+        files = uth.write_sources(
+            {"strict_magic_pkg_config.cpp": "//#PKG-CONFIG=compiletools-definitely-missing-pkg\nint main() {}\n"}
+        )
+
+        with pytest.raises(pkgconfig.PkgConfigError, match="not found") as excinfo:
+            self._parse_with_magic(
+                "direct", str(files["strict_magic_pkg_config.cpp"]), ["--pkg-config-errors=error", "-v", "-v"]
+            )
+        assert str(files["strict_magic_pkg_config.cpp"]) in str(excinfo.value)
+        assert "--pkg-config-errors=warn" in str(excinfo.value)
 
     @pytest.mark.usefixtures("pkgconfig_env")
     def test_gcc_linux_macro_not_expanded_in_pkg_config_paths(self):

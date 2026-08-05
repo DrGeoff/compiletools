@@ -7,6 +7,7 @@ from typing import Optional, Union
 import stringzilla as sz
 
 import compiletools.apptools
+import compiletools.apptools_pkgconfig
 import compiletools.build_apply
 import compiletools.compiler_macros
 import compiletools.git_utils
@@ -669,7 +670,17 @@ class MagicFlagsBase:
 
         # If the magic was PKG-CONFIG then call pkg-config
         if magic == sz.Str("PKG-CONFIG"):
-            self._extend_flags_from_dict(flagsforfilename, self._handle_pkg_config(flag, expander=expander))
+            try:
+                self._extend_flags_from_dict(flagsforfilename, self._handle_pkg_config(flag, expander=expander))
+            except compiletools.apptools_pkgconfig.PkgConfigError as exc:
+                message = (
+                    f"{exc}\nPKG-CONFIG requested by {filename}. "
+                    "Install the package, correct the annotation, or use --pkg-config-errors=warn."
+                )
+                if self._args.verbose >= 2:
+                    raise compiletools.apptools_pkgconfig.PkgConfigError(message) from None
+                print(message, file=sys.stderr)
+                raise SystemExit(1) from None
             # PKG-CONFIG generates flags for other keys AND adds itself to PKG-CONFIG key
 
         # Split flag string into individual flags - all magic flags can contain multiple values

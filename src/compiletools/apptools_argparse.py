@@ -317,6 +317,12 @@ def add_common_arguments(cap, argv=None, variant=None):
         action="append",
         default=[],
     )
+    cap.add_argument(
+        "--pkg-config-errors",
+        choices=("warn", "error"),
+        default="warn",
+        help="How pkg-config package failures are handled (default: warn).",
+    )
     _add_xxpend_argument(
         cap,
         "pkg-config",
