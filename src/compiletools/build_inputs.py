@@ -270,6 +270,9 @@ def _include_paths_with_gitroots(args, gitroot):
        include list, sorted, skipping already-present paths.
 
     gather computes the widened tuple instead of mutating args.INCLUDE.
+    An empty gitroot set silently no-ops (the legacy step raised
+    ValueError there; unreachable in production since find_git_root
+    falls back to the cwd).
     """
     from compiletools.git_utils import find_git_root
 

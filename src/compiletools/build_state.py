@@ -99,6 +99,8 @@ def stage_pkg_config_flags(inputs: BuildInputs, ts: TokenState) -> TokenState:
     lands in ld only when the caller's CAP registered LDFLAGS -- the
     decision is input schema (the want_libs hasattr bug class is
     unrepresentable here)."""
+    if not inputs.pkg_config_results:
+        return ts
     want_libs = "LDFLAGS" in inputs.registered_slots
     cpp, c, cxx, ld = ts.cpp, ts.c, ts.cxx, ts.ld
     for _pkg, result in inputs.pkg_config_results:

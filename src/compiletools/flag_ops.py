@@ -185,7 +185,7 @@ def filter_hash_irrelevant_tokens(tokens: Sequence[str]) -> list[str]:
     return out
 
 
-def dedup_tokens(tokens) -> tuple[str, ...]:
+def dedup_tokens(tokens: Sequence[str]) -> tuple[str, ...]:
     """Pair-aware order-preserving dedup over a token sequence.
 
     Tuple-native form of ``utils.deduplicate_compiler_flags`` for the
