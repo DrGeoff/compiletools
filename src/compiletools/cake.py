@@ -7,6 +7,7 @@ import sys
 from typing import Optional
 
 import compiletools.apptools
+import compiletools.build_apply
 import compiletools.compilation_database
 import compiletools.configutils
 import compiletools.diagnostics
@@ -65,9 +66,10 @@ class Cake:
         # parses — leave them untouched.
         if not hasattr(args, "bindir") or not hasattr(args, "makefilename"):
             return
-        # Namer.executable_dir() just returns args.bindir, so read it directly
-        # to avoid creating a throwaway Namer and BuildContext.
-        bindir = args.bindir
+        # Cake namespaces always carry a BuildState (parseargs/re-anchor
+        # both populate it); read the name from the state like every other
+        # migrated pipeline consumer.
+        bindir = compiletools.build_apply.get_build_state(args).names.bindir
         if bindir not in args.makefilename:
             movedmakefile = os.path.join(bindir, args.makefilename)
             if args.verbose > 4:
