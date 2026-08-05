@@ -392,12 +392,15 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
             {"strict_magic_pkg_config.cpp": "//#PKG-CONFIG=compiletools-definitely-missing-pkg\nint main() {}\n"}
         )
 
-        with pytest.raises(pkgconfig.PkgConfigError, match="not found") as excinfo:
-            self._parse_with_magic(
-                "direct", str(files["strict_magic_pkg_config.cpp"]), ["--pkg-config-errors=error", "-v", "-v"]
-            )
-        assert str(files["strict_magic_pkg_config.cpp"]) in str(excinfo.value)
-        assert "--pkg-config-errors=warn" in str(excinfo.value)
+        try:
+            with pytest.raises(pkgconfig.PkgConfigError, match="not found") as excinfo:
+                self._parse_with_magic(
+                    "direct", str(files["strict_magic_pkg_config.cpp"]), ["--pkg-config-errors=error", "-v", "-v"]
+                )
+            assert str(files["strict_magic_pkg_config.cpp"]) in str(excinfo.value)
+            assert "--pkg-config-errors=warn" in str(excinfo.value)
+        finally:
+            pkgconfig.clear_cache()
 
     @pytest.mark.usefixtures("pkgconfig_env")
     def test_gcc_linux_macro_not_expanded_in_pkg_config_paths(self):
