@@ -295,6 +295,42 @@ class TestVerbosePrintArgs:
         assert "REDACTED" not in output
         assert "otel_headers" in output
 
+    def test_verbose_print_args_shows_derived_flag_strings_from_state(self):
+        """The -vv banner promises the FINAL aggregated build values, so
+        the four flag slots must display the stashed BuildState's derived
+        strings (unify copies cxx into cpp), not the raw pre-gather attrs
+        (which hold the internal unsupplied sentinel for CPPFLAGS)."""
+        from compiletools.build_apply import populate_args
+        from compiletools.build_inputs import gather_inputs
+        from compiletools.build_state import compute_build_state
+
+        args = SimpleNamespace(
+            verbose=0,
+            CPPFLAGS="unsupplied_implies_use_CXXFLAGS",
+            CXXFLAGS="-O2 -DDERIVED_VISIBLE",
+        )
+        populate_args(args, compute_build_state(gather_inputs(args, BuildContext())))
+        derived = get_build_state(args)
+        assert "unsupplied" not in derived.cppflags
+        with patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
+            with patch("compiletools.apptools.terminalcolumns", return_value=400):
+                verbose_print_args(args)
+        output = mock_stdout.getvalue()
+        cppflags_row = next(line for line in output.splitlines() if line.startswith("CPPFLAGS"))
+        assert "unsupplied" not in cppflags_row, "raw sentinel leaked into the -vv CPPFLAGS row"
+        assert "-DDERIVED_VISIBLE" in cppflags_row
+
+    def test_verbose_print_args_without_state_prints_raw_attrs(self):
+        """A namespace with no stashed BuildState (pre-parseargs or a
+        bare fixture) must still print without raising."""
+        args = SimpleNamespace(CXXFLAGS="-O2", foo="bar")
+        with patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
+            with patch("compiletools.apptools.terminalcolumns", return_value=120):
+                verbose_print_args(args)
+        output = mock_stdout.getvalue()
+        assert "-O2" in output
+        assert "foo" in output
+
 
 class TestUnsuppliedReplacement:
     def test_unsupplied_returns_default(self):

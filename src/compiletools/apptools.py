@@ -1583,7 +1583,23 @@ _REDACTED_PLACEHOLDER = "***REDACTED***"
 def verbose_print_args(args):
     # Print the args in two columns Attr: Value
     print("\n\nFinal aggregated variables for build:")
-    maxattrlen = max(map(len, args.__dict__), default=0)
+    # The raw flag slots keep their pre-gather values (sentinels included);
+    # the build actually uses the derived strings on the stashed BuildState,
+    # so display those for the registered slots -- this banner promises the
+    # FINAL aggregated values.
+    display = dict(args.__dict__)
+    state = getattr(args, "_build_state", None)
+    if state is not None:
+        derived = {
+            "CPPFLAGS": state.cppflags,
+            "CFLAGS": state.cflags,
+            "CXXFLAGS": state.cxxflags,
+            "LDFLAGS": state.ldflags,
+        }
+        for slot, value in derived.items():
+            if slot in display:
+                display[slot] = value
+    maxattrlen = max(map(len, display), default=0)
     fmt = f"{{0:{maxattrlen + 1}}}: {{1}}"
     rightcolbegin = maxattrlen + 3
     maxcols = terminalcolumns()
@@ -1592,7 +1608,7 @@ def verbose_print_args(args):
         print("Verbose print of args aborted due to small terminal size!")
         return
 
-    for attr, value in sorted(args.__dict__.items()):
+    for attr, value in sorted(display.items()):
         if value is None:
             print(fmt.format(attr, ""))
             continue
