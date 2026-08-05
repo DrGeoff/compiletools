@@ -55,6 +55,21 @@ bucketing.
 The publish itself failing IS fatal — the helper exits non-zero and
 the caller (a build rule) fails the build.
 
+The whole sequence runs while holding the ``<cas-path>.lock`` sidecar,
+the same lock ``ct-trim-cache`` takes before evicting an entry, so a
+publish and a concurrent trim of the same CAS entry are totally
+ordered. Trim first leaves nothing to publish: the helper reports
+``CAS entry removed by a concurrent trim; rerun the build`` and exits
+``3``, and the next build rebuilds the artefact. Publish first raises
+the entry's ``nlink`` to 2, which trim's hard-link protection honours.
+Those are the only two outcomes.
+
+Publishing also freshens the CAS entry's mtime (best-effort; another
+user's entry on a shared pool is not ours to touch). Age-gated sweeps
+— ``ct-trim-cache --max-age`` and the oldest-first ``--max-size``
+budget — rank by mtime, and without this an entry that every build
+still publishes would age out on the timestamp it was created with.
+
 OPTIONS
 =======
 
@@ -80,17 +95,29 @@ OPTIONS
 ATOMICITY CONTRACT
 ==================
 
-1. ``link(cas_path, tmp)`` then ``rename(tmp, user_path)`` — POSIX-
+1. Take the ``<cas-path>.lock`` sidecar (never the entry itself —
+   locking the artefact path would create an empty, ``mtime=now``
+   file that a peer ``make`` reads as up-to-date), then re-verify the
+   entry still exists.
+2. ``link(cas_path, tmp)`` then ``rename(tmp, user_path)`` — POSIX-
    atomic replacement. Concurrent readers always see a consistent
    inode at ``user_path``; concurrent peer publishers racing on the
    same path produce a final state that points at one of their cas
    inputs, all byte-equivalent because their CAS keys collided.
-2. On ``EXDEV``: ``symlink(cas_path, tmp)`` then ``rename(tmp,
+3. On ``EXDEV``: ``symlink(cas_path, tmp)`` then ``rename(tmp,
    user_path)``. Same atomic-replacement pattern.
-3. Any other ``OSError``: re-raise visibly (no silent symlink
+4. Any other ``OSError``: re-raise visibly (no silent symlink
    degradation).
-4. Inode swap under a process holding ``user_path`` open is harmless
+5. Inode swap under a process holding ``user_path`` open is harmless
    on POSIX — the open file descriptor pins the old inode.
+
+If the lock sidecar cannot be created at all (``EACCES``, ``EPERM``,
+``EROFS``, ``ENOTSUP`` — a read-only or permission-denied pool), the
+helper warns and publishes unlocked. That is safe for exactly those
+errnos: a pool where the sidecar cannot be created is a pool where
+trim cannot unlink either, so the race being defended against cannot
+occur there. Any other lock error propagates rather than being hidden
+behind a silently unlocked publish.
 
 EXIT CODES
 ==========
@@ -103,6 +130,11 @@ EXIT CODES
     Failure — propagates argparse error or any unrecovered ``OSError``
     from ``link()`` / ``symlink()`` / ``rename()``. The ``user_path``
     is never left in a partial state.
+3
+    The CAS entry was evicted by a concurrent ``ct-trim-cache`` before
+    it could be published. Recoverable: rerun the build and the
+    artefact is relinked into the cache. Distinct from ``1`` so a
+    wrapper can retry this case without retrying real errors.
 
 CONCURRENCY
 ===========
@@ -112,10 +144,22 @@ build invocations targeting the same ``user_path`` race safely —
 whichever rename wins is correct (both are publishing byte-equivalent
 artefacts because their cas-exedir keys collided).
 
-The companion lock-aware delete in ``ct-trim-cache --cas-exedir-only``
-re-stats ``nlink`` under the producer's lock to close the
-scan-to-unlink TOCTOU window: a peer publish that elevates ``nlink``
-mid-trim aborts the unlink.
+Publish and trim are serialised on the ``<cas-path>.lock`` sidecar.
+Both sides take the same lock through ``locking.FileLock``, so both
+get the filesystem-appropriate strategy (``fcntl`` on GPFS,
+``lockdir`` on NFS and Lustre, and so on) and neither can be inside
+its critical section while the other is. Under the lock the publisher
+re-verifies the entry, freshens its mtime, and links; ``ct-trim-cache
+--cas-exedir-only`` re-stats ``nlink`` and aborts the unlink when it
+finds the entry has been published. Without the publish-side lock the
+``link()`` can land between trim's ``nlink`` re-check and its
+``remove()``, and the publish reports success on an entry that is
+about to be deleted.
+
+The lock nests below the caller's own: the Shake backend holds
+``<user-path>.lock`` across the whole publish rule while this helper
+takes ``<cas-path>.lock`` inside it. No code path takes those two in
+the opposite order.
 
 EXAMPLES
 ========
