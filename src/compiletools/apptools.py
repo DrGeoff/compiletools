@@ -1250,10 +1250,7 @@ def resubstitute(args) -> None:
     except compiletools.apptools_pkgconfig.PkgConfigError as err:
         if args.verbose >= 2:
             raise
-        print(
-            f"{err}\nInstall the package, correct --pkg-config, or use --pkg-config-errors=warn.",
-            file=sys.stderr,
-        )
+        print(compiletools.apptools_pkgconfig.render_pkg_config_error(err), file=sys.stderr)
         raise SystemExit(1) from None
     state = compute_build_state(inputs)
     apply_effects(state, context)
@@ -1528,7 +1525,13 @@ def parseargs(cap, argv, verbose=None, *, context):
     # SetEnv, wild-B symlink dir); populate_args stashes the state on
     # args._build_state and writes the resolved name attrs
     # (variant/bindir/cas-*dirs) -- never the raw flag slots.
-    inputs = gather_inputs(args, context)
+    try:
+        inputs = gather_inputs(args, context)
+    except compiletools.apptools_pkgconfig.PkgConfigError as err:
+        if args.verbose >= 2:
+            raise
+        print(compiletools.apptools_pkgconfig.render_pkg_config_error(err), file=sys.stderr)
+        raise SystemExit(1) from None
     state = compute_build_state(inputs)
     apply_effects(state, context)
     populate_args(args, state)

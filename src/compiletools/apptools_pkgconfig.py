@@ -164,6 +164,15 @@ class PkgConfigError(RuntimeError):
     """A pkg-config failure promoted by ``--pkg-config-errors=error``."""
 
 
+def render_pkg_config_error(error: PkgConfigError, extra: str = "") -> str:
+    """Return the shared, traceback-free pkg-config strict-mode diagnostic."""
+    lines = [str(error)]
+    if extra:
+        lines.append(extra)
+    lines.append("Install the package, correct the package declaration, or use --pkg-config-errors=warn.")
+    return "\n".join(lines)
+
+
 def _warn_pkg_config(message: str, detail: str = "") -> None:
     if detail:
         message = f"{message}: {detail}"

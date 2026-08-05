@@ -673,12 +673,11 @@ class MagicFlagsBase:
             try:
                 self._extend_flags_from_dict(flagsforfilename, self._handle_pkg_config(flag, expander=expander))
             except compiletools.apptools_pkgconfig.PkgConfigError as exc:
-                message = (
-                    f"{exc}\nPKG-CONFIG requested by {filename}. "
-                    "Install the package, correct the annotation, or use --pkg-config-errors=warn."
+                message = compiletools.apptools_pkgconfig.render_pkg_config_error(
+                    exc, f"PKG-CONFIG requested by {filename}."
                 )
                 if self._args.verbose >= 2:
-                    raise compiletools.apptools_pkgconfig.PkgConfigError(message) from None
+                    raise compiletools.apptools_pkgconfig.PkgConfigError(message) from exc
                 print(message, file=sys.stderr)
                 raise SystemExit(1) from None
             # PKG-CONFIG generates flags for other keys AND adds itself to PKG-CONFIG key
