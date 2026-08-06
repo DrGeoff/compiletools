@@ -2702,14 +2702,14 @@ class TestNoteShadowedBareHookValuesProvenanceFailure:
         # Same verbose >= 1 gate as the shadow note itself: at any verbosity
         # where the note could have appeared, its failure must be visible too.
         args = self._make_args(verbose=1)
-        apptools._note_shadowed_bare_hook_values(args, "prebuild-script", "prebuild_scripts")
+        apptools._note_shadowed_bare_values(args, "prebuild-script", "prebuild_scripts")
         captured = capsys.readouterr()
         assert "hook-shadow provenance lookup failed" in captured.err
         assert "'prebuild-script'" in captured.err
 
     def test_breadcrumb_not_emitted_at_verbose_0(self, capsys):
         args = self._make_args(verbose=0)
-        apptools._note_shadowed_bare_hook_values(args, "prebuild-script", "prebuild_scripts")
+        apptools._note_shadowed_bare_values(args, "prebuild-script", "prebuild_scripts")
         captured = capsys.readouterr()
         assert "hook-shadow provenance lookup failed" not in captured.err
         assert captured.err == ""

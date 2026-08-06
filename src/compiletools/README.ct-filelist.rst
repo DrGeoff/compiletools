@@ -87,18 +87,24 @@ OPTIONS
                     Glob excluding files from ``--auto`` discovery. Can be
                     specified multiple times. A pattern containing a path
                     separator matches the gitroot-relative path (a leading
-                    ``/`` anchors there, as in gitignore) and the absolute
-                    path; a pattern without one matches any single component
-                    of the gitroot-relative path, whole. So ``vendor``
-                    excludes every file under any ``vendor`` directory but
-                    never ``vendorlib``, ``test_*.cpp`` excludes by basename,
-                    and ``src/legacy``, ``/src/legacy`` and ``src/legacy/*``
-                    all exclude that subtree. ``*`` spans separators, so
-                    ``*/legacy`` matches at any depth.
+                    ``/`` anchors there, as in gitignore); a pattern without
+                    one matches any single component of the gitroot-relative
+                    path, whole. So ``vendor`` excludes every file under any
+                    ``vendor`` directory but never ``vendorlib``,
+                    ``test_*.cpp`` excludes by basename, and ``src/legacy``,
+                    ``/src/legacy`` and ``src/legacy/*`` all exclude that
+                    subtree. ``*`` spans separators, so ``*/legacy`` matches
+                    at any depth -- but only within the gitroot: directories
+                    above it are out of reach of a relative pattern, so
+                    ``*/tmp/*`` cannot exclude a whole checkout that sits
+                    under ``/tmp``. An absolute pattern matches the absolute
+                    path, which is how ``${CONF_DIR}/legacy`` works.
                     Explicitly named targets are never filtered. In a ct.conf
-                    the bare ``auto-exclude`` key is last-writer-wins; use
-                    ``append-AUTO-EXCLUDE`` (uppercase) to accumulate
-                    exclusions across the conf hierarchy. See ``ct-cake`` (1).
+                    the bare ``auto-exclude`` key is last-writer-wins between
+                    conf files; use ``append-AUTO-EXCLUDE`` (uppercase) to
+                    accumulate across the conf hierarchy instead. A
+                    command-line ``--auto-exclude`` appends to the conf
+                    values rather than replacing them. See ``ct-cake`` (1).
 
 --dynamic LIB.cpp
                     Include files needed for building a dynamic/shared library.

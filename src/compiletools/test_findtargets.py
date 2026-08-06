@@ -394,9 +394,9 @@ class TestDiscoveryArgumentSplit:
 
 
 class TestAutoExcludeMatching:
-    """A pattern with a path separator fnmatches the gitroot-relative and
-    absolute paths; a pattern without one fnmatches each individual path
-    component."""
+    """A pattern with a path separator fnmatches the gitroot-relative path
+    (and, when the pattern is itself absolute, the absolute path); a
+    pattern without one fnmatches each individual path component."""
 
     def _excluded(self, tmp_path, pattern, relpath):
         return compiletools.findtargets.is_auto_excluded(
@@ -437,6 +437,22 @@ class TestAutoExcludeMatching:
         """A conf file writes ``${CONF_DIR}/legacy/*``, which expands to an
         absolute pattern that must still match."""
         assert self._excluded(tmp_path, os.path.realpath(str(tmp_path)) + "/legacy/*", "legacy/old.cpp")
+
+    def test_a_relative_pattern_never_reaches_above_the_gitroot(self, tmp_path):
+        """``*/legacy`` is the spelling the docs recommend for matching at
+        any depth, and ``*`` spans separators -- so if the absolute path
+        were a candidate for a relative pattern, a checkout under
+        ``/tmp/...`` would be wholly excluded by ``*/tmp/*``, discovering
+        nothing, over a path component the project never chose. Only an
+        absolute pattern gets the absolute path."""
+        anchor = os.path.realpath(str(tmp_path))
+        above = (os.path.basename(anchor), os.path.basename(os.path.dirname(anchor)))
+        for ancestor in above:
+            for pattern in (f"*/{ancestor}/*", f"*/{ancestor}", f"{ancestor}/*"):
+                assert not self._excluded(tmp_path, pattern, "src/main.cpp"), pattern
+        # The in-tree spellings the ancestor rule must not cost us.
+        assert self._excluded(tmp_path, "*/src/*", "src/main.cpp")
+        assert self._excluded(tmp_path, "*/src", "src/main.cpp")
 
     def test_leading_separator_anchors_at_the_gitroot(self, tmp_path):
         """``/src/legacy`` is the spelling a gitignore-trained user reaches

@@ -51,10 +51,11 @@ def add_discovery_arguments(cap):
         dest="auto_exclude",
         action="append",
         help="Glob excluding files from --auto discovery. A pattern with a path separator "
-        "matches the gitroot-relative path (a leading / anchors there), and the absolute "
-        "path; a directory name excludes its whole subtree. A pattern without a separator "
-        "matches any single component of the gitroot-relative path, whole. Explicitly named "
-        'targets are never filtered. e.g., "vendor", "test_*.cpp", "src/legacy", "/src/legacy/*"',
+        "matches the gitroot-relative path (a leading / anchors there); a directory name "
+        "excludes its whole subtree. A pattern without a separator matches any single "
+        "component of the gitroot-relative path, whole. Neither reaches above the gitroot; "
+        "an absolute pattern matches the absolute path. Explicitly named targets are never "
+        'filtered. e.g., "vendor", "test_*.cpp", "src/legacy", "/src/legacy/*"',
     )
     compiletools.apptools._add_xxpend_argument(
         cap,
@@ -64,10 +65,10 @@ def add_discovery_arguments(cap):
             "append-AUTO-EXCLUDE / prepend-AUTO-EXCLUDE form in conf files "
             "(uppercase -- the lowercase append-auto-exclude spelling is "
             "silently ignored) so a subproject ADDS exclusions instead of "
-            "last-writer-wins clobbering the whole list, and so a CLI "
-            "append does not suppress the conf values. Order is irrelevant "
-            "for an exclusion set, so prepend and append differ only in "
-            "spelling."
+            "last-writer-wins clobbering the whole list. A command-line "
+            "--auto-exclude appends to the conf values either way; there is "
+            "no un-exclude. Order is irrelevant for an exclusion set, so "
+            "prepend and append differ only in spelling."
         ),
     )
 
@@ -112,13 +113,21 @@ def is_auto_excluded(filepath, patterns, anchor_root=""):
     """True when *filepath* is excluded from ``--auto`` discovery.
 
     A pattern containing a path separator is matched against the
-    *anchor_root*-relative path, that path rooted at ``/`` (the gitignore
-    spelling, so ``/src/legacy`` is the anchored form it looks like), and
-    the absolute path. Each is tried directly and with ``/*`` appended, so
-    a directory name excludes its whole subtree without one. Both halves
-    are ``fnmatch``, whose ``*`` spans separators, so ``*/src/legacy``
+    *anchor_root*-relative path and that path rooted at ``/`` (the
+    gitignore spelling, so ``/src/legacy`` is the anchored form it looks
+    like). Each is tried directly and with ``/*`` appended, so a directory
+    name excludes its whole subtree without one. Both halves are
+    ``fnmatch``, whose ``*`` spans separators, so ``*/src/legacy``
     excludes that subtree at any depth and ``src/legacy`` never reaches
     ``src/legacyish``.
+
+    The absolute path joins the candidates only for a pattern that is
+    itself absolute (the ``${CONF_DIR}/legacy`` spelling a conf file
+    expands to) or for a file with no relative spelling. Offering it to a
+    relative pattern would let the recommended any-depth spelling reach
+    above the anchor: ``*/tmp/*`` would exclude every file in a checkout
+    that merely sits under ``/tmp``, discovering nothing, over a path
+    component the project never chose.
 
     A pattern without a separator is fnmatched against each component of
     the *anchor_root*-relative path -- so ``vendor`` excludes every file
@@ -141,10 +150,15 @@ def is_auto_excluded(filepath, patterns, anchor_root=""):
         prefix = anchor if anchor.endswith(os.sep) else anchor + os.sep
         if absolute.startswith(prefix):
             relative = absolute[len(prefix) :]
-    candidates = [absolute] if relative is None else [absolute, relative, os.sep + relative]
     components = (relative or compiletools.wrappedos.basename(absolute)).split(os.sep)
     for pattern in patterns:
         if os.sep in pattern:
+            if relative is None:
+                candidates = [absolute]
+            elif os.path.isabs(pattern):
+                candidates = [absolute, relative, os.sep + relative]
+            else:
+                candidates = [relative, os.sep + relative]
             subtree = pattern.rstrip(os.sep)
             if any(
                 fnmatch.fnmatch(candidate, pattern) or (subtree and fnmatch.fnmatch(candidate, subtree + os.sep + "*"))

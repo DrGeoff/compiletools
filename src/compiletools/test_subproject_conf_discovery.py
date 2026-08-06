@@ -1505,10 +1505,15 @@ class TestAutoDiscoveryReanchor:
 
         Round one discovers appbeta/main.cpp with no exclusions in force
         and re-anchors onto appbeta/ct.conf; round two re-discovers under
-        the widened config, where that conf's exclusion now applies. The
-        oracle run supplies the identical exclusion on the CLI, so it
-        never loads appbeta's layer at all -- the two runs agree on
-        targets, which is what the flag promises.
+        the widened config, where that conf's exclusion now applies.
+
+        Both runs end up identically configured here -- the exclusion
+        names appbeta/legacy, not appbeta itself, so the oracle discovers
+        appbeta/main.cpp and anchors the same layer. What this test pins
+        is that a conf the first round could not have read still scopes
+        that round's own discoveries. The case where the two runs load
+        DIFFERENT config is
+        ``test_conf_driven_exclusion_agrees_on_targets_while_flags_diverge``.
         """
         (monorepo / "appbeta" / "ct.conf").write_text(
             "append-CPPFLAGS = -DAPPBETA_EXTRA\nappend-AUTO-EXCLUDE = ${CONF_DIR}/legacy\n"
@@ -1522,14 +1527,57 @@ class TestAutoDiscoveryReanchor:
             final = compiletools.findtargets.discover_targets_and_reanchor(args, args._context)
         # The conf layer WAS loaded (round one discovered appbeta/main.cpp)...
         assert "-DAPPBETA_EXTRA" in get_build_state(final).cppflags
-        # ...and its exclusion retro-applies to the round-one discoveries.
+        # ...and the round that reads its exclusion re-discovers from a fresh
+        # namespace, so round one's find does not survive into the result.
         assert not any(f.endswith(os.path.join("legacy", "old.cpp")) for f in final.filename)
 
         oracle_args = _parse_cake_args(monorepo, [*_ARGV_BASE, "--auto", f"--auto-exclude={legacy}"])
         with uth.DirectoryContext(str(monorepo)):
             oracle = compiletools.findtargets.discover_targets_and_reanchor(oracle_args, oracle_args._context)
+        assert "-DAPPBETA_EXTRA" in get_build_state(oracle).cppflags
         assert sorted(final.filename) == sorted(oracle.filename)
         assert sorted(final.tests or []) == sorted(oracle.tests or [])
+
+    def test_conf_driven_exclusion_agrees_on_targets_while_flags_diverge(self, monorepo):
+        """The documented residue of the monotone config set: when the
+        exclusion removes the very target that anchored its own conf
+        layer, the layer STAYS loaded and its flags stay in force, even
+        though nothing it configures is being built any more.
+
+        So a conf-driven exclusion and the identical CLI exclusion agree
+        on TARGETS and disagree on FLAGS. That is a deliberate contract,
+        not an oversight -- the monotonicity is what bounds the fixpoint
+        loop -- and it is asserted rather than described so nobody
+        "fixes" the monotonicity without noticing what they changed.
+
+        appalpha keeps both target sets non-empty, so the equality cannot
+        pass by both runs discovering nothing.
+        """
+        (monorepo / "appbeta" / "ct.conf").write_text(
+            "append-CPPFLAGS = -DAPPBETA_EXTRA\nappend-AUTO-EXCLUDE = ${CONF_DIR}\n"
+        )
+        appalpha = monorepo / "appalpha"
+        appalpha.mkdir()
+        # A distinct body: the global hash registry refuses to reverse-look-up
+        # a content hash shared by two tracked files.
+        (appalpha / "main.cpp").write_text("int main() { return 7; }\n")
+
+        args = _parse_cake_args(monorepo, [*_ARGV_BASE, "--auto"])
+        with uth.DirectoryContext(str(monorepo)):
+            final = compiletools.findtargets.discover_targets_and_reanchor(args, args._context)
+
+        oracle_args = _parse_cake_args(monorepo, [*_ARGV_BASE, "--auto", f"--auto-exclude={monorepo / 'appbeta'}"])
+        with uth.DirectoryContext(str(monorepo)):
+            oracle = compiletools.findtargets.discover_targets_and_reanchor(oracle_args, oracle_args._context)
+
+        assert any(f.endswith(os.path.join("appalpha", "main.cpp")) for f in final.filename)
+        assert not any(f.endswith(os.path.join("appbeta", "main.cpp")) for f in final.filename)
+        assert sorted(final.filename) == sorted(oracle.filename)
+        assert sorted(final.tests or []) == sorted(oracle.tests or [])
+        # The divergence: the conf-driven run still carries the excluded
+        # subproject's flags; the CLI run never loaded that layer.
+        assert "-DAPPBETA_EXTRA" in get_build_state(final).cppflags
+        assert "-DAPPBETA_EXTRA" not in get_build_state(oracle).cppflags
 
     def test_append_auto_exclude_accumulates_across_the_conf_hierarchy(self, monorepo):
         """The documented way a subproject ADDS exclusions: the gitroot
@@ -1575,6 +1623,50 @@ class TestAutoDiscoveryReanchor:
         assert not any(f.endswith(os.path.join("legacy", "old.cpp")) for f in final.filename)
         # Clobbered: the gitroot conf's exclusion did NOT survive.
         assert any(f.endswith(os.path.join("vendored", "third_party.cpp")) for f in final.filename)
+
+    def test_cli_auto_exclude_appends_to_the_conf_values(self, monorepo):
+        """There is no un-exclude: a command-line ``--auto-exclude`` does
+        NOT replace what the conf hierarchy resolved to, it is appended to
+        it. Pinned because the docs said the opposite, and a user who
+        believes it will reach for the command line to re-enable a
+        conf-excluded directory and silently get nothing."""
+        (monorepo / "ct.conf").write_text((monorepo / "ct.conf").read_text() + "auto-exclude = ${CONF_DIR}/vendored\n")
+        for subdir, stem in (("vendored", "third_party"), ("other", "o")):
+            (monorepo / subdir).mkdir()
+            (monorepo / subdir / f"{stem}.cpp").write_text(f"// {stem}\nint main() {{ return 0; }}\n")
+
+        args = _parse_cake_args(monorepo, [*_ARGV_BASE, "--auto", f"--auto-exclude={monorepo / 'other'}"])
+        with uth.DirectoryContext(str(monorepo)):
+            final = compiletools.findtargets.discover_targets_and_reanchor(args, args._context)
+        # Both exclusions are in force; the CLI one did not displace the conf one.
+        assert not any(f.endswith(os.path.join("other", "o.cpp")) for f in final.filename)
+        assert not any(f.endswith(os.path.join("vendored", "third_party.cpp")) for f in final.filename)
+        assert any(f.endswith(os.path.join("appbeta", "main.cpp")) for f in final.filename)
+
+    def test_a_clobbered_bare_auto_exclude_is_noted_at_verbose_one(self, monorepo, capsys):
+        """A subproject silently discarding the gitroot's exclusions is the
+        failure mode the bare key's last-writer-wins semantics enable, and
+        it is invisible at the point of damage. Same note the
+        prebuild/postbuild siblings emit, same ``verbose >= 1`` gate."""
+        (monorepo / "ct.conf").write_text((monorepo / "ct.conf").read_text() + "auto-exclude = ${CONF_DIR}/vendored\n")
+        (monorepo / "appbeta" / "ct.conf").write_text(
+            "append-CPPFLAGS = -DAPPBETA_EXTRA\nauto-exclude = ${CONF_DIR}/legacy\n"
+        )
+        _parse_cake_args(monorepo, [*_ARGV_BASE, "-v", os.path.join("appbeta", "main.cpp")])
+        note = capsys.readouterr().err
+        assert "auto-exclude" in note
+        assert str(monorepo / "vendored") in note
+        assert "append-AUTO-EXCLUDE" in note
+
+    def test_the_clobber_note_is_silent_by_default(self, monorepo, capsys):
+        """Default verbosity must stay quiet: the semantics are documented
+        and a deliberate override is not a problem to report."""
+        (monorepo / "ct.conf").write_text((monorepo / "ct.conf").read_text() + "auto-exclude = ${CONF_DIR}/vendored\n")
+        (monorepo / "appbeta" / "ct.conf").write_text(
+            "append-CPPFLAGS = -DAPPBETA_EXTRA\nauto-exclude = ${CONF_DIR}/legacy\n"
+        )
+        _parse_cake_args(monorepo, [*_ARGV_BASE, os.path.join("appbeta", "main.cpp")])
+        assert "auto-exclude" not in capsys.readouterr().err
 
     def test_auto_exclude_never_filters_an_explicit_target(self, monorepo):
         """``--auto-exclude`` scopes discovery only: a target the user named

@@ -46,24 +46,31 @@ be reported as a test, unless --no-filenametestmatch is set.
 --auto-exclude drops files from the search. Give it multiple times to build
 up a list, or set it in a ct.conf. A pattern containing a path separator
 matches the gitroot-relative path (a leading ``/`` anchors there, as in
-gitignore) and the absolute path; a pattern without one matches any single
-component of the gitroot-relative path, whole. So ``vendor`` excludes every
-file under any ``vendor`` directory but never ``vendorlib``, ``test_*.cpp``
-excludes by basename, and ``src/legacy``, ``/src/legacy`` and
-``src/legacy/*`` all exclude that subtree. ``*`` spans separators, so
-``*/legacy`` excludes a ``legacy`` subtree at any depth, while
-``src/legacy`` never reaches ``src/legacyish``. Directories above the
-gitroot are never scanned by a separator-free pattern.
+gitignore); a pattern without one matches any single component of the
+gitroot-relative path, whole. So ``vendor`` excludes every file under any
+``vendor`` directory but never ``vendorlib``, ``test_*.cpp`` excludes by
+basename, and ``src/legacy``, ``/src/legacy`` and ``src/legacy/*`` all
+exclude that subtree. ``*`` spans separators, so ``*/legacy`` excludes a
+``legacy`` subtree at any depth, while ``src/legacy`` never reaches
+``src/legacyish``. Directories above the gitroot are out of reach of a
+relative pattern of either kind, so ``*/tmp/*`` cannot exclude an entire
+checkout that merely sits under ``/tmp``; an ABSOLUTE pattern is matched
+against the absolute path, which is what makes ``${CONF_DIR}/legacy`` work.
 ct-cake and ct-filelist share this search, so an exclusion set
 in a ct.conf applies to all three; targets those tools are told to build by
-name are never filtered.
+name are never filtered. ct-filelist registers the discovery options
+without ``--style``, keeping its own; ct-cake and ct-compilation-database
+register the full set and so still accept ct-findtargets' ``--style``.
 
 Conf files have two spellings. The bare ``auto-exclude`` key is
-last-writer-wins across the conf hierarchy, and a command-line
-``--auto-exclude`` suppresses it. ``append-AUTO-EXCLUDE`` (uppercase)
-accumulates instead, which is what a subproject conf should use to ADD an
-exclusion; ``prepend-AUTO-EXCLUDE`` is a synonym, since order carries no
-meaning for an exclusion set.
+last-writer-wins across the conf hierarchy. It does not contest with the
+command line: a command-line ``--auto-exclude`` APPENDS to whatever the
+conf hierarchy resolved to, so there is no way to un-exclude from the
+command line. ``append-AUTO-EXCLUDE`` (uppercase) accumulates between conf
+files instead of replacing, which is what a subproject conf should use to
+ADD an exclusion; ``prepend-AUTO-EXCLUDE`` is a synonym, since order
+carries no meaning for an exclusion set. A bare key that a
+higher-priority conf overrides is reported at ``-v``.
 
 EXAMPLES
 ========
