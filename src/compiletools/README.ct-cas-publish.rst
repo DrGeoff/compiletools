@@ -184,17 +184,21 @@ EXIT CODES
     fallback) at the byte-equivalent CAS entry, and the sidecar
     manifest has been written if ``--source-realpath`` was supplied.
 1
-    Failure — propagates argparse error or any unrecovered ``OSError``
-    from ``link()`` / ``symlink()`` / ``rename()``. The ``user_path``
-    is never left in a partial state.
+    Failure — an unrecovered ``OSError`` from ``link()`` / ``symlink()``
+    / ``rename()`` propagated out of an uncaught exception. The
+    ``user_path`` is never left in a partial state. A command-line
+    usage error (missing ``--cas-path`` / ``--user-path``, bad flag)
+    is a separate case: argparse exits ``2`` for those, before
+    ``publish()`` ever runs.
 3
     The CAS entry was missing when the publish tried to link it. A
     concurrent ``ct-trim-cache`` eviction is the reachable cause, and it
     is recoverable: rerun the build and the artefact is relinked into
     the cache. A producer rule that exits 0 without writing its output
     lands here too, which a rerun will not fix, so the message names
-    both. Distinct from ``1`` so a wrapper can retry this case without
-    retrying real errors.
+    both. Distinct from ``1`` so a wrapper COULD retry this case without
+    retrying real errors — no in-tree caller does this today; the
+    generated build recipes treat any nonzero exit as a hard failure.
 
 CONCURRENCY
 ===========
