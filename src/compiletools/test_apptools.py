@@ -138,6 +138,30 @@ def _parseargs_with_pkg_config_conf(ct_conf_line, *, axis_conf_line=""):
     )
 
 
+@pytest.mark.usefixtures("parsers_reset")
+def test_strict_pkg_config_parseargs_renders_a_clean_remedy(capsys):
+    with _temp_repo_with_ct_conf("gcc", "gcc") as (repo_root, conf_d):
+        with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+            fh.write("CC = gcc\nCXX = g++\nLD = g++\n")
+
+        with pytest.raises(SystemExit) as excinfo:
+            _parseargs_for_variant(
+                repo_root,
+                [
+                    "--variant=gcc",
+                    "--no-git-root",
+                    "--pkg-config=compiletools-definitely-missing-pkg",
+                    "--pkg-config-errors=error",
+                ],
+                add_link=True,
+            )
+
+    assert excinfo.value.code == 1
+    error_output = capsys.readouterr().err
+    assert "compiletools-definitely-missing-pkg" in error_output
+    assert "--pkg-config-errors=warn" in error_output
+
+
 class TestExtractCommandLineMacrosSz:
     """Test extract_command_line_macros_sz()."""
 
@@ -600,6 +624,7 @@ class TestTerminalColumns:
 class TestClearCache:
     def test_clear_cache_runs(self):
         # Populate the cache with a dummy call
+        clear_cache()
 
         with patch("subprocess.run", return_value=MagicMock(returncode=1)):
             with warnings.catch_warnings(record=True) as caught:

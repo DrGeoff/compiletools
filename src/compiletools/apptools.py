@@ -1245,7 +1245,13 @@ def resubstitute(args) -> None:
     context = args._context
     prior_view = cache_naming_view(get_build_state(args))
 
-    inputs = gather_inputs(args, context)
+    try:
+        inputs = gather_inputs(args, context)
+    except compiletools.apptools_pkgconfig.PkgConfigError as err:
+        if args.verbose >= 2:
+            raise
+        print(compiletools.apptools_pkgconfig.render_pkg_config_error(err), file=sys.stderr)
+        raise SystemExit(1) from None
     state = compute_build_state(inputs)
     apply_effects(state, context)
     populate_args(args, state)
@@ -1393,7 +1399,7 @@ def parseargs(cap, argv, verbose=None, *, context):
     """
     # Deferred imports: build_inputs/build_state/build_apply import from
     # apptools (sentinels, helpers), so top-level imports here would cycle.
-    from compiletools.build_apply import apply_effects, populate_args
+    from compiletools.build_apply import apply_effects, configure_pkg_config_errors, populate_args
     from compiletools.build_inputs import gather_inputs
     from compiletools.build_state import compute_build_state
 
@@ -1464,6 +1470,10 @@ def parseargs(cap, argv, verbose=None, *, context):
         args.verbose -= args.quiet
         args._quiet_applied = True
 
+    # The apply layer owns the module-level policy.  This must happen before
+    # gather_inputs makes its first (cached) pkg-config probe.
+    configure_pkg_config_errors(args)
+
     # Variant-resolution provenance for the -vv trace. The stash's only
     # production consumer is the print itself; resolve_variant splits and
     # canonicalizes its own input, and the canonical dotted variant the
@@ -1515,7 +1525,13 @@ def parseargs(cap, argv, verbose=None, *, context):
     # SetEnv, wild-B symlink dir); populate_args stashes the state on
     # args._build_state and writes the resolved name attrs
     # (variant/bindir/cas-*dirs) -- never the raw flag slots.
-    inputs = gather_inputs(args, context)
+    try:
+        inputs = gather_inputs(args, context)
+    except compiletools.apptools_pkgconfig.PkgConfigError as err:
+        if args.verbose >= 2:
+            raise
+        print(compiletools.apptools_pkgconfig.render_pkg_config_error(err), file=sys.stderr)
+        raise SystemExit(1) from None
     state = compute_build_state(inputs)
     apply_effects(state, context)
     populate_args(args, state)

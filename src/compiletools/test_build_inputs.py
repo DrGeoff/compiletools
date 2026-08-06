@@ -16,6 +16,13 @@ from compiletools.build_context import BuildContext
 from compiletools.build_inputs import _query_pkg_config, gather_inputs
 
 
+@pytest.fixture(autouse=True)
+def _clear_pkg_config_cache():
+    compiletools.apptools_pkgconfig.clear_cache()
+    yield
+    compiletools.apptools_pkgconfig.clear_cache()
+
+
 @pytest.fixture
 def parsers_reset():
     """Wipe the configargparse parser cache around tests that go through
