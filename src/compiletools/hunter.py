@@ -4,6 +4,7 @@ import sys
 from collections.abc import Callable
 
 import compiletools.apptools
+import compiletools.apptools_pkgconfig
 import compiletools.diagnostics
 import compiletools.file_analyzer
 import compiletools.headerdeps
@@ -17,6 +18,23 @@ from compiletools.global_hash_registry import (
     get_tracked_files,
 )
 from compiletools.utils import instance_cache
+
+
+def _terminate_on_strict_pkg_config(exc, source) -> None:
+    """Turn a strict-mode pkg-config failure into a fatal, traceback-free exit.
+
+    ``--pkg-config-errors=error`` is an enforcement policy, so the source
+    expansion below must not fold it into its deliberately broad
+    warn-and-continue handler: doing so hands the caller a source list built
+    from a package whose flags are missing. ``PkgConfigError`` subclasses
+    ``RuntimeError``, so only an explicit carve-out keeps it out of that
+    handler; ``SystemExit`` is what carries the termination past it.
+    """
+    message = compiletools.apptools_pkgconfig.render_pkg_config_error(
+        exc, f"PKG-CONFIG requested while expanding {source}."
+    )
+    print(message, file=sys.stderr)
+    raise SystemExit(1) from None
 
 
 def add_arguments(cap):
@@ -739,6 +757,8 @@ class Hunter:
                 if self.args.verbose >= 7:
                     print(f"Hunter::huntsource - {source} expanded to {len(required_sources)} sources")
 
+            except compiletools.apptools_pkgconfig.PkgConfigError as exc:
+                _terminate_on_strict_pkg_config(exc, source)
             except Exception as e:
                 # Deliberately broad: the expansion walks headerdeps + magic
                 # flags, whose failure modes span OSError/ValueError/parse
@@ -786,6 +806,8 @@ class Hunter:
                         realpath_source = compiletools.wrappedos.realpath(source)
                         required_sources = self.required_source_files(realpath_source)
                         test_sources.update(required_sources)
+                    except compiletools.apptools_pkgconfig.PkgConfigError as exc:
+                        _terminate_on_strict_pkg_config(exc, source)
                     except Exception as e:
                         # Same contract as huntsource: broad on purpose (deep
                         # headerdeps/magicflags walk), loud on purpose.

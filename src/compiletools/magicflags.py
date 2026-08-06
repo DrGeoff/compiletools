@@ -673,11 +673,14 @@ class MagicFlagsBase:
             try:
                 self._extend_flags_from_dict(flagsforfilename, self._handle_pkg_config(flag, expander=expander))
             except compiletools.apptools_pkgconfig.PkgConfigError as exc:
+                # Verbosity must not invert the policy. SystemExit is the
+                # termination that survives the deliberately broad
+                # ``except Exception`` in Hunter's source expansion; a
+                # PkgConfigError there is downgraded to a warning and the
+                # caller gets a source list missing the package's flags.
                 message = compiletools.apptools_pkgconfig.render_pkg_config_error(
                     exc, f"PKG-CONFIG requested by {filename}."
                 )
-                if self._args.verbose >= 2:
-                    raise compiletools.apptools_pkgconfig.PkgConfigError(message) from exc
                 print(message, file=sys.stderr)
                 raise SystemExit(1) from None
             # PKG-CONFIG generates flags for other keys AND adds itself to PKG-CONFIG key
