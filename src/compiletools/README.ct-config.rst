@@ -64,7 +64,7 @@ ct.conf defines the following variables:
     variant = gcc.cxx26.debug
     exemarkers = [main(,main (,wxIMPLEMENT_APP,g_main_loop_new]
     testmarkers = unit_test.hpp
-    max_file_read_size = 0
+    max-file-read-size = 0
 
 The canonical token ordering used during variant canonicalization is the
 ``_DEFAULT_VARIANT_CANONICAL_ORDER`` tuple in ``compiletools/configutils.py`` —
@@ -552,7 +552,7 @@ supports the following features:
     file-locking = true
 
     # Number
-    max_file_read_size = 0
+    max-file-read-size = 0
 
     # Python list (for markers)
     exemarkers = [main(,main (,wxIMPLEMENT_APP]
@@ -752,7 +752,7 @@ Base configuration (ct.conf):
     variant-canonical-order = blank, gcc, clang, icc, msvc, debug, release, asan, ubsan, tsan, coverage, lto
     exemarkers = [main(,main (,wxIMPLEMENT_APP,g_main_loop_new]
     testmarkers = unit_test.hpp
-    max_file_read_size = 0                            # 0 = read entire file
+    max-file-read-size = 0                            # 0 = read entire file
     # file-locking = true                              # Enable file locking
     # cas-objdir = /path/to/cache                      # Object file cache location
 
