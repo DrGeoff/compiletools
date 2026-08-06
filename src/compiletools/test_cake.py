@@ -11,6 +11,7 @@ import pytest
 
 import compiletools.apptools
 import compiletools.cake
+import compiletools.compilation_database
 import compiletools.filelist
 import compiletools.findtargets
 import compiletools.namer
@@ -944,3 +945,20 @@ class TestCakeStyleSurface:
         assert len(actions) == 1
         assert list(actions[0].choices or []) == list(compiletools.filelist._STYLE_REGISTRY)
         assert actions[0].default == "flat"
+
+    @pytest.mark.parametrize(
+        "main",
+        [compiletools.cake.main, compiletools.compilation_database.main],
+        ids=["ct-cake", "ct-compilation-database"],
+    )
+    def test_composed_tool_help_advertises_the_full_style_set(self, main, capsys):
+        """Read the surface off the real entry point rather than a
+        hand-rebuilt parser, so a change to how a tool composes its
+        registrars cannot leave this pin passing against a stale replica."""
+        with pytest.raises(SystemExit) as exc:
+            main(["--help"])
+        assert exc.value.code == 0
+        helptext = " ".join(capsys.readouterr().out.split())
+        entry = "--style {null,flat,indent,args} Output formatting style"
+        assert entry in helptext
+        assert "(default: indent)" in helptext.split(entry, 1)[1][:60]
