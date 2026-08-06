@@ -146,7 +146,11 @@ def _get_filepath_by_hash_impl(
     if len(filepaths) > 1:
         raise RuntimeError(
             f"Hash {file_hash} maps to {len(filepaths)} files with identical content: "
-            f"{', '.join(filepaths)}. Cannot determine which file to use."
+            f"{', '.join(filepaths)}. compiletools requires every source/header in the "
+            f"working tree to have unique content. Fix: make each file's bytes unique, "
+            f"e.g. add a distinguishing comment stating its purpose. Note that "
+            f"--auto-exclude cannot resolve this: the hash registry covers the whole "
+            f"working tree (tracked and untracked) and is built before exclusions apply."
         )
     return filepaths[0]
 

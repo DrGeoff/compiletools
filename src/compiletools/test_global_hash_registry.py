@@ -24,6 +24,24 @@ class TestGlobalHashRegistry:
         with pytest.raises(FileNotFoundError, match="not found in working directory"):
             get_filepath_by_hash(fake_hash, ctx)
 
+    def test_get_filepath_by_hash_names_remedy_on_duplicate(self):
+        """The duplicate-content error must state the unique-content rule and
+        warn that --auto-exclude cannot resolve it, so users are not sent
+        toward the one remedy that does not work."""
+        ctx = BuildContext()
+        dup_hash = "1" * 40
+        ctx.file_hashes = {"/repo/app/util.hpp": dup_hash, "/repo/vendor/util.hpp": dup_hash}
+        ctx.reverse_hashes = {dup_hash: ["/repo/app/util.hpp", "/repo/vendor/util.hpp"]}
+
+        with pytest.raises(RuntimeError) as excinfo:
+            get_filepath_by_hash(dup_hash, ctx)
+
+        message = str(excinfo.value)
+        assert "/repo/app/util.hpp" in message
+        assert "/repo/vendor/util.hpp" in message
+        assert "unique content" in message
+        assert "--auto-exclude cannot resolve this" in message
+
     def test_file_analyzer_raises_on_missing(self):
         """Verify file_analyzer fails fast when file missing from registry."""
         ctx = BuildContext()
