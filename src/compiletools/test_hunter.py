@@ -4,6 +4,7 @@ import configargparse
 import pytest
 
 import compiletools.apptools
+import compiletools.apptools_pkgconfig as pkgconfig
 import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.magicflags
@@ -399,3 +400,152 @@ class TestHunterVerbose:
         hntr._extractSOURCE(realpath)
         captured = capsys.readouterr()
         assert "SOURCE flag" in captured.out
+
+
+@pytest.fixture
+def strict_pkg_config():
+    """Drop memoized pkg-config answers around a test that parses
+    ``--pkg-config-errors=error``. The policy itself is restored by the
+    autouse ``_isolate_pkg_config_error_policy`` fixture in ``conftest``."""
+    pkgconfig.clear_cache()
+    yield
+    pkgconfig.clear_cache()
+
+
+class TestStrictPkgConfigIsFatalDuringExpansion:
+    """``--pkg-config-errors=error`` must terminate the run at every
+    verbosity. ``huntsource``/``gettestsources`` wrap the expansion in a
+    deliberately broad ``except Exception`` that prints a warning and keeps
+    going; a strict-mode pkg-config failure reaching that handler would
+    downgrade an enforcement policy to a warning and hand the caller a
+    source list built from a package whose flags are missing."""
+
+    @staticmethod
+    def _source_with_missing_package(tmp_path, name):
+        files = uth.write_sources(
+            {f"{name}.cpp": f"//#PKG-CONFIG=compiletools-missing-{name}\nint main() {{ return 0; }}\n"},
+            target_dir=str(tmp_path),
+        )
+        return str(files[f"{name}.cpp"])
+
+    @pytest.mark.parametrize("verbosity", [0, 2])
+    def test_getsources_terminates_instead_of_warning(
+        self, capsys, tmp_path, hunter_factory, strict_pkg_config, verbosity
+    ):
+        """The end-to-end invariant: strict mode stops the build at every
+        verbosity, from the consumer a user actually calls.
+
+        Redundantly protected, deliberately. Restoring the magicflags
+        verbosity fork alone leaves this cell green, because the hunter
+        carve-out below then catches the ``PkgConfigError`` and terminates
+        anyway. The fork itself is pinned by
+        ``test_magicflags.py::test_pkg_config_error_mode_is_equally_fatal_at_high_verbosity``
+        — do not delete that cell as duplicate coverage of this one."""
+        source = self._source_with_missing_package(tmp_path, f"getsources_v{verbosity}")
+        argv_extra = ["--magic", "direct", "--pkg-config-errors=error"] + ["-v"] * verbosity
+        hntr, args = hunter_factory(argv_extra=argv_extra)
+        args.filename = [source]
+
+        with pytest.raises(SystemExit) as excinfo:
+            hntr.getsources()
+
+        assert excinfo.value.code == 1
+        captured = capsys.readouterr()
+        assert "Error expanding source" not in captured.err, (
+            f"strict pkg-config was downgraded to a warning at verbosity {verbosity}: {captured.err!r}"
+        )
+        assert "--pkg-config-errors=warn" in captured.err
+        assert "Traceback" not in captured.err
+
+    @pytest.mark.parametrize("verbosity", [0, 2])
+    def test_gettestsources_terminates_instead_of_warning(
+        self, capsys, tmp_path, hunter_factory, strict_pkg_config, verbosity
+    ):
+        source = self._source_with_missing_package(tmp_path, f"gettestsources_v{verbosity}")
+        argv_extra = ["--magic", "direct", "--pkg-config-errors=error"] + ["-v"] * verbosity
+        hntr, args = hunter_factory(argv_extra=argv_extra)
+        args.tests = [source]
+
+        with pytest.raises(SystemExit) as excinfo:
+            hntr.gettestsources()
+
+        assert excinfo.value.code == 1
+        captured = capsys.readouterr()
+        assert "Error expanding test source" not in captured.err, (
+            f"strict pkg-config was downgraded to a warning at verbosity {verbosity}: {captured.err!r}"
+        )
+        assert "--pkg-config-errors=warn" in captured.err
+
+    def test_huntsource_does_not_swallow_a_pkg_config_error_from_deeper(self, capsys, hunter_factory, monkeypatch):
+        """Defence in depth: magicflags is not the only thing the expansion
+        calls, so the broad handler itself must refuse the enforcement class
+        rather than relying on the one call site raising SystemExit."""
+        hntr, args = hunter_factory()
+        realpath = uth.example_file("simple/helloworld_cpp.cpp")
+        args.filename = [realpath]
+
+        def raise_pkg_config_error(_filename):
+            raise pkgconfig.PkgConfigError("pkg-config package 'deep' not found")
+
+        monkeypatch.setattr(hntr, "required_source_files", raise_pkg_config_error)
+
+        with pytest.raises(SystemExit) as excinfo:
+            hntr.huntsource()
+
+        assert excinfo.value.code == 1
+        captured = capsys.readouterr()
+        assert "Error expanding source" not in captured.err
+        assert "deep" in captured.err
+
+    def test_gettestsources_does_not_swallow_a_pkg_config_error_from_deeper(self, capsys, hunter_factory, monkeypatch):
+        hntr, args = hunter_factory()
+        realpath = uth.example_file("simple/helloworld_cpp.cpp")
+        args.tests = [realpath]
+
+        def raise_pkg_config_error(_filename):
+            raise pkgconfig.PkgConfigError("pkg-config package 'deep' not found")
+
+        monkeypatch.setattr(hntr, "required_source_files", raise_pkg_config_error)
+
+        with pytest.raises(SystemExit) as excinfo:
+            hntr.gettestsources()
+
+        assert excinfo.value.code == 1
+        captured = capsys.readouterr()
+        assert "Error expanding test source" not in captured.err
+        assert "deep" in captured.err
+
+    def test_an_ordinary_expansion_failure_is_still_only_a_warning(self, capsys, hunter_factory, monkeypatch):
+        """The strict-mode carve-out must not widen the broad handler into
+        a fatal one for the OSError/parse-error class it exists for."""
+        hntr, args = hunter_factory()
+        realpath = uth.example_file("simple/helloworld_cpp.cpp")
+        args.filename = [realpath]
+
+        def raise_os_error(_filename):
+            raise OSError("disk gremlins")
+
+        monkeypatch.setattr(hntr, "required_source_files", raise_os_error)
+
+        hntr.huntsource()
+
+        captured = capsys.readouterr()
+        assert "Error expanding source" in captured.err
+        assert hntr._hunted_sources == [compiletools.wrappedos.realpath(realpath)]
+
+    def test_a_mid_run_cache_clear_does_not_disarm_strict_mode(self, capsys, tmp_path, hunter_factory):
+        """``Hunter.clear_cache`` fans out to ``apptools_pkgconfig.clear_cache``,
+        which used to reset the policy to ``warn``. A build that asked for
+        strict mode then silently continued in warn mode after any cache
+        clear -- the same enforcement-downgrade class as the verbosity fork."""
+        source = self._source_with_missing_package(tmp_path, "cache_clear")
+        hntr, args = hunter_factory(argv_extra=["--magic", "direct", "--pkg-config-errors=error"])
+        args.filename = [source]
+
+        compiletools.hunter.Hunter.clear_cache()
+
+        with pytest.raises(SystemExit) as excinfo:
+            hntr.getsources()
+
+        assert excinfo.value.code == 1
+        assert "--pkg-config-errors=warn" in capsys.readouterr().err

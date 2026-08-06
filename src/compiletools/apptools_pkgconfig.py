@@ -117,12 +117,21 @@ def clear_cache():
 
     ``apptools.clear_cache`` fans out here so both the result memo
     (``cached_pkg_config``) and its package-spec existence memo are cleared.
-    Net effect is identical to the previous monolithic
-    ``apptools.clear_cache`` plus the new diagnostic cache.
+
+    Deliberately leaves the failure policy alone. ``--pkg-config-errors``
+    is set once by ``parseargs`` and is an enforcement policy, not a cache;
+    resetting it here disarmed strict mode for the rest of the process on
+    any of the shipped cache-clearing fan-outs (``Hunter.clear_cache`` ->
+    ``MagicFlagsBase.clear_cache`` -> ``apptools.clear_cache`` -> here).
+    Callers wanting the policy back at its default say so explicitly.
     """
     cached_pkg_config.cache_clear()
     _cached_pkg_config_exists.cache_clear()
-    set_pkg_config_errors("warn")
+
+
+def get_pkg_config_errors() -> Literal["warn", "error"]:
+    """Return the process-local failure policy for pkg-config consumers."""
+    return _pkg_config_errors
 
 
 def set_pkg_config_errors(errors: Literal["warn", "error"]) -> None:

@@ -328,6 +328,29 @@ def _hermetic_git_env(_hermetic_git_global_config):
                 os.environ[key] = previous
 
 
+@pytest.fixture(autouse=True)
+def _isolate_pkg_config_error_policy():
+    """Restore the process-local ``--pkg-config-errors`` policy after every test.
+
+    The policy is a module global set once by ``parseargs``. Any test that
+    flips it to ``error`` leaks strict mode into every later test in the same
+    xdist worker, where it surfaces as an order-dependent cross-file failure
+    (a plain missing-package warning becomes a raised ``PkgConfigError``).
+    Isolation used to fall out of ``apptools_pkgconfig.clear_cache`` resetting
+    the policy to ``warn``, but a cache clear must not disarm an enforcement
+    policy — the same fan-out runs mid-process in production. Owning the
+    save/restore centrally here means no future strict-mode test has to
+    remember it.
+    """
+    import compiletools.apptools_pkgconfig as _pkgconfig
+
+    saved = _pkgconfig.get_pkg_config_errors()
+    try:
+        yield
+    finally:
+        _pkgconfig.set_pkg_config_errors(saved)
+
+
 @pytest.fixture
 def pkgconfig_env(monkeypatch):
     """Set PKG_CONFIG_PATH to shared test pkg-config directory.

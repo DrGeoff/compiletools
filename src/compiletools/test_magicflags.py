@@ -387,18 +387,29 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         assert "--pkg-config-errors=warn" in error_output
         assert "Traceback" not in error_output
 
-    def test_pkg_config_error_mode_keeps_magic_context_at_high_verbosity(self):
+    def test_pkg_config_error_mode_is_equally_fatal_at_high_verbosity(self, capsys):
+        """Verbosity must not invert an enforcement policy. The strict branch
+        used to re-raise ``PkgConfigError`` at ``-vv``; that is a
+        ``RuntimeError`` subclass, so Hunter's broad expansion handler caught
+        it and downgraded the whole policy to a warning.
+
+        This is the only cell that pins the verbosity fork. The end-to-end
+        hunter cells stay green with the fork restored, because the hunter
+        carve-out catches the ``PkgConfigError`` and terminates anyway."""
         files = uth.write_sources(
             {"strict_magic_pkg_config.cpp": "//#PKG-CONFIG=compiletools-definitely-missing-pkg\nint main() {}\n"}
         )
 
         try:
-            with pytest.raises(pkgconfig.PkgConfigError, match="not found") as excinfo:
+            with pytest.raises(SystemExit) as excinfo:
                 self._parse_with_magic(
                     "direct", str(files["strict_magic_pkg_config.cpp"]), ["--pkg-config-errors=error", "-v", "-v"]
                 )
-            assert str(files["strict_magic_pkg_config.cpp"]) in str(excinfo.value)
-            assert "--pkg-config-errors=warn" in str(excinfo.value)
+            assert excinfo.value.code == 1
+            error_output = capsys.readouterr().err
+            assert "not found" in error_output
+            assert str(files["strict_magic_pkg_config.cpp"]) in error_output
+            assert "--pkg-config-errors=warn" in error_output
         finally:
             pkgconfig.clear_cache()
 

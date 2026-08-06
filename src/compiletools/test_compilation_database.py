@@ -1759,3 +1759,22 @@ class TestCompilationDatabaseDefensivePaths:
         creator.hunter.huntsource = MagicMock(side_effect=RuntimeError("project on fire"))
 
         assert creator.create_compilation_database() == []
+
+    def test_strict_pkg_config_termination_is_not_swallowed_by_that_guard(self):
+        """The heal-on-next-build guard above must not absorb an enforcement failure.
+
+        ``--pkg-config-errors=error`` asks for a build that stops. Hunter
+        signals that with ``SystemExit`` precisely because it is not an
+        ``Exception``: a ``PkgConfigError`` (a ``RuntimeError`` subclass)
+        would land in the handler above and hand the user a compile database
+        silently missing every source, with the cause reduced to a
+        verbose-gated warning line.
+        """
+
+        creator = _bare_creator(verbose=0, compilation_database_relative=False)
+        creator.hunter = MagicMock()
+        creator.hunter.huntsource = MagicMock(side_effect=SystemExit(1))
+
+        with pytest.raises(SystemExit) as excinfo:
+            creator.create_compilation_database()
+        assert excinfo.value.code == 1

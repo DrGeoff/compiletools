@@ -237,7 +237,15 @@ def test_pkg_config_error_mode_promotes_every_failure_category(monkeypatch, spec
         pkgconfig._add_flags_from_pkg_config(args)
 
 
-def test_clear_cache_resets_pkg_config_error_mode(monkeypatch):
+def test_clear_cache_preserves_pkg_config_error_mode(monkeypatch):
+    """A cache clear must not disarm an enforcement policy.
+
+    ``clear_cache`` used to reset the policy to ``warn``. The shipped
+    fan-out ``Hunter.clear_cache`` -> ``MagicFlagsBase.clear_cache`` ->
+    ``apptools.clear_cache`` -> here reaches it mid-process, so a build that
+    asked for ``--pkg-config-errors=error`` could silently continue in warn
+    mode after any cache clear.
+    """
     monkeypatch.setattr(
         pkgconfig.subprocess,
         "run",
@@ -246,8 +254,26 @@ def test_clear_cache_resets_pkg_config_error_mode(monkeypatch):
     pkgconfig.set_pkg_config_errors("error")
     pkgconfig.clear_cache()
 
+    assert pkgconfig.get_pkg_config_errors() == "error"
+    with pytest.raises(pkgconfig.PkgConfigError, match=r"pkg-config package 'missing' not found"):
+        pkgconfig.cached_pkg_config("missing", "--cflags")
+
+
+def test_clear_cache_still_clears_the_memos(monkeypatch):
+    """The policy carve-out must not stop the caches being cleared."""
+    monkeypatch.setattr(
+        pkgconfig.subprocess,
+        "run",
+        lambda cmd, **_kwargs: subprocess.CompletedProcess(cmd, 1, stdout="", stderr="missing"),
+    )
     with pytest.warns(UserWarning, match=r"pkg-config package 'missing' not found"):
         assert pkgconfig.cached_pkg_config("missing", "--cflags") == ""
+    assert pkgconfig.cached_pkg_config.cache_info().currsize > 0
+
+    pkgconfig.clear_cache()
+
+    assert pkgconfig.cached_pkg_config.cache_info().currsize == 0
+    assert pkgconfig._cached_pkg_config_exists.cache_info().currsize == 0
 
 
 def test_switching_to_error_mode_reprobes_a_warm_warn_failure(monkeypatch):
