@@ -1307,8 +1307,8 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
         Consumers: ``_setup_pkg_config_overrides_locked`` (``verbose >= 4``)
         attributes each emitted pkg-config path back to the conf file (and
         line) that contributed it, and
-        ``apptools._note_shadowed_bare_hook_values`` (``verbose >= 1``)
-        names the origin of bare hook-key values discarded by
+        ``apptools._note_shadowed_bare_values`` (``verbose >= 1``)
+        names the origin of bare-key values discarded by
         last-writer-wins.
         """
         prov = getattr(self._config_file_parser, "_provenance", None) or {}

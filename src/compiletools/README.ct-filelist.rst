@@ -15,13 +15,15 @@ Determine header and source dependencies of a C/C++ file by following headers an
 
 SYNOPSIS
 ========
-ct-filelist [OPTION] filename [filename ...]
+ct-filelist [OPTION] [filename ...]
 
 DESCRIPTION
 ===========
 ct-filelist uses the given variants/configs, command line arguments,
 environment variables, and most importantly one or more filenames to determine
-the list of files that are required to build the given filename(s). For example,
+the list of files that are required to build the given filename(s). With no
+filenames it discovers them itself (``--auto``, the default), reporting the
+files required to build everything ``ct-cake --auto`` would build. For example,
 if myfile.cpp includes myfile.hpp and myfile.hpp in turn includes awesome.h
 
 .. code-block:: text
@@ -69,6 +71,45 @@ OPTIONS
                     (default: True)
 
 **Build Targets**
+
+--auto
+                    With no filenames given, search the filesystem from the
+                    current working directory for C/C++ files with main
+                    functions and unit tests, and report the files needed to
+                    build them. This is the same discovery ``ct-cake --auto``
+                    performs, through the same driver, so the two agree on
+                    which targets exist. Use ``--no-auto`` to keep a bare
+                    ct-filelist silent. Explicitly named filenames (or
+                    ``--static`` / ``--dynamic`` / ``--tests``) suppress
+                    discovery. (default: True)
+
+--auto-exclude PATTERN
+                    Glob excluding files from ``--auto`` discovery. Can be
+                    specified multiple times. A pattern containing a path
+                    separator matches the gitroot-relative path (a leading
+                    ``/`` anchors there, as in gitignore); a pattern without
+                    one matches any single component of the gitroot-relative
+                    path, whole. So ``vendor`` excludes every file under any
+                    ``vendor`` directory but never ``vendorlib``,
+                    ``test_*.cpp`` excludes by basename, and ``src/legacy``,
+                    ``/src/legacy`` and ``src/legacy/*`` all exclude that
+                    subtree. ``*`` spans separators, so ``*/legacy`` matches
+                    at any depth -- but only within the gitroot: directories
+                    above it are out of reach of a relative pattern, so
+                    ``*/tmp/*`` cannot exclude a whole checkout that sits
+                    under ``/tmp``. An absolute pattern matches the absolute
+                    path only when it reaches INTO the tree -- everything
+                    before its first ``*``, ``?`` or ``[`` starts at the
+                    gitroot -- which is how ``${CONF_DIR}/legacy`` works.
+                    One naming an ANCESTOR is read as the gitroot-anchored
+                    form it looks like, so ``/tmp`` excludes the project's
+                    own ``tmp`` directory, never the whole checkout.
+                    Explicitly named targets are never filtered. In a ct.conf
+                    the bare ``auto-exclude`` key is last-writer-wins between
+                    conf files; use ``append-AUTO-EXCLUDE`` (uppercase) to
+                    accumulate across the conf hierarchy instead. A
+                    command-line ``--auto-exclude`` appends to the conf
+                    values rather than replacing them. See ``ct-cake`` (1).
 
 --dynamic LIB.cpp
                     Include files needed for building a dynamic/shared library.
@@ -143,6 +184,12 @@ Basic usage - list all dependencies:
 .. code-block:: bash
 
     ct-filelist myfile.cpp
+
+List everything ``ct-cake --auto`` would build, skipping a vendored subtree:
+
+.. code-block:: bash
+
+    ct-filelist --auto-exclude=vendor
 
 Show only header files (useful for packaging headers separately):
 

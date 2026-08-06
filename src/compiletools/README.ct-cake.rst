@@ -865,6 +865,57 @@ Common Options
     When enabled, ct-cake searches for source files containing exemarkers
     (like ``main(``) and testmarkers (like ``unit_test.hpp``).
 
+**--auto-exclude PATTERN**
+    Skip files during ``--auto`` discovery. Repeatable, and settable as
+    ``auto-exclude`` in any ct.conf. A pattern containing a path separator
+    matches the gitroot-relative path and that path with a leading ``/``
+    (the gitignore spelling, so ``/src/legacy`` anchors at the gitroot) --
+    each as a glob and as a directory prefix, so ``src/legacy`` and
+    ``src/legacy/*`` both exclude that subtree. ``*`` spans separators, so
+    ``*/legacy`` excludes a ``legacy`` subtree at any depth, while
+    ``src/legacy`` never reaches ``src/legacyish``. A pattern without a
+    separator matches any single component of the gitroot-relative path,
+    so ``vendor`` excludes every file under any ``vendor`` directory
+    (never ``vendorlib`` -- components match whole) and ``test_*.cpp``
+    excludes by basename. Targets named explicitly on the command line are
+    never filtered.
+
+    Directories ABOVE the gitroot are deliberately out of reach of a
+    relative pattern of either kind, so a ``tmp`` or username component in
+    the absolute path cannot silently exclude a whole tree -- without that
+    rule, ``*/tmp/*`` would exclude every file in a checkout that merely
+    sits under ``/tmp``. An ABSOLUTE pattern is matched against the
+    absolute path only when it reaches INTO the tree -- when everything
+    before its first ``*``, ``?`` or ``[`` starts at the gitroot -- which
+    is what makes the ``${CONF_DIR}/legacy`` spelling work in a conf file.
+
+    An absolute pattern naming an ANCESTOR of the gitroot gets no such
+    treatment; it is read as the gitroot-anchored form it looks like. A
+    gitignore-trained user with a project-level ``tmp`` directory writes
+    ``/tmp``, and under this rule that excludes the project's own ``tmp``
+    even when the checkout itself lives under ``/tmp``. The alternative
+    reading is not a behaviour worth preserving: ``--auto`` never walks
+    outside the project, so a pattern matching an ancestor can only mean
+    "exclude everything".
+
+    Conf files have two spellings, the same pair ``pkg-config`` has. The
+    bare ``auto-exclude`` key is last-writer-wins ACROSS CONF FILES: a
+    subproject's value replaces a higher-level one wholesale. It does not
+    contest with the command line -- a command-line ``--auto-exclude``
+    APPENDS to whatever the conf hierarchy resolved to, so there is no way
+    to un-exclude from the command line. Use ``append-AUTO-EXCLUDE``
+    (uppercase) to ADD exclusions between conf files instead of replacing;
+    it accumulates across the whole conf hierarchy. ``prepend-AUTO-EXCLUDE``
+    is a synonym -- order carries no meaning for an exclusion set.
+
+    A subproject ct.conf can therefore contribute exclusions: discovery
+    and config re-anchoring iterate to a fixpoint, so an exclusion that
+    only becomes visible once a discovered target loads its subproject
+    layer still applies to that round's discoveries. The excluded
+    target's conf layer stays loaded (the config-file set only grows), so
+    such a build carries the layer's flags while agreeing with the
+    equivalent command-line ``--auto-exclude`` on which targets it builds.
+
 **--disable-tests**
     When ``--auto`` is specified, skip automatic building and running of tests.
     Useful when you only want to build executables.

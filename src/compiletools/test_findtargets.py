@@ -1,4 +1,5 @@
 import os
+import subprocess
 from unittest.mock import patch
 
 import configargparse
@@ -6,7 +7,9 @@ import pytest
 
 import compiletools.apptools
 import compiletools.configutils
+import compiletools.file_analyzer
 import compiletools.findtargets
+import compiletools.global_hash_registry
 import compiletools.testhelper as uth
 import compiletools.utils
 from compiletools.build_context import BuildContext
@@ -329,6 +332,245 @@ class TestFindTargetsMain:
     def test_main_runs(self):
         """Test main() runs without error."""
         compiletools.findtargets.main(argv=["--style=flat", "--shorten"])
+
+
+def _bare_parser(description):
+    return configargparse.ArgumentParser(
+        conflict_handler="resolve",
+        description=description,
+        formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
+        default_config_files=[],
+        args_for_setting_config_path=["-c", "--config"],
+        ignore_unknown_config_file_keys=True,
+    )
+
+
+class TestDiscoveryArgumentSplit:
+    """``--style`` belongs to ct-findtargets' own output, not to the
+    discovery surface every ``--auto`` consumer registers. ct-filelist has
+    its own incompatible ``--style`` and registers only the discovery half.
+    """
+
+    def test_discovery_arguments_omit_style(self):
+        cap = _bare_parser("discovery half")
+        compiletools.findtargets.add_discovery_arguments(cap)
+        assert compiletools.apptools._parser_has_option(cap, "--auto")
+        assert compiletools.apptools._parser_has_option(cap, "--exemarkers")
+        assert not compiletools.apptools._parser_has_option(cap, "--style")
+
+    def test_add_arguments_layers_style_on_top(self):
+        cap = _bare_parser("full findtargets surface")
+        compiletools.findtargets.add_arguments(cap)
+        assert compiletools.apptools._parser_has_option(cap, "--auto")
+        assert compiletools.apptools._parser_has_option(cap, "--style")
+
+    def test_discovery_half_keeps_auto_on_by_default(self):
+        cap = _bare_parser("auto default")
+        compiletools.findtargets.add_discovery_arguments(cap)
+        assert cap.parse_args([]).auto is True
+        assert cap.parse_args(["--no-auto"]).auto is False
+
+    def test_auto_exclude_registers_both_the_bare_and_accumulating_spellings(self):
+        """The bare key is last-writer-wins across the conf hierarchy, so
+        the accumulating append-/prepend- pair is what a subproject conf
+        uses to ADD an exclusion. ``apptools.parseargs`` merges the pair
+        into ``auto_exclude`` via ``_do_xxpend_list``."""
+        cap = _bare_parser("auto-exclude spellings")
+        compiletools.findtargets.add_discovery_arguments(cap)
+        assert compiletools.apptools._parser_has_option(cap, "--auto-exclude")
+        assert compiletools.apptools._parser_has_option(cap, "--append-AUTO-EXCLUDE")
+        assert compiletools.apptools._parser_has_option(cap, "--prepend-AUTO-EXCLUDE")
+        args = cap.parse_args(["--append-AUTO-EXCLUDE=vendor", "--prepend-AUTO-EXCLUDE=legacy"])
+        assert args.append_auto_exclude == ["vendor"]
+        assert args.prepend_auto_exclude == ["legacy"]
+
+    def test_registering_both_halves_is_idempotent(self):
+        """Every registrar in this codebase is safe to call twice; the
+        style layer must not raise on a re-registration either."""
+        cap = _bare_parser("double registration")
+        compiletools.findtargets.add_arguments(cap)
+        compiletools.findtargets.add_arguments(cap)
+        assert cap.parse_args([]).style == "indent"
+
+
+class TestAutoExcludeMatching:
+    """A pattern with a path separator fnmatches the gitroot-relative path
+    (and, when the pattern is itself absolute, the absolute path); a
+    pattern without one fnmatches each individual path component."""
+
+    def _excluded(self, tmp_path, pattern, relpath):
+        return compiletools.findtargets.is_auto_excluded(
+            os.path.join(str(tmp_path), relpath), (pattern,), anchor_root=str(tmp_path)
+        )
+
+    def test_bare_name_excludes_that_directorys_whole_subtree(self, tmp_path):
+        assert self._excluded(tmp_path, "vendor", "vendor/deep/main.cpp")
+        assert not self._excluded(tmp_path, "vendor", "main.cpp")
+
+    def test_bare_name_matches_whole_components_not_substrings(self, tmp_path):
+        """Excluding ``vendor`` must not also exclude ``vendorlib``."""
+        assert not self._excluded(tmp_path, "vendor", "vendorlib/main.cpp")
+        assert not self._excluded(tmp_path, "main", "main.cpp")
+
+    def test_bare_glob_matches_a_basename_at_any_depth(self, tmp_path):
+        assert self._excluded(tmp_path, "test_*.cpp", "a/b/test_x.cpp")
+        assert not self._excluded(tmp_path, "test_*.cpp", "a/b/main.cpp")
+
+    def test_slashed_pattern_matches_the_anchor_relative_path(self, tmp_path):
+        assert self._excluded(tmp_path, "src/legacy/*", "src/legacy/old.cpp")
+        assert self._excluded(tmp_path, "src/legacy/*", "src/legacy/deep/old.cpp")
+        assert not self._excluded(tmp_path, "src/legacy/*", "src/current/new.cpp")
+
+    def test_slashed_directory_name_excludes_its_subtree(self, tmp_path):
+        """A directory path is the obvious thing to type; it must not need
+        a trailing ``/*`` to mean "everything under here"."""
+        assert self._excluded(tmp_path, "src/legacy", "src/legacy/deep/old.cpp")
+        assert not self._excluded(tmp_path, "src/legacy", "src/legacyish/old.cpp")
+
+    def test_globbed_directory_name_also_excludes_its_subtree(self, tmp_path):
+        """The subtree rule is fnmatch on both halves, so it survives a glob
+        in the pattern: ``*/legacy`` must behave like ``src/legacy`` does."""
+        assert self._excluded(tmp_path, "*/legacy", "src/legacy/deep/old.cpp")
+        assert not self._excluded(tmp_path, "*/legacy", "src/legacyish/old.cpp")
+
+    def test_slashed_pattern_matches_the_absolute_path(self, tmp_path):
+        """A conf file writes ``${CONF_DIR}/legacy/*``, which expands to an
+        absolute pattern that must still match."""
+        assert self._excluded(tmp_path, os.path.realpath(str(tmp_path)) + "/legacy/*", "legacy/old.cpp")
+
+    def test_a_relative_pattern_never_reaches_above_the_gitroot(self, tmp_path):
+        """``*/legacy`` is the spelling the docs recommend for matching at
+        any depth, and ``*`` spans separators -- so if the absolute path
+        were a candidate for a relative pattern, a checkout under
+        ``/tmp/...`` would be wholly excluded by ``*/tmp/*``, discovering
+        nothing, over a path component the project never chose. Only an
+        absolute pattern gets the absolute path."""
+        anchor = os.path.realpath(str(tmp_path))
+        above = (os.path.basename(anchor), os.path.basename(os.path.dirname(anchor)))
+        for ancestor in above:
+            for pattern in (f"*/{ancestor}/*", f"*/{ancestor}", f"{ancestor}/*"):
+                assert not self._excluded(tmp_path, pattern, "src/main.cpp"), pattern
+        # The in-tree spellings the ancestor rule must not cost us.
+        assert self._excluded(tmp_path, "*/src/*", "src/main.cpp")
+        assert self._excluded(tmp_path, "*/src", "src/main.cpp")
+
+    def test_an_absolute_pattern_only_counts_when_it_reaches_into_the_tree(self, tmp_path):
+        """An absolute pattern naming an ANCESTOR of the gitroot must not
+        get the absolute path. ``/tmp`` is the spelling a gitignore-trained
+        user with a project-level ``tmp`` directory writes, and if the
+        checkout happens to sit under ``/tmp`` that would exclude the whole
+        project. Neither a leading ``/`` nor a glob-free first component
+        distinguishes the two readings; only a literal head that lands
+        inside the tree does."""
+        anchor = os.path.realpath(str(tmp_path))
+        components = anchor.split(os.sep)
+        ancestors = (os.sep + components[1], os.sep + os.sep.join(components[1:3]))
+        for ancestor in ancestors:
+            leaf = os.path.basename(ancestor)
+            for pattern in (ancestor, f"{ancestor}/*", f"/*/{leaf}/*", f"/*/{leaf}"):
+                assert not self._excluded(tmp_path, pattern, "src/main.cpp"), pattern
+        # Each of those spellings still resolves, as the gitroot-anchored
+        # form it looks like: an in-project directory of the same name is
+        # excluded, which is what the user meant.
+        assert self._excluded(tmp_path, os.sep + components[1] + "/*", components[1] + "/old.cpp")
+        assert self._excluded(tmp_path, "/*/src/*", "sub/src/main.cpp")
+        assert self._excluded(tmp_path, "/sr*/main.cpp", "src/main.cpp")
+        # The in-tree absolute spelling the candidate exists for.
+        assert self._excluded(tmp_path, anchor + "/legacy/*", "legacy/old.cpp")
+
+    def test_leading_separator_anchors_at_the_gitroot(self, tmp_path):
+        """``/src/legacy`` is the spelling a gitignore-trained user reaches
+        for. It must mean the anchored pattern it looks like, not nothing."""
+        assert self._excluded(tmp_path, "/src/legacy", "src/legacy/old.cpp")
+        assert self._excluded(tmp_path, "/src/legacy/*", "src/legacy/old.cpp")
+        assert not self._excluded(tmp_path, "/src/legacy", "other/src/legacy/old.cpp")
+
+    def test_a_root_anchor_still_yields_relative_candidates(self):
+        """A repo rooted at ``/`` (or non-git discovery from ``/``) must not
+        lose the relative spellings: ``/`` already ends in the separator, so
+        appending one tests for ``//`` and nothing looks anchored."""
+        assert compiletools.findtargets.is_auto_excluded("/src/vendor/main.cpp", ("vendor",), anchor_root="/")
+        assert compiletools.findtargets.is_auto_excluded("/src/legacy/old.cpp", ("src/legacy",), anchor_root="/")
+        assert compiletools.findtargets.is_auto_excluded("/src/legacy/old.cpp", ("/src/legacy",), anchor_root="/")
+        assert not compiletools.findtargets.is_auto_excluded("/src/legacyish/old.cpp", ("src/legacy",), anchor_root="/")
+
+    def test_outside_the_anchor_offers_only_the_basename_to_bare_patterns(self, tmp_path):
+        """A file whose realpath escapes the gitroot (an in-tree symlink) must
+        not have its ancestor directories scanned: a bare pattern would then
+        match a ``tmp`` or username component the project never chose."""
+        outside = str(tmp_path / "vendor" / "main.cpp")
+        elsewhere = str(tmp_path / "elsewhere")
+        assert not compiletools.findtargets.is_auto_excluded(outside, ("vendor",), anchor_root=elsewhere)
+        assert compiletools.findtargets.is_auto_excluded(outside, ("main.cpp",), anchor_root=elsewhere)
+        assert compiletools.findtargets.is_auto_excluded(outside, ("*/vendor/*",), anchor_root=elsewhere)
+
+    def test_no_patterns_excludes_nothing(self, tmp_path):
+        assert not compiletools.findtargets.is_auto_excluded(str(tmp_path / "main.cpp"), ())
+
+
+class TestAutoExcludeInDiscovery:
+    """The exclusion applies inside FindTargets.__call__, so both the
+    tracked-files generator and the os.walk fallback honour it."""
+
+    def _tree(self, tmp_path):
+        (tmp_path / "keep").mkdir()
+        (tmp_path / "keep" / "main.cpp").write_text("int main() { return 0; }\n")
+        (tmp_path / "vendor").mkdir()
+        (tmp_path / "vendor" / "main.cpp").write_text("// vendor\nint main() { return 0; }\n")
+        (tmp_path / "keep" / "test_thing.cpp").write_text("// t\nint main() { return 0; }\n")
+
+    def test_walk_fallback_drops_excluded_sources(self, tmp_path):
+        self._tree(tmp_path)
+        _args, findtargets = _make_findtargets("TestAutoExcludeWalk", f"--auto-exclude={tmp_path / 'vendor'}")
+        with patch("compiletools.global_hash_registry.get_tracked_files", return_value={}):
+            exes, tests = findtargets(path=str(tmp_path))
+        assert any(e.endswith(os.path.join("keep", "main.cpp")) for e in exes)
+        assert not any("vendor" in e for e in exes)
+        assert any("test_thing.cpp" in t for t in tests)
+
+    def test_tracked_files_generator_drops_excluded_sources(self, tmp_path):
+        """The git-tracked path is the production one; the assertion that
+        the registry is non-empty stops this silently degrading into a
+        second os.walk-fallback test."""
+        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+        self._tree(tmp_path)
+        subprocess.run(["git", "add", "-A"], cwd=str(tmp_path), check=True)
+        with uth.DirectoryContext(str(tmp_path)):
+            _args, findtargets = _make_findtargets("TestAutoExcludeTracked", "--auto-exclude=vendor")
+            assert compiletools.global_hash_registry.get_tracked_files(findtargets.context)
+            exes, _tests = findtargets(path=str(tmp_path))
+        assert any(e.endswith(os.path.join("keep", "main.cpp")) for e in exes)
+        assert not any("vendor" in e for e in exes)
+
+    def test_glob_exclusion_drops_tests(self, tmp_path):
+        self._tree(tmp_path)
+        _args, findtargets = _make_findtargets("TestAutoExcludeGlob", "--auto-exclude=*test_*.cpp")
+        with uth.DirectoryContext(str(tmp_path)):
+            with patch("compiletools.global_hash_registry.get_tracked_files", return_value={}):
+                exes, tests = findtargets(path=str(tmp_path))
+        assert tests == []
+        assert len(exes) == 2
+
+    def test_excluded_sources_are_never_analysed(self, tmp_path):
+        """Exclusion happens before analyze_file, so an excluded subtree
+        costs nothing to skip."""
+        self._tree(tmp_path)
+        _args, findtargets = _make_findtargets("TestAutoExcludeNoAnalyse", f"--auto-exclude={tmp_path / 'vendor'}")
+        vendor_hash = compiletools.global_hash_registry.get_file_hash(
+            os.path.realpath(str(tmp_path / "vendor" / "main.cpp")), findtargets.context
+        )
+        real_analyze = compiletools.file_analyzer.analyze_file
+        analysed = []
+
+        def _spy(content_hash, context):
+            analysed.append(content_hash)
+            return real_analyze(content_hash, context)
+
+        with patch("compiletools.file_analyzer.analyze_file", side_effect=_spy):
+            with patch("compiletools.global_hash_registry.get_tracked_files", return_value={}):
+                exes, _tests = findtargets(path=str(tmp_path))
+        assert not any("vendor" in e for e in exes)
+        assert vendor_hash not in analysed
 
 
 def test_discovery_reanchor_cap_is_the_shared_apptools_cap():

@@ -1056,14 +1056,19 @@ def _do_xxpend_list(args, name, destname=None):
     setattr(args, dest, base)
 
 
-def _note_shadowed_bare_hook_values(args, name, dest):
+def _note_shadowed_bare_values(args, name, dest):
     """At ``verbose >= 1``, emit a stderr note for each conf-file value of
-    the bare hook key *name* that did not survive into ``args.<dest>``.
+    the bare key *name* that did not survive into ``args.<dest>``.
+
+    Serves every bare/``append-`` pair whose bare half is
+    last-writer-wins: the ``prebuild-script`` / ``postbuild-script`` hooks
+    and ``auto-exclude``.
 
     The bare key is documented last-writer-wins, and ``<name> = []``
     suppression is a documented feature — so this is a note, not a
     warning, and it is silent by default. It exists because the failure
-    mode the semantics enable (a hook silently never running) is
+    mode the semantics enable (a hook silently never running, a
+    subproject silently discarding the gitroot's exclusions) is
     otherwise invisible at the point of damage. Fires for any losing
     value — a later line in the same conf file as well as a
     higher-priority layer/env winner, hence the "later or
@@ -1497,10 +1502,19 @@ def parseargs(cap, argv, verbose=None, *, context):
     # guarded because only ct-cake registers these arguments.
     if hasattr(args, "prebuild_scripts"):
         _do_xxpend_list(args, "prebuild-script", destname="prebuild-scripts")
-        _note_shadowed_bare_hook_values(args, "prebuild-script", "prebuild_scripts")
+        _note_shadowed_bare_values(args, "prebuild-script", "prebuild_scripts")
     if hasattr(args, "postbuild_scripts"):
         _do_xxpend_list(args, "postbuild-script", destname="postbuild-scripts")
-        _note_shadowed_bare_hook_values(args, "postbuild-script", "postbuild_scripts")
+        _note_shadowed_bare_values(args, "postbuild-script", "postbuild_scripts")
+
+    # findtargets' --auto-exclude list: same bare-key-clobbers /
+    # append-accumulates split, and the same note when a bare value loses
+    # that contest -- a subproject silently discarding the gitroot's
+    # exclusions is at least as surprising as a shadowed hook script.
+    # hasattr-guarded because only the --auto consumers register it.
+    if hasattr(args, "auto_exclude"):
+        _do_xxpend_list(args, "auto-exclude")
+        _note_shadowed_bare_values(args, "auto-exclude", "auto_exclude")
 
     # Cake used preprocess to mean both magic flag preprocess and headerdeps preprocess
     if hasattr(args, "preprocess") and args.preprocess:
