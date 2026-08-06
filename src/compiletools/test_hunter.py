@@ -404,8 +404,9 @@ class TestHunterVerbose:
 
 @pytest.fixture
 def strict_pkg_config():
-    """Restore the process-local pkg-config failure policy (and its memos)
-    around a test that parses ``--pkg-config-errors=error``."""
+    """Drop memoized pkg-config answers around a test that parses
+    ``--pkg-config-errors=error``. The policy itself is restored by the
+    autouse ``_isolate_pkg_config_error_policy`` fixture in ``conftest``."""
     pkgconfig.clear_cache()
     yield
     pkgconfig.clear_cache()
@@ -525,3 +526,20 @@ class TestStrictPkgConfigIsFatalDuringExpansion:
         captured = capsys.readouterr()
         assert "Error expanding source" in captured.err
         assert hntr._hunted_sources == [compiletools.wrappedos.realpath(realpath)]
+
+    def test_a_mid_run_cache_clear_does_not_disarm_strict_mode(self, capsys, tmp_path, hunter_factory):
+        """``Hunter.clear_cache`` fans out to ``apptools_pkgconfig.clear_cache``,
+        which used to reset the policy to ``warn``. A build that asked for
+        strict mode then silently continued in warn mode after any cache
+        clear -- the same enforcement-downgrade class as the verbosity fork."""
+        source = self._source_with_missing_package(tmp_path, "cache_clear")
+        hntr, args = hunter_factory(argv_extra=["--magic", "direct", "--pkg-config-errors=error"])
+        args.filename = [source]
+
+        compiletools.hunter.Hunter.clear_cache()
+
+        with pytest.raises(SystemExit) as excinfo:
+            hntr.getsources()
+
+        assert excinfo.value.code == 1
+        assert "--pkg-config-errors=warn" in capsys.readouterr().err
