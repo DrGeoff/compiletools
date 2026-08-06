@@ -997,6 +997,29 @@ class TestParseargsTargetAnchoring:
         _parse_cake_args(monorepo, [*_ARGV_BASE, "-v", os.path.join("appbeta", "main.cpp")])
         assert "did you mean" not in capsys.readouterr().err
 
+    def test_case_mismatched_key_in_a_standard_tier_gets_the_note(self, monorepo, capsys):
+        """The gitroot ct.conf is a standard tier, noted by parseargs itself
+        rather than by the target-layer walk."""
+        (monorepo / "ct.conf").write_text((monorepo / "ct.conf").read_text() + "append-cppflags = -DROOT_MISCASED\n")
+        _parse_cake_args(monorepo, [*_ARGV_BASE, "-v", os.path.join("libcore", "util.cpp")])
+        err = capsys.readouterr().err
+        assert "append-cppflags" in err
+        assert str(monorepo / "ct.conf") in err
+
+    def test_quiet_cancels_the_standard_tier_case_note(self, monorepo, capsys):
+        """``-q`` decrements verbosity, so ``-v -q`` is verbosity 0 and the
+        note is below its threshold. parseargs latches --quiet onto
+        args.verbose only in its pre-gather steps, long after the conf tiers
+        are read, so the verbosity these notes consult must apply it too."""
+        (monorepo / "ct.conf").write_text((monorepo / "ct.conf").read_text() + "append-cppflags = -DROOT_MISCASED\n")
+        _parse_cake_args(monorepo, [*_ARGV_BASE, "-v", "-q", os.path.join("libcore", "util.cpp")])
+        assert "did you mean" not in capsys.readouterr().err
+
+    def test_quiet_cancels_the_target_layer_case_note(self, monorepo, capsys):
+        (monorepo / "appbeta" / "ct.conf").write_text("append-cppflags = -DAPPBETA_EXTRA\n")
+        _parse_cake_args(monorepo, [*_ARGV_BASE, "-v", "-q", os.path.join("appbeta", "main.cpp")])
+        assert "did you mean" not in capsys.readouterr().err
+
     def test_two_conflicting_subprojects_error_with_remedies(self, monorepo):
         appalpha = monorepo / "appalpha"
         appalpha.mkdir()
