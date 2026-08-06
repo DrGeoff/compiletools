@@ -624,9 +624,28 @@ class TestAutoExcludePatternNormalisation:
         parent_leaf = os.path.basename(os.path.dirname(anchor))
         assert not self._excluded(tmp_path, f"*/{parent_leaf}/", "src/main.cpp")
         assert not self._excluded(tmp_path, f"./*/{parent_leaf}/*", "src/main.cpp")
-        # ".." still names something above the anchor, which --auto never
-        # walks, so it stays a no-op rather than becoming an escape hatch.
+
+    def test_an_interior_dotdot_resolves_to_the_path_it_names(self, tmp_path):
+        """``a/../vendor`` becomes ``vendor``, which is a WIDENING, not a
+        syntax cleanup: gitignore would read it as a literal path matching
+        nothing, and here it moves from the anchored branch to the any-depth
+        component branch. The chosen semantics are "the pattern means the
+        path it names", because that is what the user wrote and the
+        alternative -- silently matching nothing -- is the whole defect class
+        this fix exists to close."""
+        assert self._excluded(tmp_path, "a/../vendor", "src/vendor/main.cpp")
+        assert self._excluded(tmp_path, "src/legacy/../legacy", "src/legacy/old.cpp")
+
+    def test_a_leading_dotdot_stays_anchored_and_matches_nothing(self, tmp_path):
+        """The asymmetry with the interior ``..`` is deliberate. Normalising
+        ``../vendor`` cannot remove its separator -- it names a path ABOVE
+        the anchor, and ``--auto`` never walks there -- so it keeps the
+        anchored reading and matches nothing, rather than collapsing into
+        ``vendor`` and becoming an accidental escape hatch out of the
+        no-reach-above-the-gitroot rule."""
         assert not self._excluded(tmp_path, "../vendor", "vendor/main.cpp")
+        assert not self._excluded(tmp_path, "../vendor", "src/vendor/main.cpp")
+        assert not self._excluded(tmp_path, "../../vendor", "vendor/main.cpp")
 
     def test_an_empty_pattern_still_excludes_nothing(self, tmp_path):
         """``normpath("")`` is ``"."``; the separator gate keeps both the
