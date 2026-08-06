@@ -3012,6 +3012,12 @@ class TestPublishedCasEntryFreshening:
     freshening pass an entry keeps the mtime of its first publish into the
     workspace while every later build goes on using it, and an age-gated
     ``ct-trim-cache`` evicts it as cold.
+
+    The companion claim — that the bumped entry does not then retrigger the
+    publish rule it was bumped for — cannot be measured here, because
+    ``_all_outputs_current`` reads existence and the link signature and never
+    an mtime. It needs a real mtime-driven build tool and lives in
+    ``test_makefile_backend.py``'s ``TestFreshenedEntryStaysUpToDate``.
     """
 
     _STALE_AGE_SECONDS = 45 * 24 * 3600
@@ -3133,23 +3139,6 @@ class TestPublishedCasEntryFreshening:
             observed[use_mtime] = (freshened, backend._cas_demotes_inputs(probe_rule))
 
         assert observed == {False: (True, True), True: (False, False)}
-
-    def test_freshening_does_not_make_the_build_look_stale(self, tmp_path):
-        """The bumped entry must not retrigger the publish it was bumped for.
-
-        ``bin/main`` is a hardlink of the CAS entry, so the ``utime`` moves both
-        sides of the publish rule to the same instant — the prereq is never
-        newer than the target. Measured here at the graph level; the make-side
-        half of the claim is ``test_makefile_backend.py``'s
-        ``TestFreshenedEntryStaysUpToDate``.
-        """
-        graph, _cas_path = self._stale_published_graph(tmp_path)
-        backend = self._make_backend()
-        backend._graph = graph
-
-        backend.execute("build")
-
-        assert backend._all_outputs_current(graph) is True
 
 
 class TestLinkOrderCorrectness:

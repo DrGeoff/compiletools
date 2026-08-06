@@ -645,11 +645,15 @@ _LOCK_ERRNOS_THAT_PROCEED = [
     (errno.ENOSYS, "Function not implemented"),
 ]
 
-# Errnos that say something is wrong with the pool rather than with locking on
-# it. Hiding one behind a silently unlocked publish would lose the diagnostic.
+# Errnos an unlocked publish must not proceed through. EIO and ENOSPC say
+# something is wrong with the pool rather than with locking on it. EINVAL is
+# the near miss: it reads as "this filesystem cannot lock" as easily as
+# "these lock arguments are wrong", and the second is a bug in compiletools,
+# so it stays fatal rather than joining the fallback set.
 _LOCK_ERRNOS_THAT_PROPAGATE = [
     (errno.EIO, "Input/output error"),
     (errno.ENOSPC, "No space left on device"),
+    (errno.EINVAL, "Invalid argument"),
 ]
 
 
@@ -686,7 +690,9 @@ class TestLockUnavailableFallback:
     def test_a_transient_lock_error_is_not_swallowed(self, cas, user, monkeypatch, err, message):
         """Only the errnos an unlocked publish is allowed to proceed through
         fall back. An EIO would otherwise be hidden behind a silently unlocked
-        publish.
+        publish, and an EINVAL would hide a malformed lock request — the reason
+        it is excluded from the fallback set despite also being reachable from
+        a filesystem that cannot lock.
         """
         _patch_filelock_raising(monkeypatch, err, message)
         with pytest.raises(OSError) as excinfo:

@@ -22,6 +22,7 @@ import os
 import shlex
 import shutil
 import sys
+import time
 from collections.abc import Mapping
 from types import MappingProxyType
 
@@ -210,6 +211,11 @@ _ORDER_ONLY_DEP_FORBIDDEN_EXTS = _COMPILE_ORDERING_INPUT_EXTS + (
 
 
 _WILD_B_DIR_SUFFIX = "/.ct-wild-ld"
+
+# Age floor on the published-CAS-entry freshening pass. See
+# ``BuildBackend._freshen_published_cas_entries`` for why bumping an entry on
+# every build is not free under ninja.
+_FRESHEN_MIN_AGE_SECONDS = 3600
 
 
 def _extract_wild_b_argv(tokens: list[str]) -> tuple[list[str], list[str]]:
@@ -2103,12 +2109,34 @@ class BuildBackend(abc.ABC):
         published hardlink, which is the same inode — would re-run every test
         on the next build. A user who opted into mtime semantics gets them
         undisturbed; cache freshness on that path is up to ``--max-age``.
+
+        An entry younger than ``_FRESHEN_MIN_AGE_SECONDS`` is left alone,
+        because under ninja every bump costs a republish. Ninja judges an
+        output against the mtime it recorded in ``.ninja_log`` when it last
+        built it, not against the output's current mtime, so raising the
+        input above that recorded value marks the publish rule dirty however
+        the two paths are wired — the hardlink shares the entry's inode, and
+        no ``restat`` setting changes which timestamp ninja compares.
+        Freshening on every build would therefore make every ninja no-op
+        build republish every artefact, forever. The age floor bounds that to
+        one republish per artefact per hour while keeping an entry in daily
+        use within an hour of current, far inside any ``--max-age`` a sweep
+        expresses in days. Make is unaffected either way: it compares the
+        published path against the entry live, and they share an inode.
         """
         if getattr(self.args, "use_mtime", False):
             return
+        cutoff = time.time() - _FRESHEN_MIN_AGE_SECONDS
         for rule in graph.rules_by_type(RuleType.SYMLINK):
-            if rule.inputs:
-                compiletools.cas_publish.freshen_cas_entry(rule.inputs[0])
+            if not rule.inputs:
+                continue
+            try:
+                # Uncached: a peer publish may have moved this since the scan.
+                if os.path.getmtime(rule.inputs[0]) > cutoff:
+                    continue
+            except OSError:
+                continue
+            compiletools.cas_publish.freshen_cas_entry(rule.inputs[0])
 
     def _record_link_signatures(self, graph: BuildGraph) -> None:
         """Persist a content-addressable signature for every link/library

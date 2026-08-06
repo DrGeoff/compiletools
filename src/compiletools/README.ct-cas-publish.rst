@@ -94,6 +94,19 @@ window a bare ``utime`` leaves open — and is skipped entirely under
 ``--use-mtime``, where the published exe's timestamp is a rebuild input
 rather than cache bookkeeping.
 
+It also leaves an entry alone until the entry is an hour old, because
+under ninja a bump is not free. Ninja judges an output against the mtime
+it recorded in ``.ninja_log`` when it last built it, not against the
+output's current mtime, so raising the entry above that recorded value
+marks the publish rule dirty however the user path is wired — the
+hardlink shares the entry's inode, and no ``restat`` setting changes
+which timestamp ninja reads. Freshening on every build would make every
+ninja no-op build republish every artefact, permanently. The age floor
+bounds that to one republish per artefact per hour while keeping an
+entry in daily use within an hour of current, far inside any
+``--max-age`` a sweep expresses in days. Make compares the published
+path against the entry live and is unaffected either way.
+
 OPTIONS
 =======
 
