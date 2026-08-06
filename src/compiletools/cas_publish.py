@@ -32,7 +32,16 @@ and trim are totally ordered on any given CAS entry. Trim going first leaves
 nothing to publish, which surfaces as ``ConcurrentTrimError`` and exit code
 ``EXIT_CONCURRENT_TRIM`` rather than a raw ``FileNotFoundError``; publish going
 first raises the entry's ``st_nlink`` to 2, which trim's hard-link protection
-honours. Those are the only two outcomes.
+honours.
+
+Those two are the only outcomes **on the hardlink path**. A publish that fell
+back to ``symlink`` (``EXDEV``, or a platform without ``os.link``) leaves the
+entry at ``st_nlink == 1``, which trim's hard-link protection deliberately does
+not cover — see the "Hard-link safety" rule in ``trim_exedir``. That publish
+reports success and is still ordered against a concurrent trim, but a *later*
+trim can evict the entry and leave the published path a dangling symlink. The
+lock buys ordering for both paths; only the hardlink buys protection after the
+fact. Recovery is the same rebuild.
 
 This module is invoked from generated build recipes via the ``ct-cas-publish``
 entry point. Keep flags minimal and the contract terse — every recipe gets
@@ -59,13 +68,16 @@ import compiletools.locking
 EXIT_CONCURRENT_TRIM = 3
 
 # Lock-acquisition errnos that mean "this pool cannot host a lock sidecar at
-# all" (read-only or permission-denied cas dir). Creating the sidecar and
-# unlinking the entry both need write permission on the cas directory, so a
-# trim running as this uid cannot evict what this publish cannot lock. That
-# implication is per-uid: a directory some other user can write but this one
-# cannot leaves their trim free to evict mid-publish, where a hardlinked
-# user_path survives on the pinned inode and only the cache name is lost, but
-# the EXDEV symlink fallback can be left dangling.
+# all" (read-only or permission-denied cas dir). Publishing unlocked is safe
+# against any trim that hits the same failure: `_safe_locked_unlink` refuses to
+# delete when `FileLock` raises, so nothing evicts from a pool nothing can lock.
+# EROFS and ENOTSUP are properties of the pool and hold for every peer (ENOTSUP
+# from `lockf` on a perfectly writable directory is the case that shows the
+# invariant is trim's refusal, not directory permissions). EACCES and EPERM can
+# instead be specific to this uid, and a user who CAN lock the directory is free
+# to trim mid-publish: a hardlinked user_path survives on the pinned inode and
+# only the cache name is lost, but the EXDEV symlink fallback can be left
+# dangling.
 # Every other errno propagates — swallowing a transient EIO or ENOSPC into an
 # unlocked publish would hide real trouble.
 _LOCK_UNHOSTABLE_ERRNOS = frozenset({errno.EACCES, errno.EPERM, errno.EROFS, errno.ENOTSUP})

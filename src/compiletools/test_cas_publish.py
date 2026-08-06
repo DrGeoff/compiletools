@@ -3,7 +3,10 @@
 Covers I1 (atomic link+rename), I2 (EXDEV-only fallback, surface other
 errors visibly), the C4 sidecar manifest write, and the publish/trim race:
 publish serialises against ``ct-trim-cache`` on the ``<cas_path>.lock``
-sidecar, so a concurrent trim can only ever produce one of two outcomes.
+sidecar, so a concurrent trim on the hardlink path can only ever produce one
+of two outcomes. The symlink-fallback third outcome — publish succeeds, the
+entry stays at ``nlink == 1``, a later trim evicts it and the published path
+dangles — is pinned separately in ``TestPublishExdevFallback``.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ import pytest
 
 import compiletools.cas_publish
 import compiletools.locking
+import compiletools.trim_cache
 from compiletools.cas_publish import EXIT_CONCURRENT_TRIM, ConcurrentTrimError, publish
 
 
@@ -134,6 +138,33 @@ class TestPublishExdevFallback:
         with pytest.raises(OSError) as excinfo:
             publish(str(cas), str(user))
         assert excinfo.value.errno == errno.ENOSPC
+
+    def test_a_symlink_fallback_publish_is_not_protected_from_a_later_trim(self, cas, user, monkeypatch):
+        """The third outcome the two-outcome guarantee excludes, and the reason
+        that guarantee is scoped to the hardlink path: an EXDEV publish reports
+        success but leaves the cas entry at ``nlink == 1``, so trim's hard-link
+        protection does not spare it and the published path is left dangling.
+
+        Runs the real ``trim_cache._safe_locked_unlink`` with the same
+        ``skip_if_nlink_above=1`` that ``trim_exedir`` passes, so this pins the
+        production protection rule rather than a restatement of it.
+        """
+
+        def fake_link(src, dst, *, src_dir_fd=None, dst_dir_fd=None, follow_symlinks=True):
+            raise OSError(errno.EXDEV, "Cross-device link")
+
+        monkeypatch.setattr(os, "link", fake_link)
+        publish(str(cas), str(user))
+        monkeypatch.undo()
+
+        assert user.is_symlink()
+        assert os.stat(str(cas)).st_nlink == 1, "a symlink publish cannot raise nlink; that is the whole gap"
+
+        assert compiletools.trim_cache._safe_locked_unlink(str(cas), skip_if_nlink_above=1) is True
+        assert not os.path.exists(str(cas))
+        assert os.path.lexists(str(user)) and not os.path.exists(str(user)), (
+            "the published symlink is left dangling — the documented cost of the EXDEV fallback"
+        )
 
 
 class TestSidecarManifest:
@@ -375,13 +406,19 @@ class TestPublishVersusConcurrentTrim:
         assert not os.path.exists(target)
         assert not user.exists(), "a lost publish must not leave a user-facing path behind"
 
-    def test_race_loop_only_ever_produces_the_two_sanctioned_outcomes(self, tmp_path, trim_child):
+    def test_same_filesystem_race_loop_only_produces_the_two_hardlink_outcomes(self, tmp_path, trim_child):
         """Free race, repeated: publish and trim start together, with the
         publish side stepping its start offset across the trim side's window so
         the interleaving varies from iteration to iteration. Every iteration
         must land on exactly one of the two sanctioned outcomes, and a
         *successful* publish must always leave the cas entry alive with the
         published hard link on it.
+
+        Scoped to one filesystem by the fixture: pool and bin both live under a
+        single ``tmp_path``, so ``os.link`` never returns EXDEV and every
+        success here is a hardlink publish (asserted per iteration). This says
+        nothing about a cross-filesystem publish — that outcome is
+        ``test_a_symlink_fallback_publish_is_not_protected_from_a_later_trim``.
         """
         iterations = 40
         pool = tmp_path / "cas-exe"
@@ -407,6 +444,10 @@ class TestPublishVersusConcurrentTrim:
                 assert os.path.exists(target), (
                     f"iteration {i}: publish reported success but trim evicted the cas entry — "
                     "the publish-side entry lock is not serialising against trim"
+                )
+                assert not user.is_symlink(), (
+                    f"iteration {i}: publish took the symlink fallback — this fixture is single-filesystem, "
+                    "so the loop's hardlink-only scope no longer holds"
                 )
                 assert os.stat(target).st_nlink >= 2, f"iteration {i}: published entry lost its hard link"
                 assert user.read_bytes() == payload

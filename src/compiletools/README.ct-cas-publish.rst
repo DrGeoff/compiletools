@@ -63,7 +63,16 @@ ordered. Trim first leaves nothing to publish: the helper reports
 or never produced; rerun the build`` and exits ``3``, and the next
 build rebuilds the artefact. Publish first raises
 the entry's ``nlink`` to 2, which trim's hard-link protection honours.
-Those are the only two outcomes.
+
+Those two are the only outcomes on the hardlink path. A publish that
+fell back to ``symlink()`` leaves the entry at ``nlink == 1``, which
+``trim_exedir``'s hard-link protection deliberately does not cover —
+see the "Hard-link safety" rule documented under ``ct-trim-cache``.
+Such a publish reports success and is still ordered against a
+concurrent trim, but a later trim can evict the entry and leave the
+published path a dangling symlink. The lock buys ordering for both
+paths; only the hard link buys protection after the fact, and the
+recovery in either case is to rebuild.
 
 Publishing also freshens the CAS entry's mtime (best-effort; another
 user's entry on a shared pool is not ours to touch). Age-gated sweeps
@@ -114,12 +123,16 @@ ATOMICITY CONTRACT
 
 If the lock sidecar cannot be created at all (``EACCES``, ``EPERM``,
 ``EROFS``, ``ENOTSUP`` — a read-only or permission-denied pool), the
-helper warns and publishes unlocked. Creating the sidecar and
-unlinking the entry both require write permission on the cas
-directory, so a trim running as the same uid cannot evict what this
-publish cannot lock. The implication is per-uid, not absolute: on a
-shared pool whose directory another user can write and this one
-cannot, that user's trim can still evict mid-publish. A hardlinked
+helper warns and publishes unlocked. That is safe against any trim
+that hits the same failure: ``ct-trim-cache`` refuses to delete an
+entry whose lock it cannot take, so nothing evicts from a pool nothing
+can lock. ``EROFS`` and ``ENOTSUP`` are properties of the pool and
+hold for every peer — ``ENOTSUP`` from ``lockf`` on a perfectly
+writable directory is the case that shows the guarantee rests on
+trim's refusal rather than on directory permissions. ``EACCES`` and
+``EPERM`` can instead be specific to this uid: on a shared pool whose
+directory another user can write and lock, that user's trim can still
+evict mid-publish. A hardlinked
 ``user_path`` survives it — ``nlink`` pins the inode, so only the
 cache name is lost — but a publish that fell back to ``symlink()``
 under ``EXDEV`` can be left dangling. Any other lock error propagates
@@ -163,7 +176,9 @@ re-verifies the entry, freshens its mtime, and links; ``ct-trim-cache
 finds the entry has been published. Without the publish-side lock the
 ``link()`` can land between trim's ``nlink`` re-check and its
 ``remove()``, and the publish reports success on an entry that is
-about to be deleted.
+about to be deleted. That ``nlink`` re-stat only ever sees a hardlink
+publish; a symlink-fallback publish is serialised by the lock like any
+other but leaves nothing for a later trim to notice.
 
 The lock nests below the caller's own: the Shake backend holds
 ``<user-path>.lock`` across the whole publish rule while this helper
