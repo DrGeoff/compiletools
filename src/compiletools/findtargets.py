@@ -165,7 +165,8 @@ def is_auto_excluded(filepath, patterns, anchor_root=""):
     ``src/./vendor`` mean what their plain forms mean instead of matching
     nothing. A leading ``/`` survives normalisation, so the anchored
     spelling stays anchored, and any number of leading slashes reads as
-    that one anchored spelling.
+    that one anchored spelling -- globs included, so ``//*`` excludes
+    everything exactly as the ``/*`` it is a spelling of already did.
 
     A pattern without a separator is fnmatched against each component of
     the *anchor_root*-relative path -- so ``vendor`` excludes every file
@@ -201,13 +202,17 @@ def is_auto_excluded(filepath, patterns, anchor_root=""):
             # test is re-run because normalising can remove the separator
             # that sent the pattern here.
             pattern = compiletools.wrappedos.normpath(pattern)
-            if pattern.startswith(os.sep * 2):
-                # normpath keeps EXACTLY two leading separators (POSIX leaves
-                # "//path" implementation-defined) and collapses three or more,
-                # so a doubled leading separator is the one redundant spelling
-                # it hands back unchanged. Left alone, "//vendor" would reach
-                # the anchored branch, whose candidates start with a single
-                # separator, and match nothing.
+            # normpath keeps EXACTLY two leading separators (POSIX leaves
+            # "//path" implementation-defined) and collapses three or more, so
+            # a doubled leading separator is the one redundant spelling it
+            # hands back unchanged. Left alone, "//vendor" would reach the
+            # anchored branch, whose candidates start with a single separator,
+            # and match nothing. Literal "//" rather than os.sep * 2, unlike
+            # every other separator test here: on NT a doubled separator is a
+            # UNC prefix that must survive, and normpath has already rewritten
+            # separators to backslashes there, so the literal is inert off
+            # POSIX where the os.sep form would corrupt \\server\share.
+            if pattern.startswith("//"):
                 pattern = pattern[1:]
         if os.sep in pattern:
             if relative is None:

@@ -578,6 +578,11 @@ _EQUIVALENT_SPELLINGS = (
     ("<ANCHOR>//legacy/*", "<ANCHOR>/legacy/*"),
     ("//vendor", "/vendor"),
     ("//src/vendor", "/src/vendor"),
+    # The largest single behaviour swing the doubled-separator strip makes:
+    # "//*" goes from matching nothing to excluding every file, agreeing with
+    # the "/*" it is a spelling of. Pinned so a reader who finds a whole tree
+    # excluded by two characters can see it is the intended reading.
+    ("//*", "/*"),
 )
 
 
