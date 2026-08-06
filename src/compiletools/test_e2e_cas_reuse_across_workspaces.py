@@ -19,6 +19,7 @@ and ``compiletools-cas-mtime-bug-report.md`` in the repo root.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -424,6 +425,62 @@ def _build_lib_sample(workdir, lib_source_name: str, *, kind: str) -> None:
     (workdir / lib_source_name).write_text(f'#include "{stem}.hpp"\nint {stem}_value() {{ return 42; }}\n')
 
 
+def _assert_reclaimable_once_unpublished(cas_exedir, workspaces, suffix: str) -> None:
+    """Once every published ``bin/`` is gone, the pool must be trimmable.
+
+    A library entry that stays above ``nlink == 1`` with nothing published is
+    protected by trim's hard-link rule forever, and no ``--keep-count`` /
+    ``--max-age`` / ``--max-size`` setting can reclaim it. That is what a
+    second, content-addressed cas name for the same library used to do (the
+    two names hardlinked to one inode and pinned each other). ``keep_count``
+    is 0 here so bucket rank is out of the way and the assertion is about
+    reachability alone; ``basenames_found`` is asserted too, because a second
+    pool name also mints a phantom second per-basename bucket.
+
+    ``--purge-ca-siblings`` is deliberately NOT passed: a fixed build never
+    writes the sibling, so a plain trim has to be sufficient. Reaching for the
+    migration flag here would hide a regression that reintroduced it.
+    """
+    for workspace in workspaces:
+        for bindir in workspace.rglob("bin"):
+            if bindir.is_dir():
+                shutil.rmtree(bindir)
+
+    pinned = {p.name: p.stat().st_nlink for p in cas_exedir.rglob(f"*{suffix}") if p.is_file()}
+    assert pinned, f"no {suffix} entries left to check in {cas_exedir}"
+    assert all(n == 1 for n in pinned.values()), (
+        f"cas-exedir {suffix} entries still hard-linked with no bin/ published — "
+        f"trim's nlink protection will spare them forever: {pinned}"
+    )
+
+    result = subprocess.run(
+        [
+            "ct-trim-cache",
+            f"--cas-exedir={cas_exedir}",
+            "--cas-exedir-only",
+            "--keep-count",
+            "0",
+            "--max-age",
+            "0",
+            "--json",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(workspaces[0]),
+        timeout=180,
+        env=_e2e_env(),
+    )
+    assert result.returncode == 0, f"ct-trim-cache failed:\n{result.stdout}\n{result.stderr}"
+    stats = json.loads(result.stdout)["exedir"]
+    assert stats["basenames_found"] == 1, (
+        f"expected one {suffix} basename bucket, got {stats['basenames_found']} — "
+        f"a second cas name for the same library buckets separately: {stats}"
+    )
+    assert stats["removed"] == len(pinned), f"trim reclaimed {stats['removed']} of {len(pinned)} entries: {stats}"
+    survivors = [p.name for p in cas_exedir.rglob(f"*{suffix}") if p.is_file()]
+    assert not survivors, f"unreclaimable {suffix} entries survived an aggressive trim: {survivors}"
+
+
 @uth.requires_functional_compiler
 def test_static_library_reused_across_workspaces(tmp_path):
     """Static-library cache regression guard: same .a built in ws1 and
@@ -456,6 +513,8 @@ def test_static_library_reused_across_workspaces(tmp_path):
     assert not swapped_inode, (
         f"second build re-archived {len(swapped_inode)} cached static lib(s) (inode swap): {sorted(swapped_inode)}"
     )
+
+    _assert_reclaimable_once_unpublished(shared_cas_exedir, [ws1, ws2], ".a")
 
 
 @uth.requires_functional_compiler
@@ -578,3 +637,5 @@ def test_shared_library_reused_across_workspaces(tmp_path):
     assert not swapped_inode, (
         f"second build re-linked {len(swapped_inode)} cached shared lib(s) (inode swap): {sorted(swapped_inode)}"
     )
+
+    _assert_reclaimable_once_unpublished(shared_cas_exedir, [ws1, ws2], ".so")

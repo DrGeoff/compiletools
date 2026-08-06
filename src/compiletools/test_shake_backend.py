@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import io
 import json
 import os
@@ -18,6 +19,7 @@ import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.magicflags
 import compiletools.testhelper as uth
+import compiletools.trace_backend
 from compiletools.apptools import _GITROOT_SENTINEL
 from compiletools.build_backend import available_backends, get_backend_class
 from compiletools.build_context import BuildContext
@@ -1238,51 +1240,29 @@ class TestSymlinkPublishShortCircuit:
 # ---------------------------------------------------------------------------
 
 
-class TestCALinkShortCircuit:
-    @pytest.fixture
-    def backend(self, tmp_path):
-        """Bare ShakeBackend (no __init__) wired with a MagicMock args whose
-        `cas_objdir` is `tmp_path`. The 4 _ca_target tests below all use
-        this minimal shape."""
-        b = ShakeBackend.__new__(ShakeBackend)
-        b.args = mock.MagicMock()
-        b.args.cas_objdir = str(tmp_path)
-        b._anchor_root = ""
-        uth.stub_build_state(b.args, cas_objdir=str(tmp_path))
-        return b
+class TestBuildArtifactShortCircuit:
+    def test_no_second_content_addressed_name_for_build_artifacts(self):
+        """No `_ca_target` sibling-naming helper exists on the backend.
 
-    def test_ca_target_deterministic(self, backend):
-        """Same rule produces the same CA target path."""
-        rule = BuildRule(output="foo", inputs=["foo.o"], command=["g++", "-o", "foo", "foo.o"], rule_type="link")
-        assert backend._ca_target(rule) == backend._ca_target(rule)
+        Library rules already write straight to their cas-exedir path, whose
+        name encodes the link key. A second content-addressed name in the same
+        pool hardlinks to the first, and trim's `skip_if_nlink_above=1`
+        protection then spares both forever. Asserting the helper's absence
+        covers the sync and async executors at once — neither can grow the
+        branch back without this failing.
+        """
+        assert not hasattr(ShakeBackend, "_ca_target")
+        source = inspect.getsource(compiletools.trace_backend)
+        assert "_ca_target" not in source
 
-    def test_ca_target_differs_on_input_change(self, backend):
-        """Different inputs produce different CA target paths."""
-        rule1 = BuildRule(output="foo", inputs=["foo.o"], command=["g++", "-o", "foo", "foo.o"], rule_type="link")
-        rule2 = BuildRule(
-            output="foo", inputs=["foo.o", "bar.o"], command=["g++", "-o", "foo", "foo.o", "bar.o"], rule_type="link"
-        )
-        assert backend._ca_target(rule1) != backend._ca_target(rule2)
-
-    def test_ca_target_differs_on_command_change(self, backend):
-        """Different commands (same inputs) produce different CA target paths."""
-        rule1 = BuildRule(output="foo", inputs=["foo.o"], command=["g++", "-o", "foo", "foo.o"], rule_type="link")
-        rule2 = BuildRule(
-            output="foo", inputs=["foo.o"], command=["g++", "-O2", "-o", "foo", "foo.o"], rule_type="link"
-        )
-        assert backend._ca_target(rule1) != backend._ca_target(rule2)
-
-    def test_ca_target_preserves_extension(self, backend):
-        """CA target preserves the file extension for libraries."""
-        rule = BuildRule(
-            output="libfoo.a", inputs=["foo.o"], command=["ar", "-src", "libfoo.a", "foo.o"], rule_type="static_library"
-        )
-        ca = backend._ca_target(rule)
-        assert ca.endswith(".a")
-        assert "libfoo_" in ca
+    def test_self_managed_exe_placement_is_rejected(self, monkeypatch):
+        """The existence-only short-circuit is unsound without cas outputs."""
+        monkeypatch.setattr(ShakeBackend, "_self_manages_exe_placement", lambda self: True)
+        with pytest.raises(ValueError, match="_self_manages_exe_placement"):
+            ShakeBackend(mock.MagicMock(), mock.MagicMock())
 
     def test_link_no_sig_files(self, monkeypatch):
-        """CA link/library rules do not produce .ct-sig sidecar files."""
+        """Link and library rules do not produce .ct-sig sidecar files."""
         link_rule = BuildRule(output="foo", inputs=["foo.o"], command=["g++", "-o", "foo", "foo.o"], rule_type="link")
         graph = BuildGraph()
         graph.add_rule(link_rule)
@@ -1467,8 +1447,8 @@ class TestAtomicLinkRouting:
 
     def test_link_rule_routes_through_atomic_link(self, monkeypatch):
         """Link rules atomic_link directly to rule.output (the cas-exe path).
-        No `_ca_target` indirection — that pattern is reserved for
-        static_library/shared_library which still write to non-CAS outputs."""
+        Static and shared libraries take the same direct path — their outputs
+        are cas-exedir entries too."""
         cas_exe = "cas-exe/aa/foo_abc.exe"
         link_rule = BuildRule(
             output=cas_exe,

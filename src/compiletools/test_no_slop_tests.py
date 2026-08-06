@@ -390,7 +390,7 @@ def _collect_r2(func: ast.AST) -> bool:
             # assert x == x  (structurally identical operands, single Eq).
             # Excludes operands that contain a Call: `assert f() == f()` is a
             # legitimate determinism/idempotency check (f could be impure), not
-            # a tautology — real examples: _ca_target(rule) == _ca_target(rule).
+            # a tautology — e.g. hash_command(cmd) == hash_command(cmd).
             if (
                 isinstance(test, ast.Compare)
                 and len(test.ops) == 1

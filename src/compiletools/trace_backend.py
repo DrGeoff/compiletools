@@ -200,6 +200,16 @@ class ShakeBackend(BuildBackend):
 
     def __init__(self, args, hunter, *, context=None):
         super().__init__(args, hunter, context=context)
+        if self._self_manages_exe_placement():
+            raise ValueError(
+                "ShakeBackend requires _self_manages_exe_placement() == False. "
+                "Its build-artifact short-circuit treats the existence of a link, "
+                "static-library or shared-library output as proof of correctness, "
+                "which only holds while that output IS the cas path (whose name "
+                "encodes the link key). Under self-managed exe placement the output "
+                "is the plain bindir pathname and a stale archive would be silently "
+                "accepted."
+            )
         self._graph: BuildGraph | None = None
         # Test rules run in-process during the build phase. A failing test
         # appends here instead of raising from inside the rule executor --
@@ -236,24 +246,6 @@ class ShakeBackend(BuildBackend):
                 f.write(f"  inputs: {' '.join(rule.inputs)}\n")
                 f.write(f"  command: {' '.join(rule.command)}\n")
         f.write("\n")
-
-    def _ca_target(self, rule: BuildRule) -> str:
-        """Content-addressable output path for a link/library rule.
-
-        Hashes sorted inputs + command (with output path stripped to avoid
-        circularity), both anchor-canonicalized so two workspaces sharing
-        a cas-exedir produce the same CA filename — raw absolute paths
-        would fork the name per checkout.  The CA filename lives alongside
-        the human-readable output so directory creation is already handled.
-        """
-        assert rule.command is not None, "_ca_target only applies to link/library rules"
-        cmd_filtered = _canonicalize_cmd_for_hash([a for a in rule.command if a != rule.output], self._anchor_root)
-        inputs = compiletools.apptools.canonicalize_paths_for_cache_key(sorted(rule.inputs), self._anchor_root)
-        key = json.dumps({"inputs": inputs, "cmd": cmd_filtered}, sort_keys=True)
-        h = hashlib.sha256(key.encode()).hexdigest()[:20]
-        base = os.path.basename(rule.output)
-        name, ext = os.path.splitext(base)
-        return os.path.join(os.path.dirname(rule.output), f"{name}_{h}{ext}")
 
     def _execute_build(self, target: str) -> None:
         # Not used: ShakeBackend overrides execute() with its own build engine.
@@ -508,24 +500,15 @@ class ShakeBackend(BuildBackend):
 
         # CONTENT-ADDRESSABLE SHORT-CIRCUIT
         if _is_build_artifact(rule):
-            if rule.rule_type in (RuleType.COMPILE, RuleType.LINK):
-                # Both compile and link rule outputs are content-addressable
-                # by construction: object names encode file_h+dep_h+macro_h;
-                # cas-exe paths encode the link key (linker identity + sorted
-                # canonical objects + ldflags). Existence is sufficient.
-                # The publish-as-symlink rule (separate, downstream) exposes
-                # link outputs at user-facing bin/<name>.
-                if os.path.exists(target):
-                    return False
-            else:
-                # static_library / shared_library still use the legacy
-                # in-place CA layout (output adjacent CA file then copy).
-                # When/if those move into a cas-libdir, this branch can
-                # collapse into the existence-only fast path above.
-                ca = self._ca_target(rule)
-                if os.path.exists(ca):
-                    compiletools.filesystem_utils.atomic_copy(ca, target)
-                    return False
+            # Every build-artefact output is content-addressable by
+            # construction, so existence is sufficient: object names encode
+            # file_h+dep_h+macro_h; cas-exe, cas-static-library and
+            # cas-shared-library paths encode the link/lib key (linker or ar
+            # identity + sorted canonical objects + ldflags). The
+            # publish-as-symlink rule (separate, downstream) exposes all
+            # three linker-artefact kinds at their user-facing bin/<name>.
+            if os.path.exists(target):
+                return False
         elif rule.rule_type == RuleType.SYMLINK:
             # SYMLINK publishes a content-addressable artefact (the single
             # input, a cas-exedir/cas-libdir path) at a user-facing target
@@ -675,16 +658,11 @@ class ShakeBackend(BuildBackend):
             self._run_test_rule(rule, flat_cmd)
         elif rule.rule_type == RuleType.COMPILE:
             cas_hit = execute_compile_rule(target, flat_cmd, self.args, skip_if_exists=True, cwd=rule.cwd)
-        elif rule.rule_type == RuleType.LINK:
-            # Link output IS the cas-exe path; the downstream publish-as-symlink
-            # rule materialises bin/<name>. No per-rule CA-then-copy here —
-            # that's only for static_library / shared_library.
-            cas_hit = execute_link_rule(target, flat_cmd, self.args, skip_if_exists=True)
         elif _is_build_artifact(rule):
-            ca = self._ca_target(rule)
-            ca_cmd = [ca if a == target else a for a in flat_cmd]
-            cas_hit = execute_link_rule(ca, ca_cmd, self.args, skip_if_exists=True)
-            compiletools.filesystem_utils.atomic_copy(ca, target)
+            # LINK / STATIC_LIBRARY / SHARED_LIBRARY all write straight to
+            # their own cas path; the downstream publish-as-symlink rule
+            # materialises bin/<name>.
+            cas_hit = execute_link_rule(target, flat_cmd, self.args, skip_if_exists=True)
         else:
             execute_link_rule(target, flat_cmd, self.args)
 
@@ -719,7 +697,10 @@ class ShakeBackend(BuildBackend):
                 on_spawn=self._track_child_spawn,
                 on_reap=self._track_child_reap,
             )
-        elif rule.rule_type == RuleType.LINK:
+        elif _is_build_artifact(rule):
+            # LINK / STATIC_LIBRARY / SHARED_LIBRARY all write straight to
+            # their own cas path; the downstream publish-as-symlink rule
+            # materialises bin/<name>.
             cas_hit = await execute_link_rule_async(
                 target,
                 flat_cmd,
@@ -728,18 +709,6 @@ class ShakeBackend(BuildBackend):
                 on_spawn=self._track_child_spawn,
                 on_reap=self._track_child_reap,
             )
-        elif _is_build_artifact(rule):
-            ca = self._ca_target(rule)
-            ca_cmd = [ca if a == target else a for a in flat_cmd]
-            cas_hit = await execute_link_rule_async(
-                ca,
-                ca_cmd,
-                self.args,
-                skip_if_exists=True,
-                on_spawn=self._track_child_spawn,
-                on_reap=self._track_child_reap,
-            )
-            compiletools.filesystem_utils.atomic_copy(ca, target)
         else:
             await execute_link_rule_async(
                 target,

@@ -27,6 +27,11 @@ resolves), and ``--purge-unresolvable`` (also reclaims NON_CANONICAL cells — r
 but not a canonicalization fixed point — under the same COLD ``--max-age`` gate).
 ``--all-variants`` performs a whole-pool trim sweep over every RESOLVABLE cell with
 per-cell error isolation and one aggregate ``{schema, mode, variants, errors}`` JSON.
+
+``--purge-ca-siblings`` is a separate destructive opt-in — a one-time migration pass
+inside the cas-exedir trim that clears the dead second content-addressed library name
+a pre-fix shake (12.1.1 and earlier) wrote. It requires ``--max-age > 0`` and spares
+warm siblings.
 """
 
 import json
@@ -199,6 +204,29 @@ def add_arguments(cap):
         ),
     )
     cap.add_argument(
+        "--purge-ca-siblings",
+        action="store_true",
+        default=False,
+        help=(
+            "DESTRUCTIVE, ONE-TIME MIGRATION: during the cas-exedir trim, unlink the "
+            "dead second content-addressed name (<stem>_<64hex>_<20hex>) that a shake "
+            "release up to and including 12.1.1 wrote beside every static/shared "
+            "library entry and hardlinked to it. The pair held each other above "
+            "nlink>1 forever, so no --keep-count / --max-age / --max-size setting "
+            "could reclaim either, and each distinct link key added another "
+            "unreclaimable singleton bucket. A fixed shake never writes the sibling "
+            "again, so this clears a bounded residue. Frees no bytes directly (the "
+            "inode survives via the real entry); it unpins the real entry so the "
+            "normal policy can evict it. REQUIRES --max-age > 0: an un-upgraded peer "
+            "recreates the sibling through two unlocked windows and would see an "
+            "uncaught FileNotFoundError if the source vanished mid-copy, so the age "
+            "floor means 'no build has touched this inode for N days' (no peer is "
+            "plausibly mid-copy) — a WARM sibling is SPARED and reported. Applies to "
+            "the cas-exedir trim only; do not run it until no pre-fix peer remains. "
+            "Honours --dry-run."
+        ),
+    )
+    cap.add_argument(
         "--all-variants",
         action="store_true",
         default=False,
@@ -325,6 +353,31 @@ def main(argv=None):
             )
             return 1
 
+        # --purge-ca-siblings is a DESTRUCTIVE opt-in migration pass inside the
+        # cas-exedir trim. It HARD-ERRORS without --max-age > 0: the sibling
+        # name is provably dead, but an un-upgraded peer recreates it through
+        # two unlocked windows, so the age floor is what makes it unlikely a
+        # peer is mid-copy on the inode. It has no meaning in the standalone
+        # pool modes (they return before the trim path), so reject that pairing
+        # rather than silently ignore the flag.
+        if args.purge_ca_siblings:
+            if args.max_age is None or args.max_age <= 0:
+                print(
+                    f"Error: --purge-ca-siblings requires --max-age > 0 (a positive "
+                    f"number of days; only siblings whose inode has not been touched "
+                    f"in that long are removed — a warm one may have a pre-fix peer "
+                    f"mid-copy on it); got {args.max_age!r}",
+                    file=sys.stderr,
+                )
+                return 1
+            if pool_modes:
+                print(
+                    "Error: --purge-ca-siblings applies to the cas-exedir trim only, "
+                    "not --list-resolvable / --list-unresolvable / --purge-unresolvable",
+                    file=sys.stderr,
+                )
+                return 1
+
         # --list-resolvable is a standalone READ-ONLY mode: print the active
         # cell names and return without touching the normal trim path.
         if args.list_resolvable:
@@ -378,6 +431,13 @@ def main(argv=None):
         do_pchdir = do_pchdir and not args.cas_pchdir_skip
         do_pcmdir = do_pcmdir and not args.cas_pcmdir_skip
         do_exedir = do_exedir and not args.cas_exedir_skip
+
+        if args.purge_ca_siblings and not do_exedir:
+            print(
+                "Error: --purge-ca-siblings needs the cas-exedir pool in the sweep, but the selection flags exclude it",
+                file=sys.stderr,
+            )
+            return 1
 
         # --all-variants: sweep every RESOLVABLE cell in the pool, not just the
         # single --variant cell. Per-cell errors are isolated (one bad cell is

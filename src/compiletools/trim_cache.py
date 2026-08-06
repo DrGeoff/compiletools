@@ -344,6 +344,39 @@ def _split_exe_leaf_name(name):
     return stem[:sep], stem[sep + 1 :], matched_suffix
 
 
+# A cas-exedir leaf name whose stem is ``<basename>_<64hex>_<20hex>``. Shake
+# releases up to and including 12.1.1 wrote a second, content-addressed name
+# for every static/shared library beside the real cas entry and hardlinked the
+# two together. The pair then held each other above ``nlink == 1``, so the
+# hard-link protection spared both forever, and the sibling's own name parses
+# as a distinct basename (``_split_exe_leaf_name`` splits on the LAST
+# underscore), giving it a private bucket that survives on rank at any
+# ``keep_count >= 1``. Nothing else in the pool has this shape: the real
+# entry's key is a single untruncated sha256.
+_CA_SIBLING_STEM_RE = re.compile(r"^(?P<real>.+_[0-9a-f]{64})_[0-9a-f]{20}$")
+
+
+def _ca_sibling_real_entry(path):
+    """Return the real cas entry ``path`` is a dead CA sibling of, or ``None``.
+
+    Name shape only — the caller must still confirm the two share an inode.
+
+    The suffix split delegates to ``_split_exe_leaf_name`` rather than
+    re-deriving it: that helper is THE exe-leaf format rule, and a stem
+    legitimately contains dots (``liblib.a_<key>.a``), so a second copy of the
+    suffix logic here would be a drift hazard on a destructive path. The regex
+    then runs against the reconstructed stem, never the raw leaf name.
+    """
+    parsed = _split_exe_leaf_name(os.path.basename(path))
+    if parsed is None:
+        return None
+    basename, link_key, suffix = parsed
+    match = _CA_SIBLING_STEM_RE.match(f"{basename}_{link_key}")
+    if match is None:
+        return None
+    return os.path.join(os.path.dirname(path), match.group("real") + suffix)
+
+
 def _map_scan(units, scan_one, workers):
     """Apply ``scan_one`` to each unit, fanning out across ``workers`` threads
     when ``workers > 1``; otherwise run serially.
@@ -526,6 +559,10 @@ class CacheTrimmer:
         # parsed (via _parse_size) by main() into args.max_size_bytes. None means
         # "no budget" (the historical behaviour — keep_count/max_age only).
         self.max_size_bytes = getattr(args, "max_size_bytes", None)
+        # --purge-ca-siblings: opt-in migration reclaim for pools warmed by a
+        # pre-fix shake. Off by default — see _reclaim_ca_siblings for why it
+        # cannot be part of the default trim path.
+        self.purge_ca_siblings = getattr(args, "purge_ca_siblings", False)
         # Scan parallelism is sourced from --parallel / -j (jobs.py), which
         # already honours CPU affinity, cgroups, and slurm allocations. A
         # caller that never plumbed it (or passed 0/None) stays serial.
@@ -969,6 +1006,122 @@ class CacheTrimmer:
     # Executable cache (cas-exedir) trimming
     # ------------------------------------------------------------------
 
+    def _reclaim_ca_siblings(self, entry_info: dict, stats: dict) -> None:
+        """OPT-IN (``--purge-ca-siblings``): unlink dead shake CA siblings and
+        drop them from ``entry_info``.
+
+        One-time migration pass for cas-exedir pools warmed by a shake release
+        that wrote a second content-addressed name beside each library entry.
+        The two names hardlink to one inode, which pinned BOTH above the
+        ``nlink > 1`` protection permanently — no ``--keep-count``,
+        ``--max-age`` or ``--max-size`` setting could reclaim either, and every
+        distinct link key that had ever been built added another unreclaimable
+        singleton bucket. A fixed shake never writes the sibling again, so the
+        residue is bounded; this pass clears what a pre-fix build already left.
+
+        A candidate is identified by name shape (``<stem>_<64hex>_<20hex>``
+        with an existing ``<stem>_<64hex>`` entry in the same bucket dir) and
+        confirmed by inode: the real entry must be in this same scan and be the
+        same file. Removing the sibling releases no bytes and loses none — the
+        surviving link is the reachable cas entry, and the real entry becomes
+        evictable on its own merits once it drops to a single link.
+
+        **Why opt-in, and why the age floor is a PEER-ACTIVITY argument rather
+        than a liveness argument.** The sibling is provably dead as a *name*:
+        nothing consults it, and its inode survives via the real entry. What is
+        not dead is the pre-fix *reader*. A shake build from an un-upgraded
+        peer recreates the sibling by ``os.link``-ing the cas entry to it and
+        then copying, and it does so through two windows this pass cannot
+        close:
+
+        * the CA-copy branch in the pre-fix ``trace_backend._build_async``
+          takes no lock at all;
+        * the sync path's lock lives and dies entirely inside ``atomic_link``,
+          so the ``atomic_copy`` that follows it runs unlocked.
+
+        ``atomic_copy``'s ``os.link`` re-raises any errno that is not ``EXDEV``,
+        so a source that vanishes mid-copy surfaces as an uncaught
+        ``FileNotFoundError`` out of the peer's executor. No lock taken here
+        helps, because the pre-fix reader never acquires one. Worse, a peer
+        still running pre-fix code recreates the sibling on its next build, so
+        an automatic reclaim would fight it forever. Hence: an explicit
+        destructive flag, and a strictly positive ``--max-age`` whose meaning
+        is "no build has touched this inode for N days", i.e. *no peer is
+        plausibly mid-copy on it* — not "this name is dead" (which is already
+        known). A WARM sibling (inode mtime within the cutoff; the pair shares
+        one inode, so one mtime) is SPARED and reported as
+        ``ca_siblings_skipped_warm``.
+
+        The under-lock inode re-check in ``_safe_locked_unlink`` cancels the
+        removal if a peer republishes or relinks between the scan and the
+        unlink. That buys trim-vs-trim and trim-vs-publish safety only; it does
+        NOT protect a pre-fix reader, per the two windows above.
+
+        Caller contract: ``main`` HARD-ERRORS when ``--purge-ca-siblings`` is
+        passed without ``--max-age > 0``. This method re-checks and raises
+        rather than silently reclaiming warm entries.
+
+        Nothing is credited to ``bytes_freed``: the inode survives.
+        """
+        if not self.purge_ca_siblings:
+            return
+        if self.max_age_seconds is None or self.max_age_seconds <= 0:
+            raise ValueError("--purge-ca-siblings requires --max-age > 0 (see _reclaim_ca_siblings)")
+        cutoff = time.time() - self.max_age_seconds
+
+        siblings: list[tuple[str, str]] = []
+        for path, (_bucket_key, mtime, _size, _nlink) in entry_info.items():
+            real = _ca_sibling_real_entry(path)
+            if real is None or real not in entry_info:
+                continue
+            try:
+                if not os.path.samefile(path, real):
+                    continue
+            except OSError:
+                continue
+            if mtime >= cutoff:
+                stats["ca_siblings_skipped_warm"] += 1
+                if self.verbose >= 1:
+                    print(f"  Sparing warm CA sibling (peer may be mid-copy): {path}", file=self._human)
+                continue
+            siblings.append((path, real))
+
+        for path, real in siblings:
+            del entry_info[path]
+            stats["total_scanned"] -= 1
+            if self.dry_run:
+                if self.verbose >= 1:
+                    print(f"  Would remove dead CA sibling: {path}", file=self._human)
+                stats["ca_siblings_removed"] += 1
+                self._drop_recorded_link(entry_info, real)
+                continue
+            removed = self._remove_or_queue_retry(
+                _RetryItem(
+                    path=path,
+                    is_dir=False,
+                    size=0,
+                    stats=stats,
+                    removed_key="ca_siblings_removed",
+                    unlink_kwargs={"require_same_inode_as": real},
+                    cleanup_sidecars=True,
+                )
+            )
+            if removed:
+                # The scan recorded the real entry's nlink WITH the sibling
+                # still linked. Left stale it re-pins the entry through the
+                # hard-link protection for the rest of this run, so the pool
+                # would need a second trim to make any progress.
+                self._drop_recorded_link(entry_info, real)
+
+    @staticmethod
+    def _drop_recorded_link(entry_info: dict, real: str) -> None:
+        """Decrement the scan's recorded ``st_nlink`` for one entry."""
+        info = entry_info.get(real)
+        if info is None:
+            return
+        bucket_key, mtime, size, nlink = info
+        entry_info[real] = (bucket_key, mtime, size, max(1, nlink - 1))
+
     def trim_exedir(self, exedir):
         """Trim stale entries from the content-addressable linker-artefact
         cache (executables, static libraries, shared libraries — all
@@ -981,6 +1134,11 @@ class CacheTrimmer:
 
         Trim policy:
 
+        * **Dead CA siblings** (``_reclaim_ca_siblings``, OPT-IN via
+          ``--purge-ca-siblings`` + ``--max-age > 0``) are unlinked and dropped
+          from the scan first, before any keep decision. See that method for
+          why they cannot be handled as an eviction, and why the pass is not
+          in the default trim path.
         * **Bucket** by ``(basename, suffix)`` (the part of the
           filename before ``_<key>``, plus its suffix). One
           executable's distinct link configurations live in the same
@@ -1014,7 +1172,8 @@ class CacheTrimmer:
 
         Returns:
             dict with statistics: total_scanned, basenames_found,
-            kept, removed, failed, bytes_freed.
+            kept, removed, failed, bytes_freed, ca_siblings_removed,
+            ca_siblings_skipped_warm.
         """
         stats = {
             "total_scanned": 0,
@@ -1031,6 +1190,8 @@ class CacheTrimmer:
             "budget_removed": 0,
             "budget_bytes_freed": 0,
             "budget_unmet_bytes": 0,
+            "ca_siblings_removed": 0,
+            "ca_siblings_skipped_warm": 0,
         }
 
         if not os.path.isdir(exedir):
@@ -1057,6 +1218,16 @@ class CacheTrimmer:
                 entry_info[path] = (bucket_key, mtime, size, nlink)
                 stats["total_scanned"] += 1
 
+        if not entry_info:
+            return stats
+
+        # Dead CA siblings (opt-in; no-op without --purge-ca-siblings) are
+        # dropped from entry_info BEFORE bucketing. They cannot be evicted as a
+        # later pass: the bucket-rank pass below would already have put each
+        # one in keep_paths (a sibling is the sole member of its own bucket),
+        # and every pass after that only adds. Filtering here also keeps
+        # basenames_found honest in the same run.
+        self._reclaim_ca_siblings(entry_info, stats)
         if not entry_info:
             return stats
 
@@ -1940,6 +2111,17 @@ class CacheTrimmer:
                 if exedir_stats["orphan_temp_bytes_freed"]:
                     orphan_str += f" ({_format_bytes(exedir_stats['orphan_temp_bytes_freed'])} freed)"
                 print(orphan_str, file=self._human)
+            if exedir_stats["ca_siblings_removed"]:
+                print(
+                    f"    Dead CA siblings: {exedir_stats['ca_siblings_removed']} (0 bytes — shared inode)",
+                    file=self._human,
+                )
+            if exedir_stats["ca_siblings_skipped_warm"]:
+                print(
+                    f"    CA siblings warm: {exedir_stats['ca_siblings_skipped_warm']}"
+                    f" (spared; a peer may be mid-copy)",
+                    file=self._human,
+                )
             self._print_orphan_sidecar_lines(exedir_stats)
             self._print_empty_bucket_lines(exedir_stats)
             self._print_budget_lines(exedir_stats)
@@ -2135,7 +2317,7 @@ def _default_lock_args():
     )
 
 
-def _safe_locked_unlink(path, *, skip_if_nlink_above=None):
+def _safe_locked_unlink(path, *, skip_if_nlink_above=None, require_same_inode_as=None):
     """Unlink path after acquiring the build lock for it.
 
     Used by ct-trim-cache to avoid deleting an .o file that a concurrent
@@ -2156,12 +2338,30 @@ def _safe_locked_unlink(path, *, skip_if_nlink_above=None):
     Without this re-check, we'd evict an entry that just gained a
     published reference and force a relink on the next build. Returns
     False (entry still considered live) when the threshold trips.
+
+    ``require_same_inode_as`` is the dead-CA-sibling counterpart: re-stat both
+    ``path`` and the named real cas entry under the lock and skip the unlink
+    unless they are still the same inode. That is what makes removing a
+    ``nlink > 1`` entry safe here — the surviving link is inside the same pool
+    and the reachable artefact keeps the bytes. Returns False when the pairing
+    no longer holds.
     """
     from compiletools.locking import FileLock
 
     lock_args = _default_lock_args()
     try:
         with FileLock(path, lock_args):
+            if require_same_inode_as is not None:
+                try:
+                    if not os.path.samefile(path, require_same_inode_as):
+                        return False
+                except FileNotFoundError:
+                    # Either link went away under us. If the sibling itself is
+                    # gone a peer trim already did the work; if the real entry
+                    # is gone the sibling is now the only copy and must stay.
+                    return not os.path.exists(path)
+                except OSError:
+                    return False
             if skip_if_nlink_above is not None:
                 try:
                     st = os.stat(path)

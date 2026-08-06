@@ -14,6 +14,7 @@ import pytest
 from compiletools import trim_cache
 from compiletools.trim_cache import (
     CacheTrimmer,
+    _ca_sibling_real_entry,
     _load_pch_manifest,
     build_current_hash_set,
     parse_object_filename,
@@ -1149,6 +1150,43 @@ def _touch_exe(exedir, basename, link_key, *, age_seconds=0, size=1024):
     return path
 
 
+_CA_LIB_KEY = "aa11" * 16
+# Measured on a real pre-fix shake pool: the leaf is
+# libmylib.a_<64hex>_<20hex>.a — the ".a" appears twice, because the cas
+# basename already carries the library's own suffix. Any name predicate must
+# tolerate the dot inside the stem.
+_CA_SIBLING_STEM = f"libmylib.a_{_CA_LIB_KEY}"
+
+
+def _touch_cas_lib(exedir, stem, *, age_seconds=0, size=1024):
+    """Create a fake cas-exedir library leaf ``<exedir>/<bucket>/<stem>.a``."""
+    bucket_dir = os.path.join(exedir, _CA_LIB_KEY[:2])
+    os.makedirs(bucket_dir, exist_ok=True)
+    path = os.path.join(bucket_dir, f"{stem}.a")
+    with open(path, "wb") as f:
+        f.write(b"\0" * size)
+    if age_seconds:
+        mtime = time.time() - age_seconds
+        os.utime(path, (mtime, mtime))
+    return path
+
+
+def _touch_ca_sibling_pair(exedir, *, age_seconds):
+    """Create a real cas library entry plus the dead CA sibling a pre-fix shake
+    hardlinked beside it. Returns ``(real, sibling)``."""
+    real = _touch_cas_lib(exedir, _CA_SIBLING_STEM, age_seconds=age_seconds)
+    sibling = os.path.join(os.path.dirname(real), f"{_CA_SIBLING_STEM}_{'b' * 20}.a")
+    os.link(real, sibling)
+    return real, sibling
+
+
+def _purge_args(**overrides):
+    """``_make_args`` with the CA-sibling reclaim opted in and a 7-day floor."""
+    defaults = {"purge_ca_siblings": True, "max_age": 7}
+    defaults.update(overrides)
+    return _make_args(**defaults)
+
+
 class TestTrimExedir:
     """``CacheTrimmer.trim_exedir`` deletes stale ``.exe`` files from the
     content-addressable executable cache while honouring keep_count,
@@ -1306,6 +1344,214 @@ class TestTrimExedir:
         # Single legacy bucket → keep_count=1 → only newest survives.
         assert stats["basenames_found"] == 1
         assert not os.path.exists(old)
+
+    @pytest.mark.skipif(
+        not hasattr(os, "link"),
+        reason="platform lacks os.link (e.g. Termux/Android); CA-sibling pairs cannot exist",
+    )
+    def test_dead_ca_sibling_reclaim_is_off_without_the_opt_in(self, tmp_path):
+        """The reclaim is OPT-IN. A default trim must leave the pair exactly as
+        it found it.
+
+        A pre-fix peer recreates the sibling through two unlocked windows (the
+        old async CA-copy branch took no lock at all; the sync path's lock died
+        inside ``atomic_link`` before the copy), so an automatic reclaim could
+        hand that peer an uncaught ``FileNotFoundError``. Both pins therefore
+        survive a default run — that is the documented cost of opting out.
+        """
+        exedir = str(tmp_path / "cas-exe")
+        real, sibling = _touch_ca_sibling_pair(exedir, age_seconds=30 * 86400)
+
+        trimmer = CacheTrimmer(_make_args(keep_count=0, max_age=7))
+        stats = trimmer.trim_exedir(exedir)
+
+        assert stats["ca_siblings_removed"] == 0
+        assert stats["ca_siblings_skipped_warm"] == 0
+        assert os.path.exists(sibling)
+        assert os.path.exists(real), "the shared inode still pins the real entry via nlink>1"
+        assert stats["basenames_found"] == 2, f"the sibling still holds its own bucket: {stats}"
+
+    @pytest.mark.skipif(
+        not hasattr(os, "link"),
+        reason="platform lacks os.link (e.g. Termux/Android); CA-sibling pairs cannot exist",
+    )
+    def test_dead_ca_sibling_is_reclaimed_and_unpins_the_real_entry(self, tmp_path):
+        """Migration: a pool warmed by a shake release that wrote a second
+        content-addressed name beside each library entry.
+
+        The pair hardlinks to one inode, so both were protected by the
+        ``nlink > 1`` rule; and because ``_split_exe_leaf_name`` splits on the
+        LAST underscore, the sibling parses as its own basename and holds a
+        private bucket that survives on rank. Both pins must go.
+        """
+        exedir = str(tmp_path / "cas-exe")
+        real, sibling = _touch_ca_sibling_pair(exedir, age_seconds=30 * 86400)
+
+        trimmer = CacheTrimmer(_purge_args(keep_count=0))
+        stats = trimmer.trim_exedir(exedir)
+
+        assert stats["ca_siblings_removed"] == 1
+        assert not os.path.exists(sibling), "dead CA sibling must be unlinked"
+        assert stats["basenames_found"] == 1, (
+            f"the sibling still counts as a basename bucket — reclaim ran after bucketing: {stats}"
+        )
+        assert stats["removed"] == 1, f"unpinned real entry must now be evictable: {stats}"
+        assert not os.path.exists(real)
+
+    @pytest.mark.skipif(
+        not hasattr(os, "link"),
+        reason="platform lacks os.link (e.g. Termux/Android); CA-sibling pairs cannot exist",
+    )
+    def test_dead_ca_sibling_reclaim_survives_default_keep_count(self, tmp_path):
+        """At the default ``keep_count=1`` the sibling is kept on bucket rank
+        before the nlink rule is ever consulted, so breaking the inode alone
+        would not free it. The real entry stays (rank 1 of its own bucket)."""
+        exedir = str(tmp_path / "cas-exe")
+        real, sibling = _touch_ca_sibling_pair(exedir, age_seconds=30 * 86400)
+
+        trimmer = CacheTrimmer(_purge_args(keep_count=1))
+        stats = trimmer.trim_exedir(exedir)
+
+        assert stats["ca_siblings_removed"] == 1
+        assert not os.path.exists(sibling)
+        assert stats["basenames_found"] == 1
+        assert os.path.exists(real), "keep_count=1 protects the sole real entry"
+
+    @pytest.mark.skipif(
+        not hasattr(os, "link"),
+        reason="platform lacks os.link (e.g. Termux/Android); CA-sibling pairs cannot exist",
+    )
+    def test_warm_ca_sibling_is_spared_and_reported(self, tmp_path):
+        """The ``--max-age`` floor is a PEER-ACTIVITY argument: an inode touched
+        inside the window may have a pre-fix peer mid-copy on it. The name is
+        just as dead as a cold one; sparing it is about the reader, not the
+        name."""
+        exedir = str(tmp_path / "cas-exe")
+        real, sibling = _touch_ca_sibling_pair(exedir, age_seconds=3600)
+
+        trimmer = CacheTrimmer(_purge_args(keep_count=0))
+        stats = trimmer.trim_exedir(exedir)
+
+        assert stats["ca_siblings_removed"] == 0
+        assert stats["ca_siblings_skipped_warm"] == 1
+        assert os.path.exists(sibling)
+        assert os.path.exists(real)
+
+    @pytest.mark.skipif(
+        not hasattr(os, "link"),
+        reason="platform lacks os.link (e.g. Termux/Android); CA-sibling pairs cannot exist",
+    )
+    @pytest.mark.parametrize("max_age", [None, 0, -1])
+    def test_ca_sibling_reclaim_without_a_positive_max_age_raises(self, tmp_path, max_age):
+        """The CLI hard-errors first, but the invariant is enforced here too so
+        a programmatic caller cannot reclaim warm siblings by omitting the age
+        floor."""
+        exedir = str(tmp_path / "cas-exe")
+        _real, sibling = _touch_ca_sibling_pair(exedir, age_seconds=30 * 86400)
+
+        trimmer = CacheTrimmer(_purge_args(keep_count=0, max_age=max_age))
+        with pytest.raises(ValueError, match="--purge-ca-siblings requires --max-age"):
+            trimmer.trim_exedir(exedir)
+        assert os.path.exists(sibling)
+
+    @pytest.mark.parametrize(
+        "leaf",
+        [
+            # A legitimate cas entry: <basename>_<64hex>. The one name the
+            # predicate must never claim, since deleting it loses the artefact.
+            f"{_CA_SIBLING_STEM}.a",
+            # Off-by-one on either hex group. Both ends of the stem are
+            # anchored and both lengths are exact, so neither can slide.
+            f"libmylib.a_{'a' * 63}_{'b' * 20}.a",
+            f"libmylib.a_{'a' * 65}_{'b' * 20}.a",
+            f"{_CA_SIBLING_STEM}_{'b' * 19}.a",
+            f"{_CA_SIBLING_STEM}_{'b' * 21}.a",
+            # sha256 hexdigest is lowercase; accepting uppercase would only
+            # widen the target of a destructive delete.
+            f"libmylib.a_{'A' * 64}_{'b' * 20}.a",
+            f"{_CA_SIBLING_STEM}_{'B' * 20}.a",
+            # Non-hex in either group.
+            f"libmylib.a_{'z' * 64}_{'b' * 20}.a",
+            f"{_CA_SIBLING_STEM}_{'z' * 20}.a",
+            # No basename before the key.
+            f"{'a' * 64}_{'b' * 20}.a",
+            # Not a cas artefact suffix at all.
+            f"{_CA_SIBLING_STEM}_{'b' * 20}.manifest",
+        ],
+    )
+    def test_only_the_exact_ca_sibling_shape_is_claimed(self, leaf):
+        """``_ca_sibling_real_entry`` gates an irreversible unlink, so it must be
+        safe on shape alone — every loosening (open-ended lengths, unanchored
+        match, uppercase hex) shifts the safety onto the same-inode pairing
+        check, which is necessary but not sufficient: a source basename ending
+        in a hex run can have a genuine sibling of its own."""
+        assert _ca_sibling_real_entry(f"/pool/aa/{leaf}") is None
+
+    def test_the_ca_sibling_shape_resolves_to_its_real_entry(self):
+        """Positive control for the table above: the shape a pre-fix shake
+        actually wrote resolves, and names the real entry beside it."""
+        sibling = f"/pool/aa/{_CA_SIBLING_STEM}_{'b' * 20}.a"
+
+        assert _ca_sibling_real_entry(sibling) == f"/pool/aa/{_CA_SIBLING_STEM}.a"
+
+    def test_ca_sibling_shape_without_the_real_entry_is_left_alone(self, tmp_path):
+        """The reclaim is shape PLUS pairing. A leaf that merely looks like a
+        sibling, with no same-inode real entry beside it, is an ordinary
+        artefact and must go through the normal keep/evict passes."""
+        exedir = str(tmp_path / "cas-exe")
+        lonely = _touch_cas_lib(exedir, f"{_CA_SIBLING_STEM}_{'b' * 20}", age_seconds=0)
+
+        trimmer = CacheTrimmer(_purge_args(keep_count=1))
+        stats = trimmer.trim_exedir(exedir)
+
+        assert stats["ca_siblings_removed"] == 0
+        assert os.path.exists(lonely)
+
+    @pytest.mark.skipif(
+        not hasattr(os, "link"),
+        reason="platform lacks os.link (e.g. Termux/Android); CA-sibling pairs cannot exist",
+    )
+    def test_ca_sibling_pairing_broken_between_scan_and_unlink_is_not_removed(self, tmp_path, monkeypatch):
+        """The scan sees a same-inode pair; before the unlink runs under the
+        lock a peer relinks the real entry, so the sibling now holds the only
+        copy of those bytes. The under-lock re-check must cancel the removal.
+        """
+        exedir = str(tmp_path / "cas-exe")
+        real, sibling = _touch_ca_sibling_pair(exedir, age_seconds=30 * 86400)
+
+        original = trim_cache._safe_locked_unlink
+
+        def racing_unlink(path, **kwargs):
+            if path == sibling:
+                # Peer relink: same name, new inode. Break the pairing BEFORE
+                # the lock so the in-lock samefile check observes it.
+                os.remove(real)
+                with open(real, "wb") as f:
+                    f.write(b"\0" * 4096)
+            return original(path, **kwargs)
+
+        monkeypatch.setattr(trim_cache, "_safe_locked_unlink", racing_unlink)
+
+        trimmer = CacheTrimmer(_purge_args(keep_count=0))
+        stats = trimmer.trim_exedir(exedir)
+
+        assert stats["ca_siblings_removed"] == 0, f"pairing was broken; the sibling must be spared: {stats}"
+        assert os.path.exists(sibling), "the sibling now holds the only copy of its bytes"
+
+    @pytest.mark.skipif(
+        not hasattr(os, "link"),
+        reason="platform lacks os.link (e.g. Termux/Android); CA-sibling pairs cannot exist",
+    )
+    def test_ca_sibling_reclaim_respects_dry_run(self, tmp_path):
+        exedir = str(tmp_path / "cas-exe")
+        real, sibling = _touch_ca_sibling_pair(exedir, age_seconds=30 * 86400)
+
+        trimmer = CacheTrimmer(_purge_args(keep_count=0, dry_run=True))
+        stats = trimmer.trim_exedir(exedir)
+
+        assert stats["ca_siblings_removed"] == 1
+        assert os.path.exists(sibling), "dry-run must not unlink"
+        assert os.path.exists(real)
 
     @pytest.mark.skipif(
         not hasattr(os, "link"),
@@ -2679,6 +2925,102 @@ class TestListResolvableMode:
     def test_mutually_exclusive_with_purge_unresolvable(self):
         rc = main(["--list-resolvable", "--purge-unresolvable", "--max-age=7"])
         assert rc == 1
+
+
+class TestPurgeCaSiblingsCli:
+    """``--purge-ca-siblings`` is a DESTRUCTIVE sweep MODIFIER (a boolean like
+    ``--dry-run``), not a standalone pool mode.
+
+    It must be inert unless passed, must refuse to run without a strictly
+    positive ``--max-age``, and must refuse the combinations where it would
+    silently do nothing.
+    """
+
+    VARIANT = "gcc.debug"
+
+    def _exedir_with_pair(self, tmp_path, *, age_seconds=30 * 86400):
+        """Returns ``(pool, (real, sibling))``.
+
+        ``pool`` is what goes on the command line; ``resolve_cas_directory_arguments``
+        appends the variant, so the pair is planted in the ``<pool>/<variant>``
+        cell the trim will actually walk.
+        """
+        pool = str(tmp_path / "cas-exe")
+        cell = os.path.join(pool, self.VARIANT)
+        return pool, _touch_ca_sibling_pair(cell, age_seconds=age_seconds)
+
+    def _run(self, pool, *extra):
+        return main([f"--variant={self.VARIANT}", f"--cas-exedir={pool}", *extra])
+
+    def test_ordinary_sweep_without_the_flag_needs_no_max_age(self, tmp_path, capsys):
+        """The regression a reader would not think to check: adding a flag with
+        a mandatory ``--max-age`` must not make ``--max-age`` mandatory for
+        everyone."""
+        pool, (real, sibling) = self._exedir_with_pair(tmp_path)
+
+        rc = self._run(pool, "--cas-exedir-only", "--keep-count=0", "--json")
+        out = capsys.readouterr().out
+
+        assert rc == 0
+        stats = json.loads(out)["exedir"]
+        assert stats["total_scanned"] == 2, f"both leaves must be in the sweep: {stats}"
+        assert stats["ca_siblings_removed"] == 0
+        assert os.path.exists(sibling), "the reclaim must not run without the opt-in"
+        assert os.path.exists(real)
+
+    @pytest.mark.skipif(
+        not hasattr(os, "link"),
+        reason="platform lacks os.link (e.g. Termux/Android); CA-sibling pairs cannot exist",
+    )
+    def test_flag_with_positive_max_age_reclaims_in_the_same_sweep(self, tmp_path, capsys):
+        """Filter-before-bucketing: the SAME run that unlinks the sibling must
+        report ``basenames_found`` without the phantom bucket."""
+        pool, (_real, sibling) = self._exedir_with_pair(tmp_path)
+
+        rc = self._run(pool, "--cas-exedir-only", "--purge-ca-siblings", "--max-age=7", "--json")
+        out = capsys.readouterr().out
+
+        assert rc == 0
+        stats = json.loads(out)["exedir"]
+        assert stats["ca_siblings_removed"] == 1
+        assert stats["total_scanned"] == 1
+        assert stats["basenames_found"] == 1
+        assert not os.path.exists(sibling)
+
+    @pytest.mark.parametrize("age_argv", [[], ["--max-age=0"], ["--max-age=-1"]])
+    def test_hard_error_without_a_positive_max_age(self, tmp_path, capsys, age_argv):
+        pool, (real, sibling) = self._exedir_with_pair(tmp_path)
+        before = _all_files_under(pool)
+
+        rc = self._run(pool, "--cas-exedir-only", "--purge-ca-siblings", *age_argv)
+        err = capsys.readouterr().err
+
+        assert rc == 1
+        assert "max-age" in err.lower()
+        assert _all_files_under(pool) == before
+        assert os.path.exists(sibling) and os.path.exists(real)
+
+    def test_rejected_when_the_exe_pool_is_deselected(self, tmp_path, capsys):
+        """``--cas-objdir-only`` leaves no exe sweep for the modifier to modify;
+        rejecting beats silently doing nothing."""
+        pool, _pair = self._exedir_with_pair(tmp_path)
+
+        rc = self._run(pool, "--cas-objdir-only", "--purge-ca-siblings", "--max-age=7")
+        err = capsys.readouterr().err
+
+        assert rc == 1
+        assert "cas-exedir" in err
+
+    def test_rejected_alongside_a_standalone_pool_mode(self, tmp_path, capsys):
+        """The pool modes return before the sweep, so the modifier would never
+        run."""
+        pool, _pair = self._exedir_with_pair(tmp_path)
+
+        rc = self._run(pool, "--list-unresolvable", "--purge-ca-siblings", "--max-age=7")
+        err = capsys.readouterr().err
+
+        assert rc == 1
+        assert "purge-ca-siblings" in err
 
 
 # ── --purge-unresolvable: DESTRUCTIVE orphan reclamation ───────────────────
