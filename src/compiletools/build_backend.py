@@ -2131,7 +2131,8 @@ class BuildBackend(abc.ABC):
             if not rule.inputs:
                 continue
             try:
-                # Uncached: a peer publish may have moved this since the scan.
+                # NOT cached: this pass and any peer publish both move the
+                # mtime being read, and rule inputs can be workspace-relative.
                 if os.path.getmtime(rule.inputs[0]) > cutoff:
                     continue
             except OSError:
