@@ -212,6 +212,10 @@ _HASH_IRRELEVANT_EXACT: frozenset[str] = frozenset(
 # Exceptions to the -W* drop rule:
 # - -Werror / -Werror=<warning> promote warnings to errors, which CAN
 #   affect the build outcome (compile fails vs succeeds).
+# - -Wno-error / -Wno-error=<warning> undo that promotion, so they
+#   change build outcome the same way; dropping them aliases
+#   "-Werror -Wno-error=X" onto bare "-Werror" and a shared cas-objdir
+#   hit skips a compile that should have failed.
 # - -Wa,<flags> reaches the assembler and -Wp,<flags> reaches the
 #   preprocessor (-Wp,-DFOO genuinely defines FOO); both change object
 #   bytes, so dropping them would alias distinct compiles onto one CAS
@@ -221,6 +225,7 @@ _HASH_IRRELEVANT_EXACT: frozenset[str] = frozenset(
 _HASH_RELEVANT_W_FLAGS: tuple[str, ...] = (
     "-Werror",
     "-Werror=",
+    "-Wno-error",
     "-Wa,",
     "-Wp,",
 )
@@ -231,9 +236,10 @@ def filter_hash_irrelevant_tokens(tokens: Sequence[str]) -> list[str]:
 
     Used by cache-key hashing to elide diagnostic-only flag changes.
     Accepts either a list or tuple. ``-W*`` warnings are dropped
-    EXCEPT ``-Werror`` / ``-Werror=...`` (can change compile outcome)
-    and ``-Wa,...`` / ``-Wp,...`` (assembler/preprocessor pass-throughs
-    that change object bytes). Returns a NEW list; input is not mutated.
+    EXCEPT ``-Werror`` / ``-Werror=...`` / ``-Wno-error`` /
+    ``-Wno-error=...`` (can change compile outcome) and ``-Wa,...`` /
+    ``-Wp,...`` (assembler/preprocessor pass-throughs that change
+    object bytes). Returns a NEW list; input is not mutated.
     """
     out = []
     i = 0

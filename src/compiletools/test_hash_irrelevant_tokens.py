@@ -6,7 +6,8 @@ contribute to cache-key hashing. Toggling ``-Wall`` <-> ``-Wextra`` or
 ``-fdiagnostics-color=...`` must not invalidate per-TU object or PCH
 cache entries.
 
-The exceptions are ``-Werror`` (and ``-Werror=<warning>``), which can
+The exceptions are ``-Werror`` / ``-Werror=<warning>`` and their
+undoing forms ``-Wno-error`` / ``-Wno-error=<warning>``, which can
 change the build outcome, and the ``-Wa,``/``-Wp,`` pass-throughs,
 which reach the assembler/preprocessor and change object bytes; all
 must remain hash-relevant.
@@ -26,6 +27,16 @@ from compiletools.apptools import filter_hash_irrelevant_tokens
             ["-Werror=unused-variable", "-O2"],
             ["-Werror=unused-variable", "-O2"],
             id="keep-werror-value",
+        ),
+        pytest.param(
+            ["-Werror", "-Wno-error", "-O2"],
+            ["-Werror", "-Wno-error", "-O2"],
+            id="keep-wno-error",
+        ),
+        pytest.param(
+            ["-Werror", "-Wno-error=deprecated-declarations", "-O2"],
+            ["-Werror", "-Wno-error=deprecated-declarations", "-O2"],
+            id="keep-wno-error-value",
         ),
         pytest.param(
             ["-Wa,--noexecstack", "-Wall", "-O2"],
