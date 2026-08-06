@@ -241,6 +241,29 @@ class TestPkgConfigGathering:
             second = gather_inputs(args, context)
             assert first.pkg_config_results == second.pkg_config_results
 
+    def test_arming_strict_mode_reprobes_a_memoized_warn_result(self, monkeypatch):
+        """The per-context memo must not outlive the policy it was filled
+        under. ``set_pkg_config_errors`` clears the module-level memos in
+        ``apptools_pkgconfig``, but it cannot reach this one, so a warn-mode
+        empty result served after strict mode is armed bypasses enforcement
+        entirely.
+        """
+        calls = []
+        monkeypatch.setattr(
+            compiletools.apptools_pkgconfig,
+            "_batch_pkg_config",
+            self._fake_batch({"foo": "-I/opt/x/include"}, {}, calls),
+        )
+        with uth.TempDirContext():
+            args = _minimal_args(pkg_config=["foo"])
+            context = BuildContext()
+            gather_inputs(args, context)
+            assert len(calls) == 1
+
+            compiletools.apptools_pkgconfig.set_pkg_config_errors("error")
+            gather_inputs(args, context)
+            assert len(calls) == 2
+
     def test_prepend_and_append_pkg_config_merge_in_declaration_order(self, monkeypatch):
         calls = []
         monkeypatch.setattr(

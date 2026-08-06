@@ -20,6 +20,7 @@ import stringzilla as sz
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from compiletools.build_inputs import PkgConfigResult
     from compiletools.build_timer import BuildTimer
     from compiletools.file_analyzer import FileAnalysisResult
     from compiletools.preprocessing_cache import MacroCacheKey, MacroDict, ProcessingResult
@@ -81,6 +82,10 @@ class BuildContext:
         self.repo_has_symlinks: bool | None = None
 
         # -- apptools pkg-config state --
+        # Keyed (package_spec, pkg_config_path, errors_policy) by
+        # build_inputs._query_pkg_config; the policy is in the key because a
+        # warn-mode result must not be served once strict mode is armed.
+        self.pkg_config_query_cache: dict[tuple[str, str | None, str], PkgConfigResult] = {}
         self.pkg_config_overrides_applied: bool = False
         # Sentinel: True means PKG_CONFIG_PATH was unset before override.
         # str means we saved that prior value. None means no override active.
