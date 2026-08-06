@@ -432,9 +432,15 @@ class TestStrictPkgConfigIsFatalDuringExpansion:
     def test_getsources_terminates_instead_of_warning(
         self, capsys, tmp_path, hunter_factory, strict_pkg_config, verbosity
     ):
-        """The whole point of the finding: at ``-vv`` the strict branch used
-        to raise ``PkgConfigError``, which ``huntsource`` caught and turned
-        into a warning, so ``getsources()`` returned normally."""
+        """The end-to-end invariant: strict mode stops the build at every
+        verbosity, from the consumer a user actually calls.
+
+        Redundantly protected, deliberately. Restoring the magicflags
+        verbosity fork alone leaves this cell green, because the hunter
+        carve-out below then catches the ``PkgConfigError`` and terminates
+        anyway. The fork itself is pinned by
+        ``test_magicflags.py::test_pkg_config_error_mode_is_equally_fatal_at_high_verbosity``
+        — do not delete that cell as duplicate coverage of this one."""
         source = self._source_with_missing_package(tmp_path, f"getsources_v{verbosity}")
         argv_extra = ["--magic", "direct", "--pkg-config-errors=error"] + ["-v"] * verbosity
         hntr, args = hunter_factory(argv_extra=argv_extra)

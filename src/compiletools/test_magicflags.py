@@ -391,7 +391,11 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         """Verbosity must not invert an enforcement policy. The strict branch
         used to re-raise ``PkgConfigError`` at ``-vv``; that is a
         ``RuntimeError`` subclass, so Hunter's broad expansion handler caught
-        it and downgraded the whole policy to a warning."""
+        it and downgraded the whole policy to a warning.
+
+        This is the only cell that pins the verbosity fork. The end-to-end
+        hunter cells stay green with the fork restored, because the hunter
+        carve-out catches the ``PkgConfigError`` and terminates anyway."""
         files = uth.write_sources(
             {"strict_magic_pkg_config.cpp": "//#PKG-CONFIG=compiletools-definitely-missing-pkg\nint main() {}\n"}
         )

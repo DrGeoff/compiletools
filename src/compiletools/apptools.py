@@ -1006,8 +1006,11 @@ def clear_cache():
     (``_get_functional_cxx_compiler_cached``, ``compiler_identity``,
     ``compiler_kind``, ``compiler_default_cxx_std``,
     ``find_system_std_module_source``) and from ``apptools_pkgconfig``
-    (``cached_pkg_config``). Net effect is identical to the previous
-    monolithic implementation.
+    (``cached_pkg_config``, ``_cached_pkg_config_exists``).
+
+    Clears memos only. The ``--pkg-config-errors`` policy is an enforcement
+    setting, not a cache, and survives — see
+    :func:`compiletools.apptools_pkgconfig.clear_cache`.
     """
     compiletools.apptools_pkgconfig.clear_cache()
     compiletools.apptools_compiler.clear_cache()
