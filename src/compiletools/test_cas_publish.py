@@ -583,23 +583,63 @@ class TestCasEntryFreshening:
         assert user.read_bytes() == cas.read_bytes()
 
 
+def _patch_filelock_raising(monkeypatch, err, message):
+    """Make every ``FileLock`` acquisition fail with ``OSError(err, message)``."""
+
+    class FailingFileLock:
+        def __init__(self, target_file, args):
+            pass
+
+        def __enter__(self):
+            raise OSError(err, message)
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            return False
+
+    monkeypatch.setattr(compiletools.locking, "FileLock", FailingFileLock)
+
+
+# Every errno an unlocked publish is allowed to proceed through, and why it is
+# reachable. The pool-wide half (EROFS/ENOTSUP/ENOSYS) and the uid- or
+# host-specific half (EACCES/EPERM/ENOLCK) differ in whether a peer could still
+# take the lock, not in what this process can do about it.
+_LOCK_ERRNOS_THAT_PROCEED = [
+    (errno.EACCES, "Permission denied"),
+    (errno.EPERM, "Operation not permitted"),
+    (errno.EROFS, "Read-only file system"),
+    (errno.ENOTSUP, "Operation not supported"),
+    (errno.ENOLCK, "No locks available"),
+    (errno.ENOSYS, "Function not implemented"),
+]
+
+# Errnos that say something is wrong with the pool rather than with locking on
+# it. Hiding one behind a silently unlocked publish would lose the diagnostic.
+_LOCK_ERRNOS_THAT_PROPAGATE = [
+    (errno.EIO, "Input/output error"),
+    (errno.ENOSPC, "No space left on device"),
+]
+
+
+def _errno_ids(table):
+    """Readable parametrize ids: the errno name rather than its number."""
+    return [errno.errorcode[err] for err, _message in table]
+
+
 class TestLockUnavailableFallback:
-    def test_publish_proceeds_and_warns_when_the_entry_lock_is_unavailable(self, cas, user, monkeypatch, capsys):
+    @pytest.mark.parametrize("err,message", _LOCK_ERRNOS_THAT_PROCEED, ids=_errno_ids(_LOCK_ERRNOS_THAT_PROCEED))
+    def test_publish_proceeds_and_warns_when_the_entry_lock_is_unavailable(
+        self, cas, user, monkeypatch, capsys, err, message
+    ):
         """An entry lock that cannot be acquired must not break every publish.
         The lock is race protection, not a precondition: warn and carry on.
+
+        ENOLCK (no lock manager / lock table exhausted) and ENOSYS (the
+        filesystem implements no lock primitive) reach this the same way
+        ENOTSUP does — ``get_lock_strategy`` routes an unrecognised or FUSE
+        filesystem to ``flock`` — and have the same outcome, so they get the
+        same treatment.
         """
-
-        class UnlockableFileLock:
-            def __init__(self, target_file, args):
-                pass
-
-            def __enter__(self):
-                raise OSError(errno.EROFS, "Read-only file system")
-
-            def __exit__(self, exc_type, exc_val, exc_tb):
-                return False
-
-        monkeypatch.setattr(compiletools.locking, "FileLock", UnlockableFileLock)
+        _patch_filelock_raising(monkeypatch, err, message)
         publish(str(cas), str(user))
 
         assert user.read_bytes() == cas.read_bytes()
@@ -609,25 +649,15 @@ class TestLockUnavailableFallback:
             f"attribute a cause the errno does not establish: {warning!r}"
         )
 
-    def test_a_transient_lock_error_is_not_swallowed(self, cas, user, monkeypatch):
-        """Only the four errnos an unlocked publish is allowed to proceed
-        through fall back. An EIO would otherwise be hidden behind a silently
-        unlocked publish.
+    @pytest.mark.parametrize("err,message", _LOCK_ERRNOS_THAT_PROPAGATE, ids=_errno_ids(_LOCK_ERRNOS_THAT_PROPAGATE))
+    def test_a_transient_lock_error_is_not_swallowed(self, cas, user, monkeypatch, err, message):
+        """Only the errnos an unlocked publish is allowed to proceed through
+        fall back. An EIO would otherwise be hidden behind a silently unlocked
+        publish.
         """
-
-        class FailingFileLock:
-            def __init__(self, target_file, args):
-                pass
-
-            def __enter__(self):
-                raise OSError(errno.EIO, "Input/output error")
-
-            def __exit__(self, exc_type, exc_val, exc_tb):
-                return False
-
-        monkeypatch.setattr(compiletools.locking, "FileLock", FailingFileLock)
+        _patch_filelock_raising(monkeypatch, err, message)
         with pytest.raises(OSError) as excinfo:
             publish(str(cas), str(user))
 
-        assert excinfo.value.errno == errno.EIO
+        assert excinfo.value.errno == err
         assert not user.exists()

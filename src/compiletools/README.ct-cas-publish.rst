@@ -121,24 +121,33 @@ ATOMICITY CONTRACT
 5. Inode swap under a process holding ``user_path`` open is harmless
    on POSIX — the open file descriptor pins the old inode.
 
-Four lock-acquisition errnos (``EACCES``, ``EPERM``, ``EROFS``,
-``ENOTSUP``) let the helper warn and publish unlocked. They are
+Six lock-acquisition errnos (``EACCES``, ``EPERM``, ``EROFS``,
+``ENOTSUP``, ``ENOLCK``, ``ENOSYS``) let the helper warn and publish
+unlocked. They are
 classified by outcome, not by cause: each can come from the sidecar
 ``open`` or from the ``lockf`` / ``flock`` that follows it, so none of
 them implies anything about the cas directory's mode. Proceeding is
 safe against any trim that hits the same failure: ``ct-trim-cache``
 refuses to delete an entry whose lock it cannot take, so nothing
-evicts what nothing can lock. ``EROFS`` and ``ENOTSUP`` are properties
+evicts what nothing can lock. ``EROFS``, ``ENOTSUP`` and ``ENOSYS``
+are properties
 of the pool and hold for every peer — ``ENOTSUP`` out of ``lockf`` on
 a perfectly writable directory is the case that shows the guarantee
-rests on trim's refusal rather than on directory permissions.
-``EACCES`` and ``EPERM`` can instead be specific to this uid: on a
-shared pool another user can lock, that user's trim can still evict
+rests on trim's refusal rather than on directory permissions, and
+``ENOSYS`` is the same statement from a filesystem implementing no
+lock primitive at all (reachable because unrecognised and FUSE
+filesystems route to ``flock``).
+``EACCES``, ``EPERM`` and ``ENOLCK`` can instead be specific to this
+uid or this host — ``ENOLCK`` means the lock manager is unreachable or
+a lock table is full, which a peer may not be seeing. On a
+shared pool another user can lock, and that user's trim can still evict
 mid-publish. A hardlinked
 ``user_path`` survives it — ``nlink`` pins the inode, so only the
 cache name is lost — but a publish that fell back to ``symlink()``
 under ``EXDEV`` can be left dangling. Any other lock error propagates
-rather than being hidden behind a silently unlocked publish.
+rather than being hidden behind a silently unlocked publish;
+``EINVAL`` is excluded on purpose, since it cannot be told apart from
+a malformed lock request.
 
 EXIT CODES
 ==========

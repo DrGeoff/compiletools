@@ -73,16 +73,24 @@ EXIT_CONCURRENT_TRIM = 3
 # anything about the cas directory's mode.
 # Proceeding is safe against any trim that hits the same failure, because
 # `_safe_locked_unlink` refuses to delete when `FileLock` raises — nothing
-# evicts from an entry nothing can lock. EROFS and ENOTSUP are properties of
-# the pool and hold for every peer (ENOTSUP out of `lockf` on a perfectly
-# writable directory is the case that shows the guarantee rests on trim's
-# refusal). EACCES and EPERM can instead be specific to this uid, and a user
-# who CAN take the lock is free to trim mid-publish: a hardlinked user_path
-# survives on the pinned inode and only the cache name is lost, but the EXDEV
-# symlink fallback can be left dangling.
+# evicts from an entry nothing can lock. EROFS, ENOTSUP and ENOSYS are
+# properties of the pool and hold for every peer (ENOTSUP out of `lockf` on a
+# perfectly writable directory is the case that shows the guarantee rests on
+# trim's refusal; ENOSYS is the same statement from a filesystem that
+# implements no lock primitive at all, which `get_lock_strategy` reaches by
+# routing an unrecognised or FUSE filesystem to `flock`). EACCES, EPERM and
+# ENOLCK can instead be specific to this uid or this host — ENOLCK is the lock
+# manager being unreachable or a lock table being full, both of which a peer
+# may not be seeing — and a user who CAN take the lock is free to trim
+# mid-publish: a hardlinked user_path survives on the pinned inode and only the
+# cache name is lost, but the EXDEV symlink fallback can be left dangling.
 # Every other errno propagates — swallowing a transient EIO or ENOSPC into an
-# unlocked publish would hide real trouble.
-_UNLOCKED_PUBLISH_ERRNOS = frozenset({errno.EACCES, errno.EPERM, errno.EROFS, errno.ENOTSUP})
+# unlocked publish would hide real trouble. EINVAL is deliberately absent: it
+# is both "this filesystem cannot lock" and "these lock arguments are wrong",
+# so it stays a hard failure rather than a silent degradation.
+_UNLOCKED_PUBLISH_ERRNOS = frozenset(
+    {errno.EACCES, errno.EPERM, errno.EROFS, errno.ENOTSUP, errno.ENOLCK, errno.ENOSYS}
+)
 
 
 class ConcurrentTrimError(Exception):
