@@ -358,3 +358,49 @@ def test_fully_spaced_constraint_is_the_form_that_reaches_a_probe(monkeypatch):
         f"the constraint was not queried as one intact spec: {probed!r}"
     )
     assert "-DZLIB_OK" in args.CPPFLAGS
+
+
+def _exists_ok_query_fails(cmd, **_kwargs):
+    """``--exists`` succeeds, the flag query fails. A .pc with an
+    unresolvable ``Requires.private`` behaves exactly this way."""
+    if "--exists" in cmd:
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+    return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="Package 'ghost' not found")
+
+
+def test_failed_query_after_a_passing_exists_warns(monkeypatch):
+    """An empty flag string must not be the only trace of a failed query.
+
+    Without the returncode check, a package whose ``--cflags`` fails is
+    indistinguishable from one that legitimately contributes no flags, and
+    the build compiles without the include paths it asked for.
+    """
+    monkeypatch.setattr(pkgconfig.subprocess, "run", _exists_ok_query_fails)
+
+    with pytest.warns(UserWarning, match=r"pkg-config --cflags 'broken' failed"):
+        assert pkgconfig.cached_pkg_config("broken", "--cflags") == ""
+
+
+def test_failed_query_is_fatal_in_error_mode(monkeypatch):
+    monkeypatch.setattr(pkgconfig.subprocess, "run", _exists_ok_query_fails)
+    pkgconfig.set_pkg_config_errors("error")
+
+    with pytest.raises(pkgconfig.PkgConfigError, match=r"pkg-config --libs 'broken' failed"):
+        pkgconfig.cached_pkg_config("broken", "--libs")
+
+
+def test_failed_query_on_the_batch_fast_path_is_fatal_in_error_mode(monkeypatch):
+    """The batch fast path skips the per-package ``--exists``, so it owns
+    its own returncode check rather than inheriting one."""
+    monkeypatch.setattr(pkgconfig.subprocess, "run", _exists_ok_query_fails)
+    pkgconfig.set_pkg_config_errors("error")
+
+    with pytest.raises(pkgconfig.PkgConfigError, match=r"pkg-config --cflags 'broken' failed"):
+        pkgconfig._batch_pkg_config(["broken"], "--cflags")
+
+
+def test_failed_query_diagnostic_carries_the_pkg_config_stderr(monkeypatch):
+    monkeypatch.setattr(pkgconfig.subprocess, "run", _exists_ok_query_fails)
+
+    with pytest.warns(UserWarning, match=r"Package 'ghost' not found"):
+        pkgconfig.cached_pkg_config("broken", "--cflags")
