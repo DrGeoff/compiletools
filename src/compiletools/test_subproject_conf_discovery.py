@@ -1309,6 +1309,112 @@ class TestParseargsTargetAnchoring:
         assert "-DAPPBETA_EXTRA" in message and "-DAPPGAMMA_DIFFERENT" in message
 
 
+class TestStandardTierCaseMismatchNotes:
+    """The notifier must cover the STANDARD conf tiers, not just the
+    newly-anchored target layers.
+
+    Its only call site was inside the target-layer fixpoint, so a key that
+    misses a registered spelling only by case went unreported in every conf
+    the ordinary hierarchy loads -- bundled, system, venv, user, project,
+    cwd. ``append-auto-exclude`` in a project ct.conf is the sharp case:
+    configargparse ignores unknown keys, so the exclusions are silently
+    dropped and the build discovers targets the user meant to exclude.
+    """
+
+    def test_lowercase_key_in_the_gitroot_conf_d_gets_did_you_mean_note(self, monorepo, capsys):
+        (monorepo / "ct.conf.d" / "ct.conf").write_text("append-auto-exclude = vendor\n")
+        args = _parse_cake_args(monorepo, [*_ARGV_BASE, "-v", os.path.join("appbeta", "main.cpp")])
+        assert "vendor" not in (args.auto_exclude or [])  # still dropped -- the note is diagnostic only
+        err = capsys.readouterr().err
+        assert "append-auto-exclude" in err
+        assert "append-AUTO-EXCLUDE" in err
+        assert str(monorepo / "ct.conf.d" / "ct.conf") in err
+
+    def test_lowercase_key_in_the_gitroot_ct_conf_gets_did_you_mean_note(self, monorepo, capsys):
+        (monorepo / "ct.conf").write_text(
+            f"variant = {_VARIANT}\n"
+            f"variant-canonical-order = {_VARIANT}\n"
+            "exemarkers = [main]\n"
+            "append-cppflags = -DSHOULD_BE_UPPERCASE\n"
+        )
+        args = _parse_cake_args(monorepo, [*_ARGV_BASE, "-v", os.path.join("appbeta", "main.cpp")])
+        assert "-DSHOULD_BE_UPPERCASE" not in get_build_state(args).cppflags
+        err = capsys.readouterr().err
+        assert "append-cppflags" in err
+        assert "append-CPPFLAGS" in err
+        assert str(monorepo / "ct.conf") in err
+
+    def test_correctly_cased_standard_tiers_emit_no_note(self, monorepo, capsys):
+        """The bundled and project confs a plain run already loads must stay
+        silent, or the note is noise on every -v invocation."""
+        (monorepo / "ct.conf.d" / "ct.conf").write_text("append-AUTO-EXCLUDE = vendor\n")
+        args = _parse_cake_args(monorepo, [*_ARGV_BASE, "-v", os.path.join("appbeta", "main.cpp")])
+        assert "vendor" in args.auto_exclude
+        assert "did you mean" not in capsys.readouterr().err
+
+    def test_the_note_is_silent_below_verbose_one(self, monorepo, capsys):
+        (monorepo / "ct.conf.d" / "ct.conf").write_text("append-auto-exclude = vendor\n")
+        _parse_cake_args(monorepo, [*_ARGV_BASE, os.path.join("appbeta", "main.cpp")])
+        assert "did you mean" not in capsys.readouterr().err
+
+    def test_a_reparse_on_the_same_parser_does_not_repeat_the_note(self, monorepo, capsys):
+        """``parseargs`` is re-entered on the SAME parser by the --auto
+        re-anchor driver and by ``resubstitute``. Without per-parser dedup
+        the standard tiers are re-scanned every round and the user gets the
+        same note once per round."""
+        (monorepo / "ct.conf.d" / "ct.conf").write_text("append-auto-exclude = vendor\n")
+        argv = [*_ARGV_BASE, "-v", os.path.join("appbeta", "main.cpp")]
+        uth.reset()
+        with uth.DirectoryContext(str(monorepo)):
+            with uth.ParserContext():
+                cap = compiletools.apptools.create_parser("repeat note test", argv=argv)
+                compiletools.cake.Cake.add_arguments(cap)
+                context = BuildContext()
+                compiletools.apptools.parseargs(cap, argv, context=context)
+                context.restore_pkg_config_path()
+                compiletools.apptools.parseargs(cap, argv, context=context)
+        assert capsys.readouterr().err.count("append-auto-exclude") == 1
+
+    def test_no_bundled_conf_key_is_itself_case_mismatched(self, tmp_path):
+        """Lint, not a scenario: extending the notifier to the standard tiers
+        made the BUNDLED confs subject to it, and it immediately caught
+        ``max_file_read_size`` (registered as ``max-file-read-size``, so the
+        line was inert). Every ct-* run now loads these files, so a
+        reintroduction would print a note to every user at -v as well as
+        silently dropping the setting."""
+        uth.reset()
+        with uth.DirectoryContext(str(_make_repo(tmp_path))):
+            with uth.ParserContext():
+                cap = compiletools.apptools.create_parser("bundled conf key lint", argv=[])
+                compiletools.cake.Cake.add_arguments(cap)
+                registered = {}
+                for action in cap._actions:
+                    for key in cap.get_possible_config_keys(action):
+                        if not key.startswith("-"):
+                            registered.setdefault(key.lower().replace("_", "-"), key)
+        bundled = os.path.join(os.path.dirname(compiletools.configutils.__file__), "ct.conf.d")
+        conf_names = sorted(n for n in os.listdir(bundled) if n.endswith(".conf"))
+        assert conf_names, f"no bundled confs found under {bundled}"
+        mismatched = [
+            (name, key, registered[key.lower().replace("_", "-")])
+            for name in conf_names
+            for key in compiletools.configutils._parse_conf_file_cached(os.path.join(bundled, name))
+            if registered.get(key.lower().replace("_", "-"), key) != key
+        ]
+        assert not mismatched, f"bundled conf keys that only miss a registered key by case: {mismatched}"
+
+    def test_a_second_distinct_lowercase_key_still_gets_its_own_note(self, monorepo, capsys):
+        """Dedup keys on (file, key), not file: two miscased keys in one conf
+        are two separate silent drops and each needs naming."""
+        (monorepo / "ct.conf.d" / "ct.conf").write_text(
+            "append-auto-exclude = vendor\nappend-cppflags = -DSHOULD_BE_UPPERCASE\n"
+        )
+        _parse_cake_args(monorepo, [*_ARGV_BASE, "-v", os.path.join("appbeta", "main.cpp")])
+        err = capsys.readouterr().err
+        assert "append-auto-exclude" in err
+        assert "append-cppflags" in err
+
+
 class TestAutoDiscoveryReanchor:
     def test_reanchor_helper_loads_discovered_targets_conf(self, monorepo):
         """Simulates the cake --auto flow: parse with no targets, then

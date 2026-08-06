@@ -104,6 +104,12 @@ OPTIONS
                     One naming an ANCESTOR is read as the gitroot-anchored
                     form it looks like, so ``/tmp`` excludes the project's
                     own ``tmp`` directory, never the whole checkout.
+                    Redundant path syntax is normalised away first, so
+                    ``vendor/`` is gitignore's spelling of ``vendor`` and
+                    ``./vendor`` and ``src//vendor`` mean what their plain
+                    forms mean; a leading ``/`` survives normalisation, so
+                    ``/vendor/`` still anchors at the gitroot, as does any
+                    number of leading slashes.
                     Explicitly named targets are never filtered. In a ct.conf
                     the bare ``auto-exclude`` key is last-writer-wins between
                     conf files; use ``append-AUTO-EXCLUDE`` (uppercase) to

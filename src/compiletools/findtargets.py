@@ -53,7 +53,9 @@ def add_discovery_arguments(cap):
         help="Glob excluding files from --auto discovery. A pattern with a path separator "
         "matches the gitroot-relative path (a leading / anchors there); a directory name "
         "excludes its whole subtree. A pattern without a separator matches any single "
-        "component of the gitroot-relative path, whole. Neither reaches above the gitroot; "
+        "component of the gitroot-relative path, whole. Redundant path syntax is normalised "
+        "away first, so vendor/ means vendor, ./vendor and src//vendor mean what their "
+        "plain forms mean, and //vendor anchors like /vendor. Neither reaches above the gitroot; "
         "an absolute pattern matches the absolute path only when it reaches into the tree, so "
         "/tmp excludes the project's own tmp directory, never a checkout that sits under /tmp. "
         "Explicitly named targets are never "
@@ -156,6 +158,16 @@ def is_auto_excluded(filepath, patterns, anchor_root=""):
     like: at a checkout under ``/tmp``, ``/tmp/*`` excludes the project's
     own ``tmp`` directory and nothing else, which is what the user meant.
 
+    Redundant path syntax is normalised away first, so which branch a
+    pattern takes is decided by what it means rather than by how it was
+    spelled: ``vendor/`` is the gitignore spelling of ``vendor`` and keeps
+    the any-depth component reading, and ``./vendor`` / ``src//vendor`` /
+    ``src/./vendor`` mean what their plain forms mean instead of matching
+    nothing. A leading ``/`` survives normalisation, so the anchored
+    spelling stays anchored, and any number of leading slashes reads as
+    that one anchored spelling -- globs included, so ``//*`` excludes
+    everything exactly as the ``/*`` it is a spelling of already did.
+
     A pattern without a separator is fnmatched against each component of
     the *anchor_root*-relative path -- so ``vendor`` excludes every file
     under any ``vendor`` directory (never ``vendorlib``: components match
@@ -180,6 +192,28 @@ def is_auto_excluded(filepath, patterns, anchor_root=""):
             relative = absolute[len(prefix) :]
     components = (relative or compiletools.wrappedos.basename(absolute)).split(os.sep)
     for pattern in patterns:
+        if os.sep in pattern:
+            # Normalise before deciding which branch the pattern takes, so
+            # redundant syntax cannot change its meaning: "vendor/" is the
+            # gitignore spelling of "vendor" and must keep the any-depth
+            # component reading rather than being anchored at the gitroot,
+            # and "./vendor" / "src//vendor" must not land in the anchored
+            # branch, whose candidates can never match them. The separator
+            # test is re-run because normalising can remove the separator
+            # that sent the pattern here.
+            pattern = compiletools.wrappedos.normpath(pattern)
+            # normpath keeps EXACTLY two leading separators (POSIX leaves
+            # "//path" implementation-defined) and collapses three or more, so
+            # a doubled leading separator is the one redundant spelling it
+            # hands back unchanged. Left alone, "//vendor" would reach the
+            # anchored branch, whose candidates start with a single separator,
+            # and match nothing. Literal "//" rather than os.sep * 2, unlike
+            # every other separator test here: on NT a doubled separator is a
+            # UNC prefix that must survive, and normpath has already rewritten
+            # separators to backslashes there, so the literal is inert off
+            # POSIX where the os.sep form would corrupt \\server\share.
+            if pattern.startswith("//"):
+                pattern = pattern[1:]
         if os.sep in pattern:
             if relative is None:
                 candidates = [absolute]

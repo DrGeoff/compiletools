@@ -626,6 +626,26 @@ def _apply_target_conf_layers(cap, argv, args, verbose, auto=False, reparse=True
     )
 
 
+def _standard_conf_paths(cap, args):
+    """The conf files the ordinary hierarchy loaded.
+
+    The tier list ``create_parser`` computed (bundled < system < venv <
+    user < project < cwd) plus an explicit ``-c/--config``, which
+    configargparse reads in ADDITION to the tiers. Target-anchored layers
+    are absent on the first pass only: ``_apply_target_conf_layers``
+    appends each layer it anchors to this same list, so a re-entrant
+    ``parseargs`` gets them back here as well. The notifier's
+    ``(file, key)`` memo is what keeps that overlap harmless.
+    """
+    paths = list(getattr(cap, "_default_config_files", None) or [])
+    for action in cap._actions:
+        if getattr(action, "is_config_file_arg", False):
+            value = getattr(args, action.dest, None)
+            if value:
+                paths.append(value)
+    return paths
+
+
 def _note_case_mismatched_conf_keys(cap, conf_paths, verbose):
     """At ``verbose >= 1``, note conf keys that miss a registered key only by
     case (or dash/underscore spelling).
@@ -635,6 +655,17 @@ def _note_case_mismatched_conf_keys(cap, conf_paths, verbose):
     dropped where ``append-CPPFLAGS`` would apply -- a no-op invisible at the
     point of damage. Genuinely unknown keys stay silent (they may belong to
     another ct-* tool sharing the conf file); only near-misses are noted.
+
+    Two call sites cover the two conf sources: ``parseargs`` passes the
+    standard tiers, ``_apply_target_conf_layers`` passes each freshly
+    anchored target layer. ``parseargs`` is re-entered on the same parser by
+    the ``--auto`` re-anchor driver and by ``resubstitute``, which would
+    re-scan the tiers -- and, from the second pass on, the target layers
+    too, since those join the standard list once anchored -- and repeat
+    every note, so already-noted pairs are remembered on the parser. The
+    memo keys on ``(file, key)`` rather than
+    the file: two miscased keys in one conf are two separate silent drops
+    and each needs naming.
     """
     if verbose < 1:
         return
@@ -647,6 +678,9 @@ def _note_case_mismatched_conf_keys(cap, conf_paths, verbose):
         for key in cap.get_possible_config_keys(action):
             if not key.startswith("-"):
                 registered.setdefault(_fold(key), key)
+    if not hasattr(cap, "_ct_case_mismatch_noted"):
+        cap._ct_case_mismatch_noted = set()
+    noted = cap._ct_case_mismatch_noted
     for path in conf_paths:
         try:
             items = compiletools.configutils._parse_conf_file_cached(path)
@@ -654,12 +688,14 @@ def _note_case_mismatched_conf_keys(cap, conf_paths, verbose):
             continue
         for key in items:
             canonical = registered.get(_fold(key))
-            if canonical is not None and canonical != key:
-                print(
-                    f"ct: note: conf key {key!r} in {path} is not registered and was "
-                    f"ignored (conf keys are case-sensitive); did you mean {canonical!r}?",
-                    file=sys.stderr,
-                )
+            if canonical is None or canonical == key or (path, key) in noted:
+                continue
+            noted.add((path, key))
+            print(
+                f"ct: note: conf key {key!r} in {path} is not registered and was "
+                f"ignored (conf keys are case-sensitive); did you mean {canonical!r}?",
+                file=sys.stderr,
+            )
 
 
 def reanchor_config_for_discovered_targets(args):
@@ -1437,6 +1473,12 @@ def parseargs(cap, argv, verbose=None, *, context):
 
     if verbose is None:
         verbose = args.verbose
+
+    # Case-mismatched keys in the standard conf tiers. Runs here rather
+    # than in create_parser because only now has the tool registered every
+    # argument the keys could be near-missing. _apply_target_conf_layers
+    # makes the same call for the layers it anchors.
+    _note_case_mismatched_conf_keys(cap, _standard_conf_paths(cap, args), verbose)
 
     # Target-anchored config discovery: explicit targets outside the cwd
     # subproject pull in their nearest-ancestor ct.conf / ct.conf.d layer.

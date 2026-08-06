@@ -508,6 +508,172 @@ class TestAutoExcludeMatching:
         assert not compiletools.findtargets.is_auto_excluded(str(tmp_path / "main.cpp"), ())
 
 
+# The file grid the normalisation differential runs over. ``<ANCHOR>`` in a
+# pattern stands for the realpath of the anchor root, which only exists at
+# test time.
+_NORMALISATION_FILES = (
+    "main.cpp",
+    "vendor/main.cpp",
+    "src/vendor/main.cpp",
+    "src/vendor/deep/x.cpp",
+    "sub/src/vendor/x.cpp",
+    "vendorlib/main.cpp",
+    "src/legacy/old.cpp",
+    "src/legacy/deep/old.cpp",
+    "src/legacyish/old.cpp",
+    "src/current/new.cpp",
+    "a/b/test_x.cpp",
+    "legacy/old.cpp",
+)
+
+# Every cell that flips False -> True once the pattern is normalised, taken
+# from a differential of the pre-fix and post-fix matchers over the grid
+# above (33 flips, zero cells narrowing). The existing suite is blind to all
+# of them, so they are pinned here by hand. The last two rows are the
+# doubled-leading-separator spellings, which normalisation alone leaves
+# unchanged and which the explicit strip covers.
+_NEWLY_EXCLUDED_CELLS = tuple(
+    (pattern, relpath)
+    for pattern, relpaths in (
+        ("vendor/", ("src/vendor/main.cpp", "src/vendor/deep/x.cpp", "sub/src/vendor/x.cpp")),
+        ("vendor//", ("src/vendor/main.cpp", "src/vendor/deep/x.cpp", "sub/src/vendor/x.cpp")),
+        ("./vendor", ("vendor/main.cpp", "src/vendor/main.cpp", "src/vendor/deep/x.cpp", "sub/src/vendor/x.cpp")),
+        (".//vendor", ("vendor/main.cpp", "src/vendor/main.cpp", "src/vendor/deep/x.cpp", "sub/src/vendor/x.cpp")),
+        ("a/../vendor", ("vendor/main.cpp", "src/vendor/main.cpp", "src/vendor/deep/x.cpp", "sub/src/vendor/x.cpp")),
+        ("src//vendor", ("src/vendor/main.cpp", "src/vendor/deep/x.cpp")),
+        ("src/./vendor", ("src/vendor/main.cpp", "src/vendor/deep/x.cpp")),
+        ("./src/vendor", ("src/vendor/main.cpp", "src/vendor/deep/x.cpp")),
+        ("./src/legacy", ("src/legacy/old.cpp", "src/legacy/deep/old.cpp")),
+        ("src/legacy//*", ("src/legacy/old.cpp", "src/legacy/deep/old.cpp")),
+        ("./test_*.cpp", ("a/b/test_x.cpp",)),
+        ("<ANCHOR>//legacy/*", ("legacy/old.cpp",)),
+        ("//vendor", ("vendor/main.cpp",)),
+        ("//src/vendor", ("src/vendor/main.cpp", "src/vendor/deep/x.cpp")),
+    )
+    for relpath in relpaths
+)
+
+# A redundant spelling and the plain spelling it is a synonym for. The pair
+# must agree on every file in the grid -- which is the "nothing narrows"
+# half of the differential, and stops a future change from making both
+# spellings equally wrong.
+_EQUIVALENT_SPELLINGS = (
+    ("vendor/", "vendor"),
+    ("vendor//", "vendor"),
+    ("./vendor", "vendor"),
+    (".//vendor", "vendor"),
+    ("a/../vendor", "vendor"),
+    ("./test_*.cpp", "test_*.cpp"),
+    ("src/vendor/", "src/vendor"),
+    ("src//vendor", "src/vendor"),
+    ("src/./vendor", "src/vendor"),
+    ("./src/vendor", "src/vendor"),
+    ("./src/legacy", "src/legacy"),
+    ("src/legacy/", "src/legacy"),
+    ("src/legacy//*", "src/legacy/*"),
+    ("*/legacy/", "*/legacy"),
+    ("/vendor/", "/vendor"),
+    ("/src/vendor/", "/src/vendor"),
+    ("<ANCHOR>/legacy/", "<ANCHOR>/legacy"),
+    ("<ANCHOR>//legacy/*", "<ANCHOR>/legacy/*"),
+    ("//vendor", "/vendor"),
+    ("//src/vendor", "/src/vendor"),
+    # The largest single behaviour swing the doubled-separator strip makes:
+    # "//*" goes from matching nothing to excluding every file, agreeing with
+    # the "/*" it is a spelling of. Pinned so a reader who finds a whole tree
+    # excluded by two characters can see it is the intended reading.
+    ("//*", "/*"),
+)
+
+
+class TestAutoExcludePatternNormalisation:
+    """Redundant path syntax in a pattern must not change what it matches.
+
+    The subject path is realpath-normalised but the pattern was not, so how
+    a pattern was spelled decided which matching branch it took: ``vendor/``
+    was anchored at the gitroot instead of keeping gitignore's any-depth
+    reading, and ``./vendor`` / ``src//vendor`` landed in the anchored
+    branch, whose candidates can never match them, so they excluded nothing.
+    """
+
+    def _excluded(self, tmp_path, pattern, relpath):
+        anchor = os.path.realpath(str(tmp_path))
+        return compiletools.findtargets.is_auto_excluded(
+            os.path.join(str(tmp_path), relpath),
+            (pattern.replace("<ANCHOR>", anchor),),
+            anchor_root=str(tmp_path),
+        )
+
+    @pytest.mark.parametrize("pattern,relpath", _NEWLY_EXCLUDED_CELLS)
+    def test_redundant_syntax_no_longer_silently_matches_nothing(self, tmp_path, pattern, relpath):
+        assert self._excluded(tmp_path, pattern, relpath)
+
+    @pytest.mark.parametrize("redundant,plain", _EQUIVALENT_SPELLINGS)
+    def test_a_redundant_spelling_matches_exactly_what_its_plain_form_matches(self, tmp_path, redundant, plain):
+        redundant_matches = {f for f in _NORMALISATION_FILES if self._excluded(tmp_path, redundant, f)}
+        plain_matches = {f for f in _NORMALISATION_FILES if self._excluded(tmp_path, plain, f)}
+        assert redundant_matches == plain_matches
+        assert plain_matches, f"{plain!r} matches nothing in the grid, so the comparison is vacuous"
+
+    def test_normalisation_preserves_gitroot_anchoring(self, tmp_path):
+        """A leading ``/`` survives normalisation, so the anchored spelling
+        keeps meaning "at the gitroot only" -- normalisation widens the
+        redundant spellings without widening the anchored one."""
+        assert self._excluded(tmp_path, "/vendor/", "vendor/main.cpp")
+        assert not self._excluded(tmp_path, "/vendor/", "src/vendor/main.cpp")
+        assert not self._excluded(tmp_path, "/src/legacy/", "other/src/legacy/old.cpp")
+
+    def test_normalisation_preserves_whole_component_matching(self, tmp_path):
+        assert not self._excluded(tmp_path, "vendor/", "vendorlib/main.cpp")
+        assert not self._excluded(tmp_path, "./vendor", "vendorlib/main.cpp")
+        assert not self._excluded(tmp_path, "src/legacy/", "src/legacyish/old.cpp")
+        assert self._excluded(tmp_path, "//vendorlib", "vendorlib/main.cpp")
+        assert not self._excluded(tmp_path, "//vendor", "vendorlib/main.cpp")
+
+    def test_normalisation_does_not_reach_above_the_anchor(self, tmp_path):
+        """The ancestor-reach rule survives: a redundant spelling of an
+        ancestor component must still not exclude the whole checkout."""
+        anchor = os.path.realpath(str(tmp_path))
+        parent_leaf = os.path.basename(os.path.dirname(anchor))
+        assert not self._excluded(tmp_path, f"*/{parent_leaf}/", "src/main.cpp")
+        assert not self._excluded(tmp_path, f"./*/{parent_leaf}/*", "src/main.cpp")
+
+    def test_an_interior_dotdot_resolves_to_the_path_it_names(self, tmp_path):
+        """``a/../vendor`` becomes ``vendor``, which is a WIDENING, not a
+        syntax cleanup: gitignore would read it as a literal path matching
+        nothing, and here it moves from the anchored branch to the any-depth
+        component branch. The chosen semantics are "the pattern means the
+        path it names", because that is what the user wrote and the
+        alternative -- silently matching nothing -- is the whole defect class
+        this fix exists to close."""
+        assert self._excluded(tmp_path, "a/../vendor", "src/vendor/main.cpp")
+        assert self._excluded(tmp_path, "src/legacy/../legacy", "src/legacy/old.cpp")
+
+    def test_a_leading_dotdot_stays_anchored_and_matches_nothing(self, tmp_path):
+        """The asymmetry with the interior ``..`` is deliberate. Normalising
+        ``../vendor`` cannot remove its separator -- it names a path ABOVE
+        the anchor, and ``--auto`` never walks there -- so it keeps the
+        anchored reading and matches nothing, rather than collapsing into
+        ``vendor`` and becoming an accidental escape hatch out of the
+        no-reach-above-the-gitroot rule."""
+        assert not self._excluded(tmp_path, "../vendor", "vendor/main.cpp")
+        assert not self._excluded(tmp_path, "../vendor", "src/vendor/main.cpp")
+        assert not self._excluded(tmp_path, "../../vendor", "vendor/main.cpp")
+
+    def test_an_empty_pattern_still_excludes_nothing(self, tmp_path):
+        """``normpath("")`` is ``"."``; the separator gate keeps both the
+        empty and the bare-dot pattern out of normalisation entirely, so
+        neither can become a match-all. ``"//"`` is the one that gets past
+        the gate: it normalises to itself, the doubled-separator strip makes
+        it ``"/"``, and it must stay the no-op ``"/"`` already is rather than
+        excluding the whole tree."""
+        assert not self._excluded(tmp_path, "", "src/main.cpp")
+        assert not self._excluded(tmp_path, ".", "src/main.cpp")
+        assert not self._excluded(tmp_path, "/", "src/main.cpp")
+        assert not self._excluded(tmp_path, "//", "src/main.cpp")
+        assert not self._excluded(tmp_path, "///", "src/main.cpp")
+
+
 class TestAutoExcludeInDiscovery:
     """The exclusion applies inside FindTargets.__call__, so both the
     tracked-files generator and the os.walk fallback honour it."""
@@ -539,6 +705,20 @@ class TestAutoExcludeInDiscovery:
             _args, findtargets = _make_findtargets("TestAutoExcludeTracked", "--auto-exclude=vendor")
             assert compiletools.global_hash_registry.get_tracked_files(findtargets.context)
             exes, _tests = findtargets(path=str(tmp_path))
+        assert any(e.endswith(os.path.join("keep", "main.cpp")) for e in exes)
+        assert not any("vendor" in e for e in exes)
+
+    def test_trailing_slash_pattern_drops_a_nested_vendor_subtree(self, tmp_path):
+        """End to end for the gitignore spelling: ``--auto-exclude=vendor/``
+        must drop ``src/vendor``, not just a gitroot-top-level ``vendor``."""
+        self._tree(tmp_path)
+        nested = tmp_path / "src" / "vendor"
+        nested.mkdir(parents=True)
+        (nested / "main.cpp").write_text("// nested vendor\nint main() { return 0; }\n")
+        _args, findtargets = _make_findtargets("TestAutoExcludeTrailingSlash", "--auto-exclude=vendor/")
+        with uth.DirectoryContext(str(tmp_path)):
+            with patch("compiletools.global_hash_registry.get_tracked_files", return_value={}):
+                exes, _tests = findtargets(path=str(tmp_path))
         assert any(e.endswith(os.path.join("keep", "main.cpp")) for e in exes)
         assert not any("vendor" in e for e in exes)
 
