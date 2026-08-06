@@ -3907,3 +3907,42 @@ class TestClangModuleInterfaceRules:
         rel = os.path.relpath(str(source), str(tmp_path))
         assert rel in _cmd(pcm_rule)
         assert str(source) not in _cmd(pcm_rule)
+
+
+class TestEmptyBindirModuleMapper:
+    """``--bindir=''`` is a supported configuration (build_state.stage_resolve_names
+    maps it through as the empty string), and it is the mapper dir the gcc
+    modules pre-pass falls back to when the makefile name carries no directory
+    part. The mapper path must still name a directory the writer can create."""
+
+    def _gcc_modules_backend(self, tmp_path):
+        args = make_backend_args(
+            tmp_path,
+            CXX="g++",
+            bindir="",
+            makefilename="Makefile",
+            cas_pcmdir=str(tmp_path / "cas-pcmdir"),
+        )
+        StubClass = make_stub_backend_class()
+        backend = StubClass(args=args, hunter=make_mock_hunter(sources=[]))
+        backend.namer = make_mock_namer(args)
+        return backend
+
+    def test_mapper_path_is_cwd_relative_when_bindir_is_empty(self, tmp_path):
+        backend = self._gcc_modules_backend(tmp_path)
+        backend._init_module_state()
+        mapper_path = backend._gcc_module_mapper_path
+        assert mapper_path is not None
+        assert os.path.dirname(mapper_path) != ""
+
+    def test_writing_the_mapper_with_an_empty_bindir_does_not_crash(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        backend = self._gcc_modules_backend(tmp_path)
+        backend._init_module_state()
+        backend._module_iface_gcm = {"M": str(tmp_path / "M.gcm")}
+        backend._gcc_header_unit_resolved = {}
+        backend._header_unit_artefact = {}
+
+        backend._write_gcc_module_mapper()
+
+        assert (tmp_path / ".module-mapper.txt").read_text().startswith("M ")

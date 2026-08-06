@@ -1113,7 +1113,12 @@ class BuildBackend(abc.ABC):
         # config, so either pins one mapper per generated build and
         # avoids the race.
         if compiler_kind == "gcc" and self._module_pcm_cache_root:
-            mapper_dir = self._build_state.names.bindir
+            # ``--bindir=''`` is supported (stage_resolve_names passes it
+            # through), and a bare makefile name has no directory part, so
+            # both fallbacks can be empty. The mapper then lands in the cwd,
+            # spelled explicitly: an empty dirname is what the writer's
+            # makedirs cannot create.
+            mapper_dir = self._build_state.names.bindir or "."
             mf = getattr(self.args, "makefilename", None)
             if mf:
                 d = os.path.dirname(mf)
