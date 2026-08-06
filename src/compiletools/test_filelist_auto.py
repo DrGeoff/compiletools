@@ -100,7 +100,12 @@ def fixpoint_repo(tmp_path):
     re-anchoring fixpoint does not, which is what makes ct-filelist's use of
     the shared driver observable from the output alone. The exclusion is
     scoped to appbeta so appalpha stays discovered and an empty output
-    cannot pass the test by accident."""
+    cannot pass the test by accident.
+
+    An exclusion, not the ``exemarkers`` swap that discriminates the same
+    fixpoint in test_subproject_conf_discovery: a subproject's exemarkers
+    value REPLACES the project-tier one for the whole run, so round two
+    would discover nothing at all and take the appalpha control with it."""
     root = tmp_path / "monorepo"
     root.mkdir()
     subprocess.run(["git", "init", "-q", str(root)], check=True)
