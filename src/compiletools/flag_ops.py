@@ -172,7 +172,7 @@ def strip_d_u_tokens(tokens: Sequence[str]) -> list[str]:
 # changing a warning level doesn't trigger a rebuild.
 #
 # These cover the GCC/Clang diagnostic and verbosity ecosystem:
-# - -W*: warnings (pure diagnostic; -Werror is the one exception, see below)
+# - -W*: warnings (pure diagnostic; -Werror/-Wa,/-Wp, are the exceptions, see below)
 # - -fdiagnostics-*, -fmessage-length=, -fno-show-column,
 #   -fno-diagnostics-show-option, -fcaret-diagnostics,
 #   -fno-color-diagnostics, -fcolor-diagnostics: message formatting
@@ -209,12 +209,20 @@ _HASH_IRRELEVANT_EXACT: frozenset[str] = frozenset(
     }
 )
 
-# Exception: -Werror promotes warnings to errors, which CAN affect the
-# build outcome (compile fails vs succeeds). Treat -Werror and
-# -Werror=<warning> as hash-relevant.
+# Exceptions to the -W* drop rule:
+# - -Werror / -Werror=<warning> promote warnings to errors, which CAN
+#   affect the build outcome (compile fails vs succeeds).
+# - -Wa,<flags> reaches the assembler and -Wp,<flags> reaches the
+#   preprocessor (-Wp,-DFOO genuinely defines FOO); both change object
+#   bytes, so dropping them would alias distinct compiles onto one CAS
+#   key — a silent miscompile, since cas-objdir has no link-time
+#   verification. -Wl,<flags> stays dropped: it is inert under -c (the
+#   link key hashes LDFLAGS separately).
 _HASH_RELEVANT_W_FLAGS: tuple[str, ...] = (
     "-Werror",
     "-Werror=",
+    "-Wa,",
+    "-Wp,",
 )
 
 
@@ -223,17 +231,18 @@ def filter_hash_irrelevant_tokens(tokens: Sequence[str]) -> list[str]:
 
     Used by cache-key hashing to elide diagnostic-only flag changes.
     Accepts either a list or tuple. ``-W*`` warnings are dropped
-    EXCEPT ``-Werror`` and ``-Werror=...`` (which can change compile
-    outcome). Returns a NEW list; input is not mutated.
+    EXCEPT ``-Werror`` / ``-Werror=...`` (can change compile outcome)
+    and ``-Wa,...`` / ``-Wp,...`` (assembler/preprocessor pass-throughs
+    that change object bytes). Returns a NEW list; input is not mutated.
     """
     out = []
     i = 0
     n = len(tokens)
     while i < n:
         tok = tokens[i]
-        # -Werror exception: hash-relevant. ``-Werror`` itself, and the
-        # ``-Werror=<warning>`` parametrized form, both promote warnings
-        # to errors and thus can change build outcome.
+        # Hash-relevant -W exceptions: -Werror(=...) changes compile
+        # outcome; -Wa,/-Wp, forward flags to the assembler/preprocessor
+        # and change object bytes.
         if any(tok == we or tok.startswith(we) for we in _HASH_RELEVANT_W_FLAGS):
             out.append(tok)
             i += 1

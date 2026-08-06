@@ -6,9 +6,10 @@ contribute to cache-key hashing. Toggling ``-Wall`` <-> ``-Wextra`` or
 ``-fdiagnostics-color=...`` must not invalidate per-TU object or PCH
 cache entries.
 
-The exception is ``-Werror`` (and ``-Werror=<warning>``): promoting a
-warning to an error CAN change the build outcome, so it must remain
-hash-relevant.
+The exceptions are ``-Werror`` (and ``-Werror=<warning>``), which can
+change the build outcome, and the ``-Wa,``/``-Wp,`` pass-throughs,
+which reach the assembler/preprocessor and change object bytes; all
+must remain hash-relevant.
 """
 
 import pytest
@@ -26,6 +27,17 @@ from compiletools.apptools import filter_hash_irrelevant_tokens
             ["-Werror=unused-variable", "-O2"],
             id="keep-werror-value",
         ),
+        pytest.param(
+            ["-Wa,--noexecstack", "-Wall", "-O2"],
+            ["-Wa,--noexecstack", "-O2"],
+            id="keep-assembler-passthrough",
+        ),
+        pytest.param(
+            ["-Wp,-DFOO=1", "-Wextra", "-O2"],
+            ["-Wp,-DFOO=1", "-O2"],
+            id="keep-preprocessor-passthrough",
+        ),
+        pytest.param(["-Wl,-z,now", "-O2"], ["-O2"], id="strip-linker-passthrough"),
         pytest.param(["-fdiagnostics-color=always", "-O2"], ["-O2"], id="strip-diagnostics-color"),
         pytest.param(["-fmessage-length=80", "-O2"], ["-O2"], id="strip-message-length"),
         pytest.param(["-pipe", "-O2"], ["-O2"], id="strip-pipe"),
