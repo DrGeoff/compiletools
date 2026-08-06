@@ -25,7 +25,7 @@ import pytest
 import compiletools.cas_publish
 import compiletools.locking
 import compiletools.trim_cache
-from compiletools.cas_publish import EXIT_CONCURRENT_TRIM, ConcurrentTrimError, publish
+from compiletools.cas_publish import EXIT_CONCURRENT_TRIM, ConcurrentTrimError, freshen_cas_entry, publish
 
 
 def _make_cas_entry(tmp_path, name="payload"):
@@ -581,6 +581,39 @@ class TestCasEntryFreshening:
         publish(str(cas), str(user))
 
         assert user.read_bytes() == cas.read_bytes()
+
+    def test_freshen_cas_entry_advances_a_stale_mtime(self, cas):
+        """C2: the backends call ``freshen_cas_entry`` directly when they skip
+        the publish rule, so the freshening must work as a standalone step and
+        not only as a side effect of a publish."""
+        stale = time.time() - 45 * 86400
+        os.utime(str(cas), (stale, stale))
+
+        freshen_cas_entry(str(cas))
+
+        assert time.time() - os.stat(str(cas)).st_mtime < 60
+
+    def test_freshen_cas_entry_is_a_noop_on_a_missing_entry(self, tmp_path):
+        """A backend freshens from its build graph, which names entries a
+        concurrent trim may already have evicted. That is not an error."""
+        gone = tmp_path / "cas" / "evicted"
+
+        freshen_cas_entry(str(gone))
+
+        assert not gone.exists()
+
+    def test_freshen_cas_entry_survives_a_denied_utime(self, cas, monkeypatch):
+        """Same shared-pool EPERM as the publish path: another user's entry is
+        not ours to touch, and a no-op build must not die over it."""
+        original_mtime = os.stat(str(cas)).st_mtime
+
+        def denied_utime(*args, **kwargs):
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+
+        monkeypatch.setattr(os, "utime", denied_utime)
+        freshen_cas_entry(str(cas))
+
+        assert os.stat(str(cas)).st_mtime == original_mtime
 
 
 def _patch_filelock_raising(monkeypatch, err, message):

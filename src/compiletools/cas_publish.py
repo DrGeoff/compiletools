@@ -138,16 +138,30 @@ def _cas_entry_lock(cas_path: str):
         yield
 
 
-def _freshen_cas_entry(cas_path: str) -> None:
+def freshen_cas_entry(cas_path: str) -> None:
     """Mark the entry as actively used by setting its mtime to now.
 
     Age-gated sweeps (``ct-trim-cache --max-age`` and the oldest-first
     ``--max-size`` budget) rank by mtime, and a CAS entry keeps the mtime it
-    was created with however many builds go on publishing it. Without this an
+    was created with however many builds go on using it. Without this an
     entry that every build still links against ages out and gets rebuilt.
 
-    Best-effort: on a shared pool the entry usually belongs to another user and
-    ``utime`` is denied, which is not a reason to fail the publish.
+    Called from two places. ``publish`` freshens under the entry lock, on the
+    build that actually republishes. The backends call it directly for every
+    published entry of a build that skipped the publish rule — a same-workspace
+    rebuild short-circuits before ``ct-cas-publish`` ever spawns, so publish
+    alone only ever freshens an entry on its FIRST publish into a workspace
+    (``BuildBackend._freshen_published_cas_entries``, which also documents why
+    that path deliberately does not take the lock).
+
+    Best-effort in both: on a shared pool the entry usually belongs to another
+    user and ``utime`` is denied, and a build graph can name an entry a
+    concurrent trim already evicted. Neither is a reason to fail anything.
+
+    Scope: published linker artefacts only. Entries in the object, PCH and PCM
+    caches age the same way on a no-op build and are not covered — they have no
+    publish step to hang a freshening off, and their protection today is
+    ``--max-age`` being set generously on a shared pool.
     """
     with contextlib.suppress(OSError):
         os.utime(cas_path, None)
@@ -199,7 +213,7 @@ def publish(cas_path: str, user_path: str, source_realpath: str | None = None) -
     with _cas_entry_lock(cas_path):
         if not os.path.exists(cas_path):
             raise ConcurrentTrimError(cas_path)
-        _freshen_cas_entry(cas_path)
+        freshen_cas_entry(cas_path)
 
         compiletools.filesystem_utils.atomic_replace(
             user_path,

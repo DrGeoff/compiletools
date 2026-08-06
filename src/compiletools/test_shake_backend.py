@@ -9,6 +9,7 @@ import io
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -1167,6 +1168,43 @@ class TestSymlinkPublishShortCircuit:
                 backend.execute("build")
                 mock_run.assert_not_called()
                 mock_hash.assert_not_called()
+
+    @pytest.mark.parametrize("wiring", ["hardlink", "symlink"])
+    def test_short_circuited_publish_still_freshens_the_cas_entry(self, monkeypatch, wiring):
+        """The skip must not cost the entry its "still in use" mark.
+
+        ``ct-cas-publish`` is what normally freshens the entry, and this rule
+        is exactly the path that never spawns it, so shake calls
+        ``_freshen_published_cas_entries`` from ``execute`` instead. The
+        symlink wiring is where it matters most: the entry stays at
+        ``nlink == 1``, which trim's hard-link protection does not cover.
+        """
+        cas_path = "cas-exe/aa/foo_abc.exe"
+        user_path = "bin/foo"
+        graph = self._make_symlink_graph(cas_path, user_path)
+
+        with ShakeBackendTestContext(graph) as (backend, tmpdir):
+            td = Path(tmpdir)
+            monkeypatch.chdir(tmpdir)
+            os.makedirs(td / "cas-exe" / "aa", exist_ok=True)
+            os.makedirs(td / "bin", exist_ok=True)
+            (td / cas_path).write_bytes(b"\x7fELF cached executable")
+            if wiring == "hardlink":
+                os.link(td / cas_path, td / user_path)
+            else:
+                os.symlink(td / cas_path, td / user_path)
+            stale = time.time() - 45 * 24 * 3600
+            os.utime(td / cas_path, (stale, stale))
+
+            with (
+                mock.patch("compiletools.trace_backend.subprocess.run") as mock_run,
+                mock.patch("compiletools.trace_backend.get_file_hash"),
+            ):
+                backend.execute("build")
+                mock_run.assert_not_called()
+
+            age = time.time() - os.path.getmtime(td / cas_path)
+            assert age < 60, f"entry still {age / 86400:.0f} days old after a build that used it"
 
     def test_runs_when_target_missing(self, monkeypatch, tmp_path):
         """First publish: cas input exists but user-facing target does not.
