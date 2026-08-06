@@ -142,20 +142,20 @@ def test_compile_and_link_skipped_on_rerun_when_sources_touched(tmp_path):
 
     This test would have caught the bug pre-fix:
 
-    1. Build a sample once. Record mtimes of every cached ``.o``,
+    1. Build a sample once. Record the identity of every cached ``.o``,
        cas-exe ``.exe``, ``.a`` and ``.so``.
     2. ``os.utime`` every source / header to NOW + 1 hour — guaranteed
        newer than every cached artefact.
     3. Build again in the same workspace.
-    4. Assert no cached-artefact mtime changed (no producer rule fired).
+    4. Assert no cached artefact was rewritten (no producer rule fired).
 
     Pre-fix behaviour: source mtime > target mtime → make/ninja fires
-    the producer recipe, which reproduces the byte-identical artefact
-    and advances the artefact's mtime. This test would fail.
+    the producer recipe, which reproduces the byte-identical artefact.
+    This test would fail.
     Post-fix behaviour: with ``--use-mtime`` defaulting to False,
     make/ninja drops normal prereqs from compile, link, ar, and
     link-shared rules, so the cached artefact's existence is sufficient
-    and the mtime is untouched.
+    and the artefact is left alone.
     """
     sample_src = uth.example_path("factory")
     assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
@@ -166,29 +166,42 @@ def test_compile_and_link_skipped_on_rerun_when_sources_touched(tmp_path):
     def _build():
         _assert_build_ok(_run_ct_cake(ws), ws)
 
-    def _artefact_mtimes() -> dict[str, float]:
-        out: dict[str, float] = {}
+    def _artefact_identities() -> dict[str, tuple]:
+        """Per-artefact identity that changes iff a producer recipe fired.
+
+        Published artefacts are compared by inode alone: every build
+        freshens the cas-exedir entries it uses, republished or not
+        (``BuildBackend._freshen_published_cas_entries``), so their mtime
+        advances with no recipe behind it. Inode still answers the question
+        this test asks, because every producer writes a temp file and
+        renames it into place — the same reasoning
+        ``test_link_artefact_reused_across_workspaces`` relies on. Object
+        entries keep the mtime comparison too; nothing freshens those.
+        """
+        out: dict[str, tuple] = {}
         for cache_root in (ws / "cas-objdir", ws / "cas-exedir"):
             if not cache_root.is_dir():
                 continue
+            published = cache_root.name == "cas-exedir"
             for p in cache_root.rglob("*"):
                 if p.is_file() and p.suffix in (".o", ".exe", ".a", ".so"):
-                    out[str(p)] = p.stat().st_mtime
+                    stat = p.stat()
+                    out[str(p)] = (stat.st_ino,) if published else (stat.st_ino, stat.st_mtime)
         return out
 
     _build()
-    before = _artefact_mtimes()
+    before = _artefact_identities()
     assert before, "first build produced no cached artefacts in cas-objdir/cas-exedir"
 
     # Bump every source / header in the workspace to "the future" so
     # mtime-based prereq comparison would force a rebuild.
-    future = max(before.values()) + 3600.0
+    future = time.time() + 3600.0
     for p in ws.rglob("*"):
         if p.is_file() and p.suffix in (".cpp", ".cc", ".c", ".h", ".hpp", ".hxx", ".hh"):
             os.utime(p, (future, future))
 
     _build()
-    after = _artefact_mtimes()
+    after = _artefact_identities()
 
     assert set(before.keys()) == set(after.keys()), (
         f"second build produced different artefact set:\n"
@@ -198,7 +211,7 @@ def test_compile_and_link_skipped_on_rerun_when_sources_touched(tmp_path):
     changed = {p: (before[p], after[p]) for p in before if after[p] != before[p]}
     assert not changed, (
         f"second build re-executed {len(changed)} producer recipe(s) despite "
-        f"CAS-stable artefact paths (mtime regressed to mtime-based rebuild). "
+        f"CAS-stable artefact paths (rebuild regressed to mtime-based). "
         f"Sample:\n  " + "\n  ".join(f"{p}: {b} -> {a}" for p, (b, a) in list(changed.items())[:5])
     )
 

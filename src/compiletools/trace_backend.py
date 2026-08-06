@@ -265,6 +265,11 @@ class ShakeBackend(BuildBackend):
             raise RuntimeError("generate() must be called before execute()")
         graph = self._graph  # non-None local: attribute narrowing is lost inside the closure below
 
+        # The SYMLINK short-circuit below returns before ct-cas-publish runs,
+        # so the entries this build uses would never be marked in use. Shake
+        # does not inherit BuildBackend.execute(), hence the explicit call.
+        self._freshen_published_cas_entries(graph)
+
         if target == "runtests":
             walk_target = "runtests" if graph.get_rule("runtests") is not None else target
         elif target == "build":
@@ -523,7 +528,10 @@ class ShakeBackend(BuildBackend):
             # deliberately NOT re-created here: manifest recreation is not a
             # republish trigger (the manifest is best-effort -- ct-cas-publish
             # swallows OSError writing it -- and trim_exedir falls back to
-            # basename bucketing when it is absent).
+            # basename bucketing when it is absent). The entry's mtime IS
+            # refreshed, but up in execute() via
+            # _freshen_published_cas_entries, so the skip stays a pure
+            # decision with no filesystem writes of its own.
             try:
                 if rule.inputs and os.path.samefile(target, rule.inputs[0]):
                     return False

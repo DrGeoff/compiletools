@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import compiletools.cas_publish
 import compiletools.makefile_backend
 import compiletools.testhelper as uth
 from compiletools.apptools import tool_version
@@ -1366,3 +1367,77 @@ class TestUseMtime:
                 assert "/tmp/obj/bb/bar_eeffgghh.o" in line
                 return
         raise AssertionError(f"no link rule line found in:\n{content}")
+
+
+class TestFreshenedEntryStaysUpToDate:
+    """Freshening a published CAS entry must not retrigger its publish rule.
+
+    ``BuildBackend._freshen_published_cas_entries`` bumps the entry's mtime on
+    every no-op build, and the emitted rule is ``bin/foo: <cas entry>`` with the
+    entry as a NORMAL prerequisite -- SYMLINK is deliberately not one of the
+    ``CAS_PRODUCER_TYPES`` whose inputs get demoted to order-only, so make's
+    mtime comparison is live here. The publish leaves the user path on the same
+    inode (hardlink) or pointing at it (EXDEV symlink), so the bump moves
+    prerequisite and target together and make still reads the target as
+    current. If it did not, the freshening would republish on every build.
+    """
+
+    @staticmethod
+    def _make_is_up_to_date(directory, target) -> int:
+        """``make -q``: 0 = target current, 1 = a recipe would run, 2 = error."""
+        return subprocess.run(
+            ["make", "-f", "Makefile", "-q", target],
+            cwd=str(directory),
+            capture_output=True,
+            text=True,
+        ).returncode
+
+    @pytest.mark.parametrize("wiring", ["hardlink", "symlink"])
+    def test_make_still_considers_the_published_target_current(self, wiring, tmp_path):
+        cas_rel = "cas-exe/aa/foo_abc.exe"
+        user_rel = "bin/foo"
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output=user_rel,
+                inputs=[cas_rel],
+                command=["ct-cas-publish", "--cas-path", cas_rel, "--user-path", user_rel],
+                rule_type="symlink",
+            )
+        )
+        hunter = MagicMock()
+        hunter.getsources = MagicMock(return_value=[])
+        backend = MakefileBackend(args=_default_makefile_args(use_mtime=False), hunter=hunter)
+        _write_makefile(backend, graph, tmp_path)
+
+        (tmp_path / "cas-exe" / "aa").mkdir(parents=True)
+        (tmp_path / "bin").mkdir()
+        (tmp_path / cas_rel).write_bytes(b"\x7fELF cached executable")
+        if wiring == "hardlink":
+            os.link(tmp_path / cas_rel, tmp_path / user_rel)
+        else:
+            os.symlink(tmp_path / cas_rel, tmp_path / user_rel)
+        stale = time.time() - 45 * 24 * 3600
+        os.utime(tmp_path / cas_rel, (stale, stale))
+
+        assert self._make_is_up_to_date(tmp_path, user_rel) == 0, "a freshly published target should be current"
+
+        compiletools.cas_publish.freshen_cas_entry(str(tmp_path / cas_rel))
+
+        assert self._make_is_up_to_date(tmp_path, user_rel) == 0, "freshening the entry retriggered the publish rule"
+
+        # And the real invocation, not just make's own answer about itself:
+        # a rebuild after the freshening runs no recipe at all.
+        rebuild = subprocess.run(
+            ["make", "-f", "Makefile", user_rel],
+            cwd=str(tmp_path),
+            capture_output=True,
+            text=True,
+        )
+        assert rebuild.returncode == 0, rebuild.stderr
+        assert "ct-cas-publish" not in rebuild.stdout, rebuild.stdout
+
+        # The gate is not vacuous: make does report work for this target when
+        # there genuinely is some.
+        os.unlink(tmp_path / user_rel)
+        assert self._make_is_up_to_date(tmp_path, user_rel) == 1

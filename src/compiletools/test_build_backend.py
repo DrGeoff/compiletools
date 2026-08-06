@@ -2,6 +2,7 @@ import io
 import json
 import os
 import shutil
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -3000,6 +3001,144 @@ class TestAllOutputsCurrent:
             )
         )
         assert backend._all_outputs_current(graph) is False
+
+
+class TestPublishedCasEntryFreshening:
+    """``execute`` marks the CAS entries a build uses, even when it builds nothing.
+
+    ``ct-cas-publish`` freshens the entry it links, but a same-workspace rebuild
+    short-circuits before that command ever spawns — ``_all_outputs_current``
+    returns first, and make/ninja would skip the publish rule anyway. Without a
+    freshening pass an entry keeps the mtime of its first publish into the
+    workspace while every later build goes on using it, and an age-gated
+    ``ct-trim-cache`` evicts it as cold.
+
+    The companion claim — that the bumped entry does not then retrigger the
+    publish rule it was bumped for — cannot be measured here, because
+    ``_all_outputs_current`` reads existence and the link signature and never
+    an mtime. It needs a real mtime-driven build tool and lives in
+    ``test_makefile_backend.py``'s ``TestFreshenedEntryStaysUpToDate``.
+    """
+
+    _STALE_AGE_SECONDS = 45 * 24 * 3600
+
+    @staticmethod
+    def _make_backend(use_mtime=False):
+        """A backend that keeps the real ``BuildBackend.execute``.
+
+        ``make_stub_backend_class`` overrides ``execute`` to a no-op, which is
+        the method under test here, so restore the base implementation and
+        record the targets that reach the native build tool.
+        """
+        StubClass = make_stub_backend_class()
+
+        class ExecutingBackend(StubClass):
+            execute = BuildBackend.execute
+
+            def __init__(self, *pargs, **kwargs):
+                super().__init__(*pargs, **kwargs)
+                self.built = []
+
+            def _execute_build(self, target):
+                self.built.append(target)
+
+            def _honors_use_mtime(self):
+                # make and ninja are the only backends the constructor lets
+                # accept ``--use-mtime=True``, and both take this ``execute``.
+                return True
+
+        args = MagicMock()
+        args.use_mtime = use_mtime
+        return ExecutingBackend(args=args, hunter=MagicMock())
+
+    @classmethod
+    def _stale_published_graph(cls, tmp_path):
+        """A link+publish pair in the shape ``build_graph`` emits, already built.
+
+        The exe lives in the CAS with a 45-day-old mtime, ``bin/main`` is the
+        hardlink ``ct-cas-publish`` left behind, and the link signature matches
+        — so ``_all_outputs_current`` reports the whole build current.
+        """
+        cas_path = tmp_path / "cas-exedir" / "ab" / "main_0123456789abcdef.exe"
+        cas_path.parent.mkdir(parents=True)
+        cas_path.write_text("executable")
+        bin_path = tmp_path / "bin" / "main"
+        bin_path.parent.mkdir(parents=True)
+        os.link(cas_path, bin_path)
+
+        graph = BuildGraph()
+        link_rule = BuildRule(
+            output=str(cas_path),
+            inputs=[str(tmp_path / "foo.o")],
+            command=["g++", "-o", str(cas_path), str(tmp_path / "foo.o")],
+            rule_type="link",
+        )
+        graph.add_rule(link_rule)
+        with open(str(cas_path) + ".ct-sig", "w") as f:
+            f.write(compute_link_signature(link_rule))
+        graph.add_rule(
+            BuildRule(
+                output=str(bin_path),
+                inputs=[str(cas_path)],
+                command=["ct-cas-publish", "--cas-path", str(cas_path), "--user-path", str(bin_path)],
+                rule_type="symlink",
+            )
+        )
+
+        stale = time.time() - cls._STALE_AGE_SECONDS
+        os.utime(cas_path, (stale, stale))
+        return graph, cas_path
+
+    def test_a_no_op_build_freshens_the_entry_it_keeps_using(self, tmp_path):
+        graph, cas_path = self._stale_published_graph(tmp_path)
+        backend = self._make_backend()
+        backend._graph = graph
+
+        backend.execute("build")
+
+        assert backend.built == [], "the build was current; the native tool should not have been invoked"
+        age = time.time() - os.path.getmtime(cas_path)
+        assert age < 60, f"entry still {age / 86400:.0f} days old after a build that used it"
+
+    def test_use_mtime_leaves_the_entry_alone(self, tmp_path):
+        """Under mtime semantics the exe's timestamp is a rebuild input.
+
+        The TEST rule keeps a real prereq on the published exe, which is the
+        same inode as the CAS entry, so freshening here would re-run every test
+        on the next build. Cache freshness on that path is ``--max-age``'s job.
+        """
+        graph, cas_path = self._stale_published_graph(tmp_path)
+        before = os.path.getmtime(cas_path)
+        backend = self._make_backend(use_mtime=True)
+        backend._graph = graph
+
+        backend.execute("build")
+
+        assert os.path.getmtime(cas_path) == before
+
+    def test_the_freshening_reads_the_same_use_mtime_the_rest_of_the_backend_reads(self, tmp_path):
+        """One setting, one source of truth.
+
+        A parallel copy of the flag would let the freshening pass and the
+        CAS-only input demotion disagree about which mode the build is in, so
+        assert the single flag flip moves both together.
+        """
+        probe_rule = BuildRule(
+            output="/tmp/obj/aa/foo_aabbccdd.o", inputs=["foo.cpp"], command=["g++"], rule_type="compile"
+        )
+        observed = {}
+        for use_mtime in (False, True):
+            graph, cas_path = self._stale_published_graph(tmp_path / f"mtime_{use_mtime}")
+            before = os.path.getmtime(cas_path)
+            backend = self._make_backend(use_mtime=use_mtime)
+            backend._graph = graph
+
+            backend.execute("build")
+
+            freshened = os.path.getmtime(cas_path) > before
+            observed[use_mtime] = (freshened, backend._cas_demotes_inputs(probe_rule))
+
+        assert observed == {False: (True, True), True: (False, False)}
 
 
 class TestLinkOrderCorrectness:

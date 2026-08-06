@@ -22,11 +22,13 @@ import os
 import shlex
 import shutil
 import sys
+import time
 from collections.abc import Mapping
 from types import MappingProxyType
 
 import compiletools.apptools
 import compiletools.build_apply
+import compiletools.cas_publish
 import compiletools.diagnostics
 import compiletools.file_analyzer
 import compiletools.filesystem_utils
@@ -210,6 +212,11 @@ _ORDER_ONLY_DEP_FORBIDDEN_EXTS = _COMPILE_ORDERING_INPUT_EXTS + (
 
 _WILD_B_DIR_SUFFIX = "/.ct-wild-ld"
 
+# Age floor on the published-CAS-entry freshening pass. See
+# ``BuildBackend._freshen_published_cas_entries`` for why bumping an entry on
+# every build is not free under ninja.
+_FRESHEN_MIN_AGE_SECONDS = 3600
+
 
 def _extract_wild_b_argv(tokens: list[str]) -> tuple[list[str], list[str]]:
     """Split *tokens* into (everything else, wild-B ``-B<dir>`` tokens).
@@ -380,11 +387,14 @@ class BuildBackend(abc.ABC):
     def execute(self, target: str = "build") -> None:
         """Invoke the native build tool to execute the build.
 
-        Handles the common template: runtests delegation, early exit when all
-        outputs are current, backend-specific build, and link signature recording.
-        Override this method entirely for backends with non-standard execution
-        (e.g. ShakeBackend which uses its own build engine).
+        Handles the common template: CAS-entry freshening, runtests delegation,
+        early exit when all outputs are current, backend-specific build, and
+        link signature recording. Override this method entirely for backends
+        with non-standard execution (e.g. ShakeBackend which uses its own build
+        engine — it calls ``_freshen_published_cas_entries`` itself).
         """
+        if self._graph is not None:
+            self._freshen_published_cas_entries(self._graph)
         if target == "runtests":
             # Every backend runs its test rules during the build phase; a
             # standalone ``runtests`` request routes through those same native
@@ -2068,6 +2078,66 @@ class BuildBackend(abc.ABC):
                 if rule.success_marker and not os.path.exists(rule.success_marker):
                     return False
         return has_build_rules
+
+    def _freshen_published_cas_entries(self, graph: BuildGraph) -> None:
+        """Mark every CAS entry this build publishes as still in use.
+
+        ``ct-cas-publish`` freshens the entry it links, but only a build that
+        actually runs the publish rule reaches it — and a same-workspace
+        rebuild never does. Make and ninja skip the rule because ``bin/<name>``
+        is already up to date against the cas entry, and the whole-build
+        ``_all_outputs_current`` check returns before either is invoked; shake
+        short-circuits on its own ``samefile`` test. So without this pass an
+        entry is freshened exactly once, on its first publish into a
+        workspace, and then ages while every subsequent build keeps using it.
+        It matters most on the EXDEV symlink path, where the entry stays at
+        ``nlink == 1`` and trim's hard-link protection does not cover it.
+
+        Deliberately unlocked, unlike the freshening inside ``publish``:
+        ``trim_cache._safe_locked_unlink`` re-stats only ``st_nlink`` and the
+        inode under the entry lock, never mtime, so taking the lock here would
+        close no window a bare ``utime`` leaves open — it would only add a lock
+        acquisition per artefact to every no-op build. The worst case is
+        unchanged from today: a trim reads a cold mtime in its unlocked scan,
+        we freshen, the trim evicts anyway, and one rebuildable entry is lost.
+        Do not add a lock here out of symmetry with ``publish``.
+
+        Skipped entirely under ``--use-mtime``. There the exe's mtime is a
+        load-bearing rebuild input rather than cache bookkeeping: the TEST rule
+        keeps a real prereq on the published exe (``build_graph``'s
+        ``cas_only_results`` branch), so bumping the entry — and with it the
+        published hardlink, which is the same inode — would re-run every test
+        on the next build. A user who opted into mtime semantics gets them
+        undisturbed; cache freshness on that path is up to ``--max-age``.
+
+        An entry younger than ``_FRESHEN_MIN_AGE_SECONDS`` is left alone,
+        because under ninja every bump costs a republish. Ninja judges an
+        output against the mtime it recorded in ``.ninja_log`` when it last
+        built it, not against the output's current mtime, so raising the
+        input above that recorded value marks the publish rule dirty however
+        the two paths are wired — the hardlink shares the entry's inode, and
+        no ``restat`` setting changes which timestamp ninja compares.
+        Freshening on every build would therefore make every ninja no-op
+        build republish every artefact, forever. The age floor bounds that to
+        one republish per artefact per hour while keeping an entry in daily
+        use within an hour of current, far inside any ``--max-age`` a sweep
+        expresses in days. Make is unaffected either way: it compares the
+        published path against the entry live, and they share an inode.
+        """
+        if getattr(self.args, "use_mtime", False):
+            return
+        cutoff = time.time() - _FRESHEN_MIN_AGE_SECONDS
+        for rule in graph.rules_by_type(RuleType.SYMLINK):
+            if not rule.inputs:
+                continue
+            try:
+                # NOT cached: this pass and any peer publish both move the
+                # mtime being read, and rule inputs can be workspace-relative.
+                if os.path.getmtime(rule.inputs[0]) > cutoff:
+                    continue
+            except OSError:
+                continue
+            compiletools.cas_publish.freshen_cas_entry(rule.inputs[0])
 
     def _record_link_signatures(self, graph: BuildGraph) -> None:
         """Persist a content-addressable signature for every link/library

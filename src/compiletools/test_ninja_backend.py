@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import compiletools.cas_publish
 import compiletools.testhelper as uth
 from compiletools.build_backend import get_backend_class
 from compiletools.build_graph import BuildGraph, BuildRule
@@ -888,3 +889,113 @@ class TestNinjaLogClassifiesTestRules:
         )
         # Sanity: the compile rule is still classified correctly.
         assert by_target["obj/foo.o"].category == "compile"
+
+
+class TestFreshenedEntryDoesNotRepublishForever:
+    """Ninja's answer to ``test_makefile_backend.py``'s freshening question.
+
+    Make compares the published path against the entry live, and a hardlink
+    publish puts both on one inode, so a bump moves them together and make
+    still reads the target as current. Ninja does not do that: it judges an
+    output against the mtime it wrote into ``.ninja_log`` when it last built
+    it, so raising the entry above that recorded value marks the publish rule
+    dirty no matter how the two paths are wired, and no ``restat`` setting
+    changes which timestamp it reads. One freshening therefore costs one
+    republish here. What must not happen is a build that republishes every
+    artefact forever, which is what an unconditional per-build bump produces
+    — hence ``_FRESHEN_MIN_AGE_SECONDS``.
+
+    The rule wires the two paths with ``ln`` rather than running
+    ``ct-cas-publish``: ninja calls an output dirty until a real execution has
+    recorded it, so this cell has to run the recipe for real, and the EXDEV
+    branch that yields a symlink-published path cannot be forced inside one
+    tmpdir. The prerequisite edge is what is under test; ``test_cas_publish.py``
+    covers the publisher.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _chdir_to_tmp(self, monkeypatch, tmp_path):
+        """The graph carries workspace-relative paths, so the helper under test
+        has to resolve them against the workspace, as a real build does."""
+        monkeypatch.chdir(tmp_path)
+
+    @staticmethod
+    def _wiring_command(wiring, tmp_path, cas_rel, user_rel) -> str:
+        """``ct-cas-publish`` hardlinks the relative entry, or symlinks its
+        absolute path on EXDEV. A relative symlink source would resolve inside
+        ``bin/`` and dangle."""
+        if wiring == "hardlink":
+            return f"ln -f {cas_rel} {user_rel}"
+        return f"ln -sfn {tmp_path / cas_rel} {user_rel}"
+
+    @staticmethod
+    def _ninja_would_run(directory, target) -> bool:
+        """``ninja -n``: dry run, so stdout says whether a recipe would fire."""
+        result = subprocess.run(
+            ["ninja", "-n", target],
+            cwd=str(directory),
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        return "no work to do" not in result.stdout
+
+    @classmethod
+    def _published_workspace(cls, tmp_path, wiring):
+        """A generated ninja file plus one real build, so the log is seeded."""
+        cas_rel = "cas-exe/aa/foo_abc.exe"
+        user_rel = "bin/foo"
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output=user_rel,
+                inputs=[cas_rel],
+                command=["sh", "-c", cls._wiring_command(wiring, tmp_path, cas_rel, user_rel)],
+                rule_type="symlink",
+            )
+        )
+        hunter = MagicMock()
+        hunter.getsources = MagicMock(return_value=[])
+        backend = NinjaBackend(args=_default_ninja_args(use_mtime=False), hunter=hunter)
+        with open(tmp_path / "build.ninja", "w") as f:
+            backend.generate(graph, output=f)
+
+        (tmp_path / "cas-exe" / "aa").mkdir(parents=True)
+        (tmp_path / "bin").mkdir()
+        (tmp_path / cas_rel).write_bytes(b"\x7fELF cached executable")
+
+        first = subprocess.run(["ninja", user_rel], cwd=str(tmp_path), capture_output=True, text=True)
+        assert first.returncode == 0, first.stderr
+        assert (tmp_path / user_rel).is_symlink() == (wiring == "symlink")
+        assert not cls._ninja_would_run(tmp_path, user_rel), "a just-built target should be current"
+        return backend, graph, cas_rel, user_rel
+
+    @pytest.mark.parametrize("wiring", ["hardlink", "symlink"])
+    def test_a_freshening_costs_one_republish_and_then_settles(self, wiring, tmp_path):
+        _backend, _graph, cas_rel, user_rel = self._published_workspace(tmp_path, wiring)
+
+        compiletools.cas_publish.freshen_cas_entry(str(tmp_path / cas_rel))
+
+        assert self._ninja_would_run(tmp_path, user_rel), (
+            "the measured cost of a freshening under ninja is one republish; if this "
+            "stopped being true the age floor could be dropped"
+        )
+        republish = subprocess.run(["ninja", user_rel], cwd=str(tmp_path), capture_output=True, text=True)
+        assert republish.returncode == 0, republish.stderr
+        assert not self._ninja_would_run(tmp_path, user_rel), "the republish did not settle the graph"
+
+    @pytest.mark.parametrize("wiring", ["hardlink", "symlink"])
+    def test_the_backend_leaves_a_warm_entry_alone_so_the_next_build_is_a_no_op(self, wiring, tmp_path):
+        """The age floor is what keeps the republish from recurring per build.
+
+        Without it every pass over the graph bumps the entry, ninja finds the
+        publish rule dirty again, and a no-op build never stops doing work.
+        """
+        backend, graph, cas_rel, user_rel = self._published_workspace(tmp_path, wiring)
+        before = os.path.getmtime(tmp_path / cas_rel)
+
+        for _ in range(3):
+            backend._freshen_published_cas_entries(graph)
+
+        assert os.path.getmtime(tmp_path / cas_rel) == before, "a warm entry was freshened"
+        assert not self._ninja_would_run(tmp_path, user_rel)

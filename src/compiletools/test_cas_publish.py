@@ -25,7 +25,7 @@ import pytest
 import compiletools.cas_publish
 import compiletools.locking
 import compiletools.trim_cache
-from compiletools.cas_publish import EXIT_CONCURRENT_TRIM, ConcurrentTrimError, publish
+from compiletools.cas_publish import EXIT_CONCURRENT_TRIM, ConcurrentTrimError, freshen_cas_entry, publish
 
 
 def _make_cas_entry(tmp_path, name="payload"):
@@ -582,24 +582,101 @@ class TestCasEntryFreshening:
 
         assert user.read_bytes() == cas.read_bytes()
 
+    def test_freshen_cas_entry_advances_a_stale_mtime(self, cas):
+        """C2: the backends call ``freshen_cas_entry`` directly when they skip
+        the publish rule, so the freshening must work as a standalone step and
+        not only as a side effect of a publish."""
+        stale = time.time() - 45 * 86400
+        os.utime(str(cas), (stale, stale))
+
+        freshen_cas_entry(str(cas))
+
+        assert time.time() - os.stat(str(cas)).st_mtime < 60
+
+    def test_freshen_cas_entry_is_a_noop_on_a_missing_entry(self, tmp_path):
+        """A backend freshens from its build graph, which names entries a
+        concurrent trim may already have evicted. That is not an error."""
+        gone = tmp_path / "cas" / "evicted"
+
+        freshen_cas_entry(str(gone))
+
+        assert not gone.exists()
+
+    def test_freshen_cas_entry_survives_a_denied_utime(self, cas, monkeypatch):
+        """Same shared-pool EPERM as the publish path: another user's entry is
+        not ours to touch, and a no-op build must not die over it."""
+        original_mtime = os.stat(str(cas)).st_mtime
+
+        def denied_utime(*args, **kwargs):
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+
+        monkeypatch.setattr(os, "utime", denied_utime)
+        freshen_cas_entry(str(cas))
+
+        assert os.stat(str(cas)).st_mtime == original_mtime
+
+
+def _patch_filelock_raising(monkeypatch, err, message):
+    """Make every ``FileLock`` acquisition fail with ``OSError(err, message)``."""
+
+    class FailingFileLock:
+        def __init__(self, target_file, args):
+            pass
+
+        def __enter__(self):
+            raise OSError(err, message)
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            return False
+
+    monkeypatch.setattr(compiletools.locking, "FileLock", FailingFileLock)
+
+
+# Every errno an unlocked publish is allowed to proceed through, and why it is
+# reachable. The pool-wide half (EROFS/ENOTSUP/ENOSYS) and the uid- or
+# host-specific half (EACCES/EPERM/ENOLCK) differ in whether a peer could still
+# take the lock, not in what this process can do about it.
+_LOCK_ERRNOS_THAT_PROCEED = [
+    (errno.EACCES, "Permission denied"),
+    (errno.EPERM, "Operation not permitted"),
+    (errno.EROFS, "Read-only file system"),
+    (errno.ENOTSUP, "Operation not supported"),
+    (errno.ENOLCK, "No locks available"),
+    (errno.ENOSYS, "Function not implemented"),
+]
+
+# Errnos an unlocked publish must not proceed through. EIO and ENOSPC say
+# something is wrong with the pool rather than with locking on it. EINVAL is
+# the near miss: it reads as "this filesystem cannot lock" as easily as
+# "these lock arguments are wrong", and the second is a bug in compiletools,
+# so it stays fatal rather than joining the fallback set.
+_LOCK_ERRNOS_THAT_PROPAGATE = [
+    (errno.EIO, "Input/output error"),
+    (errno.ENOSPC, "No space left on device"),
+    (errno.EINVAL, "Invalid argument"),
+]
+
+
+def _errno_ids(table):
+    """Readable parametrize ids: the errno name rather than its number."""
+    return [errno.errorcode[err] for err, _message in table]
+
 
 class TestLockUnavailableFallback:
-    def test_publish_proceeds_and_warns_when_the_entry_lock_is_unavailable(self, cas, user, monkeypatch, capsys):
+    @pytest.mark.parametrize("err,message", _LOCK_ERRNOS_THAT_PROCEED, ids=_errno_ids(_LOCK_ERRNOS_THAT_PROCEED))
+    def test_publish_proceeds_and_warns_when_the_entry_lock_is_unavailable(
+        self, cas, user, monkeypatch, capsys, err, message
+    ):
         """An entry lock that cannot be acquired must not break every publish.
         The lock is race protection, not a precondition: warn and carry on.
+
+        ENOLCK (no lock manager / lock table exhausted) and ENOSYS (the
+        filesystem implements no lock primitive) reach this the same way
+        ENOTSUP does — ``get_lock_strategy`` routes an unrecognised or FUSE
+        filesystem to ``flock`` — and have the same outcome, so they get the
+        same treatment.
         """
-
-        class UnlockableFileLock:
-            def __init__(self, target_file, args):
-                pass
-
-            def __enter__(self):
-                raise OSError(errno.EROFS, "Read-only file system")
-
-            def __exit__(self, exc_type, exc_val, exc_tb):
-                return False
-
-        monkeypatch.setattr(compiletools.locking, "FileLock", UnlockableFileLock)
+        _patch_filelock_raising(monkeypatch, err, message)
         publish(str(cas), str(user))
 
         assert user.read_bytes() == cas.read_bytes()
@@ -609,25 +686,17 @@ class TestLockUnavailableFallback:
             f"attribute a cause the errno does not establish: {warning!r}"
         )
 
-    def test_a_transient_lock_error_is_not_swallowed(self, cas, user, monkeypatch):
-        """Only the four errnos an unlocked publish is allowed to proceed
-        through fall back. An EIO would otherwise be hidden behind a silently
-        unlocked publish.
+    @pytest.mark.parametrize("err,message", _LOCK_ERRNOS_THAT_PROPAGATE, ids=_errno_ids(_LOCK_ERRNOS_THAT_PROPAGATE))
+    def test_a_transient_lock_error_is_not_swallowed(self, cas, user, monkeypatch, err, message):
+        """Only the errnos an unlocked publish is allowed to proceed through
+        fall back. An EIO would otherwise be hidden behind a silently unlocked
+        publish, and an EINVAL would hide a malformed lock request — the reason
+        it is excluded from the fallback set despite also being reachable from
+        a filesystem that cannot lock.
         """
-
-        class FailingFileLock:
-            def __init__(self, target_file, args):
-                pass
-
-            def __enter__(self):
-                raise OSError(errno.EIO, "Input/output error")
-
-            def __exit__(self, exc_type, exc_val, exc_tb):
-                return False
-
-        monkeypatch.setattr(compiletools.locking, "FileLock", FailingFileLock)
+        _patch_filelock_raising(monkeypatch, err, message)
         with pytest.raises(OSError) as excinfo:
             publish(str(cas), str(user))
 
-        assert excinfo.value.errno == errno.EIO
+        assert excinfo.value.errno == err
         assert not user.exists()

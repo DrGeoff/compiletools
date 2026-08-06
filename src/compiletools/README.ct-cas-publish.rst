@@ -80,6 +80,33 @@ user's entry on a shared pool is not ours to touch). Age-gated sweeps
 budget — rank by mtime, and without this an entry that every build
 still publishes would age out on the timestamp it was created with.
 
+The publish rule is not the only freshening point, because a
+same-workspace rebuild short-circuits before this helper ever spawns:
+make and ninja skip the publish rule against an already up-to-date
+``bin/<name>``, and the Shake backend skips on its own ``samefile``
+test. Left at that, an entry would be freshened exactly once, on its
+first publish into a workspace. So the backends freshen every entry
+their build publishes at the start of ``execute``
+(``BuildBackend._freshen_published_cas_entries``). That pass is
+deliberately unlocked — ``ct-trim-cache`` re-stats only ``nlink`` and
+the inode under the entry lock, never mtime, so the lock would close no
+window a bare ``utime`` leaves open — and is skipped entirely under
+``--use-mtime``, where the published exe's timestamp is a rebuild input
+rather than cache bookkeeping.
+
+It also leaves an entry alone until the entry is an hour old, because
+under ninja a bump is not free. Ninja judges an output against the mtime
+it recorded in ``.ninja_log`` when it last built it, not against the
+output's current mtime, so raising the entry above that recorded value
+marks the publish rule dirty however the user path is wired — the
+hardlink shares the entry's inode, and no ``restat`` setting changes
+which timestamp ninja reads. Freshening on every build would make every
+ninja no-op build republish every artefact, permanently. The age floor
+bounds that to one republish per artefact per hour while keeping an
+entry in daily use within an hour of current, far inside any
+``--max-age`` a sweep expresses in days. Make compares the published
+path against the entry live and is unaffected either way.
+
 OPTIONS
 =======
 
@@ -121,24 +148,33 @@ ATOMICITY CONTRACT
 5. Inode swap under a process holding ``user_path`` open is harmless
    on POSIX — the open file descriptor pins the old inode.
 
-Four lock-acquisition errnos (``EACCES``, ``EPERM``, ``EROFS``,
-``ENOTSUP``) let the helper warn and publish unlocked. They are
+Six lock-acquisition errnos (``EACCES``, ``EPERM``, ``EROFS``,
+``ENOTSUP``, ``ENOLCK``, ``ENOSYS``) let the helper warn and publish
+unlocked. They are
 classified by outcome, not by cause: each can come from the sidecar
 ``open`` or from the ``lockf`` / ``flock`` that follows it, so none of
 them implies anything about the cas directory's mode. Proceeding is
 safe against any trim that hits the same failure: ``ct-trim-cache``
 refuses to delete an entry whose lock it cannot take, so nothing
-evicts what nothing can lock. ``EROFS`` and ``ENOTSUP`` are properties
+evicts what nothing can lock. ``EROFS``, ``ENOTSUP`` and ``ENOSYS``
+are properties
 of the pool and hold for every peer — ``ENOTSUP`` out of ``lockf`` on
 a perfectly writable directory is the case that shows the guarantee
-rests on trim's refusal rather than on directory permissions.
-``EACCES`` and ``EPERM`` can instead be specific to this uid: on a
-shared pool another user can lock, that user's trim can still evict
+rests on trim's refusal rather than on directory permissions, and
+``ENOSYS`` is the same statement from a filesystem implementing no
+lock primitive at all (reachable because unrecognised and FUSE
+filesystems route to ``flock``).
+``EACCES``, ``EPERM`` and ``ENOLCK`` can instead be specific to this
+uid or this host — ``ENOLCK`` means the lock manager is unreachable or
+a lock table is full, which a peer may not be seeing. On a
+shared pool another user can lock, and that user's trim can still evict
 mid-publish. A hardlinked
 ``user_path`` survives it — ``nlink`` pins the inode, so only the
 cache name is lost — but a publish that fell back to ``symlink()``
 under ``EXDEV`` can be left dangling. Any other lock error propagates
-rather than being hidden behind a silently unlocked publish.
+rather than being hidden behind a silently unlocked publish;
+``EINVAL`` is excluded on purpose, since it cannot be told apart from
+a malformed lock request.
 
 EXIT CODES
 ==========
