@@ -80,6 +80,20 @@ user's entry on a shared pool is not ours to touch). Age-gated sweeps
 budget — rank by mtime, and without this an entry that every build
 still publishes would age out on the timestamp it was created with.
 
+The publish rule is not the only freshening point, because a
+same-workspace rebuild short-circuits before this helper ever spawns:
+make and ninja skip the publish rule against an already up-to-date
+``bin/<name>``, and the Shake backend skips on its own ``samefile``
+test. Left at that, an entry would be freshened exactly once, on its
+first publish into a workspace. So the backends freshen every entry
+their build publishes at the start of ``execute``
+(``BuildBackend._freshen_published_cas_entries``). That pass is
+deliberately unlocked — ``ct-trim-cache`` re-stats only ``nlink`` and
+the inode under the entry lock, never mtime, so the lock would close no
+window a bare ``utime`` leaves open — and is skipped entirely under
+``--use-mtime``, where the published exe's timestamp is a rebuild input
+rather than cache bookkeeping.
+
 OPTIONS
 =======
 
