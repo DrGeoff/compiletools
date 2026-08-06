@@ -6,7 +6,7 @@ Guidance for any coding agent (Codex, Cursor, Gemini, etc.) working in the `comp
 
 This file is intentionally thin. The authoritative, maintained guidance lives in:
 
-- **`CLAUDE.md`** (repo root) — orientation layer: overview, worktree/venv rules, build & test commands, build flow, magic detection, the `args.flags` invariant, CAS layers, locking invariants, variant resolution, and config-file priority.
+- **`CLAUDE.md`** (repo root) — orientation layer: overview, worktree/venv rules, build & test commands, build flow, magic detection, the `BuildState` invariant, CAS layers, locking invariants, variant resolution, and config-file priority.
 - **`src/compiletools/CLAUDE.md`** (auto-loaded for source edits) — the deep architecture rationale behind the invariants summarized above.
 - Module **docstrings** — code-level details.
 

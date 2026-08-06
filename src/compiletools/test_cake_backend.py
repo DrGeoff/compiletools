@@ -10,7 +10,7 @@ ensure_backends_registered()
 
 
 class TestBackendCLIArg:
-    def test_make_is_default(self):
+    def test_make_backend_class_resolves_by_name(self):
         cls = get_backend_class("make")
         assert cls.name() == "make"
 
