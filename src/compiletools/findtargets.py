@@ -480,16 +480,22 @@ def discover_targets_and_reanchor(args, context):
 def main(argv=None):
     cap = compiletools.apptools.create_parser("Find C/C++ files with main functions and unit tests", argv=argv)
     add_arguments(cap)
+    # The shared driver writes each round's discoveries onto the target
+    # slots, and re-anchoring reparses through this same parser, so the
+    # slots have to be registered here to survive round two.
+    compiletools.apptools.add_target_arguments(cap)
 
     from compiletools.build_context import BuildContext
 
     context = BuildContext()
     args = compiletools.apptools.parseargs(cap, argv, context=context)
-    findtargets = FindTargets(args, context=context)
 
     styleclass = _STYLE_REGISTRY[args.style.lower()]
     styleobj = styleclass()
-    executabletargets, testtargets = findtargets()
-    styleobj(executabletargets, testtargets)
+    # Report what ct-cake --auto would build: the same fixpoint of
+    # discovery and config re-anchoring, not a single discovery pass that
+    # misses whatever a discovered target's subproject conf changes.
+    args = discover_targets_and_reanchor(args, context)
+    styleobj(list(args.filename or []), list(args.tests or []))
 
     return 0

@@ -13,6 +13,7 @@ import compiletools.global_hash_registry
 import compiletools.testhelper as uth
 import compiletools.utils
 from compiletools.build_context import BuildContext
+from compiletools.examples_registry import example_path
 
 
 @pytest.fixture(autouse=True)
@@ -329,9 +330,15 @@ class TestFindTargetsTopbindirFilter:
 class TestFindTargetsMain:
     """Test findtargets.main() entry point."""
 
-    def test_main_runs(self):
-        """Test main() runs without error."""
-        compiletools.findtargets.main(argv=["--style=flat", "--shorten"])
+    def test_main_runs(self, capsys):
+        """Smoke test from a directory whose discovered targets carry no
+        conflicting subproject confs. The repo root's do: --auto discovery
+        there raises ConfContradictionError for every tool on the shared
+        re-anchoring driver, ct-filelist and ct-cake included."""
+        with uth.DirectoryContext(example_path("simple")):
+            with uth.ParserContext():
+                assert compiletools.findtargets.main(argv=["--style=flat", "--shorten"]) == 0
+        assert "helloworld_cpp.cpp" in capsys.readouterr().out
 
 
 def _bare_parser(description):
@@ -757,3 +764,44 @@ def test_discovery_reanchor_cap_is_the_shared_apptools_cap():
     """One defensive cap in one place: the discovery re-anchor loop must
     reuse apptools._MAX_TARGET_CONF_ROUNDS, not carry its own copy."""
     assert compiletools.findtargets._MAX_DISCOVERY_REANCHOR_ROUNDS == compiletools.apptools._MAX_TARGET_CONF_ROUNDS
+
+
+@pytest.fixture
+def reanchor_repo(tmp_path):
+    """A repo whose round-one discovery loads a conf that changes round-two
+    discovery: appbeta/main.cpp is an exe under the gitroot's
+    ``exemarkers = [main]``, and appbeta/ct.conf -- reachable only once that
+    target is discovered -- excludes its own directory.
+
+    One discovery pass reports appbeta/main.cpp; the re-anchoring fixpoint
+    does not. ct-cake --auto and ct-filelist --auto already run the
+    fixpoint, so the difference is also the difference between what
+    ct-findtargets reports and what those two act on."""
+    root = tmp_path / "reanchorrepo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    (root / "ct.conf").write_text("exemarkers = [main]\ntestmarkers = unit_test.hpp\n")
+
+    appalpha = root / "appalpha"
+    appalpha.mkdir()
+    (appalpha / "main.cpp").write_text("int main() { return 0; }\n")
+
+    appbeta = root / "appbeta"
+    appbeta.mkdir()
+    (appbeta / "ct.conf").write_text("append-AUTO-EXCLUDE = ${CONF_DIR}\n")
+    # Distinct bodies: the global hash registry refuses to reverse-look-up a
+    # content hash shared by two tracked files.
+    (appbeta / "main.cpp").write_text("int main() { return 1; }\n")
+    return root
+
+
+def test_main_reports_the_target_set_the_reanchor_fixpoint_settles_on(reanchor_repo, capsys):
+    """ct-findtargets must go through discover_targets_and_reanchor rather
+    than run its own single discovery pass, or it reports targets ct-cake
+    --auto would not build."""
+    with uth.DirectoryContext(str(reanchor_repo)):
+        with uth.ParserContext():
+            assert compiletools.findtargets.main([]) == 0
+    out = capsys.readouterr().out
+    assert os.path.join("appalpha", "main.cpp") in out
+    assert os.path.join("appbeta", "main.cpp") not in out
