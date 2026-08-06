@@ -885,8 +885,18 @@ Common Options
     the absolute path cannot silently exclude a whole tree -- without that
     rule, ``*/tmp/*`` would exclude every file in a checkout that merely
     sits under ``/tmp``. An ABSOLUTE pattern is matched against the
-    absolute path, which is what makes the ``${CONF_DIR}/legacy`` spelling
-    work in a conf file.
+    absolute path only when it reaches INTO the tree -- when everything
+    before its first ``*``, ``?`` or ``[`` starts at the gitroot -- which
+    is what makes the ``${CONF_DIR}/legacy`` spelling work in a conf file.
+
+    An absolute pattern naming an ANCESTOR of the gitroot gets no such
+    treatment; it is read as the gitroot-anchored form it looks like. A
+    gitignore-trained user with a project-level ``tmp`` directory writes
+    ``/tmp``, and under this rule that excludes the project's own ``tmp``
+    even when the checkout itself lives under ``/tmp``. The alternative
+    reading is not a behaviour worth preserving: ``--auto`` never walks
+    outside the project, so a pattern matching an ancestor can only mean
+    "exclude everything".
 
     Conf files have two spellings, the same pair ``pkg-config`` has. The
     bare ``auto-exclude`` key is last-writer-wins ACROSS CONF FILES: a

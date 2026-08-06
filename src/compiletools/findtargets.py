@@ -54,7 +54,9 @@ def add_discovery_arguments(cap):
         "matches the gitroot-relative path (a leading / anchors there); a directory name "
         "excludes its whole subtree. A pattern without a separator matches any single "
         "component of the gitroot-relative path, whole. Neither reaches above the gitroot; "
-        "an absolute pattern matches the absolute path. Explicitly named targets are never "
+        "an absolute pattern matches the absolute path only when it reaches into the tree, so "
+        "/tmp excludes the project's own tmp directory, never a checkout that sits under /tmp. "
+        "Explicitly named targets are never "
         'filtered. e.g., "vendor", "test_*.cpp", "src/legacy", "/src/legacy/*"',
     )
     compiletools.apptools._add_xxpend_argument(
@@ -109,6 +111,23 @@ def add_arguments(cap):
     cap.add_argument("--style", choices=list(_STYLE_REGISTRY), default="indent", help="Output formatting style")
 
 
+def _commits_to_a_path_inside(pattern, prefix):
+    """True when *pattern*'s literal head lands inside *prefix*.
+
+    The literal head is everything before the pattern's first ``*``, ``?``
+    or ``[``: the part that names a real path rather than a shape. Gates
+    the absolute candidate in ``is_auto_excluded``, because reaching INTO
+    the tree is the only reason that candidate exists (the
+    ``${CONF_DIR}/legacy`` expansion). A pattern whose head lands anywhere
+    else can only ever match ancestors of the anchor, and since ``--auto``
+    never walks outside the project that has exactly one meaning --
+    exclude everything -- which is the silent-whole-tree outcome this rule
+    exists to prevent, not a behaviour to preserve.
+    """
+    cut = min((pattern.find(metachar) for metachar in "*?[" if metachar in pattern), default=len(pattern))
+    return bool(prefix) and pattern[:cut].startswith(prefix)
+
+
 def is_auto_excluded(filepath, patterns, anchor_root=""):
     """True when *filepath* is excluded from ``--auto`` discovery.
 
@@ -121,13 +140,21 @@ def is_auto_excluded(filepath, patterns, anchor_root=""):
     excludes that subtree at any depth and ``src/legacy`` never reaches
     ``src/legacyish``.
 
-    The absolute path joins the candidates only for a pattern that is
-    itself absolute (the ``${CONF_DIR}/legacy`` spelling a conf file
-    expands to) or for a file with no relative spelling. Offering it to a
-    relative pattern would let the recommended any-depth spelling reach
-    above the anchor: ``*/tmp/*`` would exclude every file in a checkout
-    that merely sits under ``/tmp``, discovering nothing, over a path
-    component the project never chose.
+    The absolute path joins the candidates only for a pattern whose
+    literal head reaches INTO the tree (the ``${CONF_DIR}/legacy``
+    spelling a conf file expands to) or for a file with no relative
+    spelling -- see ``_commits_to_a_path_inside``. Offering it more widely
+    would let a pattern reach above the anchor: ``*/tmp/*`` would exclude
+    every file in a checkout that merely sits under ``/tmp``, discovering
+    nothing, over a path component the project never chose. Neither a
+    leading ``/`` nor a glob-free first component is enough, since
+    ``/*/tmp/*`` and ``/tmp/*`` have that same reach -- and ``/tmp`` is
+    the likelier spelling, being what a gitignore-trained user with a
+    project-level ``tmp`` writes.
+
+    Such a pattern still resolves, as the gitroot-anchored form it looks
+    like: at a checkout under ``/tmp``, ``/tmp/*`` excludes the project's
+    own ``tmp`` directory and nothing else, which is what the user meant.
 
     A pattern without a separator is fnmatched against each component of
     the *anchor_root*-relative path -- so ``vendor`` excludes every file
@@ -143,6 +170,7 @@ def is_auto_excluded(filepath, patterns, anchor_root=""):
         return False
     absolute = compiletools.wrappedos.realpath(filepath)
     relative = None
+    prefix = ""
     if anchor_root:
         # An anchor of "/" already ends in the separator; concatenating one
         # would test for "//" and leave every path looking un-anchored.
@@ -155,7 +183,7 @@ def is_auto_excluded(filepath, patterns, anchor_root=""):
         if os.sep in pattern:
             if relative is None:
                 candidates = [absolute]
-            elif os.path.isabs(pattern):
+            elif _commits_to_a_path_inside(pattern, prefix):
                 candidates = [absolute, relative, os.sep + relative]
             else:
                 candidates = [relative, os.sep + relative]

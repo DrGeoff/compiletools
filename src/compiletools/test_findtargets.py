@@ -454,6 +454,30 @@ class TestAutoExcludeMatching:
         assert self._excluded(tmp_path, "*/src/*", "src/main.cpp")
         assert self._excluded(tmp_path, "*/src", "src/main.cpp")
 
+    def test_an_absolute_pattern_only_counts_when_it_reaches_into_the_tree(self, tmp_path):
+        """An absolute pattern naming an ANCESTOR of the gitroot must not
+        get the absolute path. ``/tmp`` is the spelling a gitignore-trained
+        user with a project-level ``tmp`` directory writes, and if the
+        checkout happens to sit under ``/tmp`` that would exclude the whole
+        project. Neither a leading ``/`` nor a glob-free first component
+        distinguishes the two readings; only a literal head that lands
+        inside the tree does."""
+        anchor = os.path.realpath(str(tmp_path))
+        components = anchor.split(os.sep)
+        ancestors = (os.sep + components[1], os.sep + os.sep.join(components[1:3]))
+        for ancestor in ancestors:
+            leaf = os.path.basename(ancestor)
+            for pattern in (ancestor, f"{ancestor}/*", f"/*/{leaf}/*", f"/*/{leaf}"):
+                assert not self._excluded(tmp_path, pattern, "src/main.cpp"), pattern
+        # Each of those spellings still resolves, as the gitroot-anchored
+        # form it looks like: an in-project directory of the same name is
+        # excluded, which is what the user meant.
+        assert self._excluded(tmp_path, os.sep + components[1] + "/*", components[1] + "/old.cpp")
+        assert self._excluded(tmp_path, "/*/src/*", "sub/src/main.cpp")
+        assert self._excluded(tmp_path, "/sr*/main.cpp", "src/main.cpp")
+        # The in-tree absolute spelling the candidate exists for.
+        assert self._excluded(tmp_path, anchor + "/legacy/*", "legacy/old.cpp")
+
     def test_leading_separator_anchors_at_the_gitroot(self, tmp_path):
         """``/src/legacy`` is the spelling a gitignore-trained user reaches
         for. It must mean the anchored pattern it looks like, not nothing."""

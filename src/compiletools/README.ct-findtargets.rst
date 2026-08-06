@@ -54,8 +54,13 @@ exclude that subtree. ``*`` spans separators, so ``*/legacy`` excludes a
 ``legacy`` subtree at any depth, while ``src/legacy`` never reaches
 ``src/legacyish``. Directories above the gitroot are out of reach of a
 relative pattern of either kind, so ``*/tmp/*`` cannot exclude an entire
-checkout that merely sits under ``/tmp``; an ABSOLUTE pattern is matched
-against the absolute path, which is what makes ``${CONF_DIR}/legacy`` work.
+checkout that merely sits under ``/tmp``. An ABSOLUTE pattern is matched
+against the absolute path only when it reaches INTO the tree -- when
+everything before its first ``*``, ``?`` or ``[`` starts at the gitroot,
+which is what makes ``${CONF_DIR}/legacy`` work. An absolute pattern
+naming an ANCESTOR is read the same way as a relative one, so ``/tmp``
+excludes the project's own ``tmp`` directory rather than the whole
+checkout when the checkout happens to live under ``/tmp``.
 ct-cake and ct-filelist share this search, so an exclusion set
 in a ct.conf applies to all three; targets those tools are told to build by
 name are never filtered. ct-filelist registers the discovery options

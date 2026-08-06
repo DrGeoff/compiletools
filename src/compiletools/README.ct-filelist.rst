@@ -98,7 +98,12 @@ OPTIONS
                     above it are out of reach of a relative pattern, so
                     ``*/tmp/*`` cannot exclude a whole checkout that sits
                     under ``/tmp``. An absolute pattern matches the absolute
-                    path, which is how ``${CONF_DIR}/legacy`` works.
+                    path only when it reaches INTO the tree -- everything
+                    before its first ``*``, ``?`` or ``[`` starts at the
+                    gitroot -- which is how ``${CONF_DIR}/legacy`` works.
+                    One naming an ANCESTOR is read as the gitroot-anchored
+                    form it looks like, so ``/tmp`` excludes the project's
+                    own ``tmp`` directory, never the whole checkout.
                     Explicitly named targets are never filtered. In a ct.conf
                     the bare ``auto-exclude`` key is last-writer-wins between
                     conf files; use ``append-AUTO-EXCLUDE`` (uppercase) to
