@@ -187,3 +187,38 @@ class TestPopulateArgs:
         second = gather_inputs(args, BuildContext())
         assert first.cxxflags == second.cxxflags == ("-O2", "-Wall")
         assert first.cppflags is None and second.cppflags is None
+
+
+class TestConfigurePkgConfigErrors:
+    def test_namespace_without_the_option_leaves_an_armed_policy_alone(self):
+        """A parser that never registered ``--pkg-config-errors`` carries no
+        policy, so applying its namespace must not disarm strict mode.
+
+        The policy is process-global. A second ``parseargs`` over a
+        base-arguments-only namespace used to reset it to the ``warn``
+        default nobody asked for, and every later probe in that process
+        silently degraded to a warning.
+        """
+        from compiletools.apptools_pkgconfig import get_pkg_config_errors, set_pkg_config_errors
+        from compiletools.build_apply import configure_pkg_config_errors
+
+        set_pkg_config_errors("error")
+        configure_pkg_config_errors(argparse.Namespace())
+        assert get_pkg_config_errors() == "error"
+
+    def test_parsed_value_is_applied(self):
+        from compiletools.apptools_pkgconfig import get_pkg_config_errors
+        from compiletools.build_apply import configure_pkg_config_errors
+
+        configure_pkg_config_errors(argparse.Namespace(pkg_config_errors="error"))
+        assert get_pkg_config_errors() == "error"
+
+    def test_an_explicit_warn_value_still_disarms(self):
+        """Only the absent attribute is a no-op; a parsed ``warn`` is a
+        policy the user's config asked for and still applies."""
+        from compiletools.apptools_pkgconfig import get_pkg_config_errors, set_pkg_config_errors
+        from compiletools.build_apply import configure_pkg_config_errors
+
+        set_pkg_config_errors("error")
+        configure_pkg_config_errors(argparse.Namespace(pkg_config_errors="warn"))
+        assert get_pkg_config_errors() == "warn"

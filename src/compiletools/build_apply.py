@@ -10,10 +10,21 @@ from compiletools.build_state import BuildState, EnsureLinkerSymlinkDir, SetEnv
 
 
 def configure_pkg_config_errors(args) -> None:
-    """Apply the parsed pkg-config failure policy before any probes run."""
+    """Apply the parsed pkg-config failure policy before any probes run.
+
+    A namespace whose parser never registered ``--pkg-config-errors`` carries
+    no policy, so it leaves the process-global one as it stands. Substituting
+    the ``warn`` default here disarmed strict mode for the rest of the
+    process on the second ``parseargs`` of any base-arguments-only tool --
+    the same silent-disarm hazard ``apptools_pkgconfig.clear_cache``
+    deliberately avoids.
+    """
     from compiletools.apptools_pkgconfig import set_pkg_config_errors
 
-    set_pkg_config_errors(getattr(args, "pkg_config_errors", "warn"))
+    errors = getattr(args, "pkg_config_errors", None)
+    if errors is None:
+        return
+    set_pkg_config_errors(errors)
 
 
 def apply_effects(state: BuildState, context) -> None:
