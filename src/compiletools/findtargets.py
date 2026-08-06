@@ -109,6 +109,18 @@ def add_arguments(cap):
     add_discovery_arguments(cap)
     if compiletools.apptools._parser_has_option(cap, "--style"):
         return
+    add_style_argument(cap)
+
+
+def add_style_argument(cap):
+    """Register ct-findtargets' ``--style``, replacing any already present.
+
+    ct-cake composes this surface with ct-filelist's, which registers a
+    narrower ``--style`` of its own. Parsers built by
+    ``apptools.create_parser`` resolve the conflict by replacement, so
+    whoever registers last decides the composed choices; calling this
+    explicitly is how a composing tool says which of the two it means.
+    """
     # Style choices come from the explicit registry below.
     cap.add_argument("--style", choices=list(_STYLE_REGISTRY), default="indent", help="Output formatting style")
 

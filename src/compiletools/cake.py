@@ -327,6 +327,10 @@ class Cake:
         )
 
         compiletools.findtargets.add_arguments(cap)
+        # ct-filelist registered a narrower --style above; ct-cake advertises
+        # ct-findtargets' set, so claim it explicitly rather than by
+        # registration order.
+        compiletools.findtargets.add_style_argument(cap)
 
         compiletools.utils.add_flag_argument(
             parser=cap,

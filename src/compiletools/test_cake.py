@@ -11,6 +11,8 @@ import pytest
 
 import compiletools.apptools
 import compiletools.cake
+import compiletools.filelist
+import compiletools.findtargets
 import compiletools.namer
 import compiletools.testhelper as uth
 import compiletools.utils
@@ -906,3 +908,39 @@ class TestCake(BaseCompileToolsTestCase):
 
     def teardown_method(self):
         uth.reset()
+
+
+class TestCakeStyleSurface:
+    """ct-cake composes ct-filelist's and ct-findtargets' argument sets and
+    both register ``--style`` with incompatible choices. The composed
+    surface is ct-findtargets': null/flat/indent/args, defaulting to
+    indent. It must not depend on which registrar runs first.
+    """
+
+    @staticmethod
+    def _cake_parser():
+        cap = compiletools.apptools.create_parser("style surface", include_config=False)
+        compiletools.cake.Cake.add_arguments(cap)
+        return cap
+
+    def _style_action(self):
+        actions = [act for act in self._cake_parser()._actions if "--style" in act.option_strings]
+        assert len(actions) == 1
+        return actions[0]
+
+    def test_cake_offers_every_findtargets_style(self):
+        action = self._style_action()
+        assert list(action.choices or []) == list(compiletools.findtargets._STYLE_REGISTRY)
+        assert action.default == "indent"
+
+    @pytest.mark.parametrize("style", ["null", "flat", "indent", "args"])
+    def test_cake_accepts_each_style(self, style):
+        assert self._cake_parser().parse_args(["--style=" + style]).style == style
+
+    def test_filelist_keeps_its_own_narrower_style(self):
+        cap = compiletools.apptools.create_parser("filelist surface", include_config=False)
+        compiletools.filelist.Filelist.add_arguments(cap)
+        actions = [act for act in cap._actions if "--style" in act.option_strings]
+        assert len(actions) == 1
+        assert list(actions[0].choices or []) == list(compiletools.filelist._STYLE_REGISTRY)
+        assert actions[0].default == "flat"
