@@ -145,3 +145,40 @@ def test_filelist_parser_keeps_its_own_style_choices() -> None:
     args = cap.parse_args([])
     assert args.style == "flat"
     assert args.auto is True
+
+
+@pytest.fixture
+def sibling_repo(tmp_path):
+    """A repo whose test file has a sibling nothing includes.
+
+    ct-filelist adds every file beside a discovered test, so the sibling
+    reaches the output through that sweep alone -- not as a target and not
+    as a header dependency -- which is what makes the sweep's treatment of
+    --auto-exclude observable."""
+    root = tmp_path / "siblingrepo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    (root / "ct.conf").write_text("exemarkers = [main]\ntestmarkers = unit_test.hpp\n")
+
+    app = root / "app"
+    app.mkdir()
+    (app / "test_widget.cpp").write_text('#include "unit_test.hpp"\nint main() { return 0; }\n')
+    (app / "unit_test.hpp").write_text("#pragma once\n")
+    (app / "generated_table.inc").write_text("// nothing includes this\n")
+    return root
+
+
+def test_a_test_file_sibling_is_listed_when_nothing_excludes_it(sibling_repo, capsys: Any) -> None:
+    _run_filelist(sibling_repo, ["--auto"])
+    listed = {line.strip() for line in capsys.readouterr().out.splitlines() if line.strip()}
+    assert os.path.realpath(str(sibling_repo / "app" / "generated_table.inc")) in listed
+
+
+def test_auto_exclude_reaches_the_files_swept_in_beside_a_test(sibling_repo, capsys: Any) -> None:
+    """The sweep is a consequence of discovery, so a pattern that governs
+    discovery has to govern it too; otherwise an excluded file returns to
+    the list through a neighbour."""
+    _run_filelist(sibling_repo, ["--auto", "--auto-exclude=generated_table.inc"])
+    listed = {line.strip() for line in capsys.readouterr().out.splitlines() if line.strip()}
+    assert os.path.realpath(str(sibling_repo / "app" / "test_widget.cpp")) in listed
+    assert os.path.realpath(str(sibling_repo / "app" / "generated_table.inc")) not in listed
