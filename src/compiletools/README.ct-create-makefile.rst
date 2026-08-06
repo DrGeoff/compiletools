@@ -24,9 +24,11 @@ and the ct-build shell scripts.
 
 Unlike ct-cake, which generates and immediately executes the build,
 ct-create-makefile only generates the Makefile. This is useful when you need
-to customize the Makefile or inspect the generated rules. For other build
-system formats, use ``ct-cake --backend=<name>`` (choices: ninja, cmake,
-bazel, shake).
+to customize the Makefile or inspect the generated rules. It shares its
+rule-generation code with ``ct-cake --backend=make``, but is not what
+ct-cake uses by default: **ct-cake's default backend is shake**, not
+make. For other build system formats, use ``ct-cake --backend=<name>``
+(choices: make, ninja, cmake, bazel, shake).
 
 The tool analyzes source files for:
 

@@ -392,7 +392,10 @@ keys (``append-CFLAGS``, ``append-CXXFLAGS``, ``append-LDFLAGS``,
 ``append-PREBUILD-SCRIPT``, ``append-POSTBUILD-SCRIPT``, …) accumulate
 across the entire stack. Conf keys are case-sensitive: the key must
 match the CLI option's spelling exactly (minus the leading dashes), so
-lowercase forms like ``append-prebuild-script`` are silently ignored.
+lowercase forms like ``append-prebuild-script`` are dropped as
+unknown -- with a note at ``-v`` (verbose >= 1) naming the file and
+the near-miss key, since a genuinely unknown key stays silent but a
+case/dash near-miss of a registered key is very likely a mistake.
 Accumulation means: every contributing conf file's value is preserved, and
 matching ``--append-*`` / ``--prepend-*`` CLI flags accumulate on top
 of the conf-file values (CLI tokens land after conf tokens in the
@@ -629,9 +632,12 @@ without saying anything:
 Four shapes are rejected as a malformed package specification before
 pkg-config is ever invoked, because passing them through would make
 pkg-config invent package names out of operators and version numbers,
-or enforce a version floor other than the one written. "Rejected" means
-a ``UserWarning`` naming the specification and zero contributed flags —
-the build itself continues:
+or enforce a version floor other than the one written. "Rejected"
+means a diagnostic naming the specification and zero contributed
+flags, gated by ``--pkg-config-errors`` (default ``warn``): a
+``UserWarning`` and the build continues, or with
+``--pkg-config-errors=error`` a raised ``PkgConfigError`` that stops
+the build on first failure. See "Strict pkg-config failures" below.
 
 - an operator with nothing before it — ``>= 1.2``, or ``>=1.2``
 - an operator with nothing after it — ``zlib >=``
@@ -643,6 +649,23 @@ never reaches across a comma, a newline, or a repeated conf key to find
 a missing operand. ``pkg-config = zlib >=, libxml-2.0`` is a malformed
 ``zlib >=`` plus an ordinary ``libxml-2.0``, not a comparison of zlib's
 version against the string ``libxml-2.0``.
+
+**Strict pkg-config failures**
+
+``--pkg-config-errors {warn,error}`` (default ``warn``) controls what
+happens when a pkg-config package fails: a malformed specification
+(above), a package ``pkg-config --exists`` reports missing, or a
+package that exists but whose ``--cflags``/``--libs`` query itself
+fails (a broken ``Requires.private`` chain, a bad ``.pc`` variable
+expansion). In ``warn`` mode each failure is a ``UserWarning`` and
+contributes zero flags; the build continues, possibly with an
+incomplete link. In ``error`` mode the first failure raises
+``PkgConfigError`` and stops the build — failures are not reported in
+declaration order, so expect the *first encountered*, not necessarily
+the *first written*, specification in the diagnostic. Use ``error``
+in CI to turn a silently-incomplete build into a build failure at the
+point pkg-config resolution breaks, rather than downstream at link
+time with a confusing "undefined reference" error.
 
 **Environment Variable Mapping**
 

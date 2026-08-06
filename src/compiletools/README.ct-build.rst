@@ -28,7 +28,9 @@ steps needed to compile a project with compiletools:
 3. ``make -j$(ct-jobs)`` executes the generated Makefile using the job count
    calculated by ``ct-jobs`` (which honors ``ct.conf`` and ``CT_JOBS``).
 
-For other build backends (Ninja, CMake, Bazel, Shake), use
+``ct-build`` always uses make; it does not follow ``ct-cake``'s own
+default backend, which is **shake**, not make. For other build
+backends (Make, Ninja, CMake, Bazel, Shake), use
 ``ct-cake --backend=<name>`` instead.
 
 Because every flag is passed through untouched, you can use the exact same

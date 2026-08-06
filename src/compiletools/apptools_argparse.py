@@ -334,9 +334,10 @@ def add_common_arguments(cap, argv=None, variant=None):
             "Merged into the --pkg-config package list; prepend lands "
             "leftmost, append lands rightmost. Use the append-PKG-CONFIG / "
             "prepend-PKG-CONFIG form in conf files (uppercase — the "
-            "lowercase append-pkg-config spelling is silently ignored) so "
-            "values accumulate across the variant hierarchy instead of "
-            "last-writer-wins clobbering the bare pkg-config = ... key."
+            "lowercase append-pkg-config spelling is dropped as unknown, "
+            "noted at -v) so values accumulate across the variant "
+            "hierarchy instead of last-writer-wins clobbering the bare "
+            "pkg-config = ... key."
         ),
     )
     _add_xxpend_argument(

@@ -105,8 +105,10 @@ and version must be three whitespace-separated words. Omitting either
 space changes what pkg-config resolves, and in one case does so without
 saying anything, so those spellings are rejected as a malformed package
 specification before pkg-config is ever invoked. "Rejected" means a
-``UserWarning`` naming the specification and zero contributed flags — the
-build itself continues:
+diagnostic naming the specification and zero contributed flags, gated
+by ``--pkg-config-errors`` (default ``warn``, build continues; ``error``
+raises and stops the build on first failure — see "Strict pkg-config
+failures" in ct-config(1)):
 
 .. code-block:: cpp
 
