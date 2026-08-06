@@ -885,7 +885,8 @@ Common Options
     gitignore's spelling of ``vendor`` and excludes a ``vendor`` directory
     at any depth, and ``./vendor``, ``src//vendor`` and ``src/./vendor``
     mean what their plain forms mean. A leading ``/`` survives
-    normalisation, so ``/vendor/`` still anchors at the gitroot.
+    normalisation, so ``/vendor/`` still anchors at the gitroot, and any
+    number of leading slashes reads as that same anchored form.
 
     Directories ABOVE the gitroot are deliberately out of reach of a
     relative pattern of either kind, so a ``tmp`` or username component in

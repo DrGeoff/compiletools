@@ -528,8 +528,10 @@ _NORMALISATION_FILES = (
 
 # Every cell that flips False -> True once the pattern is normalised, taken
 # from a differential of the pre-fix and post-fix matchers over the grid
-# above (30 flips, zero cells narrowing). The existing suite is blind to all
-# of them, so they are pinned here by hand.
+# above (33 flips, zero cells narrowing). The existing suite is blind to all
+# of them, so they are pinned here by hand. The last two rows are the
+# doubled-leading-separator spellings, which normalisation alone leaves
+# unchanged and which the explicit strip covers.
 _NEWLY_EXCLUDED_CELLS = tuple(
     (pattern, relpath)
     for pattern, relpaths in (
@@ -545,6 +547,8 @@ _NEWLY_EXCLUDED_CELLS = tuple(
         ("src/legacy//*", ("src/legacy/old.cpp", "src/legacy/deep/old.cpp")),
         ("./test_*.cpp", ("a/b/test_x.cpp",)),
         ("<ANCHOR>//legacy/*", ("legacy/old.cpp",)),
+        ("//vendor", ("vendor/main.cpp",)),
+        ("//src/vendor", ("src/vendor/main.cpp", "src/vendor/deep/x.cpp")),
     )
     for relpath in relpaths
 )
@@ -572,6 +576,8 @@ _EQUIVALENT_SPELLINGS = (
     ("/src/vendor/", "/src/vendor"),
     ("<ANCHOR>/legacy/", "<ANCHOR>/legacy"),
     ("<ANCHOR>//legacy/*", "<ANCHOR>/legacy/*"),
+    ("//vendor", "/vendor"),
+    ("//src/vendor", "/src/vendor"),
 )
 
 
@@ -616,6 +622,8 @@ class TestAutoExcludePatternNormalisation:
         assert not self._excluded(tmp_path, "vendor/", "vendorlib/main.cpp")
         assert not self._excluded(tmp_path, "./vendor", "vendorlib/main.cpp")
         assert not self._excluded(tmp_path, "src/legacy/", "src/legacyish/old.cpp")
+        assert self._excluded(tmp_path, "//vendorlib", "vendorlib/main.cpp")
+        assert not self._excluded(tmp_path, "//vendor", "vendorlib/main.cpp")
 
     def test_normalisation_does_not_reach_above_the_anchor(self, tmp_path):
         """The ancestor-reach rule survives: a redundant spelling of an
@@ -650,10 +658,15 @@ class TestAutoExcludePatternNormalisation:
     def test_an_empty_pattern_still_excludes_nothing(self, tmp_path):
         """``normpath("")`` is ``"."``; the separator gate keeps both the
         empty and the bare-dot pattern out of normalisation entirely, so
-        neither can become a match-all."""
+        neither can become a match-all. ``"//"`` is the one that gets past
+        the gate: it normalises to itself, the doubled-separator strip makes
+        it ``"/"``, and it must stay the no-op ``"/"`` already is rather than
+        excluding the whole tree."""
         assert not self._excluded(tmp_path, "", "src/main.cpp")
         assert not self._excluded(tmp_path, ".", "src/main.cpp")
         assert not self._excluded(tmp_path, "/", "src/main.cpp")
+        assert not self._excluded(tmp_path, "//", "src/main.cpp")
+        assert not self._excluded(tmp_path, "///", "src/main.cpp")
 
 
 class TestAutoExcludeInDiscovery:
