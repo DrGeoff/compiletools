@@ -445,6 +445,15 @@ class TestAutoExcludeMatching:
         assert self._excluded(tmp_path, "/src/legacy/*", "src/legacy/old.cpp")
         assert not self._excluded(tmp_path, "/src/legacy", "other/src/legacy/old.cpp")
 
+    def test_a_root_anchor_still_yields_relative_candidates(self):
+        """A repo rooted at ``/`` (or non-git discovery from ``/``) must not
+        lose the relative spellings: ``/`` already ends in the separator, so
+        appending one tests for ``//`` and nothing looks anchored."""
+        assert compiletools.findtargets.is_auto_excluded("/src/vendor/main.cpp", ("vendor",), anchor_root="/")
+        assert compiletools.findtargets.is_auto_excluded("/src/legacy/old.cpp", ("src/legacy",), anchor_root="/")
+        assert compiletools.findtargets.is_auto_excluded("/src/legacy/old.cpp", ("/src/legacy",), anchor_root="/")
+        assert not compiletools.findtargets.is_auto_excluded("/src/legacyish/old.cpp", ("src/legacy",), anchor_root="/")
+
     def test_outside_the_anchor_offers_only_the_basename_to_bare_patterns(self, tmp_path):
         """A file whose realpath escapes the gitroot (an in-tree symlink) must
         not have its ancestor directories scanned: a bare pattern would then

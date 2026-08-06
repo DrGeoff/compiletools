@@ -3,6 +3,7 @@ findtargets.discover_targets_and_reanchor driver, so its target set matches
 what ct-cake --auto would build."""
 
 import os
+import subprocess
 from typing import Any
 
 import pytest
@@ -86,6 +87,49 @@ def test_explicit_target_and_auto_do_not_both_apply(capsys: Any) -> None:
     _run_filelist(sample_dir, ["--auto", "helloworld_cpp.cpp"])
     listed = {line.strip() for line in capsys.readouterr().out.splitlines() if line.strip()}
     assert listed == {os.path.realpath(os.path.join(sample_dir, "helloworld_cpp.cpp"))}
+
+
+@pytest.fixture
+def fixpoint_repo(tmp_path):
+    """A repo whose round-one discovery loads a conf that CHANGES round-two
+    discovery: appbeta/main.cpp is an exe under the gitroot's
+    ``exemarkers = [main]``, and appbeta/ct.conf -- reachable only once that
+    target is discovered -- excludes its own directory.
+
+    A single discovery pass therefore lists appbeta/main.cpp and the
+    re-anchoring fixpoint does not, which is what makes ct-filelist's use of
+    the shared driver observable from the output alone. The exclusion is
+    scoped to appbeta so appalpha stays discovered and an empty output
+    cannot pass the test by accident."""
+    root = tmp_path / "monorepo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    (root / "ct.conf").write_text("exemarkers = [main]\ntestmarkers = unit_test.hpp\n")
+
+    appalpha = root / "appalpha"
+    appalpha.mkdir()
+    (appalpha / "main.cpp").write_text("int main() { return 0; }\n")
+
+    appbeta = root / "appbeta"
+    appbeta.mkdir()
+    (appbeta / "ct.conf").write_text("append-AUTO-EXCLUDE = ${CONF_DIR}\n")
+    # Distinct bodies: the global hash registry refuses to reverse-look-up a
+    # content hash shared by two tracked files.
+    (appbeta / "main.cpp").write_text("int main() { return 1; }\n")
+    return root
+
+
+def test_auto_honours_a_subproject_conf_discovered_mid_pass(fixpoint_repo, capsys: Any) -> None:
+    """ct-filelist must go through discover_targets_and_reanchor, not run
+    one discovery pass. Replacing the driver call in filelist.main with a
+    single FindTargets(...).process(args) leaves appbeta/main.cpp in the
+    output and fails this test; every other test in this file survives that
+    mutation, so this is the one that pins the wiring."""
+    _run_filelist(fixpoint_repo, ["--auto"])
+
+    listed = {line.strip() for line in capsys.readouterr().out.splitlines() if line.strip()}
+    assert os.path.realpath(str(fixpoint_repo / "appalpha" / "main.cpp")) in listed
+    assert os.path.realpath(str(fixpoint_repo / "appbeta" / "main.cpp")) not in listed
 
 
 def test_filelist_parser_keeps_its_own_style_choices() -> None:

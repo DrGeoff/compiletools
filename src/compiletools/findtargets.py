@@ -135,9 +135,12 @@ def is_auto_excluded(filepath, patterns, anchor_root=""):
     absolute = compiletools.wrappedos.realpath(filepath)
     relative = None
     if anchor_root:
+        # An anchor of "/" already ends in the separator; concatenating one
+        # would test for "//" and leave every path looking un-anchored.
         anchor = compiletools.wrappedos.realpath(anchor_root)
-        if absolute.startswith(anchor + os.sep):
-            relative = absolute[len(anchor) + 1 :]
+        prefix = anchor if anchor.endswith(os.sep) else anchor + os.sep
+        if absolute.startswith(prefix):
+            relative = absolute[len(prefix) :]
     candidates = [absolute] if relative is None else [absolute, relative, os.sep + relative]
     components = (relative or compiletools.wrappedos.basename(absolute)).split(os.sep)
     for pattern in patterns:
