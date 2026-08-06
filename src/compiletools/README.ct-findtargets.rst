@@ -63,7 +63,12 @@ excludes the project's own ``tmp`` directory rather than the whole
 checkout when the checkout happens to live under ``/tmp``. Redundant path
 syntax is normalised away first, so ``vendor/`` is gitignore's spelling of
 ``vendor`` and ``./vendor`` and ``src//vendor`` mean what their plain forms
-mean; a leading ``/`` survives, so ``/vendor/`` still anchors.
+mean; a leading ``/`` survives, so ``/vendor/`` still anchors, and extra
+leading slashes read as that same anchored form. A ``..`` inside a pattern
+resolves to the path the pattern names, which differs from gitignore: ``a/../vendor``
+means ``vendor`` and so excludes a ``vendor`` directory at any depth. A
+LEADING ``..`` names a path above the gitroot, where ``--auto`` never
+looks, so ``../vendor`` excludes nothing.
 ct-cake and ct-filelist share this search, so an exclusion set
 in a ct.conf applies to all three; targets those tools are told to build by
 name are never filtered. ct-filelist registers the discovery options

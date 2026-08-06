@@ -632,8 +632,10 @@ def _standard_conf_paths(cap, args):
     The tier list ``create_parser`` computed (bundled < system < venv <
     user < project < cwd) plus an explicit ``-c/--config``, which
     configargparse reads in ADDITION to the tiers. Target-anchored layers
-    are not here: ``_apply_target_conf_layers`` owns those and appends them
-    to the same list as it goes.
+    are absent on the first pass only: ``_apply_target_conf_layers``
+    appends each layer it anchors to this same list, so a re-entrant
+    ``parseargs`` gets them back here as well. The notifier's
+    ``(file, key)`` memo is what keeps that overlap harmless.
     """
     paths = list(getattr(cap, "_default_config_files", None) or [])
     for action in cap._actions:
@@ -658,8 +660,10 @@ def _note_case_mismatched_conf_keys(cap, conf_paths, verbose):
     standard tiers, ``_apply_target_conf_layers`` passes each freshly
     anchored target layer. ``parseargs`` is re-entered on the same parser by
     the ``--auto`` re-anchor driver and by ``resubstitute``, which would
-    re-scan the tiers and repeat every note, so already-noted pairs are
-    remembered on the parser. The memo keys on ``(file, key)`` rather than
+    re-scan the tiers -- and, from the second pass on, the target layers
+    too, since those join the standard list once anchored -- and repeat
+    every note, so already-noted pairs are remembered on the parser. The
+    memo keys on ``(file, key)`` rather than
     the file: two miscased keys in one conf are two separate silent drops
     and each needs naming.
     """
