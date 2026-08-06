@@ -323,7 +323,8 @@ def add_common_arguments(cap, argv=None, variant=None):
         default="warn",
         help=(
             "How pkg-config package failures are handled (default: warn). "
-            "In error mode, processing stops at the first failed package."
+            "In error mode, processing stops on the first failure encountered; "
+            "failures are not reported in declaration order."
         ),
     )
     _add_xxpend_argument(

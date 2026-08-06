@@ -250,6 +250,27 @@ def test_clear_cache_resets_pkg_config_error_mode(monkeypatch):
         assert pkgconfig.cached_pkg_config("missing", "--cflags") == ""
 
 
+def test_switching_to_error_mode_reprobes_a_warm_warn_failure(monkeypatch):
+    """A cached warn-mode failure cannot bypass a later strict-mode query."""
+    calls = []
+
+    def missing(cmd, **_kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="missing")
+
+    monkeypatch.setattr(pkgconfig.subprocess, "run", missing)
+
+    with pytest.warns(UserWarning, match=r"pkg-config package 'missing' not found"):
+        assert pkgconfig.cached_pkg_config("missing", "--cflags") == ""
+    assert len(calls) == 1
+
+    pkgconfig.set_pkg_config_errors("error")
+
+    with pytest.raises(pkgconfig.PkgConfigError, match=r"pkg-config package 'missing' not found"):
+        pkgconfig.cached_pkg_config("missing", "--cflags")
+    assert len(calls) == 2
+
+
 @pytest.mark.parametrize("spec", ["zlib >=", ">= 1.2", ">=1.2", "zlib>= 1.2", "zlib >=1.2"])
 def test_malformed_comparison_gets_an_explicit_diagnostic_without_a_probe(monkeypatch, spec):
     """Specs pkg-config would answer by making something up.

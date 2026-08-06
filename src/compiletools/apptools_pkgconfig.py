@@ -130,6 +130,9 @@ def set_pkg_config_errors(errors: Literal["warn", "error"]) -> None:
     if errors not in ("warn", "error"):
         raise ValueError(f"unsupported pkg-config error mode: {errors!r}")
     global _pkg_config_errors
+    if errors != _pkg_config_errors:
+        cached_pkg_config.cache_clear()
+        _cached_pkg_config_exists.cache_clear()
     _pkg_config_errors = errors
 
 

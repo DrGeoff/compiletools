@@ -234,7 +234,7 @@ class TestPkgConfigGathering:
             context = BuildContext()
             first = gather_inputs(args, context)
 
-            def explode(packages, option, errors="warn"):
+            def explode(packages, option):
                 raise AssertionError("memoized query must not re-run pkg-config")
 
             monkeypatch.setattr(compiletools.apptools_pkgconfig, "_batch_pkg_config", explode)
