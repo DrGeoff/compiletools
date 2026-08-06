@@ -121,18 +121,20 @@ ATOMICITY CONTRACT
 5. Inode swap under a process holding ``user_path`` open is harmless
    on POSIX — the open file descriptor pins the old inode.
 
-If the lock sidecar cannot be created at all (``EACCES``, ``EPERM``,
-``EROFS``, ``ENOTSUP`` — a read-only or permission-denied pool), the
-helper warns and publishes unlocked. That is safe against any trim
-that hits the same failure: ``ct-trim-cache`` refuses to delete an
-entry whose lock it cannot take, so nothing evicts from a pool nothing
-can lock. ``EROFS`` and ``ENOTSUP`` are properties of the pool and
-hold for every peer — ``ENOTSUP`` from ``lockf`` on a perfectly
-writable directory is the case that shows the guarantee rests on
-trim's refusal rather than on directory permissions. ``EACCES`` and
-``EPERM`` can instead be specific to this uid: on a shared pool whose
-directory another user can write and lock, that user's trim can still
-evict mid-publish. A hardlinked
+Four lock-acquisition errnos (``EACCES``, ``EPERM``, ``EROFS``,
+``ENOTSUP``) let the helper warn and publish unlocked. They are
+classified by outcome, not by cause: each can come from the sidecar
+``open`` or from the ``lockf`` / ``flock`` that follows it, so none of
+them implies anything about the cas directory's mode. Proceeding is
+safe against any trim that hits the same failure: ``ct-trim-cache``
+refuses to delete an entry whose lock it cannot take, so nothing
+evicts what nothing can lock. ``EROFS`` and ``ENOTSUP`` are properties
+of the pool and hold for every peer — ``ENOTSUP`` out of ``lockf`` on
+a perfectly writable directory is the case that shows the guarantee
+rests on trim's refusal rather than on directory permissions.
+``EACCES`` and ``EPERM`` can instead be specific to this uid: on a
+shared pool another user can lock, that user's trim can still evict
+mid-publish. A hardlinked
 ``user_path`` survives it — ``nlink`` pins the inode, so only the
 cache name is lost — but a publish that fell back to ``symlink()``
 under ``EXDEV`` can be left dangling. Any other lock error propagates

@@ -585,7 +585,7 @@ class TestCasEntryFreshening:
 
 class TestLockUnavailableFallback:
     def test_publish_proceeds_and_warns_when_the_entry_lock_is_unavailable(self, cas, user, monkeypatch, capsys):
-        """A read-only or lock-hostile cas pool must not break every publish.
+        """An entry lock that cannot be acquired must not break every publish.
         The lock is race protection, not a precondition: warn and carry on.
         """
 
@@ -603,11 +603,16 @@ class TestLockUnavailableFallback:
         publish(str(cas), str(user))
 
         assert user.read_bytes() == cas.read_bytes()
-        assert "lock" in capsys.readouterr().err.lower()
+        warning = capsys.readouterr().err.lower()
+        assert "lock" in warning and "unlocked" in warning, (
+            "the warning must say the publish went ahead without the lock, and must not "
+            f"attribute a cause the errno does not establish: {warning!r}"
+        )
 
     def test_a_transient_lock_error_is_not_swallowed(self, cas, user, monkeypatch):
-        """Only "this pool cannot host a lock sidecar" errnos fall back. An EIO
-        would otherwise be hidden behind a silently unlocked publish.
+        """Only the four errnos an unlocked publish is allowed to proceed
+        through fall back. An EIO would otherwise be hidden behind a silently
+        unlocked publish.
         """
 
         class FailingFileLock:

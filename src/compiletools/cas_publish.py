@@ -67,20 +67,22 @@ import compiletools.locking
 # the recoverable loss apart from a real error.
 EXIT_CONCURRENT_TRIM = 3
 
-# Lock-acquisition errnos that mean "this pool cannot host a lock sidecar at
-# all" (read-only or permission-denied cas dir). Publishing unlocked is safe
-# against any trim that hits the same failure: `_safe_locked_unlink` refuses to
-# delete when `FileLock` raises, so nothing evicts from a pool nothing can lock.
-# EROFS and ENOTSUP are properties of the pool and hold for every peer (ENOTSUP
-# from `lockf` on a perfectly writable directory is the case that shows the
-# invariant is trim's refusal, not directory permissions). EACCES and EPERM can
-# instead be specific to this uid, and a user who CAN lock the directory is free
-# to trim mid-publish: a hardlinked user_path survives on the pinned inode and
-# only the cache name is lost, but the EXDEV symlink fallback can be left
-# dangling.
+# Lock-acquisition errnos an unlocked publish is allowed to proceed through.
+# They are classified by outcome, not by cause: each can come from the sidecar
+# `open` or from the `lockf`/`flock` that follows it, so none of them implies
+# anything about the cas directory's mode.
+# Proceeding is safe against any trim that hits the same failure, because
+# `_safe_locked_unlink` refuses to delete when `FileLock` raises — nothing
+# evicts from an entry nothing can lock. EROFS and ENOTSUP are properties of
+# the pool and hold for every peer (ENOTSUP out of `lockf` on a perfectly
+# writable directory is the case that shows the guarantee rests on trim's
+# refusal). EACCES and EPERM can instead be specific to this uid, and a user
+# who CAN take the lock is free to trim mid-publish: a hardlinked user_path
+# survives on the pinned inode and only the cache name is lost, but the EXDEV
+# symlink fallback can be left dangling.
 # Every other errno propagates — swallowing a transient EIO or ENOSPC into an
 # unlocked publish would hide real trouble.
-_LOCK_UNHOSTABLE_ERRNOS = frozenset({errno.EACCES, errno.EPERM, errno.EROFS, errno.ENOTSUP})
+_UNLOCKED_PUBLISH_ERRNOS = frozenset({errno.EACCES, errno.EPERM, errno.EROFS, errno.ENOTSUP})
 
 
 class ConcurrentTrimError(Exception):
@@ -119,10 +121,10 @@ def _cas_entry_lock(cas_path: str):
             lock_args = compiletools.ct_lock_helper.create_args_from_env()
             stack.enter_context(compiletools.locking.FileLock(cas_path, lock_args))
         except OSError as e:
-            if e.errno not in _LOCK_UNHOSTABLE_ERRNOS:
+            if e.errno not in _UNLOCKED_PUBLISH_ERRNOS:
                 raise
             print(
-                f"Warning: publishing {cas_path} without its entry lock ({e}); this pool cannot host a lock sidecar",
+                f"Warning: entry lock unavailable, publishing {cas_path} unlocked ({e})",
                 file=sys.stderr,
             )
         yield
