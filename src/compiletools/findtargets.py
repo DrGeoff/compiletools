@@ -1,11 +1,13 @@
 import fnmatch
 import os
 import sys
+import traceback
 
 import configargparse
 
 import compiletools.apptools
 import compiletools.build_apply
+import compiletools.configutils
 import compiletools.file_analyzer
 import compiletools.git_utils
 import compiletools.namer
@@ -539,6 +541,23 @@ def _reject_library_slots(cap, args):
     )
 
 
+def _warn_target_set_may_be_incomplete():
+    """Say that the report below is the first discovery pass, not the fixpoint.
+
+    ct-findtargets reports a target set rather than acting on one, so the
+    tree it cannot fully resolve is precisely the tree a user runs it to
+    understand -- exiting empty withholds the answer at the moment it is
+    most wanted. Exiting 0 keeps the list usable to a caller, which leaves
+    stderr as the only channel that can qualify it.
+    """
+    print(
+        "WARNING: discovery stopped re-anchoring after its first pass, so the target "
+        "list below may be incomplete. Resolve the conflict above and re-run to see "
+        "the set ct-cake --auto would build.",
+        file=sys.stderr,
+    )
+
+
 def main(argv=None):
     cap = compiletools.apptools.create_parser("Find C/C++ files with main functions and unit tests", argv=argv)
     add_arguments(cap)
@@ -572,7 +591,19 @@ def main(argv=None):
     # report matches what ct-cake --auto builds even when a discovered
     # target's subproject conf changes the set.
     if args.auto and not any([args.filename, args.static, args.dynamic, args.tests]):
-        args = discover_targets_and_reanchor(args, context)
+        try:
+            args = discover_targets_and_reanchor(args, context)
+        except compiletools.configutils.ConfContradictionError:
+            # Reachable at verbose >= 2 only: _apply_target_conf_layers
+            # re-raises there instead of printing, to keep the traceback.
+            traceback.print_exc()
+            _warn_target_set_may_be_incomplete()
+        except SystemExit as err:
+            # Verbose < 2: _apply_target_conf_layers has already written the
+            # contradiction to stderr and converted it to exit 1.
+            if err.code != 1:
+                raise
+            _warn_target_set_may_be_incomplete()
     styleobj(list(args.filename or []), list(args.tests or []))
 
     return 0

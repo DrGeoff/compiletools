@@ -8,12 +8,12 @@ import pytest
 import compiletools.apptools
 import compiletools.configutils
 import compiletools.file_analyzer
+import compiletools.filelist
 import compiletools.findtargets
 import compiletools.global_hash_registry
 import compiletools.testhelper as uth
 import compiletools.utils
 from compiletools.build_context import BuildContext
-from compiletools.examples_registry import example_path
 
 
 @pytest.fixture(autouse=True)
@@ -331,13 +331,17 @@ class TestFindTargetsMain:
     """Test findtargets.main() entry point."""
 
     def test_main_runs(self, capsys):
-        """Smoke test from a directory whose discovered targets carry no
-        conflicting subproject confs. The repo root's do: --auto discovery
-        there raises ConfContradictionError for every tool on the shared
-        re-anchoring driver, ct-filelist and ct-cake included."""
-        with uth.DirectoryContext(example_path("simple")):
-            with uth.ParserContext():
-                assert compiletools.findtargets.main(argv=["--style=flat", "--shorten"]) == 0
+        """Smoke test from the pytest rootdir.
+
+        This repo's own examples tree carries subproject confs that
+        contradict each other (three examples-end-to-end/*/ct.conf pin
+        different ``-std=`` values), so the re-anchoring walk cannot
+        settle here. That must not stop ct-findtargets reporting: the
+        narrowing of this test to a contradiction-free directory was the
+        regression report for exactly that.
+        """
+        with uth.ParserContext():
+            assert compiletools.findtargets.main(argv=["--style=flat", "--shorten"]) == 0
         assert "helloworld_cpp.cpp" in capsys.readouterr().out
 
 
@@ -829,6 +833,98 @@ def test_an_explicit_target_suppresses_discovery(reanchor_repo, capsys):
             assert compiletools.findtargets.main(["--style=args", named]) == 0
     out = capsys.readouterr().out
     assert out.split() == [named]
+
+
+@pytest.fixture
+def contradicting_conf_repo(tmp_path):
+    """Two discoverable targets whose subproject confs set one key to
+    different values at the same tier -- the shape that makes the
+    re-anchoring fixpoint raise ConfContradictionError.
+
+    Same shape this repo's own tree has: three examples-end-to-end/*/ct.conf
+    pin different ``-std=`` values, which is why a bare ct-findtargets at
+    the pytest rootdir walks the identical path.
+    """
+    root = tmp_path / "contradictionrepo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    (root / "ct.conf").write_text("exemarkers = [main]\ntestmarkers = unit_test.hpp\n")
+    for index, (name, std) in enumerate((("appalpha", "c++20"), ("appbeta", "c++23"))):
+        subproject = root / name
+        subproject.mkdir()
+        (subproject / "ct.conf").write_text(f"CXXFLAGS = -std={std}\n")
+        # Distinct bodies: the global hash registry refuses to reverse-look-up
+        # a content hash shared by two tracked files.
+        (subproject / "main.cpp").write_text(f"int main() {{ return {index}; }}\n")
+    return root
+
+
+def test_a_conf_contradiction_still_reports_the_targets_discovery_found(contradicting_conf_repo, capsys):
+    """The tool a user reaches for to understand a confusing tree must not
+    die of the same confusion.
+
+    Discovery's first pass completes and writes its results onto the
+    caller's namespace before any re-anchor can raise, so what survives is
+    exactly the single-pass set -- which is also what this tool reported
+    before the fixpoint existed.
+    """
+    with uth.DirectoryContext(str(contradicting_conf_repo)):
+        with uth.ParserContext():
+            assert compiletools.findtargets.main(["--style=flat"]) == 0
+    out = capsys.readouterr().out
+    assert os.path.join("appalpha", "main.cpp") in out
+    assert os.path.join("appbeta", "main.cpp") in out
+
+
+def test_the_contradiction_and_the_incompleteness_both_reach_stderr(contradicting_conf_repo, capsys):
+    """Exiting 0 tells a caller the list is usable; it must not also imply
+    the list is complete. stderr is the only channel left to say so, and it
+    has to carry both halves -- what went wrong, and what that costs."""
+    with uth.DirectoryContext(str(contradicting_conf_repo)):
+        with uth.ParserContext():
+            compiletools.findtargets.main(["--style=flat"])
+    err = capsys.readouterr().err
+    assert "conflicting subproject configs" in err
+    assert "may be incomplete" in err
+
+
+def test_the_verbose_two_path_reports_too_and_keeps_its_traceback(contradicting_conf_repo, capsys):
+    """Two exceptions reach main, so both need covering.
+
+    _apply_target_conf_layers prints the contradiction and converts it to
+    SystemExit(1) below verbose 2, and re-raises ConfContradictionError at
+    verbose 2 and above so the traceback survives. Catching only the first
+    would leave ``-vv`` -- the flag a user reaches for when the tree is
+    confusing -- as the one mode that still reports nothing.
+    """
+    with uth.DirectoryContext(str(contradicting_conf_repo)):
+        with uth.ParserContext():
+            assert compiletools.findtargets.main(["--style=flat", "-vv"]) == 0
+    captured = capsys.readouterr()
+    assert os.path.join("appbeta", "main.cpp") in captured.out
+    assert "Traceback (most recent call last)" in captured.err
+    assert "may be incomplete" in captured.err
+
+
+def test_a_settling_repo_gets_no_incompleteness_warning(reanchor_repo, capsys):
+    """Control. Without it the assertion above passes just as well against a
+    version that warns on every invocation, which would make the warning
+    worthless as a signal."""
+    with uth.DirectoryContext(str(reanchor_repo)):
+        with uth.ParserContext():
+            assert compiletools.findtargets.main(["--style=flat"]) == 0
+    assert "may be incomplete" not in capsys.readouterr().err
+
+
+def test_ct_filelist_still_fails_hard_on_the_same_repo(contradicting_conf_repo):
+    """The catch belongs to ct-findtargets alone, never to the shared
+    driver. ct-filelist and ct-cake act on the target set instead of
+    reporting it, so a set discovery could not finish is not one they may
+    proceed with."""
+    with uth.DirectoryContext(str(contradicting_conf_repo)):
+        with uth.ParserContext():
+            with pytest.raises(SystemExit):
+                compiletools.filelist.main(["--style=flat"])
 
 
 @pytest.fixture
