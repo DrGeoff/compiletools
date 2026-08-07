@@ -1443,6 +1443,19 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
         ``const``. Returns None for anything else -- a lone ``store_true``
         keeps stock behavior. An ambiguous match (more than one candidate)
         also returns None rather than guessing.
+
+        The CANDIDATE is typed only by its ``const``, not by its action
+        class, so ``utils.add_boolean_argument``'s value-converting arm is
+        reachable too: there the positive half is ``nargs="?"`` with
+        ``const=True`` and only the ``--no-<name>`` half is a
+        ``store_false``. Requiring both halves to be flag actions left
+        ``no-use-mtime = False`` (and the same spelling for
+        ``no-preprocess``, ``no-file-locking`` and
+        ``no-allow-magic-source-in-header``) inert -- the identical defect
+        in the double-negative spelling. Emitting a bare ``--use-mtime``
+        for that key is safe because configargparse appends its conf and
+        env tokens AFTER the command line, so the optional value slot has
+        no user positional to swallow.
         """
         if not isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction)):
             return None
@@ -1451,7 +1464,6 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
             for other in self._actions
             if other is not action
             and other.dest == action.dest
-            and isinstance(other, (argparse._StoreTrueAction, argparse._StoreFalseAction))
             and other.const is not action.const
             and other.option_strings
         ]
@@ -1512,24 +1524,37 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
         the one place this changes an outcome rather than restoring one --
         the inert reading left the default standing.
 
-        Scope: two conflicting keys within the conf hierarchy itself
-        (``auto = True`` in one file, ``no-auto = True`` in another) still
-        reach the mutually exclusive group and still exit 2 -- unchanged,
-        and out of reach of a function handed one item at a time with no
-        view of the growing argv.
+        Scope -- three ways two sources still reach the mutually exclusive
+        group and exit 2, all out of reach of a function handed one item at
+        a time with no view of the growing argv. Two conflicting keys within
+        the conf hierarchy itself (``auto = True`` in one file, ``no-auto =
+        True`` in another). Two env vars naming opposite halves (``AUTO=1``
+        with ``NO_AUTO=1``): configargparse converts every env item before
+        it splices any of them into the argv, so neither call can see the
+        other. And a caller passing ``config_file_contents`` directly, where
+        configargparse skips ``_open_config_files`` entirely, leaving the
+        stash un-widened so an env var contradicting a conf key exits 2
+        instead of winning -- no compiletools caller does (pinned by
+        ``test_conf_boolean_flags.TestTheConfigFileContentsPath``).
         """
         partner = self._boolean_negation_partner(action)
         if partner is None:
+            return super().convert_item_to_command_line_arg(action, key, value)
+
+        # configargparse's own boolean vocabulary, deliberately not
+        # utils.to_bool's wider one and not whitespace-tolerant either: a
+        # value it rejects must keep producing its error, not silently gain
+        # a meaning on this code path only. Checked BEFORE the suppression
+        # so a malformed value is diagnosed whether or not the command line
+        # happens to name the pair.
+        requested = _CONF_BOOLEAN_WORDS.get(value.lower()) if isinstance(value, str) else None
+        if requested is None:
             return super().convert_item_to_command_line_arg(action, key, value)
 
         cli = getattr(self, "_ct_command_line_args", None) or []
         if self._command_line_names_any(cli, (action, partner)):
             return []
 
-        # configargparse's own boolean vocabulary, deliberately not
-        # utils.to_bool's wider one: a value it rejects must keep producing
-        # its error, not silently gain a meaning on this code path only.
-        requested = _CONF_BOOLEAN_WORDS.get(value.strip().lower()) if isinstance(value, str) else None
         if requested is False:
             # A conf key names an option; a truthy value applies that option
             # (stock behavior, delegated below) and a falsey value applies
