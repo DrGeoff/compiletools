@@ -470,3 +470,56 @@ def test_a_repeated_batch_warning_is_forwarded_only_once(monkeypatch, capsys):
 
     err = capsys.readouterr().err
     assert err.count("Variable 'prefix' not defined") == 1
+
+
+def test_clear_cache_resets_the_forwarded_stderr_dedup_set(monkeypatch, capsys):
+    """``clear_cache`` must reopen the gate on an already-forwarded triple.
+
+    The dedup set is process-global, so without an explicit reset here the
+    only thing proving it works is incidental worker-seeding order under
+    ``-n`` -- a renamed or reordered test can silently stop exercising the
+    ``.clear()`` call in ``clear_cache`` without any test going red. Routed
+    through ``_run_pkg_config_query`` itself (not a manual ``print``) so the
+    assertion depends on the production gate, not on the test's own echo.
+    """
+
+    def succeeds_with_a_warning(cmd, **_kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout="-I/opt/x", stderr="Variable 'prefix' not defined")
+
+    monkeypatch.setattr(pkgconfig.subprocess, "run", succeeds_with_a_warning)
+
+    assert pkgconfig._run_pkg_config_query("chatty", "--cflags") == "-I/opt/x"
+    pkgconfig.clear_cache()
+    assert pkgconfig._run_pkg_config_query("chatty", "--cflags") == "-I/opt/x"
+
+    err = capsys.readouterr().err
+    assert err.count("Variable 'prefix' not defined") == 2
+
+
+def test_a_different_stderr_for_the_same_package_and_option_is_not_suppressed(monkeypatch, capsys):
+    """The dedup key is ``(package, option, stderr)``, not just ``(package,
+    option)``: a second, different warning from the same query must still
+    reach the user, while a literal repeat of either stays suppressed."""
+
+    responses = iter(
+        [
+            "first warning",
+            "first warning",
+            "second warning",
+            "first warning",
+        ]
+    )
+
+    def succeeds_with_a_warning(cmd, **_kwargs):
+        if "--exists" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="-I/opt/x", stderr=next(responses))
+
+    monkeypatch.setattr(pkgconfig.subprocess, "run", succeeds_with_a_warning)
+
+    for _ in range(4):
+        assert pkgconfig._run_pkg_config_query("chatty", "--cflags") == "-I/opt/x"
+
+    err = capsys.readouterr().err
+    assert err.count("first warning") == 1
+    assert err.count("second warning") == 1

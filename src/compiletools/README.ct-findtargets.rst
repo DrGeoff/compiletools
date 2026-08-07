@@ -27,8 +27,8 @@ ct-findtargets [-h] [-c CONFIG_FILE] [--variant VARIANT] [-v] [-q]
                     [--auto-exclude AUTO_EXCLUDE]
                     [--append-AUTO-EXCLUDE AUTO_EXCLUDE]
                     [--prepend-AUTO-EXCLUDE AUTO_EXCLUDE]
-                    [--style {null,flat,indent,args}]
                     [--filenametestmatch | --no-filenametestmatch]
+                    [--style {null,flat,indent,args}]
                     [--dynamic [DYNAMIC ...]] [--static [STATIC ...]]
                     [--tests [TESTS ...]]
                     [filename ...]
@@ -65,9 +65,12 @@ deduplicating paths across the two modes must resolve them itself.
 
 ``--static`` and ``--dynamic`` are registered (so they appear in
 ``--help`` and are conf-settable) but rejected with an error before any
-target discovery or pkg-config work runs: ct-findtargets lists
-executables and tests only, and its output styles have no bucket for
-libraries, so accepting a library target would either mislabel it or
+target discovery or pkg-config work runs, unless the value arrives only
+through a conf tier anchored on an explicit target -- discovered only
+during re-anchoring, after gather/apply_effects have already run --
+which a second, post-parseargs backstop call catches: ct-findtargets
+lists executables and tests only, and its output styles have no bucket
+for libraries, so accepting a library target would either mislabel it or
 silently omit it from output that scripts (such as ``ct-build``)
 consume. Name executables as positional arguments and tests with
 ``--tests``, and build libraries with ``ct-create-makefile
