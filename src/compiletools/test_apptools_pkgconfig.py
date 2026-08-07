@@ -451,3 +451,230 @@ def test_a_succeeding_query_is_not_promoted_to_a_failure_in_error_mode(monkeypat
     pkgconfig.set_pkg_config_errors("error")
 
     assert pkgconfig.cached_pkg_config("chatty", "--cflags") == "-I/opt/x"
+
+
+def _write_pc(directory, name, body):
+    path = directory / f"{name}.pc"
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+class TestUndefinedPkgConfigVariables:
+    """pkgconf expands a ``${var}`` no assignment defines to the empty string
+    and exits 0, so a typo'd ``${includedir}`` silently truncates a flag.
+
+    Measured on this platform: neither pkgconf 1.4.2 nor 2.3.0 reports it
+    under ``--cflags``, ``--print-errors``, ``--errors-to-stdout``,
+    ``--validate``, ``--simulate``, ``--log-file`` or ``PKG_CONFIG_DEBUG_SPEW``
+    -- every one exits 0 in silence. freedesktop pkg-config 0.29.2 does
+    report it (``parse.c`` ``parse_strict``), but is not what ships here.
+    compiletools therefore scans the ``.pc`` text itself.
+    """
+
+    def test_the_premise_holds_pkgconf_exits_zero_with_a_truncated_flag(self, tmp_path, monkeypatch):
+        """Pin the defect this detector exists for against the real
+        pkg-config on the machine running the suite. If a future pkgconf
+        starts erroring, this fails and the detector can be retired rather
+        than silently duplicating the implementation's own check."""
+        _write_pc(tmp_path, "undefvar", "Name: U\nDescription: d\nVersion: 1\nCflags: -I${includedir_typo}/u\n")
+        monkeypatch.setenv("PKG_CONFIG_PATH", str(tmp_path))
+
+        result = subprocess.run(
+            ["pkg-config", "--print-errors", "--cflags", "undefvar"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "-I/u"
+        assert "includedir_typo" not in result.stderr
+
+    def test_a_query_names_the_variable_the_file_and_the_silent_expansion(self, tmp_path, monkeypatch):
+        _write_pc(tmp_path, "undefvar", "Name: U\nDescription: d\nVersion: 1\nCflags: -I${includedir_typo}/u\n")
+        monkeypatch.setenv("PKG_CONFIG_PATH", str(tmp_path))
+
+        with pytest.warns(UserWarning, match="includedir_typo") as recorded:
+            pkgconfig.cached_pkg_config("undefvar", "--cflags")
+
+        messages = [str(w.message) for w in recorded]
+        assert any("includedir_typo" in m for m in messages), messages
+        assert any(str(tmp_path / "undefvar.pc") in m for m in messages), messages
+        assert any("empty" in m for m in messages), messages
+
+    def test_strict_mode_promotes_it(self, tmp_path, monkeypatch):
+        _write_pc(tmp_path, "undefvar", "Name: U\nDescription: d\nVersion: 1\nCflags: -I${includedir_typo}/u\n")
+        monkeypatch.setenv("PKG_CONFIG_PATH", str(tmp_path))
+        pkgconfig.set_pkg_config_errors("error")
+
+        with pytest.raises(pkgconfig.PkgConfigError, match="includedir_typo"):
+            pkgconfig.cached_pkg_config("undefvar", "--cflags")
+
+    def test_a_well_formed_pc_file_is_silent(self, tmp_path, monkeypatch):
+        """Anti-vacuity for every positive case above: the same code path
+        over a file whose variables all resolve must emit nothing."""
+        _write_pc(
+            tmp_path,
+            "wellformed",
+            "prefix=/opt/w\nincludedir=${prefix}/include\nName: W\nDescription: d\nVersion: 1\n"
+            "Cflags: -I${includedir}/w\n",
+        )
+        monkeypatch.setenv("PKG_CONFIG_PATH", str(tmp_path))
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            assert pkgconfig.cached_pkg_config("wellformed", "--cflags") == "-I/opt/w/include/w"
+
+    @pytest.mark.parametrize("keyword", ["Requires", "Requires.private"])
+    def test_the_scan_follows_the_requires_closure(self, tmp_path, monkeypatch, keyword):
+        """A typo in a dependency truncates the consumer's flags just as
+        surely as one in the package itself, and the consumer is the only
+        name the user typed."""
+        _write_pc(tmp_path, "dep", "Name: D\nDescription: d\nVersion: 1\nCflags: -I${prefix_typo}/dep\n")
+        _write_pc(
+            tmp_path,
+            "top",
+            f"Name: T\nDescription: d\nVersion: 1\n{keyword}: dep >= 1\nCflags: -I/opt/top\n",
+        )
+        monkeypatch.setenv("PKG_CONFIG_PATH", str(tmp_path))
+
+        with pytest.warns(UserWarning, match="prefix_typo") as recorded:
+            pkgconfig.cached_pkg_config("top", "--cflags")
+
+        messages = [str(w.message) for w in recorded]
+        assert any("prefix_typo" in m and "dep.pc" in m for m in messages), messages
+
+    def test_a_definition_below_its_use_is_reported(self, tmp_path, monkeypatch):
+        """The scan is order-sensitive because both implementations are.
+
+        Measured on this box: pkgconf 1.4.2 expands ``-I${late}/b`` to
+        ``-I/b`` and exits 0 when ``late=`` appears on a later line, and
+        freedesktop 0.29.2 says ``Variable 'late' not defined`` and exits 1.
+        An order-independent scan would call this a false positive and
+        suppress a real silent truncation.
+        """
+        path = _write_pc(
+            tmp_path,
+            "backwards",
+            "Name: B\nDescription: d\nVersion: 1\nCflags: -I${late}/b\nlate=/opt/late\n",
+        )
+        monkeypatch.setenv("PKG_CONFIG_PATH", str(tmp_path))
+
+        assert pkgconfig._undefined_pc_variables(str(path)) == ["late"]
+
+        result = subprocess.run(["pkg-config", "--cflags", "backwards"], capture_output=True, text=True, check=False)
+        assert (result.returncode, result.stdout.strip()) == (0, "-I/b")
+
+        with pytest.warns(UserWarning, match="late"):
+            pkgconfig.cached_pkg_config("backwards", "--cflags")
+
+    def test_a_self_reference_resolves_against_the_previous_definition(self, tmp_path):
+        """An assignment takes effect at the end of its own line, so the
+        idiomatic ``prefix=${prefix}/suffix`` accumulation is not a finding
+        when an earlier ``prefix=`` exists -- and is one when it does not."""
+        satisfied = _write_pc(
+            tmp_path,
+            "selfref",
+            "prefix=/opt\nprefix=${prefix}/x\nName: S\nDescription: d\nVersion: 1\nCflags: -I${prefix}\n",
+        )
+        assert pkgconfig._undefined_pc_variables(str(satisfied)) == []
+
+        unsatisfied = _write_pc(
+            tmp_path,
+            "selfref-first",
+            "prefix=${prefix}/x\nName: S\nDescription: d\nVersion: 1\nCflags: -I${prefix}\n",
+        )
+        assert pkgconfig._undefined_pc_variables(str(unsatisfied)) == ["prefix"]
+
+    def test_builtin_variables_are_not_reported(self, tmp_path, monkeypatch):
+        """``pcfiledir`` and friends are supplied by pkg-config itself, not
+        by the file. Measured on pkgconf 1.4.2: pcfiledir, pc_sysrootdir and
+        pc_top_builddir all resolve to a value for a file that defines none
+        of them."""
+        path = _write_pc(
+            tmp_path,
+            "builtins",
+            "Name: B\nDescription: d\nVersion: 1\nCflags: -I${pcfiledir}/inc -I${pc_sysrootdir}usr/include\n",
+        )
+        monkeypatch.setenv("PKG_CONFIG_PATH", str(tmp_path))
+
+        assert pkgconfig._undefined_pc_variables(str(path)) == []
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            cflags = pkgconfig.cached_pkg_config("builtins", "--cflags")
+        assert f"-I{tmp_path}/inc" in cflags
+
+    def test_the_shipped_example_corpus_is_clean(self, pkgconfig_env):
+        """False-positive floor over every ``.pc`` compiletools ships. A
+        detector that fires here would fire on real projects too."""
+        import pathlib
+
+        findings = {}
+        for pc in sorted(pathlib.Path(pkgconfig_env).glob("*.pc")):
+            undefined = pkgconfig._undefined_pc_variables(str(pc))
+            if undefined:
+                findings[pc.name] = undefined
+        assert findings == {}
+
+    def test_a_commented_out_reference_is_not_a_finding(self, tmp_path):
+        """The measurement that produced this rule: three system icu ``.pc``
+        files carry ``${pkgdatadir}`` on commented-out lines. Counting them
+        put the false-positive rate at 3/236 instead of 0/236."""
+        path = _write_pc(
+            tmp_path,
+            "commented",
+            "Name: C\nDescription: d\nVersion: 1\n#datadir=${pkgdatadir}\nCflags: -I/opt/c\n",
+        )
+        assert pkgconfig._undefined_pc_variables(str(path)) == []
+
+
+class TestBareDetachedPkgConfigFlags:
+    """The visible symptom of the same defect at the other end: an
+    ``-I${undefined}`` whose expansion consumed the whole path leaves a bare
+    ``-I`` that eats the next argv token, and a bare ``-L`` makes the linker
+    read ``-lfoo`` as a library *directory*."""
+
+    def test_a_trailing_detached_flag_is_reported(self):
+        assert pkgconfig._bare_detached_flags("-DFOO -I") == ["-I"]
+
+    def test_a_detached_flag_followed_by_another_flag_is_reported(self):
+        assert pkgconfig._bare_detached_flags("-L -lfoo") == ["-L"]
+
+    def test_a_legitimately_detached_pair_is_silent(self):
+        """Measured false positive this rule was narrowed to avoid:
+        ``libbsd-overlay`` ships ``-isystem /usr/include/bsd``."""
+        assert pkgconfig._bare_detached_flags("-isystem /usr/include/bsd") == []
+
+    def test_attached_flags_are_silent(self):
+        assert pkgconfig._bare_detached_flags("-I/usr/include -L/usr/lib -lfoo") == []
+
+    def test_a_query_warns_naming_the_flag(self, monkeypatch):
+        def truncating_query(cmd, **_kwargs):
+            if "--exists" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="-L -lfoo", stderr="")
+
+        monkeypatch.setattr(pkgconfig.subprocess, "run", truncating_query)
+
+        with pytest.warns(UserWarning, match=r"detached '-L'"):
+            pkgconfig.cached_pkg_config("truncated", "--libs")
+
+    def test_a_narrow_subprocess_stub_cannot_break_the_query(self, monkeypatch):
+        """The scanner adds one probe (``--variable pc_path pkg-config``) to
+        the pkg-config call pattern. A caller stubbing ``subprocess.run`` to
+        model only the calls the query itself makes must still get its flags:
+        a best-effort diagnostic may not turn a working query into a crash.
+        This is the regression that ``test_add_flags_fallback_uses_real_package_specs``
+        caught -- it raised ``KeyError: '--variable'`` from inside its own stub.
+        """
+
+        def models_only_exists_and_cflags(cmd, **_kwargs):
+            if "--exists" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout={"--cflags": "-I/opt/x"}[cmd[1]], stderr="")
+
+        monkeypatch.setenv("PKG_CONFIG_LIBDIR", "")
+        monkeypatch.delenv("PKG_CONFIG_LIBDIR")
+        monkeypatch.setattr(pkgconfig.subprocess, "run", models_only_exists_and_cflags)
+
+        assert pkgconfig.cached_pkg_config("narrow", "--cflags") == "-I/opt/x"

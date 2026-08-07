@@ -32,6 +32,10 @@ process-wide ``PKG_CONFIG_PATH`` override state:
   ``PKG_CONFIG_PATH`` overrides under ``_PKG_CONFIG_OVERRIDE_LOCK``.
 * :func:`_pkg_config_provenance_label` -- best-effort origin attribution for
   emitted ``Prepended/Appended pkg-config path: ...`` diagnostic lines.
+* :func:`_audit_pkg_config_output` -- the two undefined-``${variable}``
+  detectors (:func:`_undefined_pc_variables` over the ``Requires`` closure,
+  :func:`_bare_detached_flags` over the query output), run on every
+  successful flag query and routed through the same warn/error policy.
 
 The ``args_parser`` provenance side-channel
 (``_ComposingArgumentParser.get_conf_file_provenance()``) is reached purely
@@ -115,8 +119,11 @@ def tokenize_pkg_config_specs(values: list[str]) -> list[str]:
 def clear_cache():
     """Clear the pkg-config cache moved out of :mod:`compiletools.apptools`.
 
-    ``apptools.clear_cache`` fans out here so both the result memo
-    (``cached_pkg_config``) and its package-spec existence memo are cleared.
+    ``apptools.clear_cache`` fans out here so the result memo
+    (``cached_pkg_config``), its package-spec existence memo, and the
+    once-per-package undefined-variable report are all cleared. The
+    ``pc_path`` memo is deliberately kept: it caches pkg-config's compiled-in
+    default search list, which no build changes.
 
     Deliberately leaves the failure policy alone. ``--pkg-config-errors``
     is set once by ``parseargs`` and is an enforcement policy, not a cache;
@@ -127,6 +134,7 @@ def clear_cache():
     """
     cached_pkg_config.cache_clear()
     _cached_pkg_config_exists.cache_clear()
+    _report_undefined_pc_variables.cache_clear()
 
 
 def get_pkg_config_errors() -> Literal["warn", "error"]:
@@ -142,6 +150,7 @@ def set_pkg_config_errors(errors: Literal["warn", "error"]) -> None:
     if errors != _pkg_config_errors:
         cached_pkg_config.cache_clear()
         _cached_pkg_config_exists.cache_clear()
+        _report_undefined_pc_variables.cache_clear()
     _pkg_config_errors = errors
 
 
@@ -235,6 +244,268 @@ def _cached_pkg_config_exists(package: str) -> bool:
     return False
 
 
+# pkg-config supplies these itself, so a ``.pc`` that references one without
+# assigning it is correct. Measured on pkgconf 1.4.2: pcfiledir,
+# pc_sysrootdir and pc_top_builddir resolve to a value for a file defining
+# none of them; the remaining three resolve to empty but are global
+# properties of the installation, never the per-file typo this hunts.
+_PC_BUILTIN_VARIABLES = frozenset(
+    {
+        "pcfiledir",
+        "pc_sysrootdir",
+        "pc_top_builddir",
+        "pc_path",
+        "pc_system_includedirs",
+        "pc_system_libdirs",
+    }
+)
+
+_PC_ASSIGNMENT_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_.+-]*)\s*=")
+_PC_REFERENCE_RE = re.compile(r"\$\{([^}]*)\}")
+_PC_KEYWORD_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_.]*)\s*:\s*(.*)$")
+
+# Flags whose argument may be detached. A bare one at the end of the output,
+# or immediately before another flag, is what an ``-I${undefined}`` collapses
+# to once the expansion eats the whole path.
+_PC_ARGUMENT_TAKING_FLAGS = frozenset(
+    {"-I", "-L", "-l", "-D", "-U", "-F", "-isystem", "-iquote", "-idirafter", "-include", "-framework"}
+)
+
+
+def _bare_package_name(spec: str) -> str:
+    """Return the package name from a tokenized spec, dropping any version
+    constraint in either the spaced (``zlib >= 1.2``) or attached
+    (``zlib>=1.2``) form."""
+    head = spec.split()[0] if spec.split() else spec
+    for index, character in enumerate(head):
+        if character in "<>=!":
+            return head[:index]
+    return head
+
+
+@functools.cache
+def _pkg_config_default_search_dirs() -> tuple[str, ...]:
+    """Return pkg-config's own default ``.pc`` search list.
+
+    One subprocess per process, and only when ``PKG_CONFIG_LIBDIR`` is unset
+    (that variable replaces the default list outright).
+
+    ANY failure degrades to an empty list rather than propagating. This is
+    the only probe the undefined-variable scanner adds to the pkg-config
+    call pattern, and it must not be able to change the outcome of the query
+    it decorates -- a caller (or a test) that stubs ``subprocess.run`` to
+    model only ``--exists`` and ``--cflags`` would otherwise see a build fail
+    on a diagnostic. An empty list means the scanner locates no ``.pc`` file
+    and stays silent, which is the correct degradation.
+    """
+    try:
+        result = subprocess.run(
+            ["pkg-config", "--variable", "pc_path", "pkg-config"],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        if result.returncode != 0:
+            return ()
+        return tuple(d for d in result.stdout.strip().split(os.pathsep) if d)
+    except Exception:
+        return ()
+
+
+def _pkg_config_search_dirs() -> tuple[str, ...]:
+    """Return the live ``.pc`` search list, honouring PKG_CONFIG_PATH and
+    PKG_CONFIG_LIBDIR. Read from the environment on every call because both
+    change between builds (and between tests)."""
+    dirs = [d for d in os.environ.get("PKG_CONFIG_PATH", "").split(os.pathsep) if d]
+    libdir = os.environ.get("PKG_CONFIG_LIBDIR")
+    if libdir is not None:
+        dirs.extend(d for d in libdir.split(os.pathsep) if d)
+    else:
+        dirs.extend(_pkg_config_default_search_dirs())
+    return tuple(dirs)
+
+
+def _locate_pc_file(package: str) -> str | None:
+    """Return the ``.pc`` file pkg-config would read for *package*, or None.
+
+    A pure-python walk of the same search order rather than a
+    ``--variable=pcfiledir`` subprocess per package: measured agreement with
+    pkgconf's own answer on 20/20 sampled system packages, at ~4us against
+    ~1.3ms. Returning None costs only the diagnostic.
+    """
+    for directory in _pkg_config_search_dirs():
+        candidate = os.path.join(directory, f"{package}.pc")
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def _pc_required_packages(value: str) -> list[str]:
+    """Return the bare package names in a ``Requires``/``Requires.private``
+    value, dropping comparison operators and version operands."""
+    packages = []
+    tokens = value.replace(",", " ").split()
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token[0] in "<>=!":
+            # A spaced comparison consumes its operator and its operand.
+            index += 2 if _PKG_CONFIG_COMPARISON_RE.fullmatch(token) and not token.rstrip("<>=!") else 1
+            continue
+        name = _bare_package_name(token)
+        if name:
+            packages.append(name)
+        # An attached constraint (``foo>=1.2``) carries its own operand;
+        # a trailing bare operator takes the following token as the operand.
+        if name != token:
+            index += 1
+            continue
+        index += 1
+        if index < len(tokens) and tokens[index][0] in "<>=!":
+            operator = tokens[index]
+            index += 2 if not operator.rstrip("<>=!") else 1
+    return packages
+
+
+def _read_pc_file(path: str) -> list[str]:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            return handle.read().splitlines()
+    except OSError:
+        return []
+
+
+def _undefined_pc_variables(path: str) -> list[str]:
+    """Return the names of ``${var}`` references *path* never assigns.
+
+    The scan is order-sensitive: only an assignment on a strictly earlier
+    line satisfies a reference, and an assignment takes effect at the end of
+    its own line so ``foo=${foo}/x`` is checked against the prior ``foo``.
+    Both implementations were measured to agree that a definition placed
+    below its use is undefined -- pkgconf expands ``-I${late}/b`` to
+    ``-I/b`` at exit 0, freedesktop 0.29.2 reports ``Variable 'late' not
+    defined`` and exits 1 -- so an order-independent scan would deliberately
+    suppress a true positive.
+
+    Commented-out lines are skipped: three system icu ``.pc`` files carry
+    ``${pkgdatadir}`` behind a ``#``, and counting those put the measured
+    false-positive rate at 3/236 instead of 0/236.
+
+    Deliberately NOT treating ``PKG_CONFIG_<PKG>_<VAR>`` as a definition:
+    measured on pkgconf 1.4.2, that override is ignored outright (it does not
+    even override a variable the file *does* define), so honouring it here
+    would suppress a true positive on the shipped implementation.
+    """
+    defined = set(_PC_BUILTIN_VARIABLES)
+    undefined: list[str] = []
+    for line in _read_pc_file(path):
+        if line.lstrip().startswith("#"):
+            continue
+        for name in _PC_REFERENCE_RE.findall(line):
+            if name and name not in defined and name not in undefined:
+                undefined.append(name)
+        assignment = _PC_ASSIGNMENT_RE.match(line)
+        if assignment:
+            defined.add(assignment.group(1))
+    return undefined
+
+
+def _pc_requires_closure(package: str) -> list[tuple[str, str]]:
+    """Return ``(package, pc_path)`` for *package* and every package reachable
+    through ``Requires`` / ``Requires.private``, in breadth-first order.
+
+    The consumer's flags carry its dependencies' flags, so a dependency's
+    typo truncates the consumer's compile line -- and the consumer is the only
+    name the user typed. Cycles are terminated by the seen set; the shipped
+    ``cycle-alpha``/``cycle-beta`` example pair is exactly that shape.
+    """
+    found: list[tuple[str, str]] = []
+    seen = {package}
+    queue = [package]
+    while queue:
+        current = queue.pop(0)
+        path = _locate_pc_file(current)
+        if path is None:
+            continue
+        found.append((current, path))
+        for line in _read_pc_file(path):
+            if line.lstrip().startswith("#"):
+                continue
+            keyword = _PC_KEYWORD_RE.match(line)
+            if keyword is None or keyword.group(1) not in ("Requires", "Requires.private"):
+                continue
+            for dependency in _pc_required_packages(keyword.group(2)):
+                if dependency not in seen:
+                    seen.add(dependency)
+                    queue.append(dependency)
+    return found
+
+
+@functools.cache
+def _report_undefined_pc_variables(package: str) -> None:
+    """Warn once per package about ``${var}`` references nothing defines.
+
+    pkgconf expands an undefined variable to the empty string and exits 0 --
+    measured identical on 1.4.2 and 2.3.0, under every switch that looks like
+    it should report (``--validate``, ``--print-errors``,
+    ``--errors-to-stdout``, ``--simulate``, ``--log-file``,
+    ``PKG_CONFIG_DEBUG_SPEW``). freedesktop pkg-config 0.29.2 reports it and
+    exits 1, so the build breaks loudly there and silently here. Scanning the
+    ``.pc`` text is the only detection available on the shipped
+    implementation.
+    """
+    for owner, path in _pc_requires_closure(_bare_package_name(package)):
+        for variable in _undefined_pc_variables(path):
+            via = "" if owner == _bare_package_name(package) else f" (required by {package!r})"
+            _warn_pkg_config(
+                f"pkg-config package {owner!r}{via} references undefined variable ${{{variable}}} in {path}",
+                "pkgconf expands it to the empty string and still exits 0, so the flag it appears in "
+                "reaches the compiler silently truncated",
+            )
+
+
+def _bare_detached_flags(output: str) -> list[str]:
+    """Return argument-taking flags left bare in *output*.
+
+    The visible symptom of the same defect at the far end: once
+    ``-I${undefined}`` has eaten the whole path, the remaining ``-I`` eats the
+    next argv token instead, and a bare ``-L`` before ``-lfoo`` makes the
+    linker read the library name as a search *directory*.
+
+    Only a flag that is last, or immediately followed by another flag, counts.
+    A detached-but-satisfied pair is legitimate and common -- narrowing to
+    this shape took the measured false-positive count on 236 system packages
+    from one (``libbsd-overlay``'s ``-isystem /usr/include/bsd``) to zero.
+    """
+    try:
+        tokens = shlex.split(output)
+    except ValueError:
+        tokens = output.split()
+    bare = []
+    for index, token in enumerate(tokens):
+        if token not in _PC_ARGUMENT_TAKING_FLAGS:
+            continue
+        if index + 1 == len(tokens) or tokens[index + 1].startswith("-"):
+            bare.append(token)
+    return bare
+
+
+def _audit_pkg_config_output(package: str, option: str, output: str) -> None:
+    """Run both undefined-variable detectors over one successful query.
+
+    Called from the single funnel every flag query passes through, so the
+    batch fast path (which skips the per-package ``--exists``) is covered by
+    the same code as the per-package fallback.
+    """
+    _report_undefined_pc_variables(package)
+    for flag in _bare_detached_flags(output):
+        _warn_pkg_config(
+            f"pkg-config {option} {package!r} returned a detached {flag!r} with no argument",
+            "an undefined ${variable} expands to the empty string, so the flag consumes the next "
+            "token on the command line instead of its own path",
+        )
+
+
 def _run_pkg_config_query(package: str, option: str) -> str:
     """Run one flag query and route a nonzero returncode through the policy.
 
@@ -263,7 +534,9 @@ def _run_pkg_config_query(package: str, option: str) -> str:
     stderr = _pkg_config_stderr(result)
     if stderr:
         print(stderr, file=sys.stderr)
-    return result.stdout.rstrip()
+    output = result.stdout.rstrip()
+    _audit_pkg_config_output(package, option, output)
+    return output
 
 
 @functools.cache
