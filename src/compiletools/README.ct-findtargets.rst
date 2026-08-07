@@ -29,6 +29,7 @@ ct-findtargets [-h] [-c CONFIG_FILE] [--variant VARIANT] [-v] [-q]
                     [--prepend-AUTO-EXCLUDE AUTO_EXCLUDE]
                     [--style {null,flat,indent,args}]
                     [--filenametestmatch | --no-filenametestmatch]
+                    [--dynamic [DYNAMIC ...]] [--static [STATIC ...]]
                     [--tests [TESTS ...]]
                     [filename ...]
 
@@ -62,13 +63,18 @@ unresolved. Harmless for ``ct-build``, which feeds the printed string
 straight to ``ct-create-makefile``, but a caller comparing or
 deduplicating paths across the two modes must resolve them itself.
 
-``--static`` and ``--dynamic`` are rejected with an error:
-ct-findtargets lists executables and tests only, and its output styles
-have no bucket for libraries, so accepting a library target would
-either mislabel it or silently omit it from output that scripts (such
-as ``ct-build``) consume. Name executables as positional arguments and
-tests with ``--tests``, and build libraries with ``ct-create-makefile
---static``/``--dynamic``.
+``--static`` and ``--dynamic`` are registered (so they appear in
+``--help`` and are conf-settable) but rejected with an error before any
+target discovery or pkg-config work runs: ct-findtargets lists
+executables and tests only, and its output styles have no bucket for
+libraries, so accepting a library target would either mislabel it or
+silently omit it from output that scripts (such as ``ct-build``)
+consume. Name executables as positional arguments and tests with
+``--tests``, and build libraries with ``ct-create-makefile
+--static``/``--dynamic``. If the value came from a ct.conf tier rather
+than the command line, the error names the conf key instead of the
+flag, since a project may never have passed ``--static``/``--dynamic``
+at all.
 
 --auto-exclude drops files from the search. Give it multiple times to build
 up a list, or set it in a ct.conf. A pattern containing a path separator
