@@ -850,6 +850,31 @@ def library_repo(tmp_path):
     return root
 
 
+@pytest.fixture
+def library_repo_with_env_effect(library_repo):
+    """``library_repo`` plus the one conf key that makes ``apply_effects``
+    observable from outside the process.
+
+    ``append-PKG-CONFIG-PATH`` becomes a ``SetEnv`` effect on
+    ``PKG_CONFIG_PATH``, and ``apply_effects`` is the last stage of
+    ``parseargs``. Nothing else ct-findtargets does writes the process
+    environment, so the variable reads out whether the whole gather ->
+    compute -> apply pipeline ran -- a stronger signal than counting
+    pkg-config subprocesses, which only covers the gather half.
+    """
+    (library_repo / "pc").mkdir()
+    (library_repo / "ct.conf").write_text(
+        "exemarkers = [main]\ntestmarkers = unit_test.hpp\nappend-PKG-CONFIG-PATH = ${CONF_DIR}/pc\n"
+    )
+    return library_repo
+
+
+def _run_findtargets(repo, argv):
+    with uth.DirectoryContext(str(repo)):
+        with uth.ParserContext():
+            return compiletools.findtargets.main(argv)
+
+
 class TestLibrarySlotsAreRejected:
     """ct-findtargets reports two buckets, executables and tests, and the
     style classes take exactly those two. ``--static`` / ``--dynamic`` reach
@@ -863,11 +888,7 @@ class TestLibrarySlotsAreRejected:
     pin; the silent-swallow surface is one release old and is the accident.
     """
 
-    @staticmethod
-    def _run(repo, argv):
-        with uth.DirectoryContext(str(repo)):
-            with uth.ParserContext():
-                return compiletools.findtargets.main(argv)
+    _run = staticmethod(_run_findtargets)
 
     def test_a_named_executable_still_reports(self, library_repo, capsys):
         """Control: the rejection must be specific to the library slots, not
@@ -914,7 +935,81 @@ class TestLibrarySlotsAreRejected:
         with pytest.raises(SystemExit):
             self._run(library_repo, ["--static", os.path.join("lib", "widget.cpp")])
         err = capsys.readouterr().err
-        assert "--static" in err
+        # The subject phrase, not a bare "--static": the remedy sentence
+        # names ct-create-makefile --static/--dynamic too, so only the
+        # subject distinguishes this from the conf-key wording pinned by
+        # TestLibrarySlotRejectionPrecedesTheBuildStateWork.
+        assert "--static cannot be reported" in err
         assert "positional" in err
         assert "--tests" in err
         assert "ct-create-makefile" in err
+
+
+class TestLibrarySlotRejectionPrecedesTheBuildStateWork:
+    """A usage error must land before ``parseargs`` does any work.
+
+    ``parseargs`` runs gather -> compute -> ``apply_effects``, and
+    ``apply_effects`` mutates ``PKG_CONFIG_PATH`` and, on the wild-B
+    linker axis, creates a directory and a symlink; gather spawns
+    pkg-config subprocesses on the way. None of it is recoverable by the
+    caller, because ct-findtargets is a read-only diagnostic and both
+    scripts/ct-build and this test suite keep running in the same process
+    after trapping the ``SystemExit``.
+
+    The second half is the conf-settability the registration brought with
+    it: configargparse derives a ``static`` key from ``--static``, so a
+    project carrying that key in a ct.conf tier gets exit 2 for a flag it
+    never passed, and the message has to say so.
+    """
+
+    def test_an_accepted_invocation_does_apply_the_env_effect(self, library_repo_with_env_effect, monkeypatch):
+        """Control. Without it the assertion in the rejection test passes
+        just as well when the conf key produced no effect at all, which
+        makes the whole pair vacuous."""
+        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+        argv = ["--style=args", os.path.join("app", "main.cpp")]
+        assert _run_findtargets(library_repo_with_env_effect, argv) == 0
+        applied = os.environ.get("PKG_CONFIG_PATH")
+        assert applied is not None
+        assert os.path.realpath(applied) == os.path.realpath(str(library_repo_with_env_effect / "pc"))
+
+    @pytest.mark.parametrize("flag", ["--static", "--dynamic"])
+    def test_a_rejected_invocation_leaves_the_environment_untouched(
+        self, library_repo_with_env_effect, flag, monkeypatch
+    ):
+        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+        argv = ["--style=args", flag, os.path.join("lib", "widget.cpp")]
+        with pytest.raises(SystemExit) as excinfo:
+            _run_findtargets(library_repo_with_env_effect, argv)
+        assert excinfo.value.code == 2
+        assert os.environ.get("PKG_CONFIG_PATH") is None
+
+    def test_a_conf_set_library_slot_names_the_conf_key_not_a_flag(self, library_repo, capsys):
+        """A message telling the user to stop passing ``--static`` sends
+        them hunting through a command line that does not contain it."""
+        (library_repo / "ct.conf").write_text(
+            "exemarkers = [main]\ntestmarkers = unit_test.hpp\nstatic = lib/widget.cpp\n"
+        )
+        with pytest.raises(SystemExit) as excinfo:
+            _run_findtargets(library_repo, ["--style=args"])
+        assert excinfo.value.code == 2
+        err = capsys.readouterr().err
+        assert "conf key static" in err
+        assert "--static cannot be reported" not in err
+
+    def test_a_subproject_conf_reaches_the_post_parse_backstop(self, library_repo, capsys):
+        """The pre-pass reads only the standard conf tiers.
+
+        Conf layers anchored on an explicit target are added inside
+        parseargs by ``_apply_target_conf_layers``, so a subproject
+        ct.conf setting the key is invisible until after the work the
+        pre-pass exists to avoid. That is why the check runs a second
+        time; this pins the second call against being deleted as a
+        duplicate of the first.
+        """
+        subproject = library_repo / "app"
+        (subproject / "ct.conf").write_text("static = lib/widget.cpp\n")
+        with pytest.raises(SystemExit) as excinfo:
+            _run_findtargets(library_repo, ["--style=args", os.path.join("app", "main.cpp")])
+        assert excinfo.value.code == 2
+        assert "conf key static" in capsys.readouterr().err

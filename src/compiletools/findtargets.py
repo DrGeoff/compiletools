@@ -2,6 +2,8 @@ import fnmatch
 import os
 import sys
 
+import configargparse
+
 import compiletools.apptools
 import compiletools.build_apply
 import compiletools.file_analyzer
@@ -489,19 +491,51 @@ def discover_targets_and_reanchor(args, context):
     )
 
 
+_LIBRARY_SLOTS = (("--static", "static"), ("--dynamic", "dynamic"))
+
+
+def _conf_file_sourced_keys(cap):
+    """The conf keys configargparse credited to a config file on the last parse.
+
+    A key the command line also supplied is absent: configargparse drops
+    the conf entry once argv carries the same option. Membership therefore
+    means "this value did not come from argv", which is the distinction
+    the diagnostic needs and is exact without scanning argv for tokens
+    that argparse may have reached by abbreviation.
+    """
+    keys = set()
+    for source, settings in cap.get_source_to_settings_dict().items():
+        if source.startswith(configargparse._CONFIG_FILE_SOURCE_KEY):
+            keys.update(settings)
+    return keys
+
+
 def _reject_library_slots(cap, args):
     """Refuse --static/--dynamic, which this tool registers but cannot report.
 
     The style classes take an executable bucket and a test bucket, so a named
     library has nowhere to go and is dropped from the output.
+
+    Registering the slots also made them conf-settable -- configargparse
+    derives a ``static`` key from the option string -- so a project can
+    reach here without passing anything. Naming the flag in that case
+    sends the user hunting through a command line that does not contain
+    it, hence the conf-key wording.
     """
-    named = [flag for flag, value in (("--static", args.static), ("--dynamic", args.dynamic)) if value]
+    named = [(flag, key) for flag, key in _LIBRARY_SLOTS if getattr(args, key, None)]
     if not named:
         return
-    cap.error(
-        f"{' and '.join(named)} cannot be reported by ct-findtargets, which lists executables and tests only. "
+    from_conf = _conf_file_sourced_keys(cap)
+    subjects = [f"conf key {key}" if key in from_conf else flag for flag, key in named]
+    remedy = (
         "Name executables as positional arguments and tests with --tests, "
         "and build libraries with ct-create-makefile --static/--dynamic."
+    )
+    if any(key in from_conf for _, key in named):
+        remedy += " ct-create-makefile reads the same conf key, so the value belongs in a conf layer that tool sees."
+    cap.error(
+        f"{' and '.join(subjects)} cannot be reported by ct-findtargets, "
+        f"which lists executables and tests only. {remedy}"
     )
 
 
@@ -515,8 +549,19 @@ def main(argv=None):
 
     from compiletools.build_context import BuildContext
 
+    # Reject ahead of parseargs. A usage error argparse can decide on its
+    # own must not first run gather -> compute -> apply_effects, which
+    # spawns pkg-config subprocesses, mutates PKG_CONFIG_PATH and can
+    # create the wild-B linker symlink dir -- none of it recoverable by a
+    # caller that traps the SystemExit. parse_known_args on this same
+    # parser resolves abbreviations and the standard conf tiers exactly as
+    # the real parse will, and does no work beyond reading conf files.
+    _reject_library_slots(cap, cap.parse_known_args(argv)[0])
+
     context = BuildContext()
     args = compiletools.apptools.parseargs(cap, argv, context=context)
+    # Backstop: _apply_target_conf_layers adds conf tiers anchored on the
+    # explicit targets, which the pre-pass above cannot see.
     _reject_library_slots(cap, args)
 
     styleclass = _STYLE_REGISTRY[args.style.lower()]
