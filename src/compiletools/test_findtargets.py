@@ -252,6 +252,160 @@ class TestFindTargetsStyles:
         assert "b.cpp" in out
 
 
+_EXES = ["app/main.cpp"]
+_TESTS = ["test_widget.cpp"]
+_STATIC = ["lib/widget.cpp"]
+_DYNAMIC = ["lib/plugin.cpp"]
+
+_BUCKET_COMBOS = {
+    "nothing at all": ([], [], [], []),
+    "exes and tests only": (_EXES, _TESTS, [], []),
+    "static only": (_EXES, [], _STATIC, []),
+    "dynamic only": (_EXES, [], [], _DYNAMIC),
+    "both libraries": (_EXES, [], _STATIC, _DYNAMIC),
+    "all four buckets": (_EXES, _TESTS, _STATIC, _DYNAMIC),
+}
+
+# Every style crossed with every bucket combination, spelled out verbatim
+# rather than recomputed, so a change to any style's rendering has to be
+# retyped here to pass. The two "exes and tests only" rows and the "nothing at
+# all" rows are the output the two-bucket styles produced before the library
+# buckets existed; they are the compatibility contract, not just examples.
+_EXPECTED_OUTPUT = {
+    ("null", "nothing at all"): "[]\n[]\n",
+    ("null", "exes and tests only"): "['app/main.cpp']\n['test_widget.cpp']\n",
+    ("null", "static only"): "['app/main.cpp']\n[]\nstatic: ['lib/widget.cpp']\n",
+    ("null", "dynamic only"): "['app/main.cpp']\n[]\ndynamic: ['lib/plugin.cpp']\n",
+    ("null", "both libraries"): "['app/main.cpp']\n[]\nstatic: ['lib/widget.cpp']\ndynamic: ['lib/plugin.cpp']\n",
+    ("null", "all four buckets"): (
+        "['app/main.cpp']\n['test_widget.cpp']\nstatic: ['lib/widget.cpp']\ndynamic: ['lib/plugin.cpp']\n"
+    ),
+    ("flat", "nothing at all"): "\n",
+    ("flat", "exes and tests only"): "app/main.cpp test_widget.cpp\n",
+    ("flat", "static only"): "app/main.cpp lib/widget.cpp\n",
+    ("flat", "dynamic only"): "app/main.cpp lib/plugin.cpp\n",
+    ("flat", "both libraries"): "app/main.cpp lib/widget.cpp lib/plugin.cpp\n",
+    ("flat", "all four buckets"): "app/main.cpp test_widget.cpp lib/widget.cpp lib/plugin.cpp\n",
+    ("indent", "nothing at all"): ("Executable Targets:\n\tNone found\nTest Targets:\n\tNone found\n"),
+    ("indent", "exes and tests only"): ("Executable Targets:\n\tapp/main.cpp\nTest Targets:\n\ttest_widget.cpp\n"),
+    ("indent", "static only"): (
+        "Executable Targets:\n\tapp/main.cpp\nTest Targets:\n\tNone found\nStatic Library Targets:\n\tlib/widget.cpp\n"
+    ),
+    ("indent", "dynamic only"): (
+        "Executable Targets:\n\tapp/main.cpp\nTest Targets:\n\tNone found\nDynamic Library Targets:\n\tlib/plugin.cpp\n"
+    ),
+    ("indent", "both libraries"): (
+        "Executable Targets:\n\tapp/main.cpp\n"
+        "Test Targets:\n\tNone found\n"
+        "Static Library Targets:\n\tlib/widget.cpp\n"
+        "Dynamic Library Targets:\n\tlib/plugin.cpp\n"
+    ),
+    ("indent", "all four buckets"): (
+        "Executable Targets:\n\tapp/main.cpp\n"
+        "Test Targets:\n\ttest_widget.cpp\n"
+        "Static Library Targets:\n\tlib/widget.cpp\n"
+        "Dynamic Library Targets:\n\tlib/plugin.cpp\n"
+    ),
+    ("args", "nothing at all"): "",
+    ("args", "exes and tests only"): " app/main.cpp --tests test_widget.cpp",
+    ("args", "static only"): " app/main.cpp --static lib/widget.cpp",
+    ("args", "dynamic only"): " app/main.cpp --dynamic lib/plugin.cpp",
+    ("args", "both libraries"): " app/main.cpp --static lib/widget.cpp --dynamic lib/plugin.cpp",
+    ("args", "all four buckets"): (
+        " app/main.cpp --tests test_widget.cpp --static lib/widget.cpp --dynamic lib/plugin.cpp"
+    ),
+}
+
+
+class TestLibraryBucketsInEveryStyle:
+    """Every style reports named libraries, and only when there are any.
+
+    ct-findtargets registers ``--static`` / ``--dynamic`` because the
+    re-anchoring driver reparses through the same parser. Reporting them is
+    what turns that accident into the capability the styles were missing. The
+    opt-in rule -- a library section appears only when its bucket is
+    non-empty -- is what makes the change free for every existing consumer,
+    so it is pinned as byte equality against the pre-library output rather
+    than asserted in a comment.
+    """
+
+    @pytest.mark.parametrize("style,combo", sorted(_EXPECTED_OUTPUT))
+    def test_each_style_renders_every_bucket_combination_verbatim(self, capsys, style, combo):
+        compiletools.findtargets._STYLE_REGISTRY[style]()(*_BUCKET_COMBOS[combo])
+        assert capsys.readouterr().out == _EXPECTED_OUTPUT[(style, combo)]
+
+    @pytest.mark.parametrize("style", sorted(compiletools.findtargets._STYLE_REGISTRY))
+    @pytest.mark.parametrize("combo", ["nothing at all", "exes and tests only"])
+    def test_empty_library_buckets_render_what_the_two_argument_call_renders(self, capsys, style, combo):
+        """The compatibility contract, from both ends. Passing the library
+        buckets explicitly-but-empty must equal omitting them, AND that shared
+        output must equal the verbatim table -- otherwise the two calls could
+        agree on output neither of them produced before."""
+        styleobj = compiletools.findtargets._STYLE_REGISTRY[style]()
+        executables, tests, _static, _dynamic = _BUCKET_COMBOS[combo]
+        styleobj(executables, tests)
+        omitted = capsys.readouterr().out
+        styleobj(executables, tests, [], [])
+        assert capsys.readouterr().out == omitted
+        assert omitted == _EXPECTED_OUTPUT[(style, combo)]
+
+
+class TestArgsStyleRoundTrip:
+    """ArgsStyle output is consumed by ct-create-makefile, so what it writes
+    has to reparse into the slots it came from."""
+
+    @staticmethod
+    def _reparse(tokens):
+        cap = _bare_parser("args style round trip")
+        compiletools.apptools.add_target_arguments(cap)
+        args = cap.parse_args(tokens)
+        return tuple(list(getattr(args, slot) or []) for slot in ("filename", "tests", "static", "dynamic"))
+
+    @pytest.mark.parametrize("combo", sorted(_BUCKET_COMBOS))
+    def test_the_emitted_tokens_reparse_into_the_buckets_they_came_from(self, capsys, combo):
+        buckets = _BUCKET_COMBOS[combo]
+        compiletools.findtargets.ArgsStyle()(*buckets)
+        assert self._reparse(capsys.readouterr().out.split()) == buckets
+
+
+# What scripts/ct-build composes: all=$(ct-findtargets --style=args $@) then
+# ct-create-makefile ${all} $@. The user's own argv is appended AFTER the
+# generated tokens, so every slot is written twice.
+_CT_BUILD_ARGVS = (
+    ["--static", "lib/widget.cpp"],
+    ["--dynamic", "lib/plugin.cpp"],
+    ["app/main.cpp", "--static", "lib/widget.cpp"],
+    ["app/main.cpp", "--tests", "t/test_widget.cpp", "--static", "lib/widget.cpp", "--dynamic", "lib/plugin.cpp"],
+    # The residual: a positional AFTER an nargs="*" option in the USER's own
+    # argv is absorbed by that option. Single-pass ct-create-makefile does the
+    # same thing, so the double pass must not make it worse -- which is what
+    # the equality below measures, not that the parse is what a user meant.
+    ["--static", "lib/widget.cpp", "app/main.cpp"],
+)
+
+
+class TestCtBuildDoublePass:
+    """ct-build feeds the ArgsStyle output to ct-create-makefile followed by
+    the user's own argv, so every named target arrives twice. The four slots
+    must come out of the double pass exactly as they come out of a single
+    direct ct-create-makefile invocation.
+    """
+
+    @pytest.mark.parametrize("argv", _CT_BUILD_ARGVS, ids=lambda argv: " ".join(argv))
+    def test_the_doubled_argv_yields_the_single_pass_slots(self, capsys, argv):
+        single = TestArgsStyleRoundTrip._reparse(argv)
+        compiletools.findtargets.ArgsStyle()(*single)
+        generated = capsys.readouterr().out.split()
+        assert TestArgsStyleRoundTrip._reparse(generated + argv) == single
+
+    def test_the_double_pass_cases_actually_populate_a_library_slot(self):
+        """Guard against a vacuous sweep: if every argv above parsed to four
+        empty slots the equality would hold against a style that emits
+        nothing."""
+        populated = [argv for argv in _CT_BUILD_ARGVS if any(TestArgsStyleRoundTrip._reparse(argv)[2:])]
+        assert len(populated) == len(_CT_BUILD_ARGVS)
+
+
 class TestFindTargetsProcess:
     """Test FindTargets.process method."""
 
@@ -681,6 +835,71 @@ class TestAutoExcludePatternNormalisation:
         assert not self._excluded(tmp_path, "///", "src/main.cpp")
 
 
+# The root-slash family, where a pattern's meaning is decided by how many
+# separators it carries and nothing else. ``git check-ignore`` is the
+# authority the --auto-exclude docstring appeals to, so the agreement is
+# measured against a real repository rather than restated.
+_ROOT_PATTERN_ORACLE_FILES = ("src/vendor/a.cpp", "vendor/b.cpp", "vendor/sub/c.cpp", "top.cpp")
+_ROOT_PATTERN_ORACLE_PATTERNS = ("/", "//", "///", "/*", "vendor/", "/vendor")
+
+
+class TestRootPatternsAgreeWithGitignore:
+    """A bare ``/`` excludes NOTHING, and ``/*`` excludes everything.
+
+    The one-character difference is the whole decision. ``/`` looks like the
+    anchored spelling of the tree root, which under the "a directory name
+    excludes its whole subtree" rule would exclude every file -- the silent
+    discover-nothing outcome ``_commits_to_a_path_inside`` exists to prevent.
+    git resolves it the other way, and these cells prove compiletools agrees
+    with git rather than merely claiming to.
+    """
+
+    @staticmethod
+    def _tree(tmp_path):
+        root = tmp_path / "rootpatterns"
+        root.mkdir()
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        for relpath in _ROOT_PATTERN_ORACLE_FILES:
+            path = root / relpath
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("int main() { return 0; }\n")
+        return root
+
+    @staticmethod
+    def _git_ignored(root, pattern):
+        (root / ".gitignore").write_text(pattern + "\n")
+        return {
+            relpath
+            for relpath in _ROOT_PATTERN_ORACLE_FILES
+            if subprocess.run(["git", "check-ignore", "-q", relpath], cwd=str(root)).returncode == 0
+        }
+
+    @staticmethod
+    def _excluded(root, pattern):
+        return {
+            relpath
+            for relpath in _ROOT_PATTERN_ORACLE_FILES
+            if compiletools.findtargets.is_auto_excluded(
+                os.path.join(str(root), relpath), (pattern,), anchor_root=str(root)
+            )
+        }
+
+    @pytest.mark.parametrize("pattern", _ROOT_PATTERN_ORACLE_PATTERNS)
+    def test_the_exclusion_set_matches_what_git_ignores(self, tmp_path, pattern):
+        root = self._tree(tmp_path)
+        assert self._excluded(root, pattern) == self._git_ignored(root, pattern)
+
+    def test_the_oracle_discriminates(self, tmp_path):
+        """Guard against a vacuous pass. If ``git check-ignore`` reported
+        nothing ignored for every pattern -- an unreadable .gitignore, a git
+        that refuses to answer -- the agreement above would hold trivially
+        against an implementation that also excludes nothing. Pin the two
+        ends of the range the parametrized cells run over."""
+        root = self._tree(tmp_path)
+        assert self._git_ignored(root, "/*") == set(_ROOT_PATTERN_ORACLE_FILES)
+        assert self._git_ignored(root, "/") == set()
+
+
 class TestAutoExcludeInDiscovery:
     """The exclusion applies inside FindTargets.__call__, so both the
     tracked-files generator and the os.walk fallback honour it."""
@@ -822,11 +1041,17 @@ def test_an_explicit_target_suppresses_discovery(reanchor_repo, capsys):
     discovered one. scripts/ct-build feeds this string to ct-create-makefile,
     so a merged list hands it the named target twice -- once in the caller's
     spelling and once in the discovered absolute one, which ordered_unique
-    cannot collapse."""
+    cannot collapse.
+
+    The target is a POSITIONAL. There is no --filename option: argparse
+    prefix-resolves that spelling to --filenametestmatch, a store_true whose
+    default is already True, and the path that follows lands on the
+    positional anyway -- so the option spelling passed for the wrong reason.
+    """
     named = os.path.join("appalpha", "main.cpp")
     with uth.DirectoryContext(str(reanchor_repo)):
         with uth.ParserContext():
-            assert compiletools.findtargets.main(["--style=args", "--filename", named]) == 0
+            assert compiletools.findtargets.main(["--style=args", named]) == 0
     out = capsys.readouterr().out
     assert out.split() == [named]
 
@@ -850,67 +1075,240 @@ def library_repo(tmp_path):
     return root
 
 
-class TestLibrarySlotsAreRejected:
-    """ct-findtargets reports two buckets, executables and tests, and the
-    style classes take exactly those two. ``--static`` / ``--dynamic`` reach
-    the parser only because the re-anchoring driver reparses through this
-    same cap and needs the slots registered, so a named library is accepted
-    and then never printed.
+_EXE_TARGET = os.path.join("app", "main.cpp")
+_LIB_TARGET = os.path.join("lib", "widget.cpp")
+_LIB_HEADING = {"--static": "Static Library Targets:", "--dynamic": "Dynamic Library Targets:"}
+_LIB_LABEL = {"--static": "static", "--dynamic": "dynamic"}
+_LIB_FLAGS = sorted(_LIB_HEADING)
+_STYLES = sorted(compiletools.findtargets._STYLE_REGISTRY)
 
-    Base 168b1076 rejected both flags outright -- main() did not register
-    the target arguments, so argparse exited 2 on an unrecognized argument.
-    Restoring that rejection with a diagnostic is the contract these tests
-    pin; the silent-swallow surface is one release old and is the accident.
+
+class TestLibrarySlotsAreReported:
+    """ct-findtargets reports a named ``--static`` / ``--dynamic`` target.
+
+    Both slots reach the parser because the re-anchoring driver reparses
+    through this same cap and needs them registered. The release before this
+    one accepted a named library and then never printed it; the release
+    before THAT rejected it outright, first as an argparse unrecognized
+    argument and then with a diagnostic. Reporting it is the contract now:
+    the combined form has to report BOTH targets, which kills the
+    silently-incomplete answer by construction rather than by a guard.
+
+    Discovery still cannot INVENT a library target -- static versus dynamic
+    has no source-level signal -- so these are the explicit slots only.
     """
 
     @staticmethod
-    def _run(repo, argv):
+    def _run(repo, argv, capsys):
         with uth.DirectoryContext(str(repo)):
             with uth.ParserContext():
-                return compiletools.findtargets.main(argv)
+                assert compiletools.findtargets.main(argv) == 0
+        return capsys.readouterr().out
 
     def test_a_named_executable_still_reports(self, library_repo, capsys):
-        """Control: the rejection must be specific to the library slots, not
-        a blanket refusal of every explicitly named target."""
-        named = os.path.join("app", "main.cpp")
-        assert self._run(library_repo, ["--style=args", "--filename", named]) == 0
-        assert capsys.readouterr().out.split() == [named]
+        """Control: naming a library must not have changed what naming an
+        executable does."""
+        out = self._run(library_repo, ["--style=args", _EXE_TARGET], capsys)
+        assert out.split() == [_EXE_TARGET]
 
-    @pytest.mark.parametrize("flag", ["--static", "--dynamic"])
-    def test_a_library_slot_alone_is_rejected(self, library_repo, flag):
-        with pytest.raises(SystemExit) as excinfo:
-            self._run(library_repo, ["--style=args", flag, os.path.join("lib", "widget.cpp")])
-        assert excinfo.value.code == 2
+    @pytest.mark.parametrize("style", _STYLES)
+    @pytest.mark.parametrize("flag", _LIB_FLAGS)
+    def test_a_named_library_alone_is_reported(self, library_repo, capsys, flag, style):
+        expected = {
+            "null": f"[]\n[]\n{_LIB_LABEL[flag]}: ['{_LIB_TARGET}']\n",
+            "flat": f"{_LIB_TARGET}\n",
+            "indent": (
+                f"Executable Targets:\n\tNone found\n"
+                f"Test Targets:\n\tNone found\n"
+                f"{_LIB_HEADING[flag]}\n\t{_LIB_TARGET}\n"
+            ),
+            "args": f" {flag} {_LIB_TARGET}",
+        }[style]
+        assert self._run(library_repo, [f"--style={style}", flag, _LIB_TARGET], capsys) == expected
 
-    @pytest.mark.parametrize("flag", ["--static", "--dynamic"])
-    def test_a_library_slot_combined_with_filename_is_rejected(self, library_repo, flag, capsys):
-        """The dangerous form. Combined with a named executable the tool
-        used to exit 0 printing only the executable -- a plausible answer
-        that silently drops the library, which survives far longer
-        downstream than the empty output the flag produces on its own."""
-        with pytest.raises(SystemExit) as excinfo:
-            self._run(
-                library_repo,
-                [
-                    "--style=args",
-                    flag,
-                    os.path.join("lib", "widget.cpp"),
-                    "--filename",
-                    os.path.join("app", "main.cpp"),
-                ],
-            )
-        assert excinfo.value.code == 2
-        assert "main.cpp" not in capsys.readouterr().out
+    @pytest.mark.parametrize("style", _STYLES)
+    @pytest.mark.parametrize("flag", _LIB_FLAGS)
+    def test_the_combined_form_reports_both_targets(self, library_repo, capsys, flag, style):
+        """The form the rejection guard existed to prevent. Naming a library
+        alongside an executable used to exit 0 printing only the executable
+        -- a plausible answer that silently drops the library and survives
+        far longer downstream than an empty one. Both appear now.
 
-    def test_the_diagnostic_names_the_flag_the_slots_and_the_other_tool(self, library_repo, capsys):
-        """A rejection a user cannot act on is worse than the silence it
-        replaces, so pin the three things the message has to carry: which
-        flag was refused, which slots this tool does report, and where a
-        library build actually goes."""
-        with pytest.raises(SystemExit):
-            self._run(library_repo, ["--static", os.path.join("lib", "widget.cpp")])
-        err = capsys.readouterr().err
-        assert "--static" in err
-        assert "positional" in err
-        assert "--tests" in err
-        assert "ct-create-makefile" in err
+        The executable is a positional and comes FIRST: argparse nargs="*"
+        is greedy, so a positional written after the library flag is absorbed
+        into the library list instead.
+        """
+        expected = {
+            "null": f"['{_EXE_TARGET}']\n[]\n{_LIB_LABEL[flag]}: ['{_LIB_TARGET}']\n",
+            "flat": f"{_EXE_TARGET} {_LIB_TARGET}\n",
+            "indent": (
+                f"Executable Targets:\n\t{_EXE_TARGET}\n"
+                f"Test Targets:\n\tNone found\n"
+                f"{_LIB_HEADING[flag]}\n\t{_LIB_TARGET}\n"
+            ),
+            "args": f" {_EXE_TARGET} {flag} {_LIB_TARGET}",
+        }[style]
+        argv = [f"--style={style}", _EXE_TARGET, flag, _LIB_TARGET]
+        assert self._run(library_repo, argv, capsys) == expected
+
+    @pytest.mark.parametrize("flag", _LIB_FLAGS)
+    def test_a_named_library_suppresses_discovery(self, library_repo, capsys, flag):
+        """A named target is the whole target set, libraries included: the
+        discovery gate already reads all four slots. The bare run is measured
+        alongside so the absence below cannot be an empty-output artefact."""
+        discovered = self._run(library_repo, ["--style=args"], capsys)
+        assert discovered.split() == [os.path.join(str(library_repo), _EXE_TARGET)]
+        named = self._run(library_repo, ["--style=args", flag, _LIB_TARGET], capsys)
+        assert named.split() == [flag, _LIB_TARGET]
+
+    @pytest.mark.parametrize("flag", _LIB_FLAGS)
+    def test_no_auto_still_reports_a_named_library(self, library_repo, capsys, flag):
+        """--no-auto means "do not walk", not "do not report". It empties the
+        output only when nothing is named."""
+        out = self._run(library_repo, ["--style=args", "--no-auto", flag, _LIB_TARGET], capsys)
+        assert out.split() == [flag, _LIB_TARGET]
+
+    @pytest.mark.parametrize("flag", _LIB_FLAGS)
+    def test_the_args_output_feeds_ct_create_makefile_unchanged(self, library_repo, capsys, flag):
+        """What scripts/ct-build does with the string: ct-create-makefile
+        gets the generated tokens followed by the user's own argv. The four
+        target slots must come out of that double pass exactly as they come
+        out of the single direct invocation."""
+        argv = [_EXE_TARGET, flag, _LIB_TARGET]
+        generated = self._run(library_repo, ["--style=args", *argv], capsys).split()
+        assert TestArgsStyleRoundTrip._reparse(generated + argv) == TestArgsStyleRoundTrip._reparse(argv)
+
+
+def _expected_warning(target, flag, markers):
+    return (
+        f"Warning: {target} is named as a {flag} target but contains an executable "
+        f"marker ({markers}). A positional written after {flag} is absorbed into its "
+        f"list, so name executables before {flag}."
+    )
+
+
+class TestExemarkerInALibrarySlotWarns:
+    """``--static``/``--dynamic`` take a list, so a positional written AFTER
+    one is absorbed into it. The result builds: ``ct-build --static
+    lib/widget.cpp app/main.cpp`` exits 0, archives main.o into libwidget.a
+    and produces no executable. Nothing downstream notices -- the same
+    single-pass ``ct-create-makefile`` invocation produces the identical
+    artefact set, so this is the CLI shape, not a ct-build wart.
+
+    The warning is the mitigation: it names the file, the exemarker that
+    makes it look like an executable, and the ordering rule that explains
+    how it got there. It does NOT refuse -- a source carrying ``main`` can
+    legitimately live in a library -- so the exit code stays 0 and the
+    target is still reported.
+    """
+
+    @staticmethod
+    def _run(repo, argv, capsys):
+        with uth.DirectoryContext(str(repo)):
+            with uth.ParserContext():
+                assert compiletools.findtargets.main(argv) == 0
+        return capsys.readouterr()
+
+    @pytest.mark.parametrize("flag", _LIB_FLAGS)
+    def test_a_library_slot_holding_an_executable_source_warns(self, library_repo, capsys, flag):
+        captured = self._run(library_repo, ["--style=args", flag, _EXE_TARGET], capsys)
+        assert captured.err.strip() == _expected_warning(_EXE_TARGET, flag, "main")
+
+    @pytest.mark.parametrize("flag", _LIB_FLAGS)
+    def test_a_genuine_library_source_is_silent(self, library_repo, capsys, flag):
+        """Anti-vacuity for the test above: the same invocation over a source
+        with no exemarker must produce no stderr at all, so the warning is
+        keyed on the marker rather than on the slot being populated."""
+        captured = self._run(library_repo, ["--style=args", flag, _LIB_TARGET], capsys)
+        assert captured.err == ""
+
+    @pytest.mark.parametrize("flag", _LIB_FLAGS)
+    def test_the_accident_that_motivates_the_warning_is_the_one_that_fires(self, library_repo, capsys, flag):
+        """The real shape: the user wrote the executable positional after the
+        library flag and argparse absorbed it. Both sources land in the
+        library slot, the executable slot is empty, and only the source
+        carrying the exemarker is named."""
+        captured = self._run(library_repo, ["--style=args", flag, _LIB_TARGET, _EXE_TARGET], capsys)
+        assert captured.out.split() == [flag, _LIB_TARGET, _EXE_TARGET]
+        assert captured.err.strip() == _expected_warning(_EXE_TARGET, flag, "main")
+
+    @pytest.mark.parametrize("flag", _LIB_FLAGS)
+    def test_warning_not_refusal(self, library_repo, capsys, flag):
+        """Exit 0 and the target still reported: a source carrying ``main``
+        in a library is legal, so the run must not be blocked."""
+        captured = self._run(library_repo, ["--style=args", flag, _EXE_TARGET], capsys)
+        assert captured.out.split() == [flag, _EXE_TARGET]
+
+    @pytest.mark.parametrize("flag", _LIB_FLAGS)
+    def test_the_warning_reaches_the_default_verbosity(self, library_repo, capsys, flag):
+        """No -v anywhere in the argv above; this pins that explicitly, and
+        pins -q as the way to turn it off, since the audience is exactly the
+        user who typed the accident without asking for diagnostics."""
+        loud = self._run(library_repo, ["--style=args", flag, _EXE_TARGET], capsys)
+        assert loud.err != ""
+        quiet = self._run(library_repo, ["--style=args", "-q", flag, _EXE_TARGET], capsys)
+        assert quiet.err == ""
+
+    @pytest.mark.parametrize("flag", _LIB_FLAGS)
+    def test_a_named_library_that_does_not_exist_is_not_an_error(self, library_repo, capsys, flag):
+        """The check hashes and analyses the named file; a path that resolves
+        to nothing must fall through to the report rather than crash there."""
+        captured = self._run(library_repo, ["--style=args", flag, "lib/absent.cpp"], capsys)
+        assert captured.out.split() == [flag, "lib/absent.cpp"]
+        assert captured.err == ""
+
+    def test_both_slots_are_checked_in_one_run(self, library_repo, capsys):
+        """--static and --dynamic can both be populated; each is scanned."""
+        argv = ["--style=args", "--static", _EXE_TARGET, "--dynamic", _EXE_TARGET]
+        captured = self._run(library_repo, argv, capsys)
+        assert captured.err.splitlines() == [
+            _expected_warning(_EXE_TARGET, "--static", "main"),
+            _expected_warning(_EXE_TARGET, "--dynamic", "main"),
+        ]
+
+    def test_the_marker_named_is_the_one_configured(self, library_repo, capsys, tmp_path):
+        """Anti-tautology for the marker text: with a different exemarker
+        configured, the warning names THAT marker, so ``main`` above is read
+        out of the file rather than hardcoded."""
+        (library_repo / "lib" / "plugin.cpp").write_text("void wxIMPLEMENT_APP() {}\n")
+        argv = ["--style=args", "--exemarkers=wxIMPLEMENT_APP", "--static", os.path.join("lib", "plugin.cpp")]
+        captured = self._run(library_repo, argv, capsys)
+        assert captured.err.strip() == _expected_warning(
+            os.path.join("lib", "plugin.cpp"), "--static", "wxIMPLEMENT_APP"
+        )
+
+    def test_a_marker_that_only_appears_in_a_comment_is_not_named(self, library_repo, capsys):
+        """The marker list is the classifier's, not a substring scan.
+
+        ``_detect_marker_type`` skips a hit inside a comment or a string
+        literal, so a comment mentioning a marker never contributes to the
+        EXE verdict. Naming it anyway points the user at a line that did not
+        trigger the warning -- and the default exemarker list makes that
+        reachable with nothing configured, since a comment mentioning
+        ``wxIMPLEMENT_APP`` in any file carrying ``main`` would be named.
+        """
+        source = os.path.join("lib", "plugin.cpp")
+        (library_repo / source).write_text(
+            "// wxIMPLEMENT_APP is the wxWidgets entry point; this file does not use it.\n"
+            'const char *usage = "wxIMPLEMENT_APP";\n'
+            "int main() { return 0; }\n"
+        )
+        argv = ["--style=args", "--exemarkers=wxIMPLEMENT_APP", "--static", source]
+        captured = self._run(library_repo, argv, capsys)
+        assert captured.err.strip() == _expected_warning(source, "--static", "main")
+
+    def test_the_same_marker_outside_a_comment_is_named(self, library_repo, capsys):
+        """Anti-vacuity for the test above: the comment is what suppresses
+        ``wxIMPLEMENT_APP``, not the marker being unnameable."""
+        source = os.path.join("lib", "plugin.cpp")
+        (library_repo / source).write_text("void wxIMPLEMENT_APP() {}\nint main() { return 0; }\n")
+        argv = ["--style=args", "--exemarkers=wxIMPLEMENT_APP", "--static", source]
+        captured = self._run(library_repo, argv, capsys)
+        assert captured.err.strip() == _expected_warning(source, "--static", "main, wxIMPLEMENT_APP")
+
+    def test_a_marker_configured_twice_is_named_once(self, library_repo, capsys):
+        """``--exemarkers`` appends to the conf list rather than replacing it,
+        so re-stating a marker the conf already carries delivers it twice."""
+        argv = ["--style=args", "--exemarkers=main", "--static", _EXE_TARGET]
+        captured = self._run(library_repo, argv, capsys)
+        assert captured.err.strip() == _expected_warning(_EXE_TARGET, "--static", "main")

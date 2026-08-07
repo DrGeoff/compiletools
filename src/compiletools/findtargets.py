@@ -2,6 +2,8 @@ import fnmatch
 import os
 import sys
 
+import stringzilla
+
 import compiletools.apptools
 import compiletools.build_apply
 import compiletools.file_analyzer
@@ -180,6 +182,15 @@ def is_auto_excluded(filepath, patterns, anchor_root=""):
     that one anchored spelling -- globs included, so ``//*`` excludes
     everything exactly as the ``/*`` it is a spelling of already did.
 
+    A pattern of separators alone excludes NOTHING. It survives
+    normalisation as a bare ``/``, which names no path under the anchor and
+    whose subtree candidate is the unmatchable ``//*``. Reading it as the
+    tree root instead -- excluding every file over one character -- is the
+    silent discover-nothing outcome ``_commits_to_a_path_inside`` exists to
+    prevent, and ``git check-ignore`` resolves it the same way (pinned by
+    ``TestRootPatternsAgreeWithGitignore``). ``/*`` is the spelling that
+    excludes everything.
+
     A pattern without a separator is fnmatched against each component of
     the *anchor_root*-relative path -- so ``vendor`` excludes every file
     under any ``vendor`` directory (never ``vendorlib``: components match
@@ -233,9 +244,8 @@ def is_auto_excluded(filepath, patterns, anchor_root=""):
                 candidates = [absolute, relative, os.sep + relative]
             else:
                 candidates = [relative, os.sep + relative]
-            subtree = pattern.rstrip(os.sep)
             if any(
-                fnmatch.fnmatch(candidate, pattern) or (subtree and fnmatch.fnmatch(candidate, subtree + os.sep + "*"))
+                fnmatch.fnmatch(candidate, pattern) or fnmatch.fnmatch(candidate, pattern + os.sep + "*")
                 for candidate in candidates
             ):
                 return True
@@ -244,44 +254,71 @@ def is_auto_excluded(filepath, patterns, anchor_root=""):
     return False
 
 
+# Every style takes the same four buckets, and the two library buckets are
+# rendered ONLY when non-empty. That opt-in rule is what makes the capability
+# free for existing consumers: a run that names no library produces output
+# byte-identical to the two-bucket version's, in all four styles, pinned by
+# ``TestLibraryBucketsInEveryStyle``. The buckets default to empty so the
+# two-argument call ``FindTargets.process`` makes at verbose>=2 keeps working.
+
+
 class NullStyle:
-    def __call__(self, executabletargets, testtargets):
+    def __call__(self, executabletargets, testtargets, statictargets=(), dynamictargets=()):
         print(executabletargets)
         print(testtargets)
+        # Labelled, unlike the first two lines: a library bucket appears only
+        # when populated, so an unlabelled third line would be unreadable when
+        # only one of the two is present.
+        for label, targets in (("static", statictargets), ("dynamic", dynamictargets)):
+            if targets:
+                print(f"{label}: {targets}")
 
 
 class FlatStyle:
-    def __call__(self, executabletargets, testtargets):
-        print(" ".join(executabletargets + testtargets))
+    def __call__(self, executabletargets, testtargets, statictargets=(), dynamictargets=()):
+        print(" ".join([*executabletargets, *testtargets, *statictargets, *dynamictargets]))
 
 
 class IndentStyle:
-    def __call__(self, executabletargets, testtargets):
-        print("Executable Targets:")
-        if executabletargets:
-            for target in executabletargets:
-                print(f"\t{target}")
-        else:
-            print("\tNone found")
+    def __call__(self, executabletargets, testtargets, statictargets=(), dynamictargets=()):
+        for heading, targets in (
+            ("Executable Targets:", executabletargets),
+            ("Test Targets:", testtargets),
+        ):
+            print(heading)
+            if targets:
+                for target in targets:
+                    print(f"\t{target}")
+            else:
+                print("\tNone found")
 
-        print("Test Targets:")
-        if testtargets:
-            for target in testtargets:
-                print(f"\t{target}")
-        else:
-            print("\tNone found")
+        for heading, targets in (
+            ("Static Library Targets:", statictargets),
+            ("Dynamic Library Targets:", dynamictargets),
+        ):
+            if targets:
+                print(heading)
+                for target in targets:
+                    print(f"\t{target}")
 
 
 class ArgsStyle:
-    def __call__(self, executabletargets, testtargets):
-        if executabletargets:
-            for target in executabletargets:
-                sys.stdout.write(f" {target}")
+    def __call__(self, executabletargets, testtargets, statictargets=(), dynamictargets=()):
+        # Positionals first, and every option after them. argparse's nargs="*"
+        # is greedy, so a positional emitted after an option token is absorbed
+        # into that option's list on the reparse.
+        for target in executabletargets:
+            sys.stdout.write(f" {target}")
 
-        if testtargets:
-            sys.stdout.write(" --tests")
-            for target in testtargets:
-                sys.stdout.write(f" {target}")
+        for flag, targets in (
+            ("--tests", testtargets),
+            ("--static", statictargets),
+            ("--dynamic", dynamictargets),
+        ):
+            if targets:
+                sys.stdout.write(f" {flag}")
+                for target in targets:
+                    sys.stdout.write(f" {target}")
 
 
 _STYLE_REGISTRY = {
@@ -489,20 +526,83 @@ def discover_targets_and_reanchor(args, context):
     )
 
 
-def _reject_library_slots(cap, args):
-    """Refuse --static/--dynamic, which this tool registers but cannot report.
+def _exemarkers_matching(filepath, markers):
+    """Return the exemarkers the classifier itself counts as hits in the file.
 
-    The style classes take an executable bucket and a test bucket, so a named
-    library has nowhere to go and is dropped from the output.
+    Each marker is put through ``_detect_marker_type`` alone, over the same
+    comment and literal spans ``analyze_file`` uses, so the answer is the
+    classifier's rather than an approximation of it. A plain ``marker in
+    text`` scan is a strict superset: it reports a marker that appears only
+    inside a comment or a string literal, which is exactly what the
+    classifier skips (doctest's "Entry point: main() is ..." boilerplate,
+    ``printf("usage: main(...)")`` help text). Naming one of those in the
+    warning points the user at a line that did not trigger it.
+
+    Duplicates are collapsed. The bundled ct.conf already carries the default
+    markers and a command-line ``--exemarkers`` appends rather than replaces,
+    so a marker the user re-states arrives twice.
+
+    Whole-file read, where ``analyze_file`` honours ``max_read_size``: a
+    marker appearing only past that cap is named though the classifier never
+    saw it.
+
+    ``file_analyzer._detect_marker_type`` and
+    ``file_analyzer.find_comment_and_literal_spans`` are private names with an
+    external reader here, so a refactor of either has this call site to
+    update.
     """
-    named = [flag for flag, value in (("--static", args.static), ("--dynamic", args.dynamic)) if value]
-    if not named:
+    try:
+        with open(filepath, encoding="utf-8", errors="replace") as infile:
+            text = stringzilla.Str(infile.read())
+    except OSError:
+        return []
+    comment_spans, literal_spans = compiletools.file_analyzer.find_comment_and_literal_spans(text)
+    return [
+        marker
+        for marker in dict.fromkeys(markers)
+        if compiletools.file_analyzer._detect_marker_type(text, [marker], [], [], comment_spans, literal_spans)
+        == MarkerType.EXE
+    ]
+
+
+def _warn_about_executables_in_library_slots(args, context):
+    """Warn when a source named as a library target carries an exemarker.
+
+    ``--static`` and ``--dynamic`` each take a list, so a positional written
+    after one is absorbed into it: ``--static lib/widget.cpp app/main.cpp``
+    puts both sources in the library and leaves the executable slot empty.
+    That combination builds -- the archive gets main.o and no executable is
+    produced -- so nothing downstream reports it.
+
+    ``_exemarkers_matching`` cannot come back empty here: the EXE verdict it
+    re-runs per marker is an ``any()`` over the same list, so a file that
+    classified EXE yields at least one single-marker EXE.
+    """
+    slots = (("--static", args.static or []), ("--dynamic", args.dynamic or []))
+    if not any(targets for _flag, targets in slots):
         return
-    cap.error(
-        f"{' and '.join(named)} cannot be reported by ct-findtargets, which lists executables and tests only. "
-        "Name executables as positional arguments and tests with --tests, "
-        "and build libraries with ct-create-makefile --static/--dynamic."
-    )
+    if not args.exemarkers or args.verbose < 0:
+        return
+
+    from compiletools.global_hash_registry import get_file_hash
+
+    compiletools.file_analyzer.set_analyzer_args(args, context)
+    for flag, targets in slots:
+        for target in targets:
+            try:
+                content_hash = get_file_hash(target, context)
+                result = compiletools.file_analyzer.analyze_file(content_hash, context)
+            except OSError:
+                continue
+            if result.marker_type != MarkerType.EXE:
+                continue
+            markers = ", ".join(_exemarkers_matching(target, args.exemarkers))
+            print(
+                f"Warning: {target} is named as a {flag} target but contains an executable "
+                f"marker ({markers}). A positional written after {flag} is absorbed into its "
+                f"list, so name executables before {flag}.",
+                file=sys.stderr,
+            )
 
 
 def main(argv=None):
@@ -517,7 +617,6 @@ def main(argv=None):
 
     context = BuildContext()
     args = compiletools.apptools.parseargs(cap, argv, context=context)
-    _reject_library_slots(cap, args)
 
     styleclass = _STYLE_REGISTRY[args.style.lower()]
     styleobj = styleclass()
@@ -528,6 +627,16 @@ def main(argv=None):
     # target's subproject conf changes the set.
     if args.auto and not any([args.filename, args.static, args.dynamic, args.tests]):
         args = discover_targets_and_reanchor(args, context)
-    styleobj(list(args.filename or []), list(args.tests or []))
+    _warn_about_executables_in_library_slots(args, context)
+    # Discovery never populates the library slots -- static-versus-dynamic has
+    # no source-level signal, so only the caller can say which sources are a
+    # library -- but a named one is reported rather than silently dropped, and
+    # the styles render a library section only when there is one.
+    styleobj(
+        list(args.filename or []),
+        list(args.tests or []),
+        list(args.static or []),
+        list(args.dynamic or []),
+    )
 
     return 0

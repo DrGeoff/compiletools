@@ -29,6 +29,7 @@ ct-findtargets [-h] [-c CONFIG_FILE] [--variant VARIANT] [-v] [-q]
                     [--prepend-AUTO-EXCLUDE AUTO_EXCLUDE]
                     [--style {null,flat,indent,args}]
                     [--filenametestmatch | --no-filenametestmatch]
+                    [--dynamic [DYNAMIC ...]] [--static [STATIC ...]]
                     [--tests [TESTS ...]]
                     [filename ...]
 
@@ -55,13 +56,32 @@ way ``ct-cake --auto`` does, so a subproject conf reached only through
 a discovered target still shapes the final target set (including its
 ``append-AUTO-EXCLUDE`` additions).
 
-``--static`` and ``--dynamic`` are rejected with an error:
-ct-findtargets lists executables and tests only, and its output styles
-have no bucket for libraries, so accepting a library target would
-either mislabel it or silently omit it from output that scripts (such
-as ``ct-build``) consume. Name executables as positional arguments and
-tests with ``--tests``, and build libraries with ``ct-create-makefile
---static``/``--dynamic``.
+``--static`` and ``--dynamic`` are reported too, each in its own bucket.
+Naming one suppresses discovery exactly as naming an executable does,
+and the combined form reports BOTH::
+
+    ct-findtargets app/main.cpp --static lib/widget.cpp
+
+lists the executable and the library, rather than dropping the library
+from output that scripts (such as ``ct-build``) consume. Write the
+positionals BEFORE the library flag: ``--static`` and ``--dynamic``
+each take a list, so a positional written after one is absorbed into
+that list. That accident builds rather than failing -- the executable's
+object is archived into the library and no executable is produced -- so
+a source in a library slot that carries an exemarker draws a warning on
+stderr naming the file, the marker and the ordering rule. It is a
+warning, not a refusal: a source carrying ``main`` can legitimately be
+part of a library. ``-q`` silences it. The warning reaches the
+ct-findtargets route only; ``ct-create-makefile`` does not read
+exemarkers, so the same mistake made directly against it is unwarned.
+
+Discovery never INVENTS a library target. Whether a source belongs in a
+static library, a shared library or an executable is a partition its
+author chooses -- nothing in the source distinguishes the three -- so
+the library buckets hold exactly what the command line named, and an
+``--auto`` run with nothing named reports none. Each style prints a
+library section only when there is a library to print, so the output of
+every invocation that names none is unchanged.
 
 --auto-exclude drops files from the search. Give it multiple times to build
 up a list, or set it in a ct.conf. A pattern containing a path separator
