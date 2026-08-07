@@ -27,7 +27,7 @@ Cycle management:
   ``apptools_validate``, ``version``) are imported directly at module level.
 * The handful of apptools-core symbols this module needs — the
   ``_UNSUPPLIED_*`` sentinels and ``unsupplied_replacement`` /
-  ``_ensure_variant_suffix`` (whose canonical home is the substitution core)
+  ``_ensure_variant_suffix`` (whose canonical home is the apptools facade)
   — are reached through a deferred ``import compiletools.apptools`` inside the
   four functions that use them. apptools imports THIS module at its top for
   re-export, so a top-level back-import would form a hard cycle; the deferred

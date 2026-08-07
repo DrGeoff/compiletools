@@ -1159,7 +1159,7 @@ def main(argv=None):
 
     context = BuildContext()
     # The manager must span parseargs (which applies the PKG_CONFIG_PATH
-    # override via _setup_pkg_config_overrides) AND the build (magicflags
+    # override via build_apply.apply_effects) AND the build (magicflags
     # runs pkg-config subprocesses that need the override live), so that a
     # long-lived embedder calling main() repeatedly doesn't carry project
     # A's pkg-config dirs into project B's environment.

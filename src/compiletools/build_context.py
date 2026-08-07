@@ -39,11 +39,11 @@ class BuildContext:
 
     One piece of state does NOT die with the context: the process-wide
     ``PKG_CONFIG_PATH`` mutation applied by
-    ``apptools._setup_pkg_config_overrides``. Library embedders driving
-    multiple builds in one process should wrap each build in
-    ``pkg_config_path_restored()`` so project A's auto-discovered
-    pkg-config dirs don't bleed into project B's environment (the
-    ``ct-cake`` CLI does this in ``cake.main``).
+    ``build_apply.apply_effects`` (the ``SetEnv`` effect computed by the
+    build-state core). Library embedders driving multiple builds in one
+    process should wrap each build in ``pkg_config_path_restored()`` so
+    project A's auto-discovered pkg-config dirs don't bleed into project
+    B's environment (the ``ct-cake`` CLI does this in ``cake.main``).
     """
 
     def __init__(self) -> None:
@@ -100,7 +100,7 @@ class BuildContext:
 
         Safe to hold around code that may or may not apply overrides: the
         sentinel is recorded at apply time by
-        ``apptools._setup_pkg_config_overrides``, and
+        ``build_apply.apply_effects`` (the ``SetEnv`` effect), and
         ``restore_pkg_config_path`` is a no-op when nothing was applied
         (``None`` sentinel). Preferred over calling
         ``restore_pkg_config_path`` directly.
@@ -111,8 +111,8 @@ class BuildContext:
             self.restore_pkg_config_path()
 
     def restore_pkg_config_path(self) -> None:
-        """Undo any PKG_CONFIG_PATH mutation made by
-        ``apptools._setup_pkg_config_overrides`` against this context.
+        """Undo any PKG_CONFIG_PATH mutation recorded on this context by
+        ``build_apply.apply_effects`` (the ``SetEnv`` effect).
 
         Long-lived processes (test sessions, library embedders) that
         create more than one BuildContext should call this between
@@ -121,11 +121,12 @@ class BuildContext:
         Prefer the ``pkg_config_path_restored()`` context manager, which
         pairs apply-scope and restore automatically.
 
-        Acquires the same module-level
-        ``compiletools.apptools_pkgconfig._PKG_CONFIG_OVERRIDE_LOCK`` that
-        ``_setup_pkg_config_overrides`` takes for its mutation, so the
-        apply/restore serialization contract on ``PKG_CONFIG_PATH`` is
-        enforced rather than merely documented.
+        Acquires ``compiletools.apptools_pkgconfig._PKG_CONFIG_OVERRIDE_LOCK``
+        so concurrent restores serialize with each other and with the
+        legacy ``_setup_pkg_config_overrides`` writer that tests still
+        exercise. ``apply_effects`` itself mutates the env without taking
+        this lock: parseargs is single-threaded at that point, so the
+        apply side relies on call-context, not the lock.
         """
         import os
 

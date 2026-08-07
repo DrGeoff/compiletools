@@ -1,8 +1,8 @@
 """Startup-validation + legacy-config-key checks (leaf-ish module).
 
 Extracted from :mod:`compiletools.apptools` as a behavior-preserving facade
-split. It groups the "fail loud, fail early" guards that run after config
-substitution and just before/within :func:`apptools.parseargs`:
+split. It groups the "fail loud, fail early" guards that run after the
+build-state core (gather/compute/apply) inside :func:`apptools.parseargs`:
 
 * :func:`_check_resolved_compiler_available` -- the resolved CC/CXX/LD binary
   must be on PATH.
@@ -124,7 +124,7 @@ def _check_resolved_compiler_available(args) -> None:
     compile invocation with a generic "g++: command not found" — no
     pointer at *which* variant requested g++.
 
-    This check runs after substitutions and emits a clear error naming
+    This check runs after the build-state core and emits a clear error naming
     both the missing binary and the resolved variant so the user knows
     whether to switch variants or install the toolchain.
     """

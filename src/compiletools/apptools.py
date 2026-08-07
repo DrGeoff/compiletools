@@ -52,7 +52,7 @@ import compiletools.wrappedos
 # apptools_argparse reaches BACK into this module for the ``_UNSUPPLIED_*``
 # sentinels and ``unsupplied_replacement`` / ``_ensure_variant_suffix`` via a
 # deferred ``import compiletools.apptools`` inside the four functions that need
-# them (those symbols stay in the substitution core). That deferred import is
+# them (those symbols stay here in the facade). That deferred import is
 # the accepted cycle-break: this top-level import of apptools_argparse pulls in
 # git_utils, which imports the apptools facade — but only uses it at call time,
 # so the partially-initialised module is fine (the pre-existing cycle pattern).
