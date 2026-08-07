@@ -326,11 +326,11 @@ class Cake:
             help="Ignored. For backwards compatibility only.",
         )
 
-        compiletools.findtargets.add_arguments(cap)
-        # ct-filelist registered a narrower --style above; ct-cake advertises
-        # ct-findtargets' set, so claim it explicitly rather than by
-        # registration order.
-        compiletools.findtargets.add_style_argument(cap)
+        # Discovery half only. ct-filelist registered --style above, and that
+        # is the one ct-cake means: --filelist output is the only thing it
+        # formats with a style, so ct-findtargets' wider null/args choices
+        # would advertise values no code path here can honour.
+        compiletools.findtargets.add_discovery_arguments(cap)
 
         compiletools.utils.add_flag_argument(
             parser=cap,
@@ -516,7 +516,7 @@ class Cake:
 
     def _callfilelist(self):
         assert self.hunter is not None
-        filelist = compiletools.filelist.Filelist(self.args, self.hunter, style="flat")
+        filelist = compiletools.filelist.Filelist(self.args, self.hunter)
         filelist.process()
 
     def _call_compilation_database(self):
