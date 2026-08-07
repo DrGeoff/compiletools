@@ -113,7 +113,7 @@ def _merged_pkg_config_specs(args):
 
 
 def _compute_pkg_config_path(args, verbose=0):
-    """The value _setup_pkg_config_overrides_locked would write: existing
+    """The value the build runs under: the existing
     env merged with the conf/CLI prepend/append lists and the
     auto-discovered cwd/gitroot ct.conf.d/pkgconfig candidates. Emits the
     verbose >= 4 provenance lines (gather is the impure boundary; the

@@ -2,7 +2,6 @@
 
 import subprocess
 import warnings
-from types import SimpleNamespace
 
 import pytest
 
@@ -80,15 +79,15 @@ def test_tokenize_pkg_config_specs_treats_comma_as_a_hard_boundary(raw, expected
     assert pkgconfig.tokenize_pkg_config_specs([raw]) == expected
 
 
-def test_add_flags_fallback_uses_real_package_specs(monkeypatch):
+def test_batch_fallback_uses_real_package_specs(monkeypatch):
     """The per-package fallback probes each spec, never the whole list joined.
 
-    ``args.pkg_config`` is built the way callers must build it — already
-    tokenized, the shape ``build_inputs._merged_pkg_config_specs`` produces
-    from the raw conf attrs. Handing this test the raw conf shape
-    ``['present missing']`` would only be testing that
-    ``_add_flags_from_pkg_config`` re-tokenizes defensively, which is a
-    property its callers do not need and should not have to keep.
+    The package list is the post-tokenization shape
+    ``build_inputs._merged_pkg_config_specs`` produces from the raw conf
+    attrs. Handing this test the raw conf shape ``['present missing']``
+    would only be testing that ``_batch_pkg_config`` re-tokenizes
+    defensively, which is a property its callers do not need and should not
+    have to keep.
     """
     calls: list[list[str]] = []
 
@@ -107,25 +106,22 @@ def test_add_flags_fallback_uses_real_package_specs(monkeypatch):
         return subprocess.CompletedProcess(cmd, 0, stdout=output)
 
     monkeypatch.setattr(pkgconfig.subprocess, "run", fake_run)
-    args = SimpleNamespace(
-        pkg_config=["present", "missing"],
-        verbose=0,
-        CPPFLAGS="",
-        CFLAGS="",
-        CXXFLAGS="",
-        LDFLAGS="",
-    )
 
-    with pytest.warns(UserWarning, match=r"pkg-config package 'missing' not found") as recorded:
-        pkgconfig._add_flags_from_pkg_config(args)
+    # catch_warnings rather than pytest.warns because both queries have to
+    # run inside the same recording scope: the assertion is that they
+    # produce ONE warning between them, so the existence memo cannot
+    # re-report the same missing package once per flag option.
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        cflags = pkgconfig._batch_pkg_config(["present", "missing"], "--cflags")
+        libs = pkgconfig._batch_pkg_config(["present", "missing"], "--libs")
 
     assert len(recorded) == 1
     assert str(recorded[0].message).startswith("pkg-config package 'missing' not found")
     assert "present missing" not in str(recorded[0].message)
-    assert "-isystem /present/include" in args.CPPFLAGS
-    assert "-DPRESENT" in args.CFLAGS
-    assert "-DPRESENT" in args.CXXFLAGS
-    assert "-lpresent" in args.LDFLAGS
+    assert pkgconfig.filter_pkg_config_cflags(cflags["present"]) == "-isystem /present/include -DPRESENT"
+    assert cflags["missing"] == ""
+    assert libs["present"] == "-L/present/lib -lpresent"
     assert ["pkg-config", "--exists", "present", "missing"] in calls
     assert ["pkg-config", "--exists", "present missing"] not in calls
 
@@ -133,7 +129,7 @@ def test_add_flags_fallback_uses_real_package_specs(monkeypatch):
 def test_batch_fast_path_keeps_constraint_as_one_spec(monkeypatch):
     """A constraint stays one argv element through the batched ``--exists``.
 
-    As above, ``args.pkg_config`` carries the post-tokenization shape.
+    As above, the package list carries the post-tokenization shape.
     ``'zlib >= 1.2'`` is one element and ``'other'`` is another; what this
     pins is that the batch probe does not re-split the constraint into
     ``zlib``, ``>=`` and ``1.2`` on its way to argv.
@@ -146,19 +142,12 @@ def test_batch_fast_path_keeps_constraint_as_one_spec(monkeypatch):
         return subprocess.CompletedProcess(cmd, 0, stdout=output)
 
     monkeypatch.setattr(pkgconfig.subprocess, "run", fake_run)
-    args = SimpleNamespace(
-        pkg_config=["zlib >= 1.2", "other"],
-        verbose=0,
-        CPPFLAGS="",
-        CFLAGS="",
-        CXXFLAGS="",
-    )
 
-    pkgconfig._add_flags_from_pkg_config(args)
+    out = pkgconfig._batch_pkg_config(["zlib >= 1.2", "other"], "--cflags")
 
     assert ["pkg-config", "--exists", "zlib >= 1.2", "other"] in calls
     assert ["pkg-config", "--cflags", "zlib >= 1.2"] in calls
-    assert "-DCONSTRAINT_OK" in args.CPPFLAGS
+    assert out["zlib >= 1.2"] == "-DCONSTRAINT_OK"
 
 
 def test_unsatisfied_version_floor_warning_names_the_full_spec(monkeypatch):
@@ -176,16 +165,9 @@ def test_unsatisfied_version_floor_warning_names_the_full_spec(monkeypatch):
         )
 
     monkeypatch.setattr(pkgconfig.subprocess, "run", fake_run)
-    args = SimpleNamespace(
-        pkg_config=["zlib >= 999"],
-        verbose=0,
-        CPPFLAGS="",
-        CFLAGS="",
-        CXXFLAGS="",
-    )
 
     with pytest.warns(UserWarning, match=r"pkg-config version requirement 'zlib >= 999' not satisfied"):
-        pkgconfig._add_flags_from_pkg_config(args)
+        assert pkgconfig.cached_pkg_config("zlib >= 999", "--cflags") == ""
 
 
 def test_missing_constrained_package_warning_names_the_bare_package(monkeypatch):
@@ -193,16 +175,9 @@ def test_missing_constrained_package_warning_names_the_bare_package(monkeypatch)
         return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="translated diagnostic")
 
     monkeypatch.setattr(pkgconfig.subprocess, "run", fake_run)
-    args = SimpleNamespace(
-        pkg_config=["ghost >= 1.0"],
-        verbose=0,
-        CPPFLAGS="",
-        CFLAGS="",
-        CXXFLAGS="",
-    )
 
     with pytest.warns(UserWarning, match=r"pkg-config package 'ghost' not found"):
-        pkgconfig._add_flags_from_pkg_config(args)
+        assert pkgconfig.cached_pkg_config("ghost >= 1.0", "--cflags") == ""
 
 
 @pytest.mark.parametrize(
@@ -224,17 +199,9 @@ def test_pkg_config_error_mode_promotes_every_failure_category(monkeypatch, spec
 
     monkeypatch.setattr(pkgconfig.subprocess, "run", fake_run)
     pkgconfig.set_pkg_config_errors("error")
-    args = SimpleNamespace(
-        pkg_config=[spec],
-        pkg_config_errors="error",
-        verbose=0,
-        CPPFLAGS="",
-        CFLAGS="",
-        CXXFLAGS="",
-    )
 
     with pytest.raises(pkgconfig.PkgConfigError, match=category):
-        pkgconfig._add_flags_from_pkg_config(args)
+        pkgconfig._batch_pkg_config([spec], "--cflags")
 
 
 def test_clear_cache_preserves_pkg_config_error_mode(monkeypatch):
@@ -315,16 +282,9 @@ def test_malformed_comparison_gets_an_explicit_diagnostic_without_a_probe(monkey
         pytest.fail("malformed specs must not invoke pkg-config")
 
     monkeypatch.setattr(pkgconfig.subprocess, "run", fail_if_called)
-    args = SimpleNamespace(
-        pkg_config=[spec],
-        verbose=0,
-        CPPFLAGS="",
-        CFLAGS="",
-        CXXFLAGS="",
-    )
 
     with pytest.warns(UserWarning, match=rf"pkg-config malformed package specification {spec!r}"):
-        pkgconfig._add_flags_from_pkg_config(args)
+        assert pkgconfig._batch_pkg_config([spec], "--cflags") == {spec: ""}
 
 
 def test_fully_spaced_constraint_is_the_form_that_reaches_a_probe(monkeypatch):
@@ -342,22 +302,15 @@ def test_fully_spaced_constraint_is_the_form_that_reaches_a_probe(monkeypatch):
         return subprocess.CompletedProcess(cmd, 0, stdout="-DZLIB_OK", stderr="")
 
     monkeypatch.setattr(pkgconfig.subprocess, "run", fake_run)
-    args = SimpleNamespace(
-        pkg_config=["zlib >= 1.2"],
-        verbose=0,
-        CPPFLAGS="",
-        CFLAGS="",
-        CXXFLAGS="",
-    )
 
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        pkgconfig._add_flags_from_pkg_config(args)
+        out = pkgconfig._batch_pkg_config(["zlib >= 1.2"], "--cflags")
 
     assert ["pkg-config", "--cflags", "zlib >= 1.2"] in probed, (
         f"the constraint was not queried as one intact spec: {probed!r}"
     )
-    assert "-DZLIB_OK" in args.CPPFLAGS
+    assert out["zlib >= 1.2"] == "-DZLIB_OK"
 
 
 def _exists_ok_query_fails(cmd, **_kwargs):

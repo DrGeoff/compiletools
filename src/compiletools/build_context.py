@@ -88,7 +88,6 @@ class BuildContext:
         # want_libs because a libs-free entry must not be served to a caller
         # that needs libs.
         self.pkg_config_query_cache: dict[tuple[str, str | None, str, bool], PkgConfigResult] = {}
-        self.pkg_config_overrides_applied: bool = False
         # Sentinel: True means PKG_CONFIG_PATH was unset before override.
         # str means we saved that prior value. None means no override active.
         self._original_pkg_config_path: str | bool | None = None
@@ -116,27 +115,21 @@ class BuildContext:
 
         Long-lived processes (test sessions, library embedders) that
         create more than one BuildContext should call this between
-        contexts to avoid bleeding pkg-config state across builds. After
-        restore, the override flag is reset so a future apply works.
+        contexts to avoid bleeding pkg-config state across builds.
         Prefer the ``pkg_config_path_restored()`` context manager, which
         pairs apply-scope and restore automatically.
 
-        Acquires ``compiletools.apptools_pkgconfig._PKG_CONFIG_OVERRIDE_LOCK``
-        so concurrent restores serialize with each other and with the
-        legacy ``_setup_pkg_config_overrides`` writer that tests still
-        exercise. ``apply_effects`` itself mutates the env without taking
-        this lock: parseargs is single-threaded at that point, so the
-        apply side relies on call-context, not the lock.
+        Unlocked, like the ``apply_effects`` write it undoes: both run
+        single-threaded by call context. A lock on this half alone was
+        never mutual exclusion -- it serialized restores against each
+        other and against a writer that no longer exists, while the apply
+        side wrote the same variable without taking it.
         """
         import os
 
-        import compiletools.apptools_pkgconfig
-
-        with compiletools.apptools_pkgconfig._PKG_CONFIG_OVERRIDE_LOCK:
-            if self._original_pkg_config_path is True:
-                os.environ.pop("PKG_CONFIG_PATH", None)
-            elif isinstance(self._original_pkg_config_path, str):
-                os.environ["PKG_CONFIG_PATH"] = self._original_pkg_config_path
-            # else: nothing was applied; nothing to undo.
-            self._original_pkg_config_path = None
-            self.pkg_config_overrides_applied = False
+        if self._original_pkg_config_path is True:
+            os.environ.pop("PKG_CONFIG_PATH", None)
+        elif isinstance(self._original_pkg_config_path, str):
+            os.environ["PKG_CONFIG_PATH"] = self._original_pkg_config_path
+        # else: nothing was applied; nothing to undo.
+        self._original_pkg_config_path = None

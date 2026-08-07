@@ -6,16 +6,17 @@ plus :mod:`compiletools.wrappedos` and :mod:`compiletools.utils` (themselves
 leaves). It MUST NOT import ``compiletools.apptools`` -- doing so would
 reintroduce the very cycle this split removes.
 
-:mod:`compiletools.git_utils` is imported *inside*
-:func:`_setup_pkg_config_overrides_locked` (deferred), not at module scope,
-because ``git_utils`` itself does a top-level ``import compiletools.apptools``
-(used only lazily). A module-scope import here would form the cycle
-apptools -> apptools_pkgconfig -> git_utils -> apptools and crash at
-``apptools`` initialisation. The deferred import runs only after every module
-is fully initialised.
+:mod:`compiletools.git_utils` is off limits at module scope for the same
+reason: it does a top-level ``import compiletools.apptools`` (used only
+lazily), so importing it here would form the cycle apptools ->
+apptools_pkgconfig -> git_utils -> apptools and crash at ``apptools``
+initialisation. Nothing here needs it -- the gitroot-relative
+``ct.conf.d/pkgconfig`` candidate discovery lives in
+:func:`compiletools.build_inputs._compute_pkg_config_path`, which defers the
+import inside the function.
 
-It groups the functions that invoke ``pkg-config`` and that manage the
-process-wide ``PKG_CONFIG_PATH`` override state:
+It groups the functions that invoke ``pkg-config`` and that compute the
+process-wide ``PKG_CONFIG_PATH`` override value:
 
 * :func:`cached_pkg_config` -- ``@functools.cache``-memoised single-package
   ``pkg-config --cflags`` / ``--libs`` probe.
@@ -25,11 +26,12 @@ process-wide ``PKG_CONFIG_PATH`` override state:
   default system include paths.
 * :func:`_batch_pkg_config` -- batched multi-package query with per-package
   fallback through :func:`cached_pkg_config`.
-* :func:`_add_flags_from_pkg_config` -- fold pkg-config cflags/libs into
-  ``args.{CPPFLAGS,CFLAGS,CXXFLAGS,LDFLAGS}``.
-* :func:`_setup_pkg_config_overrides` /
-  :func:`_setup_pkg_config_overrides_locked` -- apply project + CLI
-  ``PKG_CONFIG_PATH`` overrides under ``_PKG_CONFIG_OVERRIDE_LOCK``.
+* :func:`compute_pkg_config_path` -- pure merge of the existing environment
+  value with the conf/CLI prepend/append lists and the auto-discovered
+  candidates, producing the ``PKG_CONFIG_PATH`` the build runs under.
+  ``gather_inputs`` calls it; ``apply_effects`` performs the env write.
+* :func:`emit_pkg_config_path_provenance` -- the ``verbose >= 4``
+  ``Prepended/Appended pkg-config path: ...`` lines over that same merge.
 * :func:`_pkg_config_provenance_label` -- best-effort origin attribution for
   emitted ``Prepended/Appended pkg-config path: ...`` diagnostic lines.
 * :func:`_audit_pkg_config_output` -- the two undefined-``${variable}``
@@ -57,7 +59,6 @@ import re
 import shlex
 import subprocess
 import sys
-import threading
 import warnings
 from typing import Literal
 
@@ -649,71 +650,6 @@ def _pkg_config_provenance_label(
     return "(from CLI)"
 
 
-def _setup_pkg_config_overrides(context, verbose=0, prepend_paths=None, append_paths=None, args_parser=None):
-    """Apply project-level and CLI-specified pkg-config path overrides to PKG_CONFIG_PATH.
-
-    Priority order (highest first):
-
-    1. ``prepend-PKG-CONFIG-PATH`` entries, with CLI winning over conf-file
-       entries and — within the accumulated conf-file entries — the
-       higher-priority axis conf (composed later in the variant) winning
-       over the lower-priority one (e.g. project ``ct.conf``).
-    2. ``<cwd>/ct.conf.d/pkgconfig/`` (project-local, auto-discovered)
-    3. ``<gitroot>/ct.conf.d/pkgconfig/`` (repo-level, auto-discovered)
-    4. Existing ``PKG_CONFIG_PATH`` entries
-    5. ``append-PKG-CONFIG-PATH`` entries, symmetric to (1): CLI wins over
-       conf-file entries, higher-priority axis wins within the conf-file
-       group.
-
-    Args:
-        context: BuildContext instance tracking per-build state.
-        verbose: verbosity level for diagnostic output.
-        prepend_paths: directories to prepend (from ``--prepend-PKG-CONFIG-PATH``).
-        append_paths: directories to append (from ``--append-PKG-CONFIG-PATH``).
-        args_parser: optional ``_ComposingArgumentParser`` whose
-            ``get_conf_file_provenance()`` is consulted at ``verbose >= 4``
-            to attribute each emitted ``Prepended/Appended pkg-config
-            path: ...`` line back to its origin (conf-file:line, CLI, or
-            auto-discovered). Best-effort: if absent or empty the
-            output degrades to bare paths (today's format).
-
-    Must be called before any pkg-config subprocess invocation
-    (i.e., before _add_flags_from_pkg_config and before magicflags
-    processing).
-
-    Concurrency contract
-    --------------------
-    This function mutates the **process-wide** ``os.environ['PKG_CONFIG_PATH']``,
-    which is global state. Callers MUST observe the following:
-
-    * Per-process serialization is enforced via a module-level
-      ``threading.Lock`` (``_PKG_CONFIG_OVERRIDE_LOCK``). Two threads
-      racing into this function will not interleave their reads/writes
-      of ``PKG_CONFIG_PATH``.
-    * The lock does NOT protect against other code paths in the process
-      mutating ``os.environ['PKG_CONFIG_PATH']`` independently.
-    * The lock does NOT serialize across processes. Multiple processes
-      sharing a single ``BuildContext`` is unsupported.
-    * The ``context.pkg_config_overrides_applied`` flag is checked and
-      set within the lock to make the apply-once invariant safe under
-      concurrent calls on the same context.
-    * After mutation, ``context._original_pkg_config_path`` records the
-      prior value so ``BuildContext.restore_pkg_config_path()`` can
-      undo the mutation. Restore is also single-process / serial.
-      Callers should prefer the
-      ``BuildContext.pkg_config_path_restored()`` context manager
-      (``cake.main`` holds it around the whole invocation) over pairing
-      apply/restore calls by hand.
-    """
-    with _PKG_CONFIG_OVERRIDE_LOCK:
-        _setup_pkg_config_overrides_locked(context, verbose, prepend_paths, append_paths, args_parser)
-
-
-# Process-local serialization for the env-mutation in _setup_pkg_config_overrides.
-# See the docstring of that function for the full contract.
-_PKG_CONFIG_OVERRIDE_LOCK = threading.Lock()
-
-
 def _merged_pkg_config_path_entries(existing, prepend_paths, append_paths, cwd_candidates, gitroot_candidates):
     """Yield ``(dir, label, origin)`` for each entry of the final
     PKG_CONFIG_PATH, in emission order, deduplicated.
@@ -740,7 +676,7 @@ def _merged_pkg_config_path_entries(existing, prepend_paths, append_paths, cwd_c
     source defines).
 
     ``label``/``origin`` are the provenance-printing hints
-    ``_setup_pkg_config_overrides_locked`` consumes at ``verbose >= 4``;
+    ``emit_pkg_config_path_provenance`` consumes at ``verbose >= 4``;
     both are None for middle (pre-existing) entries.
     """
     existing_dirs = [compiletools.wrappedos.normpath(d) for d in existing.split(os.pathsep)] if existing else []
@@ -770,11 +706,9 @@ def compute_pkg_config_path(existing, prepend_paths, append_paths, cwd_candidate
     """Pure merge producing the final PKG_CONFIG_PATH value, or None when
     the merge is empty.
 
-    Extraction of the merge loop of ``_setup_pkg_config_overrides_locked``
-    (which now calls this and keeps only the candidate discovery, env write
-    and provenance printing). ``gather_inputs`` calls it too so the pure
-    build-state core receives the value as data instead of reading the
-    mutated environment.
+    ``gather_inputs`` calls it so the pure build-state core receives the
+    value as data instead of reading the mutated environment; the env write
+    itself is a ``SetEnv`` effect performed by ``apply_effects``.
     """
     final = [
         d
@@ -815,100 +749,6 @@ def emit_pkg_config_path_provenance(
             print(f"{label} pkg-config path: {d} {attribution}")
         else:
             print(f"{label} pkg-config path: {d}")
-
-
-def _setup_pkg_config_overrides_locked(context, verbose, prepend_paths, append_paths, args_parser=None):
-    """Body of _setup_pkg_config_overrides; assumes the module lock is held."""
-    if context.pkg_config_overrides_applied:
-        return
-
-    # Deferred import: ``compiletools.git_utils`` is NOT a leaf -- it does a
-    # top-level ``import compiletools.apptools`` (used only lazily inside its
-    # own functions). Importing it at module scope here would create the cycle
-    # apptools -> apptools_pkgconfig -> git_utils -> apptools and fail at
-    # ``apptools`` init time (partially-initialised module). Importing inside
-    # the function keeps apptools_pkgconfig a true import-time leaf; by the
-    # time this runs every module is fully initialised. Importing the symbol
-    # (``from ... import find_git_root``) rather than the submodule avoids
-    # rebinding the local ``compiletools`` name, keeping the
-    # ``compiletools.wrappedos.*`` references below resolvable by the type
-    # checker.
-    from compiletools.git_utils import find_git_root
-
-    gitroot = find_git_root()
-
-    cwd_candidates = []
-    cwd_pkgconfig = os.path.join(os.getcwd(), "ct.conf.d", "pkgconfig")
-    if compiletools.wrappedos.isdir(cwd_pkgconfig):
-        cwd_candidates.append(compiletools.wrappedos.normpath(cwd_pkgconfig))
-
-    gitroot_candidates = []
-    if gitroot:
-        repo_pkgconfig = os.path.join(gitroot, "ct.conf.d", "pkgconfig")
-        if compiletools.wrappedos.isdir(repo_pkgconfig):
-            repo_pkgconfig = compiletools.wrappedos.normpath(repo_pkgconfig)
-            if repo_pkgconfig not in cwd_candidates:
-                gitroot_candidates.append(repo_pkgconfig)
-
-    existing = os.environ.get("PKG_CONFIG_PATH", "")
-
-    emit_pkg_config_path_provenance(
-        existing, prepend_paths, append_paths, cwd_candidates, gitroot_candidates, verbose, args_parser
-    )
-
-    new_value = compute_pkg_config_path(existing, prepend_paths, append_paths, cwd_candidates, gitroot_candidates)
-
-    # Save original ONLY if we are about to mutate, so restore_pkg_config_path
-    # can faithfully undo. Set the flag AFTER the mutation succeeds so a
-    # caller hitting an exception above can retry.
-    if new_value is not None and new_value != existing:
-        context._original_pkg_config_path = existing if "PKG_CONFIG_PATH" in os.environ else True
-        os.environ["PKG_CONFIG_PATH"] = new_value
-
-    context.pkg_config_overrides_applied = True
-
-
-def _add_flags_from_pkg_config(args):
-    """Add flags for the package specs already canonicalized on ``args``.
-
-    Legacy mutate-in-place writer with no production caller: the build
-    pipeline queries pkg-config in ``gather_inputs`` and folds the results
-    in ``build_state.stage_pkg_config_flags``. Kept (and re-exported from
-    ``apptools``) for tests and library embedders that drive it directly;
-    expects ``args.pkg_config`` to already be a tokenized list.
-    """
-    packages = list(args.pkg_config)
-    if not packages:
-        return
-
-    # Batch pkg-config calls: query all packages at once instead of one subprocess
-    # per package.  Falls back to per-package calls if the batch fails (e.g. a
-    # package is missing and we need to identify which one).
-    # hasattr IS the CAP registration: populate_args never materializes
-    # slot attrs, so an unregistered LDFLAGS stays absent and hasattr
-    # answers "does this tool link?" on any namespace shape.
-    want_libs = hasattr(args, "LDFLAGS")
-
-    batch_cflags = _batch_pkg_config(packages, "--cflags")
-    batch_libs = _batch_pkg_config(packages, "--libs") if want_libs else {}
-
-    for pkg in packages:
-        raw_cflags = batch_cflags.get(pkg, "")
-        cflags = filter_pkg_config_cflags(raw_cflags, args.verbose)
-
-        if cflags:
-            args.CPPFLAGS += f" {cflags}"
-            args.CFLAGS += f" {cflags}"
-            args.CXXFLAGS += f" {cflags}"
-            if args.verbose >= 6:
-                print(f"pkg-config --cflags {pkg} added FLAGS={cflags}")
-
-        if want_libs:
-            libs = batch_libs.get(pkg, "")
-            if libs:
-                args.LDFLAGS += f" {libs}"
-                if args.verbose >= 6:
-                    print(f"pkg-config --libs {pkg} added LDFLAGS={libs}")
 
 
 def _batch_pkg_config(packages: list[str], option: str) -> dict[str, str]:

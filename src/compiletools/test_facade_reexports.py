@@ -68,12 +68,8 @@ _add(
         "cached_pkg_config",
         "filter_pkg_config_cflags",
         "tokenize_pkg_config_specs",
-        "_setup_pkg_config_overrides",
-        "_setup_pkg_config_overrides_locked",
-        "_add_flags_from_pkg_config",
         "_batch_pkg_config",
         "_pkg_config_provenance_label",
-        "_PKG_CONFIG_OVERRIDE_LOCK",  # threading.Lock -- identity is load-bearing
         "_PkgConfigOrigin",
     ],
 )

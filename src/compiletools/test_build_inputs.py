@@ -428,7 +428,7 @@ class TestIncludePathsGathering:
 
 
 class TestComputePkgConfigPath:
-    """Pure merge extracted from _setup_pkg_config_overrides_locked."""
+    """Pure merge shared by gather_inputs and the provenance printer."""
 
     def test_empty_inputs_produce_none(self):
         assert compute_pkg_config_path("", None, None, [], []) is None

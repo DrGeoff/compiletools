@@ -30,8 +30,8 @@ def configure_pkg_config_errors(args) -> None:
 def apply_effects(state: BuildState, context) -> None:
     """Execute state.effects against the live process (env, filesystem).
 
-    SetEnv mirrors _setup_pkg_config_overrides_locked's save-original
-    protocol: context._original_pkg_config_path is set only for
+    SetEnv follows a save-original protocol:
+    context._original_pkg_config_path is set only for
     PKG_CONFIG_PATH and only when the value actually changes, to True
     when the var was previously unset (so restore_pkg_config_path can
     tell "delete it" from "put this string back"). The save is guarded

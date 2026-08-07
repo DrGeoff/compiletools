@@ -1531,9 +1531,10 @@ class TestAutoDiscoveryReanchor:
                 assert compiletools.cake.main(None) == 0
 
     def test_reanchor_reapplies_subproject_pkg_config_path(self, monorepo, monkeypatch):
-        """The first parseargs latches context.pkg_config_overrides_applied;
-        the re-anchor's parseargs re-run must reset it so a target layer's
-        prepend-PKG-CONFIG-PATH reaches os.environ."""
+        """The first parseargs already wrote its merged PKG_CONFIG_PATH;
+        the re-anchor restores the pre-build value before its parseargs
+        re-run, so a target layer's prepend-PKG-CONFIG-PATH reaches
+        os.environ from a clean base rather than stacking."""
         monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
         (monorepo / "appbeta" / "ct.conf").write_text(
             "append-CPPFLAGS = -DAPPBETA_EXTRA\nprepend-PKG-CONFIG-PATH = ${CONF_DIR}/pkgconfig\n"

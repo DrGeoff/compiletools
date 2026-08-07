@@ -1135,6 +1135,27 @@ def make_backend_args(tmpdir, **overrides):
     return args
 
 
+def apply_pkg_config_overrides(context) -> None:
+    """Apply the PKG_CONFIG_PATH overrides to the live process for *context*.
+
+    Runs the production chain -- ``gather_inputs`` (auto-discovers the
+    cwd/gitroot ``ct.conf.d/pkgconfig`` candidates and merges them with the
+    conf/CLI prepend/append lists), ``compute_build_state`` (turns the merged
+    value into a ``SetEnv`` effect), ``apply_effects`` (writes the environment
+    and records the restore sentinel on *context*) -- over a bare namespace.
+    For tests that need the override in place without going through a full
+    ``parseargs``; ``context.restore_pkg_config_path()`` undoes it.
+    """
+    import argparse
+
+    from compiletools.build_apply import apply_effects
+    from compiletools.build_inputs import gather_inputs
+    from compiletools.build_state import compute_build_state
+
+    args = argparse.Namespace(verbose=0)
+    apply_effects(compute_build_state(gather_inputs(args, context)), context)
+
+
 def finalize_flag_state(args) -> None:
     """Synthesize a BuildState from a hand-built namespace and stash it.
 
