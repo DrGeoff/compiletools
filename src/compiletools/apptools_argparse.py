@@ -1444,18 +1444,25 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
         keeps stock behavior. An ambiguous match (more than one candidate)
         also returns None rather than guessing.
 
-        The CANDIDATE is typed only by its ``const``, not by its action
-        class, so ``utils.add_boolean_argument``'s value-converting arm is
+        The CANDIDATE is typed by its ``const``, not by its action class,
+        so ``utils.add_boolean_argument``'s value-converting arm is
         reachable too: there the positive half is ``nargs="?"`` with
         ``const=True`` and only the ``--no-<name>`` half is a
         ``store_false``. Requiring both halves to be flag actions left
         ``no-use-mtime = False`` (and the same spelling for
-        ``no-preprocess``, ``no-file-locking`` and
-        ``no-allow-magic-source-in-header``) inert -- the identical defect
-        in the double-negative spelling. Emitting a bare ``--use-mtime``
-        for that key is safe because configargparse appends its conf and
-        env tokens AFTER the command line, so the optional value slot has
-        no user positional to swallow.
+        ``no-file-locking`` and ``no-allow-magic-source-in-header``)
+        inert -- the identical defect in the double-negative spelling.
+        Emitting a bare ``--use-mtime`` for that key is safe because
+        configargparse appends its conf and env tokens AFTER the command
+        line, so the optional value slot has no user positional to swallow.
+
+        A ``const`` of None excludes a candidate outright. A boolean
+        partner always carries a boolean ``const``; a plain value-taking
+        store action never does, and admitting one as a second candidate
+        trips the ambiguity guard below. ``cake.py``'s deprecated
+        ``--CT_PREPROCESS`` synonym is registered against the
+        ``preprocess`` dest and is exactly that shape, which is why the
+        dest needs this conjunct where a two-action dest does not.
         """
         if not isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction)):
             return None
@@ -1464,6 +1471,7 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
             for other in self._actions
             if other is not action
             and other.dest == action.dest
+            and other.const is not None
             and other.const is not action.const
             and other.option_strings
         ]

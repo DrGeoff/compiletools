@@ -39,6 +39,7 @@ import pytest
 
 import compiletools.apptools
 import compiletools.apptools_argparse
+import compiletools.cake
 import compiletools.findtargets
 import compiletools.testhelper as uth
 import compiletools.utils
@@ -804,6 +805,90 @@ class TestTheValueConvertingHelpersDoubleNegative:
                 tmp_path, name, body, default=default, helper=compiletools.utils.add_boolean_argument
             )
             assert value is expected
+
+
+def _cake_parser(conf_path):
+    """The real ``ct-cake`` flag inventory on a probe parser.
+
+    ``preprocess`` is the one dest in the tree carrying a third action, and
+    the hand-built single-registration probe above cannot show it. Built
+    from ``Cake.add_arguments`` rather than a replica so a change to the
+    deprecated synonym reaches these cells.
+    """
+    parser = compiletools.apptools._ComposingArgumentParser(
+        description="cake conf boolean probe",
+        formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
+        auto_env_var_prefix=_PROBE_ENV_PREFIX,
+        default_config_files=[str(conf_path)],
+        args_for_setting_config_path=["-c", "--config"],
+        ignore_unknown_config_file_keys=True,
+        conflict_handler="resolve",
+        config_file_parser_class=compiletools.apptools_argparse._AccumulatingConfigFileParser,
+    )
+    compiletools.cake.Cake.add_arguments(parser)
+    return parser
+
+
+def _parse_cake_with_conf(tmp_path, conf_body, argv=()):
+    conf = tmp_path / "ct.conf"
+    conf.write_text(conf_body)
+    return _cake_parser(conf).parse_known_args(list(argv))
+
+
+class TestADestCarryingAThirdValueTakingAction:
+    """``cake.py`` registers a deprecated ``--CT_PREPROCESS`` synonym against
+    the ``preprocess`` dest, so that dest carries THREE actions where every
+    other boolean carries two.
+
+    Typing the candidate by ``const`` alone admits the synonym, because a
+    plain store action's ``const`` is None and ``None is not False``. Two
+    candidates then trip the ambiguity guard, ``_boolean_negation_partner``
+    declines to choose, and ``no-preprocess = False`` stays inert -- the one
+    flag of eight that the const-typed candidate did not reach when the
+    action-class filter came off. That filter had been masking the synonym
+    incidentally.
+
+    A boolean partner always carries a boolean ``const``; a value-taking
+    synonym never does. Requiring one is what separates them without
+    weakening the ambiguity guard, which the last cell holds.
+    """
+
+    def test_the_preprocess_dest_carries_a_third_action_with_a_non_boolean_const(self, tmp_path):
+        """Premise pin: without the third action the other cells would pass
+        against a two-action shape that never had the defect."""
+        parser = _cake_parser(tmp_path / "absent.conf")
+        consts = [action.const for action in parser._actions if action.dest == "preprocess"]
+        assert sorted(str(const) for const in consts) == ["False", "None", "True"]
+
+    def test_a_falsey_value_on_the_no_key_turns_preprocess_on(self, tmp_path):
+        args, unknown = _parse_cake_with_conf(tmp_path, "no-preprocess = False\n")
+        assert unknown == []
+        assert args.preprocess is True
+
+    @pytest.mark.parametrize(
+        "body,expected",
+        [
+            ("no-preprocess = True\n", False),
+            ("preprocess = True\n", True),
+            ("preprocess = False\n", False),
+        ],
+    )
+    def test_the_spellings_that_already_worked_are_unchanged(self, tmp_path, body, expected):
+        args, _ = _parse_cake_with_conf(tmp_path, body)
+        assert args.preprocess is expected
+
+    def test_two_boolean_candidates_still_refuse_to_resolve(self, tmp_path):
+        """The ambiguity guard is narrowed, not disabled: a second candidate
+        carrying a boolean ``const`` still leaves the partner unresolved."""
+        parser = _probe_parser(
+            tmp_path / "absent.conf",
+            "auto",
+            default=False,
+            helper=compiletools.utils.add_flag_argument,
+        )
+        parser.add_argument("--also-auto", dest="auto", action="store_true")
+        negative = parser._option_string_actions["--no-auto"]
+        assert parser._boolean_negation_partner(negative) is None
 
 
 class TestTheDoubleNegativeConfKey:
