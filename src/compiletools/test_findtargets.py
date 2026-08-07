@@ -911,6 +911,6 @@ class TestLibrarySlotsAreRejected:
             self._run(library_repo, ["--static", os.path.join("lib", "widget.cpp")])
         err = capsys.readouterr().err
         assert "--static" in err
-        assert "--filename" in err
+        assert "positional" in err
         assert "--tests" in err
         assert "ct-create-makefile" in err
