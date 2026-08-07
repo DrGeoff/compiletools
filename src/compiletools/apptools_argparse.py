@@ -1348,6 +1348,12 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
                 a.env_var = compiletools.utils.ENV_VAR_DISABLED  # type: ignore[attr-defined]
 
     def _open_config_files(self, command_line_args):
+        # configargparse folds env-var tokens into the argv it hands here,
+        # before it reads a single conf file. Recording the widened list is
+        # what lets convert_item_to_command_line_arg see an env-set partner
+        # option, so an env var beats a conf file for a flag pair as it
+        # already does for every other key.
+        self._ct_command_line_args = list(command_line_args)
         streams = super()._open_config_files(command_line_args)
         if len(streams) < 2:
             return streams
@@ -1480,14 +1486,16 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
         parser is the partner key, ``no-flag = True``. Emitting the partner
         option here is what makes ``flag = False`` mean what it says.
 
-        Also restores "the command line wins": stock configargparse skips a
-        conf value only when the SAME action's option string is already on
-        the command line, so ``no-auto = True`` in a conf plus ``--auto`` on
-        the command line injected ``--no-auto`` alongside it and the
-        mutually exclusive group turned that into exit 2. Suppressing the
-        injection when either form was typed, in full or abbreviated, makes
-        the command line override the conf file as it does for every other
-        key.
+        Also restores the normal precedence, command line over env var over
+        conf file. Stock configargparse skips a conf value only when the
+        SAME action's option string is already present, so ``no-auto =
+        True`` in a conf plus ``--auto`` on the command line injected
+        ``--no-auto`` alongside it and the mutually exclusive group turned
+        that into exit 2. Suppressing the injection when either form of the
+        pair is already present -- in full or abbreviated -- gives these
+        flags the precedence every other key has. ``_open_config_files``
+        supplies the env half of that list, because configargparse folds
+        env-var tokens into the argv before it opens a conf file.
 
         The rule is symmetric in the key rather than keyed on the action's
         ``const``: a truthy value applies the option the key names, a falsey
@@ -1495,12 +1503,11 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
         the one place this changes an outcome rather than restoring one --
         the inert reading left the default standing.
 
-        Scope: the suppression reads the command line only. A conf value
-        conflicting with the PARTNER key set by an env var, or by another
-        key in the same conf hierarchy, still reaches the mutually
-        exclusive group and still exits 2 -- unchanged from before this
-        override, and out of the reach of a function that sees one item at
-        a time.
+        Scope: two conflicting keys within the conf hierarchy itself
+        (``auto = True`` in one file, ``no-auto = True`` in another) still
+        reach the mutually exclusive group and still exit 2 -- unchanged,
+        and out of reach of a function handed one item at a time with no
+        view of the growing argv.
         """
         partner = self._boolean_negation_partner(action)
         if partner is None:

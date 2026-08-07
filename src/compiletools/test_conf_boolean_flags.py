@@ -387,6 +387,76 @@ class TestTheCommandLineOverridesTheConfFile:
         assert value is True
 
 
+def _env_var_for(name):
+    return _PROBE_ENV_PREFIX + name.replace("-", "_").upper()
+
+
+class TestTheEnvironmentOverridesTheConfFile:
+    """configargparse's documented precedence is command line, then env var,
+    then conf file. Making a falsey value live puts these flags back under
+    it, and the same mutually-exclusive-group hazard applies one rung down:
+    an env var emitting the partner option next to a conf entry emitting the
+    plain one exits 2 unless the conf entry is suppressed. Measured against
+    the parent revision, ``auto = True`` in a conf plus ``AUTO=0`` in the
+    environment was a silent True; without this half it becomes exit 2."""
+
+    @pytest.mark.parametrize("name", sorted(_EXPECTED_FLAG_ARGUMENT_NAMES))
+    def test_a_falsey_env_var_beats_a_truthy_conf_entry(self, tmp_path, monkeypatch, name):
+        monkeypatch.setenv(_env_var_for(name), "0")
+        value, unknown = _parse_with_conf(
+            tmp_path, name, f"{name} = True\n", default=False, helper=compiletools.utils.add_flag_argument
+        )
+        assert unknown == []
+        assert value is False
+
+    @pytest.mark.parametrize("name", sorted(_EXPECTED_FLAG_ARGUMENT_NAMES))
+    def test_a_truthy_env_var_beats_a_falsey_conf_entry(self, tmp_path, monkeypatch, name):
+        monkeypatch.setenv(_env_var_for(name), "1")
+        value, unknown = _parse_with_conf(
+            tmp_path, name, f"{name} = False\n", default=False, helper=compiletools.utils.add_flag_argument
+        )
+        assert unknown == []
+        assert value is True
+
+    @pytest.mark.parametrize("name", sorted(_EXPECTED_FLAG_ARGUMENT_NAMES))
+    def test_a_truthy_env_var_beats_the_no_key_conf_entry(self, tmp_path, monkeypatch, name):
+        monkeypatch.setenv(_env_var_for(name), "1")
+        value, unknown = _parse_with_conf(
+            tmp_path, name, f"no-{name} = True\n", default=False, helper=compiletools.utils.add_flag_argument
+        )
+        assert unknown == []
+        assert value is True
+
+    @pytest.mark.parametrize("name", sorted(_EXPECTED_FLAG_ARGUMENT_NAMES))
+    def test_the_command_line_beats_both_the_env_var_and_the_conf_entry(self, tmp_path, monkeypatch, name):
+        monkeypatch.setenv(_env_var_for(name), "0")
+        value, unknown = _parse_with_conf(
+            tmp_path,
+            name,
+            f"{name} = True\n",
+            default=False,
+            helper=compiletools.utils.add_flag_argument,
+            argv=[f"--{name}"],
+        )
+        assert unknown == []
+        assert value is True
+
+
+class TestConflictsLeftOutOfScope:
+    @pytest.mark.parametrize("name", sorted(_EXPECTED_FLAG_ARGUMENT_NAMES))
+    def test_two_contradicting_conf_keys_still_exit_two(self, tmp_path, name):
+        """The documented boundary. Both keys come from the conf hierarchy,
+        so neither can suppress the other from inside a translation function
+        handed one item at a time. Pinned so that a later change to that
+        behaviour is a deliberate one that updates the docstring with it."""
+        conf = tmp_path / "ct.conf"
+        conf.write_text(f"{name} = True\nno-{name} = True\n")
+        parser = _probe_parser(conf, name, default=False, helper=compiletools.utils.add_flag_argument)
+        with pytest.raises(SystemExit) as excinfo:
+            parser.parse_known_args([])
+        assert excinfo.value.code == 2
+
+
 class TestTheDoubleNegativeConfKey:
     @pytest.mark.parametrize("name", sorted(_EXPECTED_FLAG_ARGUMENT_NAMES))
     def test_a_falsey_value_on_the_no_key_turns_the_flag_on(self, tmp_path, name):
