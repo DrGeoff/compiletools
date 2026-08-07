@@ -1,57 +1,44 @@
-# Accurate Header Guard Detection
+# Non-standard header guard fixture
 
-## Overview
+Fixture for `test_magicflags.py::TestMagicFlagsModule::test_header_guard_bug_transitive_magic_flags`.
 
-This sample demonstrates a bug in ct-magicflags where non-standard header guards
-cause Pass 2 to skip transitive dependencies, resulting in missing magic flags.
+## The bug this pins
 
-## The Bug
-
-### Pass 1: Initial Discovery
-- Processes main.cpp → header_a.hpp → header_b.hpp
-- Discovers all dependencies (2 headers)
-- Macro convergence defines HEADER_A_HPP_GUARD (non-standard pattern prevents detection)
-
-### Pass 2: Re-discovery with Converged Macros
-- FileAnalyzer fails to detect HEADER_A_HPP_GUARD as a header guard
-- Guard macro enters Pass 2 macro state
-- Preprocessor evaluates `#ifndef HEADER_A_HPP_GUARD` as FALSE
-- Skips entire header_a.hpp contents (including `#include "header_b.hpp"`)
-- Only discovers 1 header instead of 2
-
-### Result
-- header_b.hpp not rediscovered in Pass 2
-- Magic flags lost: `//#PKG-CONFIG=zlib`, `//#LDFLAGS=-lm`
-- Game engine missing critical dependencies
-
-## Non-Standard Guard Pattern
-
-header_a.hpp uses a guard pattern that breaks FileAnalyzer detection:
+`file_analyzer.analyze_file()` grouped preprocessor directives by type
+(all `#ifndef`, then all `#define`, ...) instead of by line number
+before matching an `#ifndef`/`#define` pair as an include guard. That
+broke detection whenever another directive sat between the two, as in
+`header_a.hpp`:
 
 ```cpp
 #ifndef HEADER_A_HPP_GUARD
-#define SOME_OTHER_MACRO 1  // This breaks detection!
+#define SOME_OTHER_MACRO 1  // sits between the guard's ifndef and define
 #define HEADER_A_HPP_GUARD
 ```
 
-FileAnalyzer expects `#define HEADER_A_HPP_GUARD` immediately after `#ifndef`,
-but the intermediate `#define SOME_OTHER_MACRO 1` causes it to miss the guard.
-
-## Testing
-
-```bash
-cd /home/gericksson/compiletools
-pytest src/compiletools/test_magicflags.py::TestMagicFlagsModule::test_header_guard_bug_transitive_magic_flags -v
-```
-
-**Before fix**: Test FAILS (weapon dependencies missing)
-**After fix**: Test PASSES (all dependencies discovered)
+With the guard undetected, `HEADER_A_HPP_GUARD` was treated as an
+ordinary macro rather than the file's guard. On the macro-convergence
+re-pass, the preprocessor evaluated `#ifndef HEADER_A_HPP_GUARD` as
+false and skipped the rest of `header_a.hpp` — including its
+`#include "header_b.hpp"` — so `header_b.hpp`'s magic flags
+(`//#PKG-CONFIG=zlib`, `//#LDFLAGS=-lm`) never made it into the build.
 
 ## Fix
 
-**File**: `/home/gericksson/compiletools/src/compiletools/file_analyzer.py`
+`detect_include_guard()` in `file_analyzer.py` now sorts directives by
+line number before pairing an `#ifndef` with its `#define`, and looks
+ahead up to five directives for the matching `#define` instead of
+requiring it to be the very next one.
 
-1. **Line ~598**: Sort directives by line number before guard detection
-2. **Line ~930-939**: Look ahead 5 positions for matching #define (not just next)
+## File layout
 
-This allows FileAnalyzer to correctly detect non-standard guard patterns.
+- `main.cpp` includes `header_a.hpp`
+- `header_a.hpp` — the non-standard guard shown above, includes `header_b.hpp`
+- `header_b.hpp` — carries the magic flags that were being lost
+
+## What the regression test asserts
+
+`test_header_guard_bug_transitive_magic_flags` builds `main.cpp` and
+asserts both `header_a.hpp` and `header_b.hpp` are discovered as
+transitive dependencies, and that `header_b.hpp`'s magic flags survive
+into the final flag set.
