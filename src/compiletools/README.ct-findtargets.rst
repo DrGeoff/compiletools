@@ -104,9 +104,10 @@ LEADING ``..`` names a path above the gitroot, where ``--auto`` never
 looks, so ``../vendor`` excludes nothing.
 ct-cake and ct-filelist share this search, so an exclusion set
 in a ct.conf applies to all three; targets those tools are told to build by
-name are never filtered. ct-filelist registers the discovery options
-without ``--style``, keeping its own; ct-cake and ct-compilation-database
-register the full set and so still accept ct-findtargets' ``--style``.
+name are never filtered. ct-filelist, ct-cake and ct-compilation-database
+all register ct-findtargets' discovery options without its ``--style``.
+ct-cake keeps ct-filelist's own flat/indent ``--style`` for its
+``--filelist`` output; ct-compilation-database has no ``--style`` at all.
 
 Conf files have two spellings. The bare ``auto-exclude`` key is
 last-writer-wins across the conf hierarchy. It does not contest with the
