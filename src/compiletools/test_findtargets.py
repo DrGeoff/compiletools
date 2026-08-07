@@ -1069,67 +1069,105 @@ def library_repo(tmp_path):
     return root
 
 
-class TestLibrarySlotsAreRejected:
-    """ct-findtargets reports two buckets, executables and tests, and the
-    style classes take exactly those two. ``--static`` / ``--dynamic`` reach
-    the parser only because the re-anchoring driver reparses through this
-    same cap and needs the slots registered, so a named library is accepted
-    and then never printed.
+_EXE_TARGET = os.path.join("app", "main.cpp")
+_LIB_TARGET = os.path.join("lib", "widget.cpp")
+_LIB_HEADING = {"--static": "Static Library Targets:", "--dynamic": "Dynamic Library Targets:"}
+_LIB_LABEL = {"--static": "static", "--dynamic": "dynamic"}
+_LIB_FLAGS = sorted(_LIB_HEADING)
+_STYLES = sorted(compiletools.findtargets._STYLE_REGISTRY)
 
-    Base 168b1076 rejected both flags outright -- main() did not register
-    the target arguments, so argparse exited 2 on an unrecognized argument.
-    Restoring that rejection with a diagnostic is the contract these tests
-    pin; the silent-swallow surface is one release old and is the accident.
+
+class TestLibrarySlotsAreReported:
+    """ct-findtargets reports a named ``--static`` / ``--dynamic`` target.
+
+    Both slots reach the parser because the re-anchoring driver reparses
+    through this same cap and needs them registered. The release before this
+    one accepted a named library and then never printed it; the release
+    before THAT rejected it outright, first as an argparse unrecognized
+    argument and then with a diagnostic. Reporting it is the contract now:
+    the combined form has to report BOTH targets, which kills the
+    silently-incomplete answer by construction rather than by a guard.
+
+    Discovery still cannot INVENT a library target -- static versus dynamic
+    has no source-level signal -- so these are the explicit slots only.
     """
 
     @staticmethod
-    def _run(repo, argv):
+    def _run(repo, argv, capsys):
         with uth.DirectoryContext(str(repo)):
             with uth.ParserContext():
-                return compiletools.findtargets.main(argv)
+                assert compiletools.findtargets.main(argv) == 0
+        return capsys.readouterr().out
 
     def test_a_named_executable_still_reports(self, library_repo, capsys):
-        """Control: the rejection must be specific to the library slots, not
-        a blanket refusal of every explicitly named target."""
-        named = os.path.join("app", "main.cpp")
-        assert self._run(library_repo, ["--style=args", "--filename", named]) == 0
-        assert capsys.readouterr().out.split() == [named]
+        """Control: naming a library must not have changed what naming an
+        executable does."""
+        out = self._run(library_repo, ["--style=args", _EXE_TARGET], capsys)
+        assert out.split() == [_EXE_TARGET]
 
-    @pytest.mark.parametrize("flag", ["--static", "--dynamic"])
-    def test_a_library_slot_alone_is_rejected(self, library_repo, flag):
-        with pytest.raises(SystemExit) as excinfo:
-            self._run(library_repo, ["--style=args", flag, os.path.join("lib", "widget.cpp")])
-        assert excinfo.value.code == 2
+    @pytest.mark.parametrize("style", _STYLES)
+    @pytest.mark.parametrize("flag", _LIB_FLAGS)
+    def test_a_named_library_alone_is_reported(self, library_repo, capsys, flag, style):
+        expected = {
+            "null": f"[]\n[]\n{_LIB_LABEL[flag]}: ['{_LIB_TARGET}']\n",
+            "flat": f"{_LIB_TARGET}\n",
+            "indent": (
+                f"Executable Targets:\n\tNone found\n"
+                f"Test Targets:\n\tNone found\n"
+                f"{_LIB_HEADING[flag]}\n\t{_LIB_TARGET}\n"
+            ),
+            "args": f" {flag} {_LIB_TARGET}",
+        }[style]
+        assert self._run(library_repo, [f"--style={style}", flag, _LIB_TARGET], capsys) == expected
 
-    @pytest.mark.parametrize("flag", ["--static", "--dynamic"])
-    def test_a_library_slot_combined_with_filename_is_rejected(self, library_repo, flag, capsys):
-        """The dangerous form. Combined with a named executable the tool
-        used to exit 0 printing only the executable -- a plausible answer
-        that silently drops the library, which survives far longer
-        downstream than the empty output the flag produces on its own."""
-        with pytest.raises(SystemExit) as excinfo:
-            self._run(
-                library_repo,
-                [
-                    "--style=args",
-                    flag,
-                    os.path.join("lib", "widget.cpp"),
-                    "--filename",
-                    os.path.join("app", "main.cpp"),
-                ],
-            )
-        assert excinfo.value.code == 2
-        assert "main.cpp" not in capsys.readouterr().out
+    @pytest.mark.parametrize("style", _STYLES)
+    @pytest.mark.parametrize("flag", _LIB_FLAGS)
+    def test_the_combined_form_reports_both_targets(self, library_repo, capsys, flag, style):
+        """The form the rejection guard existed to prevent. Naming a library
+        alongside an executable used to exit 0 printing only the executable
+        -- a plausible answer that silently drops the library and survives
+        far longer downstream than an empty one. Both appear now.
 
-    def test_the_diagnostic_names_the_flag_the_slots_and_the_other_tool(self, library_repo, capsys):
-        """A rejection a user cannot act on is worse than the silence it
-        replaces, so pin the three things the message has to carry: which
-        flag was refused, which slots this tool does report, and where a
-        library build actually goes."""
-        with pytest.raises(SystemExit):
-            self._run(library_repo, ["--static", os.path.join("lib", "widget.cpp")])
-        err = capsys.readouterr().err
-        assert "--static" in err
-        assert "positional" in err
-        assert "--tests" in err
-        assert "ct-create-makefile" in err
+        The executable is a positional and comes FIRST: argparse nargs="*"
+        is greedy, so a positional written after the library flag is absorbed
+        into the library list instead.
+        """
+        expected = {
+            "null": f"['{_EXE_TARGET}']\n[]\n{_LIB_LABEL[flag]}: ['{_LIB_TARGET}']\n",
+            "flat": f"{_EXE_TARGET} {_LIB_TARGET}\n",
+            "indent": (
+                f"Executable Targets:\n\t{_EXE_TARGET}\n"
+                f"Test Targets:\n\tNone found\n"
+                f"{_LIB_HEADING[flag]}\n\t{_LIB_TARGET}\n"
+            ),
+            "args": f" {_EXE_TARGET} {flag} {_LIB_TARGET}",
+        }[style]
+        argv = [f"--style={style}", _EXE_TARGET, flag, _LIB_TARGET]
+        assert self._run(library_repo, argv, capsys) == expected
+
+    @pytest.mark.parametrize("flag", _LIB_FLAGS)
+    def test_a_named_library_suppresses_discovery(self, library_repo, capsys, flag):
+        """A named target is the whole target set, libraries included: the
+        discovery gate already reads all four slots. The bare run is measured
+        alongside so the absence below cannot be an empty-output artefact."""
+        discovered = self._run(library_repo, ["--style=args"], capsys)
+        assert discovered.split() == [os.path.join(str(library_repo), _EXE_TARGET)]
+        named = self._run(library_repo, ["--style=args", flag, _LIB_TARGET], capsys)
+        assert named.split() == [flag, _LIB_TARGET]
+
+    @pytest.mark.parametrize("flag", _LIB_FLAGS)
+    def test_no_auto_still_reports_a_named_library(self, library_repo, capsys, flag):
+        """--no-auto means "do not walk", not "do not report". It empties the
+        output only when nothing is named."""
+        out = self._run(library_repo, ["--style=args", "--no-auto", flag, _LIB_TARGET], capsys)
+        assert out.split() == [flag, _LIB_TARGET]
+
+    @pytest.mark.parametrize("flag", _LIB_FLAGS)
+    def test_the_args_output_feeds_ct_create_makefile_unchanged(self, library_repo, capsys, flag):
+        """What scripts/ct-build does with the string: ct-create-makefile
+        gets the generated tokens followed by the user's own argv. The four
+        target slots must come out of that double pass exactly as they come
+        out of the single direct invocation."""
+        argv = [_EXE_TARGET, flag, _LIB_TARGET]
+        generated = self._run(library_repo, ["--style=args", *argv], capsys).split()
+        assert TestArgsStyleRoundTrip._reparse(generated + argv) == TestArgsStyleRoundTrip._reparse(argv)
