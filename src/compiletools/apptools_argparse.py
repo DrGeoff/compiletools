@@ -1353,6 +1353,15 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
         # what lets convert_item_to_command_line_arg see an env-set partner
         # option, so an env var beats a conf file for a flag pair as it
         # already does for every other key.
+        #
+        # configargparse skips this method entirely when a caller passes
+        # config_file_contents, so on that path the stash keeps the
+        # un-widened argv and an env var contradicting a conf key for a flag
+        # pair exits 2 instead of winning. Nothing in compiletools passes
+        # that argument (pinned by
+        # test_conf_boolean_flags.TestTheConfigFileContentsPath); reading
+        # os.environ here instead is refuted by measurement, because the env
+        # item would then suppress its own token.
         self._ct_command_line_args = list(command_line_args)
         streams = super()._open_config_files(command_line_args)
         if len(streams) < 2:

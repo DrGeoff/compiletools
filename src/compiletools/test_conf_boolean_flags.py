@@ -442,6 +442,84 @@ class TestTheEnvironmentOverridesTheConfFile:
         assert value is True
 
 
+class TestTheConfigFileContentsPath:
+    """The one path where the env half does not hold, pinned as unreachable.
+
+    ``convert_item_to_command_line_arg`` learns which options the caller
+    already named from an argv stash that ``_open_config_files`` widens with
+    configargparse's env-var tokens. configargparse skips
+    ``_open_config_files`` entirely when a caller passes
+    ``config_file_contents``, so on that path the stash keeps the un-widened
+    argv, the conf entry is not suppressed, and a contradicting env var exits
+    2 rather than winning.
+
+    Reading ``os.environ`` inside the suppression instead is refuted by
+    measurement rather than by argument: the env-sourced item would match its
+    own variable and suppress its own token, so ``AUTO=1`` with no conf file
+    at all resolves to False. The degradation is therefore kept, and these
+    two cases hold it to being unreachable and to being loud.
+    """
+
+    def test_no_compiletools_caller_supplies_config_file_contents(self):
+        """The reachability claim, pinned. ``config_file_contents`` may
+        appear only as ``_ComposingArgumentParser.parse_known_args``'
+        parameter and its pass-through to super; any call site binding it to
+        a real value puts the degradation below into production."""
+        offenders = []
+        for path in _production_python_files():
+            text = pathlib.Path(path).read_text(encoding="utf-8")
+            for lineno, line in enumerate(text.splitlines(), 1):
+                if "config_file_contents" not in line:
+                    continue
+                stripped = line.strip()
+                if stripped.startswith("#"):
+                    continue
+                allowed = (
+                    "config_file_contents=None,",
+                    "config_file_contents=config_file_contents,",
+                )
+                if not stripped.startswith(allowed):
+                    offenders.append(f"{os.path.basename(path)}:{lineno}: {stripped}")
+        assert offenders == [], (
+            "config_file_contents is bound to a real value; the env-var half of the flag-pair "
+            f"precedence does not hold on that path: {offenders}"
+        )
+
+    def test_a_contradicting_env_var_is_loud_rather_than_silently_wrong(self, monkeypatch):
+        """The degradation itself, so a future caller inherits a named test
+        instead of a surprise. Exit 2 from the mutually exclusive group, not
+        a silently wrong boolean -- which is why it is tolerable while the
+        case above keeps it unreachable."""
+        monkeypatch.setenv(_env_var_for("auto"), "0")
+        parser = compiletools.apptools._ComposingArgumentParser(
+            auto_env_var_prefix=_PROBE_ENV_PREFIX,
+            add_help=False,
+            conflict_handler="resolve",
+            config_file_parser_class=compiletools.apptools_argparse._AccumulatingConfigFileParser,
+        )
+        compiletools.utils.add_flag_argument(parser, "auto", dest="auto", default=False)
+        with pytest.raises(SystemExit) as excinfo:
+            parser.parse_known_args([], config_file_contents="auto = True\n")
+        assert excinfo.value.code == 2
+
+    def test_the_falsey_conf_fix_itself_still_holds_on_that_path(self, monkeypatch):
+        """Anti-vacuity for the two above: only the env half degrades. The
+        defect this whole file exists for -- a falsey conf value being inert
+        -- is fixed on the config_file_contents path too, so the case above
+        is a narrow precedence gap and not the fix failing wholesale."""
+        monkeypatch.delenv(_env_var_for("auto"), raising=False)
+        parser = compiletools.apptools._ComposingArgumentParser(
+            auto_env_var_prefix=_PROBE_ENV_PREFIX,
+            add_help=False,
+            conflict_handler="resolve",
+            config_file_parser_class=compiletools.apptools_argparse._AccumulatingConfigFileParser,
+        )
+        compiletools.utils.add_flag_argument(parser, "auto", dest="auto", default=True)
+        args, unknown = parser.parse_known_args([], config_file_contents="auto = False\n")
+        assert unknown == []
+        assert args.auto is False
+
+
 class TestConflictsLeftOutOfScope:
     @pytest.mark.parametrize("name", sorted(_EXPECTED_FLAG_ARGUMENT_NAMES))
     def test_two_contradicting_conf_keys_still_exit_two(self, tmp_path, name):
