@@ -598,11 +598,12 @@ def main(argv=None):
             # re-raises there instead of printing, to keep the traceback.
             traceback.print_exc()
             _warn_target_set_may_be_incomplete()
-        except SystemExit as err:
+        except compiletools.configutils.ConfContradictionExit:
             # Verbose < 2: _apply_target_conf_layers has already written the
-            # contradiction to stderr and converted it to exit 1.
-            if err.code != 1:
-                raise
+            # contradiction to stderr and converted it. Catching plain
+            # SystemExit(1) here would also swallow gather's strict
+            # pkg-config conversion, which uses the same code and gate --
+            # degrading an enforcement failure to a warning.
             _warn_target_set_may_be_incomplete()
     styleobj(list(args.filename or []), list(args.tests or []))
 

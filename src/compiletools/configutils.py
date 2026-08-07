@@ -663,6 +663,18 @@ class ConfContradictionError(RuntimeError):
     """Two same-tier config layers set the same key to different values."""
 
 
+class ConfContradictionExit(SystemExit):
+    """The exit ``_apply_target_conf_layers`` converts a contradiction into.
+
+    Below verbose 2 that function reports the contradiction itself and exits
+    rather than propagating, so the type is the only thing left that says
+    which failure the exit came from. The exit code cannot: gather's strict
+    pkg-config conversion raises ``SystemExit(1)`` behind the same verbosity
+    gate, and ct-findtargets degrades a contradiction to a warning while an
+    enforcement failure must stay fatal.
+    """
+
+
 def _flatten_conf_value(value):
     """Render a parsed conf value (scalar or list) as one comparison string."""
     if isinstance(value, list):

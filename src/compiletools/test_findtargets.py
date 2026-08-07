@@ -330,7 +330,7 @@ class TestFindTargetsTopbindirFilter:
 class TestFindTargetsMain:
     """Test findtargets.main() entry point."""
 
-    def test_main_runs(self, capsys):
+    def test_main_runs(self, pytestconfig, capsys):
         """Smoke test from the pytest rootdir.
 
         This repo's own examples tree carries subproject confs that
@@ -339,9 +339,14 @@ class TestFindTargetsMain:
         settle here. That must not stop ct-findtargets reporting: the
         narrowing of this test to a contradiction-free directory was the
         regression report for exactly that.
+
+        The rootdir is entered explicitly rather than inherited. Under
+        ``-n`` a worker's cwd is whatever the last test left it at, and an
+        inherited cwd elsewhere makes this pass on an empty target list.
         """
-        with uth.ParserContext():
-            assert compiletools.findtargets.main(argv=["--style=flat", "--shorten"]) == 0
+        with uth.DirectoryContext(str(pytestconfig.rootpath)):
+            with uth.ParserContext():
+                assert compiletools.findtargets.main(argv=["--style=flat", "--shorten"]) == 0
         assert "helloworld_cpp.cpp" in capsys.readouterr().out
 
 
@@ -914,6 +919,57 @@ def test_a_settling_repo_gets_no_incompleteness_warning(reanchor_repo, capsys):
         with uth.ParserContext():
             assert compiletools.findtargets.main(["--style=flat"]) == 0
     assert "may be incomplete" not in capsys.readouterr().err
+
+
+@pytest.fixture
+def broken_package_repo(tmp_path):
+    """A repo whose discovered target anchors a conf naming a package
+    pkg-config cannot resolve.
+
+    Round one sees only the root conf and succeeds; the subproject conf is
+    reachable only once app/main.cpp is discovered, so the failure lands in
+    the re-anchoring round -- inside the same call the contradiction catch
+    wraps.
+    """
+    root = tmp_path / "brokenpackagerepo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    (root / "ct.conf").write_text("exemarkers = [main]\ntestmarkers = unit_test.hpp\n")
+    app = root / "app"
+    app.mkdir()
+    (app / "ct.conf").write_text("pkg-config = ct-no-such-package-4a91f2\n")
+    (app / "main.cpp").write_text("int main() { return 0; }\n")
+    return root
+
+
+def test_a_strict_pkg_config_failure_in_a_discovered_conf_stays_fatal(broken_package_repo, capsys):
+    """Reporting a partial set must not widen into a silent degrade.
+
+    gather converts a PkgConfigError to SystemExit(1) below verbose 2 --
+    the same code behind the same verbosity gate as the contradiction
+    conversion. Discriminating on the code rather than the type would turn
+    an enforcement policy the user explicitly armed into a warning and an
+    exit 0, which is the failure mode the compilation-database carve-outs
+    exist to prevent.
+    """
+    with uth.DirectoryContext(str(broken_package_repo)):
+        with uth.ParserContext():
+            with pytest.raises(SystemExit) as excinfo:
+                compiletools.findtargets.main(["--style=flat", "--pkg-config-errors=error"])
+    assert excinfo.value.code == 1
+    err = capsys.readouterr().err
+    assert "may be incomplete" not in err
+    assert "ct-no-such-package-4a91f2" in err
+
+
+def test_the_same_repo_reports_normally_in_warn_mode(broken_package_repo, capsys):
+    """Control on the fixture: without --pkg-config-errors=error the
+    unresolvable package is only a warning, so the fatal exit above is the
+    strict policy firing rather than the repo being broken outright."""
+    with uth.DirectoryContext(str(broken_package_repo)):
+        with uth.ParserContext():
+            assert compiletools.findtargets.main(["--style=flat"]) == 0
+    assert os.path.join("app", "main.cpp") in capsys.readouterr().out
 
 
 def test_ct_filelist_still_fails_hard_on_the_same_repo(contradicting_conf_repo):
