@@ -1276,3 +1276,39 @@ class TestExemarkerInALibrarySlotWarns:
         assert captured.err.strip() == _expected_warning(
             os.path.join("lib", "plugin.cpp"), "--static", "wxIMPLEMENT_APP"
         )
+
+    def test_a_marker_that_only_appears_in_a_comment_is_not_named(self, library_repo, capsys):
+        """The marker list is the classifier's, not a substring scan.
+
+        ``_detect_marker_type`` skips a hit inside a comment or a string
+        literal, so a comment mentioning a marker never contributes to the
+        EXE verdict. Naming it anyway points the user at a line that did not
+        trigger the warning -- and the default exemarker list makes that
+        reachable with nothing configured, since a comment mentioning
+        ``wxIMPLEMENT_APP`` in any file carrying ``main`` would be named.
+        """
+        source = os.path.join("lib", "plugin.cpp")
+        (library_repo / source).write_text(
+            "// wxIMPLEMENT_APP is the wxWidgets entry point; this file does not use it.\n"
+            'const char *usage = "wxIMPLEMENT_APP";\n'
+            "int main() { return 0; }\n"
+        )
+        argv = ["--style=args", "--exemarkers=wxIMPLEMENT_APP", "--static", source]
+        captured = self._run(library_repo, argv, capsys)
+        assert captured.err.strip() == _expected_warning(source, "--static", "main")
+
+    def test_the_same_marker_outside_a_comment_is_named(self, library_repo, capsys):
+        """Anti-vacuity for the test above: the comment is what suppresses
+        ``wxIMPLEMENT_APP``, not the marker being unnameable."""
+        source = os.path.join("lib", "plugin.cpp")
+        (library_repo / source).write_text("void wxIMPLEMENT_APP() {}\nint main() { return 0; }\n")
+        argv = ["--style=args", "--exemarkers=wxIMPLEMENT_APP", "--static", source]
+        captured = self._run(library_repo, argv, capsys)
+        assert captured.err.strip() == _expected_warning(source, "--static", "main, wxIMPLEMENT_APP")
+
+    def test_a_marker_configured_twice_is_named_once(self, library_repo, capsys):
+        """``--exemarkers`` appends to the conf list rather than replacing it,
+        so re-stating a marker the conf already carries delivers it twice."""
+        argv = ["--style=args", "--exemarkers=main", "--static", _EXE_TARGET]
+        captured = self._run(library_repo, argv, capsys)
+        assert captured.err.strip() == _expected_warning(_EXE_TARGET, "--static", "main")

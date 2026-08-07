@@ -2,6 +2,8 @@ import fnmatch
 import os
 import sys
 
+import stringzilla
+
 import compiletools.apptools
 import compiletools.build_apply
 import compiletools.file_analyzer
@@ -524,14 +526,43 @@ def discover_targets_and_reanchor(args, context):
     )
 
 
-def _exemarkers_present_in(filepath, markers):
-    """Return the configured exemarkers whose text appears in the file."""
+def _exemarkers_matching(filepath, markers):
+    """Return the exemarkers the classifier itself counts as hits in the file.
+
+    Each marker is put through ``_detect_marker_type`` alone, over the same
+    comment and literal spans ``analyze_file`` uses, so the answer is the
+    classifier's rather than an approximation of it. A plain ``marker in
+    text`` scan is a strict superset: it reports a marker that appears only
+    inside a comment or a string literal, which is exactly what the
+    classifier skips (doctest's "Entry point: main() is ..." boilerplate,
+    ``printf("usage: main(...)")`` help text). Naming one of those in the
+    warning points the user at a line that did not trigger it.
+
+    Duplicates are collapsed. The bundled ct.conf already carries the default
+    markers and a command-line ``--exemarkers`` appends rather than replaces,
+    so a marker the user re-states arrives twice.
+
+    Whole-file read, where ``analyze_file`` honours ``max_read_size``: a
+    marker appearing only past that cap is named though the classifier never
+    saw it.
+
+    ``file_analyzer._detect_marker_type`` and
+    ``file_analyzer.find_comment_and_literal_spans`` are private names with an
+    external reader here, so a refactor of either has this call site to
+    update.
+    """
     try:
         with open(filepath, encoding="utf-8", errors="replace") as infile:
-            text = infile.read()
+            text = stringzilla.Str(infile.read())
     except OSError:
         return []
-    return [marker for marker in markers if marker in text]
+    comment_spans, literal_spans = compiletools.file_analyzer.find_comment_and_literal_spans(text)
+    return [
+        marker
+        for marker in dict.fromkeys(markers)
+        if compiletools.file_analyzer._detect_marker_type(text, [marker], [], [], comment_spans, literal_spans)
+        == MarkerType.EXE
+    ]
 
 
 def _warn_about_executables_in_library_slots(args, context):
@@ -542,6 +573,10 @@ def _warn_about_executables_in_library_slots(args, context):
     puts both sources in the library and leaves the executable slot empty.
     That combination builds -- the archive gets main.o and no executable is
     produced -- so nothing downstream reports it.
+
+    ``_exemarkers_matching`` cannot come back empty here: the EXE verdict it
+    re-runs per marker is an ``any()`` over the same list, so a file that
+    classified EXE yields at least one single-marker EXE.
     """
     slots = (("--static", args.static or []), ("--dynamic", args.dynamic or []))
     if not any(targets for _flag, targets in slots):
@@ -557,11 +592,11 @@ def _warn_about_executables_in_library_slots(args, context):
             try:
                 content_hash = get_file_hash(target, context)
                 result = compiletools.file_analyzer.analyze_file(content_hash, context)
-            except (OSError, FileNotFoundError):
+            except OSError:
                 continue
             if result.marker_type != MarkerType.EXE:
                 continue
-            markers = ", ".join(_exemarkers_present_in(target, args.exemarkers) or args.exemarkers)
+            markers = ", ".join(_exemarkers_matching(target, args.exemarkers))
             print(
                 f"Warning: {target} is named as a {flag} target but contains an executable "
                 f"marker ({markers}). A positional written after {flag} is absorbed into its "
