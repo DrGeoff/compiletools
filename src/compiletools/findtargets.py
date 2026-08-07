@@ -488,7 +488,7 @@ def _reject_library_slots(cap, args):
         return
     cap.error(
         f"{' and '.join(named)} cannot be reported by ct-findtargets, which lists executables and tests only. "
-        "Use --filename and --tests to name those explicitly, "
+        "Name executables as positional arguments and tests with --tests, "
         "and build libraries with ct-create-makefile --static/--dynamic."
     )
 
