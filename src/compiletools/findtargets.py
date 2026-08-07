@@ -109,6 +109,18 @@ def add_arguments(cap):
     add_discovery_arguments(cap)
     if compiletools.apptools._parser_has_option(cap, "--style"):
         return
+    add_style_argument(cap)
+
+
+def add_style_argument(cap):
+    """Register ct-findtargets' ``--style``, replacing any already present.
+
+    ct-cake composes this surface with ct-filelist's, which registers a
+    narrower ``--style`` of its own. Parsers built by
+    ``apptools.create_parser`` resolve the conflict by replacement, so
+    whoever registers last decides the composed choices; calling this
+    explicitly is how a composing tool says which of the two it means.
+    """
     # Style choices come from the explicit registry below.
     cap.add_argument("--style", choices=list(_STYLE_REGISTRY), default="indent", help="Output formatting style")
 
@@ -477,19 +489,45 @@ def discover_targets_and_reanchor(args, context):
     )
 
 
+def _reject_library_slots(cap, args):
+    """Refuse --static/--dynamic, which this tool registers but cannot report.
+
+    The style classes take an executable bucket and a test bucket, so a named
+    library has nowhere to go and is dropped from the output.
+    """
+    named = [flag for flag, value in (("--static", args.static), ("--dynamic", args.dynamic)) if value]
+    if not named:
+        return
+    cap.error(
+        f"{' and '.join(named)} cannot be reported by ct-findtargets, which lists executables and tests only. "
+        "Name executables as positional arguments and tests with --tests, "
+        "and build libraries with ct-create-makefile --static/--dynamic."
+    )
+
+
 def main(argv=None):
     cap = compiletools.apptools.create_parser("Find C/C++ files with main functions and unit tests", argv=argv)
     add_arguments(cap)
+    # The shared driver writes each round's discoveries onto the target
+    # slots, and re-anchoring reparses through this same parser, so the
+    # slots have to be registered here to survive round two.
+    compiletools.apptools.add_target_arguments(cap)
 
     from compiletools.build_context import BuildContext
 
     context = BuildContext()
     args = compiletools.apptools.parseargs(cap, argv, context=context)
-    findtargets = FindTargets(args, context=context)
+    _reject_library_slots(cap, args)
 
     styleclass = _STYLE_REGISTRY[args.style.lower()]
     styleobj = styleclass()
-    executabletargets, testtargets = findtargets()
-    styleobj(executabletargets, testtargets)
+    # Same gate as cake.process(): an explicit target is the whole target
+    # set, and --no-auto means do not walk. Discovery then runs the fixpoint
+    # of discovery and config re-anchoring rather than a single pass, so the
+    # report matches what ct-cake --auto builds even when a discovered
+    # target's subproject conf changes the set.
+    if args.auto and not any([args.filename, args.static, args.dynamic, args.tests]):
+        args = discover_targets_and_reanchor(args, context)
+    styleobj(list(args.filename or []), list(args.tests or []))
 
     return 0

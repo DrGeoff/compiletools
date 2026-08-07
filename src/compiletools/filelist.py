@@ -72,6 +72,27 @@ class Filelist:
         styleclass = _STYLE_REGISTRY[style.lower()]
         self.styleobject = styleclass(args)
 
+    def _not_auto_excluded(self, filepaths):
+        """The subset of *filepaths* ``--auto-exclude`` does not drop.
+
+        Read per call rather than in ``__init__``: the re-anchor driver can
+        grow ``auto_exclude`` with a subproject conf's values between
+        discovery and this walk.
+        """
+        patterns = tuple(getattr(self.args, "auto_exclude", None) or ())
+        if not patterns:
+            return set(filepaths)
+        anchor_root = compiletools.git_utils.find_git_root()
+        kept = set()
+        for filepath in filepaths:
+            realpath = compiletools.wrappedos.realpath(filepath)
+            if compiletools.findtargets.is_auto_excluded(realpath, patterns, anchor_root):
+                if self.args.verbose >= 3:
+                    print("Excluded from the file list by --auto-exclude: " + realpath)
+                continue
+            kept.add(filepath)
+        return kept
+
     @staticmethod
     def add_arguments(cap):
         if compiletools.apptools._parser_has_option(cap, "--extrafile"):
@@ -113,29 +134,36 @@ class Filelist:
         # Add all the command line specified extras
         if self.args.extrafile:
             extras.update(self.args.extrafile)
+        if self.args.extrafilelist:
+            for fname in self.args.extrafilelist:
+                with open(fname) as ff:
+                    extras.update([line.strip() for line in ff])
+
+        # Directory sweeps: the caller named the directory, not the files in
+        # it, so --auto-exclude applies to what the sweep turns up (files
+        # named one by one above are the explicit-target case it never
+        # filters).
+        swept = set()
         if self.args.extradir:
             for ed in self.args.extradir:
-                extras.update(
+                swept.update(
                     [
                         os.path.join(ed, ff)
                         for ff in os.listdir(ed)
                         if compiletools.wrappedos.isfile(os.path.join(ed, ff))
                     ]
                 )
-        if self.args.extrafilelist:
-            for fname in self.args.extrafilelist:
-                with open(fname) as ff:
-                    extras.update([line.strip() for line in ff])
 
         # Add all the files in the same directory as test files
         if self.args.tests:
             for testfile in self.args.tests:
                 testdir = compiletools.wrappedos.dirname(compiletools.wrappedos.realpath(testfile))
-                extras |= {
+                swept |= {
                     os.path.join(testdir, fileintestdir)
                     for fileintestdir in os.listdir(testdir)
                     if compiletools.wrappedos.isfile(os.path.join(testdir, fileintestdir))
                 }
+        extras |= self._not_auto_excluded(swept)
 
         mergedfiles = []
         if self.args.merge:
@@ -161,7 +189,15 @@ class Filelist:
             check_filename(filename)
             realpath = compiletools.wrappedos.realpath(filename)
             files = self._hunter.required_files(realpath)
-            filteredfiles = filterobject(files)
+            filteredfiles = set(filterobject(files))
+            # The walk reached these, the caller did not name them, so
+            # --auto-exclude governs them: ct-cake compiles a vendored header
+            # and a packaging list still must not ship it. The named target
+            # itself is the explicit-target case and survives.
+            target_walked = realpath in filteredfiles
+            filteredfiles = self._not_auto_excluded(filteredfiles - {realpath})
+            if target_walked:
+                filteredfiles.add(realpath)
 
             if self.args.merge:
                 mergedfiles.extend(filteredfiles)

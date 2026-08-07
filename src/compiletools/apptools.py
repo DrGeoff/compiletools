@@ -1472,7 +1472,14 @@ def parseargs(cap, argv, verbose=None, *, context):
     compiletools.git_utils.set_allow_fake_git(getattr(args, "allow_fake_git", False))
 
     if verbose is None:
+        # --quiet reaches args.verbose only at the pre-gather latch far
+        # below, so subtract it here for the diagnostics in between (the
+        # case-mismatch notes, the anchored-layer report). Re-entry after
+        # the latch reads the already-decremented args.verbose, hence the
+        # _quiet_applied guard; an explicit caller-supplied verbose wins.
         verbose = args.verbose
+        if not getattr(args, "_quiet_applied", False):
+            verbose -= args.quiet
 
     # Case-mismatched keys in the standard conf tiers. Runs here rather
     # than in create_parser because only now has the tool registered every

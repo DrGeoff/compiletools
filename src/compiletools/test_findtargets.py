@@ -13,6 +13,7 @@ import compiletools.global_hash_registry
 import compiletools.testhelper as uth
 import compiletools.utils
 from compiletools.build_context import BuildContext
+from compiletools.examples_registry import example_path
 
 
 @pytest.fixture(autouse=True)
@@ -329,9 +330,15 @@ class TestFindTargetsTopbindirFilter:
 class TestFindTargetsMain:
     """Test findtargets.main() entry point."""
 
-    def test_main_runs(self):
-        """Test main() runs without error."""
-        compiletools.findtargets.main(argv=["--style=flat", "--shorten"])
+    def test_main_runs(self, capsys):
+        """Smoke test from a directory whose discovered targets carry no
+        conflicting subproject confs. The repo root's do: --auto discovery
+        there raises ConfContradictionError for every tool on the shared
+        re-anchoring driver, ct-filelist and ct-cake included."""
+        with uth.DirectoryContext(example_path("simple")):
+            with uth.ParserContext():
+                assert compiletools.findtargets.main(argv=["--style=flat", "--shorten"]) == 0
+        assert "helloworld_cpp.cpp" in capsys.readouterr().out
 
 
 def _bare_parser(description):
@@ -757,3 +764,153 @@ def test_discovery_reanchor_cap_is_the_shared_apptools_cap():
     """One defensive cap in one place: the discovery re-anchor loop must
     reuse apptools._MAX_TARGET_CONF_ROUNDS, not carry its own copy."""
     assert compiletools.findtargets._MAX_DISCOVERY_REANCHOR_ROUNDS == compiletools.apptools._MAX_TARGET_CONF_ROUNDS
+
+
+@pytest.fixture
+def reanchor_repo(tmp_path):
+    """A repo whose round-one discovery loads a conf that changes round-two
+    discovery: appbeta/main.cpp is an exe under the gitroot's
+    ``exemarkers = [main]``, and appbeta/ct.conf -- reachable only once that
+    target is discovered -- excludes its own directory.
+
+    One discovery pass reports appbeta/main.cpp; the re-anchoring fixpoint
+    does not. ct-cake --auto and ct-filelist --auto already run the
+    fixpoint, so the difference is also the difference between what
+    ct-findtargets reports and what those two act on."""
+    root = tmp_path / "reanchorrepo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    (root / "ct.conf").write_text("exemarkers = [main]\ntestmarkers = unit_test.hpp\n")
+
+    appalpha = root / "appalpha"
+    appalpha.mkdir()
+    (appalpha / "main.cpp").write_text("int main() { return 0; }\n")
+
+    appbeta = root / "appbeta"
+    appbeta.mkdir()
+    (appbeta / "ct.conf").write_text("append-AUTO-EXCLUDE = ${CONF_DIR}\n")
+    # Distinct bodies: the global hash registry refuses to reverse-look-up a
+    # content hash shared by two tracked files.
+    (appbeta / "main.cpp").write_text("int main() { return 1; }\n")
+    return root
+
+
+def test_main_reports_the_target_set_the_reanchor_fixpoint_settles_on(reanchor_repo, capsys):
+    """ct-findtargets must go through discover_targets_and_reanchor rather
+    than run its own single discovery pass, or it reports targets ct-cake
+    --auto would not build."""
+    with uth.DirectoryContext(str(reanchor_repo)):
+        with uth.ParserContext():
+            assert compiletools.findtargets.main([]) == 0
+    out = capsys.readouterr().out
+    assert os.path.join("appalpha", "main.cpp") in out
+    assert os.path.join("appbeta", "main.cpp") not in out
+
+
+def test_no_auto_reports_nothing(reanchor_repo, capsys):
+    """--no-auto means "do not walk", so with nothing named the target set is
+    empty. Same contract as ct-filelist's
+    test_no_auto_keeps_a_bare_invocation_silent."""
+    with uth.DirectoryContext(str(reanchor_repo)):
+        with uth.ParserContext():
+            assert compiletools.findtargets.main(["--style=args", "--no-auto"]) == 0
+    assert capsys.readouterr().out.strip() == ""
+
+
+def test_an_explicit_target_suppresses_discovery(reanchor_repo, capsys):
+    """A named target is the whole target set: it must not merge with the
+    discovered one. scripts/ct-build feeds this string to ct-create-makefile,
+    so a merged list hands it the named target twice -- once in the caller's
+    spelling and once in the discovered absolute one, which ordered_unique
+    cannot collapse."""
+    named = os.path.join("appalpha", "main.cpp")
+    with uth.DirectoryContext(str(reanchor_repo)):
+        with uth.ParserContext():
+            assert compiletools.findtargets.main(["--style=args", "--filename", named]) == 0
+    out = capsys.readouterr().out
+    assert out.split() == [named]
+
+
+@pytest.fixture
+def library_repo(tmp_path):
+    """A repo with one executable and one library source, so ``--static``
+    can name a real file that parseargs will resolve and hash."""
+    root = tmp_path / "libraryrepo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    (root / "ct.conf").write_text("exemarkers = [main]\ntestmarkers = unit_test.hpp\n")
+
+    app = root / "app"
+    app.mkdir()
+    (app / "main.cpp").write_text("int main() { return 0; }\n")
+
+    lib = root / "lib"
+    lib.mkdir()
+    (lib / "widget.cpp").write_text("int widget() { return 3; }\n")
+    return root
+
+
+class TestLibrarySlotsAreRejected:
+    """ct-findtargets reports two buckets, executables and tests, and the
+    style classes take exactly those two. ``--static`` / ``--dynamic`` reach
+    the parser only because the re-anchoring driver reparses through this
+    same cap and needs the slots registered, so a named library is accepted
+    and then never printed.
+
+    Base 168b1076 rejected both flags outright -- main() did not register
+    the target arguments, so argparse exited 2 on an unrecognized argument.
+    Restoring that rejection with a diagnostic is the contract these tests
+    pin; the silent-swallow surface is one release old and is the accident.
+    """
+
+    @staticmethod
+    def _run(repo, argv):
+        with uth.DirectoryContext(str(repo)):
+            with uth.ParserContext():
+                return compiletools.findtargets.main(argv)
+
+    def test_a_named_executable_still_reports(self, library_repo, capsys):
+        """Control: the rejection must be specific to the library slots, not
+        a blanket refusal of every explicitly named target."""
+        named = os.path.join("app", "main.cpp")
+        assert self._run(library_repo, ["--style=args", "--filename", named]) == 0
+        assert capsys.readouterr().out.split() == [named]
+
+    @pytest.mark.parametrize("flag", ["--static", "--dynamic"])
+    def test_a_library_slot_alone_is_rejected(self, library_repo, flag):
+        with pytest.raises(SystemExit) as excinfo:
+            self._run(library_repo, ["--style=args", flag, os.path.join("lib", "widget.cpp")])
+        assert excinfo.value.code == 2
+
+    @pytest.mark.parametrize("flag", ["--static", "--dynamic"])
+    def test_a_library_slot_combined_with_filename_is_rejected(self, library_repo, flag, capsys):
+        """The dangerous form. Combined with a named executable the tool
+        used to exit 0 printing only the executable -- a plausible answer
+        that silently drops the library, which survives far longer
+        downstream than the empty output the flag produces on its own."""
+        with pytest.raises(SystemExit) as excinfo:
+            self._run(
+                library_repo,
+                [
+                    "--style=args",
+                    flag,
+                    os.path.join("lib", "widget.cpp"),
+                    "--filename",
+                    os.path.join("app", "main.cpp"),
+                ],
+            )
+        assert excinfo.value.code == 2
+        assert "main.cpp" not in capsys.readouterr().out
+
+    def test_the_diagnostic_names_the_flag_the_slots_and_the_other_tool(self, library_repo, capsys):
+        """A rejection a user cannot act on is worse than the silence it
+        replaces, so pin the three things the message has to carry: which
+        flag was refused, which slots this tool does report, and where a
+        library build actually goes."""
+        with pytest.raises(SystemExit):
+            self._run(library_repo, ["--static", os.path.join("lib", "widget.cpp")])
+        err = capsys.readouterr().err
+        assert "--static" in err
+        assert "positional" in err
+        assert "--tests" in err
+        assert "ct-create-makefile" in err

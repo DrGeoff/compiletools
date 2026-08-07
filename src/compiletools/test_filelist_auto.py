@@ -145,3 +145,95 @@ def test_filelist_parser_keeps_its_own_style_choices() -> None:
     args = cap.parse_args([])
     assert args.style == "flat"
     assert args.auto is True
+
+
+@pytest.fixture
+def sibling_repo(tmp_path):
+    """A repo whose test file has a sibling nothing includes.
+
+    ct-filelist adds every file beside a discovered test, so the sibling
+    reaches the output through that sweep alone -- not as a target and not
+    as a header dependency -- which is what makes the sweep's treatment of
+    --auto-exclude observable."""
+    root = tmp_path / "siblingrepo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    (root / "ct.conf").write_text("exemarkers = [main]\ntestmarkers = unit_test.hpp\n")
+
+    app = root / "app"
+    app.mkdir()
+    (app / "test_widget.cpp").write_text('#include "unit_test.hpp"\nint main() { return 0; }\n')
+    (app / "unit_test.hpp").write_text("#pragma once\n")
+    (app / "generated_table.inc").write_text("// nothing includes this\n")
+    return root
+
+
+def test_a_test_file_sibling_is_listed_when_nothing_excludes_it(sibling_repo, capsys: Any) -> None:
+    _run_filelist(sibling_repo, ["--auto"])
+    listed = {line.strip() for line in capsys.readouterr().out.splitlines() if line.strip()}
+    assert os.path.realpath(str(sibling_repo / "app" / "generated_table.inc")) in listed
+
+
+def test_auto_exclude_reaches_the_files_swept_in_beside_a_test(sibling_repo, capsys: Any) -> None:
+    """The sweep is a consequence of discovery, so a pattern that governs
+    discovery has to govern it too; otherwise an excluded file returns to
+    the list through a neighbour."""
+    _run_filelist(sibling_repo, ["--auto", "--auto-exclude=generated_table.inc"])
+    listed = {line.strip() for line in capsys.readouterr().out.splitlines() if line.strip()}
+    assert os.path.realpath(str(sibling_repo / "app" / "test_widget.cpp")) in listed
+    assert os.path.realpath(str(sibling_repo / "app" / "generated_table.inc")) not in listed
+
+
+@pytest.fixture
+def vendor_repo(tmp_path):
+    """A repo whose one target includes a header from a vendored subtree.
+
+    The header reaches the output only through the hunter's dependency walk
+    -- it is not a target and not a sweep sibling -- which is the shape
+    README.ct-filelist.rst's ``--auto-exclude=vendor`` example describes."""
+    root = tmp_path / "vendorrepo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    (root / "ct.conf").write_text("exemarkers = [main]\ntestmarkers = unit_test.hpp\n")
+
+    vendor = root / "vendor"
+    vendor.mkdir()
+    (vendor / "thirdparty.hpp").write_text("#pragma once\ninline int vendored() { return 7; }\n")
+
+    app = root / "app"
+    app.mkdir()
+    (app / "main.cpp").write_text('#include "../vendor/thirdparty.hpp"\nint main() { return vendored(); }\n')
+    return root
+
+
+def test_a_vendored_header_is_listed_when_nothing_excludes_it(vendor_repo, capsys: Any) -> None:
+    _run_filelist(vendor_repo, ["--auto"])
+    listed = {line.strip() for line in capsys.readouterr().out.splitlines() if line.strip()}
+    assert os.path.realpath(str(vendor_repo / "vendor" / "thirdparty.hpp")) in listed
+
+
+def test_auto_exclude_drops_a_vendored_header_the_walk_pulled_in(vendor_repo, capsys: Any) -> None:
+    """--auto-exclude filters ct-filelist's OUTPUT, not only its discovery:
+    ct-cake does compile this header, and the packaging list still must not
+    ship it. The target that includes it stays."""
+    _run_filelist(vendor_repo, ["--auto", "--auto-exclude=vendor"])
+    listed = {line.strip() for line in capsys.readouterr().out.splitlines() if line.strip()}
+    assert os.path.realpath(str(vendor_repo / "app" / "main.cpp")) in listed
+    assert os.path.realpath(str(vendor_repo / "vendor" / "thirdparty.hpp")) not in listed
+
+
+def test_an_extrafile_survives_a_pattern_that_excludes_it_from_the_walk(vendor_repo, capsys: Any) -> None:
+    """Explicit beats exclude, on an invocation where the SAME pattern drops
+    the SAME file from the dependency walk. --extrafile is the caller naming
+    a file, so nothing filters it; the walk reached that identical header
+    without being asked and --auto-exclude=vendor does drop it there. Both
+    halves run in one command, so the extras union is the only route by
+    which the header can reach the output.
+
+    Routing extras through _not_auto_excluded alongside the swept set makes
+    this fail while every other test in this file survives, which is what
+    pins the boundary between the two rulings that produced this code."""
+    _run_filelist(vendor_repo, ["--auto", "--auto-exclude=vendor", "--extrafile", "vendor/thirdparty.hpp"])
+    listed = {line.strip() for line in capsys.readouterr().out.splitlines() if line.strip()}
+    assert os.path.realpath(str(vendor_repo / "app" / "main.cpp")) in listed
+    assert os.path.realpath(str(vendor_repo / "vendor" / "thirdparty.hpp")) in listed
