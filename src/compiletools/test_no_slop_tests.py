@@ -13,8 +13,8 @@ It mirrors the established in-repo lint style — ``test_entry_point_surface.py`
 intentional exception is documented inline, never silent.
 
 Rules (all backed by ``ast`` only — no new deps, runs in well under a second
-over the whole tree). All six FAIL THE BUILD; there is no advisory tier, so an
-unreviewed hit is an error. R4-R6 were labelled W1-W3 and were advisory
+over the whole tree). All seven FAIL THE BUILD; there is no advisory tier, so
+an unreviewed hit is an error. R4-R6 were labelled W1-W3 and were advisory
 (``warnings.warn`` + an always-passing report test) until 2026-07-29 — commit
 messages up to 9fc5a61a use the old names.
 
@@ -36,6 +36,20 @@ messages up to 9fc5a61a use the old names.
   R6 NAME-PROMISE     — a name *token* says creates/writes/removes and no
      assert observes the filesystem (directly or one hop through a local), or
      says equals and no assert compares anything.
+  R7 PHANTOM FLAG     — an argv list/tuple literal inside a test contains a
+     ``--flag`` token that no parser in the package registers. argparse
+     resolves an unambiguous prefix, so ``--filename`` silently became
+     ``--filenametestmatch`` (a nargs=0 boolean defaulting to True) and its
+     path argument fell through to the ``filename`` positional — the test
+     passed while exercising a flag that does not exist.
+
+R7's helper-body limitation: the rule sees only argv sequences written
+literally inside a ``def test_*``. A phantom flag appended by a module-level
+helper (``def _argv(*extras): return ["--bindir", d, *extras]``) is invisible,
+as is one built by string concatenation or ``shlex.split``. It is a
+lands-at-authorship guard for the common shape, not a proof of absence — the
+23 ``--filename`` sites removed in 555a5045 included 3 helper-call sites and 1
+helper docstring that only a manual grep found.
 
 R4 is the one rule that routinely fires on *sound* tests: all 21 of its hits at
 promotion time were legitimate interaction tests, and a mock assertion is the
@@ -193,6 +207,21 @@ _R6_NAME_PROMISE_ALLOWLIST: frozenset[str] = frozenset(
     }
 )
 
+# R7: phantom --flags awaiting the fix on a sibling review branch. These are
+# NOT exceptions — they are real defects owned by another member, allowlisted
+# only so this branch lands green. ct-findtargets registers no --filename; the
+# token prefix-resolves to --filenametestmatch and the path falls through to
+# the positional. Fixed on gericksson/ct-review-fixups-cliflow @ 9d5fd488;
+# DELETE these three lines when that merges (test_allowlist_entries_still_
+# trip_their_rule will name them the moment they stop firing).
+_R7_PHANTOM_FLAG_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        "test_findtargets.py::test_a_library_slot_combined_with_filename_is_rejected",
+        "test_findtargets.py::test_a_named_executable_still_reports",
+        "test_findtargets.py::test_an_explicit_target_suppresses_discovery",
+    }
+)
+
 
 # ---------------------------------------------------------------------------
 # Regex vocabularies
@@ -260,6 +289,21 @@ _R6_FS_EVIDENCE_ATTRS = frozenset(
 
 # Bare-name calls that open the filesystem (no attribute to key on).
 _R6_FS_EVIDENCE_CALLS = frozenset({"open"})
+
+# R7: the shapes that register an option string somewhere in the package.
+# ``add_argument("--x")`` is the literal one; the three helpers below expand a
+# bare name into a pair of option strings and would otherwise read as
+# unregistered.
+_R7_FLAG_HELPERS = frozenset({"add_flag_argument", "add_boolean_argument"})
+_R7_XXPEND_ONE = "_add_xxpend_argument"
+_R7_XXPEND_MANY = "_add_xxpend_arguments"
+
+# Registered by argparse/configargparse itself, so they appear in no
+# add_argument call in the tree.
+_R7_BUILTIN_OPTIONS = frozenset({"--help", "--config"})
+
+# Callees whose list/tuple argument IS an argv, regardless of what it holds.
+_R7_ARGV_CALLEES = frozenset({"main", "parse_args", "parse_known_args", "parseargs"})
 
 
 def _test_python_files():
@@ -565,6 +609,156 @@ def _collect_r6(name: str, func: ast.AST) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# R7 collector — phantom --flags in argv literals
+# ---------------------------------------------------------------------------
+
+
+def _const_str(node: ast.AST) -> str | None:
+    return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+
+def _non_test_python_files():
+    """Yield absolute paths of every non-``test_`` module beside this file."""
+    src_dir = os.path.dirname(__file__)
+    for fname in sorted(os.listdir(src_dir)):
+        if fname.endswith(".py") and not fname.startswith("test_"):
+            yield os.path.join(src_dir, fname)
+
+
+def _attr_name(node: ast.AST) -> str:
+    """Trailing name of a Name/Attribute node (``argparse.Foo`` -> ``Foo``)."""
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    if isinstance(node, ast.Name):
+        return node.id
+    return ""
+
+
+@functools.cache
+def _boolean_optional_action_names() -> frozenset[str]:
+    """Action classes that synthesize a ``--no-X`` for every ``--X``.
+
+    ``argparse.BooleanOptionalAction`` does this inside ``__init__``, so its
+    negated forms appear in no source literal — the package's own
+    ``DocumentationAction`` subclasses it and contributes ``--no-man`` /
+    ``--no-doc`` that only the live parser knows about.
+    """
+    names = {"BooleanOptionalAction"}
+    for path in _non_test_python_files():
+        with open(path, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read(), filename=path)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and any(_attr_name(b) in names for b in node.bases):
+                names.add(node.name)
+    return frozenset(names)
+
+
+def _options_registered_in_tree(tree: ast.AST) -> set[str]:
+    """Every option string one module tree registers, over the five shapes."""
+    opts: set[str] = set()
+
+    def named_arg(node: ast.Call, keyword: str) -> str | None:
+        for kw in node.keywords:
+            if kw.arg == keyword:
+                return _const_str(kw.value)
+        return _const_str(node.args[1]) if len(node.args) >= 2 else None
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        callee = f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else "")
+        if callee == "add_argument":
+            literals: list[str] = []
+            for arg in node.args:
+                literal = _const_str(arg)
+                if literal is None:
+                    break
+                if literal.startswith("-"):
+                    literals.append(literal)
+            opts.update(literals)
+            action = next((kw.value for kw in node.keywords if kw.arg == "action"), None)
+            if action is not None and _attr_name(action) in _boolean_optional_action_names():
+                opts.update(f"--no-{lit[2:]}" for lit in literals if lit.startswith("--"))
+        elif callee in _R7_FLAG_HELPERS:
+            name = named_arg(node, "name")
+            if name:
+                opts.update({f"--{name}", f"--no-{name}"})
+        elif callee == _R7_XXPEND_ONE:
+            name = named_arg(node, "name")
+            if name:
+                opts.update({f"--prepend-{name.upper()}", f"--append-{name.upper()}"})
+        elif callee == _R7_XXPEND_MANY:
+            seq = node.args[1] if len(node.args) >= 2 else None
+            for kw in node.keywords:
+                if kw.arg == "xxpendableargs":
+                    seq = kw.value
+            if isinstance(seq, (ast.Tuple, ast.List)):
+                for elt in seq.elts:
+                    name = _const_str(elt)
+                    if name:
+                        opts.update({f"--prepend-{name.upper()}", f"--append-{name.upper()}"})
+    return opts
+
+
+@functools.cache
+def _known_option_strings() -> frozenset[str]:
+    """Every option string registered anywhere in the package.
+
+    One global union, not a per-file set: a test module's own ad-hoc parser
+    contributes to what counts as "known" in every other test module. That
+    over-accepts by construction, but the direction is a false NEGATIVE (a
+    missed phantom flag), never a false alarm, and it was measured to make no
+    difference — global and per-file produce the same hit set on this tree.
+    """
+    opts: set[str] = set(_R7_BUILTIN_OPTIONS)
+    for path in list(_non_test_python_files()) + list(_test_python_files()):
+        with open(path, encoding="utf-8") as fh:
+            opts |= _options_registered_in_tree(ast.parse(fh.read(), filename=path))
+    return frozenset(opts)
+
+
+def _argv_sequences_passed_to_a_parser(func: ast.AST) -> set[int]:
+    """``id()`` of every list/tuple handed straight to a parser entry point."""
+    found: set[int] = set()
+    for node in ast.walk(func):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        callee = f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else "")
+        if callee in _R7_ARGV_CALLEES:
+            found.update(id(a) for a in node.args if isinstance(a, (ast.List, ast.Tuple)))
+    return found
+
+
+def _collect_r7(func: ast.AST, known: frozenset[str]) -> bool:
+    """A ``--flag`` literal in an argv sequence that no parser registers.
+
+    A sequence qualifies as ct argv only if its first element is a ``-`` or
+    ``ct-`` string literal AND it is either handed directly to a parser entry
+    point or already carries at least one known ct option. Without both
+    conditions the rule flags compiler-flag token fixtures (``--sysroot``),
+    gtest/doctest/Catch2 xml argv, and ``git``/``make`` command lines.
+    """
+    direct = _argv_sequences_passed_to_a_parser(func)
+    for node in ast.walk(func):
+        if not (isinstance(node, (ast.List, ast.Tuple)) and node.elts):
+            continue
+        first = _const_str(node.elts[0])
+        if first is None or not (first.startswith("-") or first.startswith("ct-")):
+            continue
+        tokens = [_const_str(e) for e in node.elts]
+        bare = [t.split("=", 1)[0] for t in tokens if t and t.startswith("--") and len(t) > 2]
+        if not bare:
+            continue
+        if id(node) not in direct and not any(b in known for b in bare):
+            continue
+        if any(b not in known for b in bare):
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Shared scan
 # ---------------------------------------------------------------------------
 
@@ -685,6 +879,51 @@ def test_no_unkept_name_promises():
     )
 
 
+def test_no_phantom_cli_flags_in_argv_lists():
+    """R7: every ``--flag`` in a test argv must be a registered option."""
+    known = _known_option_strings()
+    hits = _scan(functools.partial(_collect_r7, known=known), _R7_PHANTOM_FLAG_ALLOWLIST)
+    assert not hits, (
+        "These tests pass a --flag that no parser in the package registers. "
+        "argparse resolves an unambiguous prefix, so the token either silently "
+        "becomes a DIFFERENT option or is swallowed by parse_known_args — "
+        "either way the test passes without exercising what it names:\n"
+        + "\n".join(f"  {h}" for h in hits)
+        + "\n\nFix: use the real option string (check the add_argument call), "
+        "or drop the token if the value belongs on a positional. Truncating "
+        "the flag until argparse errors is the quickest way to find which "
+        "registered option it was resolving to. If the argv is genuinely for "
+        "some other program, add the test to _R7_PHANTOM_FLAG_ALLOWLIST with "
+        "a one-line justification."
+    )
+
+
+def test_known_option_strings_covers_the_real_ct_cake_parser():
+    """The static extractor must not rot: every option the live ct-cake parser
+    registers has to appear in the set R7 checks against.
+
+    Containment, not equality — the static set is the union over every module
+    in the package, so it is legitimately larger than any one tool's parser
+    (it includes options registered by tools ct-cake does not compose).
+    """
+    import compiletools.apptools
+    import compiletools.cake
+
+    cap = compiletools.apptools.create_parser("test-no-slop-r7", argv=[])
+    compiletools.cake.Cake.add_arguments(cap)
+    live = {opt for action in cap._actions for opt in action.option_strings if opt.startswith("--")}
+
+    missing = sorted(live - _known_option_strings())
+    assert not missing, (
+        "The live ct-cake parser registers option strings the R7 static "
+        f"extractor does not see: {missing}\n\n"
+        "A new registration shape was introduced (a wrapper helper, a loop "
+        "over a name list, a dynamically built option string). Teach "
+        "_options_registered_in_tree about it — until then R7 will flag every "
+        "test that legitimately uses these flags."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Allowlist typo-guard (mirrors test_entry_point_surface / cas-dir-resolver)
 # ---------------------------------------------------------------------------
@@ -708,6 +947,7 @@ def test_allowlist_entries_are_live():
         ("_R4_MOCK_ASSERT_ONLY_ALLOWLIST", _R4_MOCK_ASSERT_ONLY_ALLOWLIST),
         ("_R5_CAPTURE_DISCARDED_ALLOWLIST", _R5_CAPTURE_DISCARDED_ALLOWLIST),
         ("_R6_NAME_PROMISE_ALLOWLIST", _R6_NAME_PROMISE_ALLOWLIST),
+        ("_R7_PHANTOM_FLAG_ALLOWLIST", _R7_PHANTOM_FLAG_ALLOWLIST),
     ):
         stale = sorted(allowlist - live)
         assert not stale, f"{label} has entries that no longer exist: {stale}"
@@ -740,6 +980,10 @@ def test_allowlist_entries_still_trip_their_rule():
         "_R4_MOCK_ASSERT_ONLY_ALLOWLIST": (_R4_MOCK_ASSERT_ONLY_ALLOWLIST, _collect_r4),
         "_R5_CAPTURE_DISCARDED_ALLOWLIST": (_R5_CAPTURE_DISCARDED_ALLOWLIST, _collect_r5),
         "_R6_NAME_PROMISE_ALLOWLIST": (_R6_NAME_PROMISE_ALLOWLIST, lambda f: _collect_r6(f.name, f)),
+        "_R7_PHANTOM_FLAG_ALLOWLIST": (
+            _R7_PHANTOM_FLAG_ALLOWLIST,
+            functools.partial(_collect_r7, known=_known_option_strings()),
+        ),
     }
     for label, (allowlist, collector) in collectors.items():
         dead = sorted(key for key in allowlist if not any(collector(f) for f in funcs.get(key, [])))
@@ -791,7 +1035,25 @@ _RULE_BEHAVIOUR_CASES: tuple[tuple[bool, str, str], ...] = (
     (True, "R1", "def test_x():\n    do_thing()\n"),
     (True, "R2", "def test_x():\n    assert True\n"),
     (True, "R3", "def test_x():\n    try:\n        f()\n    except:\n        pass\n"),
+    # R7 cases run against _R7_SELF_TEST_KNOWN, not the real registry, so they
+    # stay stable when the package's option surface changes.
+    (True, "R7", 'def test_x():\n    main(["--verbose", "--phantom", "f.cpp"])\n'),
+    (False, "R7", 'def test_x():\n    main(["--verbose", "f.cpp"])\n'),
+    # Handed to a parser entry point: no known-option anchor needed.
+    (True, "R7", 'def test_x():\n    parse_args(["--phantom"])\n'),
+    # Built into a local first, then used: qualifies on the known-option anchor.
+    (True, "R7", 'def test_x():\n    argv = ["--verbose", "--phantom"]\n    run(argv)\n'),
+    # An argv for some OTHER program (compiler, git, gtest): no ct option in
+    # it and not handed to a ct parser, so the rule stays out of the way.
+    (False, "R7", 'def test_x():\n    subprocess.run(["--sysroot", "/opt/sdk"])\n'),
+    (False, "R7", 'def test_x():\n    run(["--gtest_output=xml:/tmp/x.xml"])\n'),
+    # `=`-joined values are compared on the bare option string.
+    (False, "R7", 'def test_x():\n    main(["--verbose=2"])\n'),
+    (True, "R7", 'def test_x():\n    main(["--verbose", "--phantom=2"])\n'),
 )
+
+# Fixed option registry for the R7 self-test cases above.
+_R7_SELF_TEST_KNOWN: frozenset[str] = frozenset({"--verbose", "--config"})
 
 
 def test_rules_fire_on_slop_and_stay_quiet_on_good_tests():
@@ -804,6 +1066,7 @@ def test_rules_fire_on_slop_and_stay_quiet_on_good_tests():
         "R4": lambda node: _collect_r4(node),
         "R5": lambda node: _collect_r5(node),
         "R6": lambda node: _collect_r6(node.name, node),
+        "R7": lambda node: _collect_r7(node, _R7_SELF_TEST_KNOWN),
     }
     wrong: list[str] = []
     for should_flag, rule, source in _RULE_BEHAVIOUR_CASES:
