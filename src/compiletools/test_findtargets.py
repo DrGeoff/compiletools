@@ -826,7 +826,7 @@ def test_an_explicit_target_suppresses_discovery(reanchor_repo, capsys):
     named = os.path.join("appalpha", "main.cpp")
     with uth.DirectoryContext(str(reanchor_repo)):
         with uth.ParserContext():
-            assert compiletools.findtargets.main(["--style=args", "--filename", named]) == 0
+            assert compiletools.findtargets.main(["--style=args", named]) == 0
     out = capsys.readouterr().out
     assert out.split() == [named]
 
@@ -873,7 +873,7 @@ class TestLibrarySlotsAreRejected:
         """Control: the rejection must be specific to the library slots, not
         a blanket refusal of every explicitly named target."""
         named = os.path.join("app", "main.cpp")
-        assert self._run(library_repo, ["--style=args", "--filename", named]) == 0
+        assert self._run(library_repo, ["--style=args", named]) == 0
         assert capsys.readouterr().out.split() == [named]
 
     @pytest.mark.parametrize("flag", ["--static", "--dynamic"])
@@ -887,16 +887,20 @@ class TestLibrarySlotsAreRejected:
         """The dangerous form. Combined with a named executable the tool
         used to exit 0 printing only the executable -- a plausible answer
         that silently drops the library, which survives far longer
-        downstream than the empty output the flag produces on its own."""
+        downstream than the empty output the flag produces on its own.
+
+        The executable comes first because the library slots take
+        ``nargs="*"``: trailing it after ``--static`` hands both paths to
+        the library slot and leaves the positional empty, which is not the
+        combination under test."""
         with pytest.raises(SystemExit) as excinfo:
             self._run(
                 library_repo,
                 [
                     "--style=args",
+                    os.path.join("app", "main.cpp"),
                     flag,
                     os.path.join("lib", "widget.cpp"),
-                    "--filename",
-                    os.path.join("app", "main.cpp"),
                 ],
             )
         assert excinfo.value.code == 2
