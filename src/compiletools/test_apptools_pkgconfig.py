@@ -361,8 +361,14 @@ def test_fully_spaced_constraint_is_the_form_that_reaches_a_probe(monkeypatch):
 
 
 def _exists_ok_query_fails(cmd, **_kwargs):
-    """``--exists`` succeeds, the flag query fails. A .pc with an
-    unresolvable ``Requires.private`` behaves exactly this way."""
+    """``--exists`` succeeds, the flag query fails.
+
+    Measured against pkgconf 1.4.2: a ``.pc`` with an unresolvable
+    ``Requires.private`` exits 0 on ``--exists`` and 1 on ``--cflags``, so
+    ``--exists`` is not a proxy for the flag queries. A bare ``--libs`` on that
+    same ``.pc`` exits 0, so the ``--libs`` test below pins the general
+    contract rather than that specific ``.pc``.
+    """
     if "--exists" in cmd:
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
     return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="Package 'ghost' not found")
