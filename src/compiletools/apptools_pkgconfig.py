@@ -244,6 +244,12 @@ def _run_pkg_config_query(package: str, option: str) -> str:
     this check the empty stdout is indistinguishable from a package that
     contributes no flags, so the build compiles or links without what it
     asked for, silently, even under ``--pkg-config-errors=error``.
+
+    stderr is captured to build that diagnostic, so a query that exits 0
+    while still writing to stderr has its output forwarded verbatim rather
+    than swallowed. It is not routed through the failure policy: pkg-config
+    exited 0 and returned usable flags, which is not a failure for
+    ``--pkg-config-errors=error`` to promote.
     """
     result = subprocess.run(
         ["pkg-config", option, package],
@@ -254,6 +260,9 @@ def _run_pkg_config_query(package: str, option: str) -> str:
     if result.returncode != 0:
         _warn_pkg_config(f"pkg-config {option} {package!r} failed", _pkg_config_stderr(result))
         return ""
+    stderr = _pkg_config_stderr(result)
+    if stderr:
+        print(stderr, file=sys.stderr)
     return result.stdout.rstrip()
 
 

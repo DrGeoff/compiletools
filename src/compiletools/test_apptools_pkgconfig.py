@@ -404,3 +404,39 @@ def test_failed_query_diagnostic_carries_the_pkg_config_stderr(monkeypatch):
 
     with pytest.warns(UserWarning, match=r"Package 'ghost' not found"):
         pkgconfig.cached_pkg_config("broken", "--cflags")
+
+
+def test_a_warning_from_a_succeeding_query_still_reaches_the_user(monkeypatch, capsys):
+    """Capturing stderr to build the failure diagnostic must not silence the
+    success path.
+
+    pkg-config exits 0 while writing real diagnostics to stderr -- an
+    undefined variable expands to nothing and the flags come back quietly
+    short. Before stderr was captured it went straight to the terminal, so
+    capturing it without re-emitting would delete that signal.
+    """
+
+    def succeeds_with_a_warning(cmd, **_kwargs):
+        if "--exists" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="-I/opt/x", stderr="Variable 'prefix' not defined")
+
+    monkeypatch.setattr(pkgconfig.subprocess, "run", succeeds_with_a_warning)
+
+    assert pkgconfig.cached_pkg_config("chatty", "--cflags") == "-I/opt/x"
+    assert "Variable 'prefix' not defined" in capsys.readouterr().err
+
+
+def test_a_succeeding_query_is_not_promoted_to_a_failure_in_error_mode(monkeypatch):
+    """A warning on stderr is not a failed query: pkg-config exited 0 and
+    returned usable flags, so strict mode must not turn it into a fatal."""
+
+    def succeeds_with_a_warning(cmd, **_kwargs):
+        if "--exists" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="-I/opt/x", stderr="Variable 'prefix' not defined")
+
+    monkeypatch.setattr(pkgconfig.subprocess, "run", succeeds_with_a_warning)
+    pkgconfig.set_pkg_config_errors("error")
+
+    assert pkgconfig.cached_pkg_config("chatty", "--cflags") == "-I/opt/x"
