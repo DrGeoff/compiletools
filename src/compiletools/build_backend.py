@@ -1118,6 +1118,12 @@ class BuildBackend(abc.ABC):
             # both fallbacks can be empty. The mapper then lands in the cwd,
             # spelled explicitly: an empty dirname is what the writer's
             # makedirs cannot create.
+            # That config is the one case the uniqueness argument above does
+            # not cover: with an empty bindir AND a directory-less makefile
+            # name, every invocation in the same cwd shares
+            # ``./.module-mapper.txt``, so concurrent gcc-module builds there
+            # race exactly as they would under cas-objdir. Give either one a
+            # directory to keep them apart.
             mapper_dir = self._build_state.names.bindir or "."
             mf = getattr(self.args, "makefilename", None)
             if mf:
