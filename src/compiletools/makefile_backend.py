@@ -176,6 +176,25 @@ class MakefileBackend(BuildBackend):
         already evicted, an entry owned by another user on a shared pool, and
         a ``find`` without GNU/BSD ``-mmin`` are all cache bookkeeping, not
         build errors.
+
+        ``touch -c`` is load-bearing, not tidiness. Plain ``touch`` CREATES a
+        missing file, and ``find -exec ... +`` stats the paths and runs one
+        ``touch`` at the end, so a peer trim unlinking an entry inside that
+        window lands the ``touch`` on a path that no longer exists — and
+        ``-mmin +N`` selects precisely the population ``--max-age`` evicts. The
+        result is a zero-byte cas entry with ``mtime=now``, which the publish
+        rule then hardlinks to ``bin/<name>``: a silent wrong build at exit 0,
+        made sticky because the fresh mtime puts it last in line for eviction.
+        That is the first locking invariant's hazard (an empty ``mtime=now``
+        artefact a peer make reads as up-to-date) in a new place. ``-c`` skips
+        the missing path instead, and the next build relinks the entry.
+
+        ``CT_DRY_RUN`` suppresses the whole assignment under ``make -n`` and
+        ``make -q``, which must not mutate anything. GNU Make puts its
+        single-letter options in the first word of ``MAKEFLAGS`` at parse time;
+        the leading ``-`` makes that word a flag cluster even when the first
+        word is a long option, so a long option containing ``n`` at worst skips
+        a freshening (harmless) rather than licensing one.
         """
         if getattr(self.args, "use_mtime", False):
             return ""
@@ -186,12 +205,14 @@ class MakefileBackend(BuildBackend):
         shells = [
             "$(shell find "
             + " ".join(_make_quote(entry) for entry in entries[i : i + _RM_CHUNK_SIZE])
-            + f" -maxdepth 0 -mmin +{minutes} -exec touch -m {{}} + 2>/dev/null)"
+            + f" -maxdepth 0 -mmin +{minutes} -exec touch -c -m {{}} + 2>/dev/null)"
             for i in range(0, len(entries), _RM_CHUNK_SIZE)
         ]
+        dry = "CT_DRY_RUN := $(findstring n,$(firstword -$(MAKEFLAGS)))$(findstring q,$(firstword -$(MAKEFLAGS)))"
+        body = "_CT_FRESHEN := $(if $(CT_DRY_RUN),," + "".join(shells) + ")"
         # `#` in a path would start a Make comment here (a variable-assignment
         # line, unlike a recipe line where `#` reaches the shell verbatim).
-        return "_CT_FRESHEN := " + "".join(shells).replace("#", "\\#")
+        return dry + "\n" + body.replace("#", "\\#")
 
     def _write_makefile(self, graph: BuildGraph, f) -> None:
         """Write a complete Makefile from the BuildGraph."""

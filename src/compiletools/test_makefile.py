@@ -928,6 +928,87 @@ class TestGenerateThenRunFreshening:
 
             assert os.path.getmtime(entry) == before, "an entry inside the age floor was freshened"
 
+    @staticmethod
+    def _emitted_touch_argv(tempdir):
+        """The ``touch`` the generated Makefile runs, lifted out of its ``find``.
+
+        Reading the argv the emitter actually wrote keeps the cell honest: a
+        hand-written ``touch -c -m`` control would pass while the Makefile on
+        disk said something else.
+        """
+        with open(os.path.join(tempdir, "Makefile")) as f:
+            text = f.read()
+        line = next(line for line in text.splitlines() if line.startswith("_CT_FRESHEN"))
+        payload = line.split(" -exec ", 1)[1].split(" {} +", 1)[0]
+        return payload.split()
+
+    @staticmethod
+    def _published_exe(tempdir):
+        candidates = [
+            os.path.join(root, name)
+            for root, _dirs, files in os.walk(os.path.join(tempdir, "bin"))
+            for name in files
+            if name == "helloworld_cpp"
+        ]
+        assert len(candidates) == 1, f"expected exactly one published exe, got {candidates}"
+        return candidates[0]
+
+    @uth.requires_functional_compiler
+    def test_the_freshening_does_not_create_an_entry_a_peer_trim_removed(self):
+        """A missing entry must be skipped, never created.
+
+        ``find -exec ... +`` stats the paths and runs one ``touch`` at the end,
+        so a peer ``ct-trim-cache`` unlinking an entry inside that window lands
+        the ``touch`` on a path that no longer exists — and ``-mmin +60``
+        selects exactly the population ``--max-age`` evicts. Plain ``touch``
+        creates the file; the build then publishes a zero-byte executable at
+        exit 0, with an ``mtime=now`` that makes it the last thing a sweep would
+        evict. ``os.utime`` (the execute-side pass) raises instead, so without
+        ``-c`` the two freshening paths disagree in the one failure mode both
+        docstrings call out.
+        """
+        with uth.TempDirContextWithChange() as tempdir:
+            entry = self._generated_and_built(tempdir)
+            touch_argv = self._emitted_touch_argv(tempdir)
+
+            os.remove(entry)
+            os.remove(self._published_exe(tempdir))
+            subprocess.run(touch_argv + [entry], check=False)
+
+            assert not os.path.exists(entry), (
+                f"{' '.join(touch_argv)} created the evicted cas entry; the publish rule "
+                "will hardlink those zero bytes to bin/ and the build will exit 0"
+            )
+
+            subprocess.check_output(["make", "-f", "Makefile"], universal_newlines=True, stderr=subprocess.STDOUT)
+            published = self._published_exe(tempdir)
+            assert os.path.getsize(published) > 0, "make republished an empty executable"
+            assert subprocess.run([published], check=False).returncode == 0, "the republished executable does not run"
+
+    @uth.requires_functional_compiler
+    def test_a_dry_run_does_not_freshen(self):
+        """``make -n`` must not mutate the cache.
+
+        The directive is a parse-time ``:=`` assignment, so it runs on every
+        invocation including the ones that promise to change nothing. The
+        second half is the non-vacuity control: an executing make over the same
+        stale entry must still freshen it, so a cell that passed because
+        freshening broke entirely would fail here.
+        """
+        with uth.TempDirContextWithChange() as tempdir:
+            entry = self._generated_and_built(tempdir)
+
+            stale = time.time() - 90 * 86400
+            os.utime(entry, (stale, stale))
+
+            subprocess.check_output(["make", "-n", "-f", "Makefile"], universal_newlines=True, stderr=subprocess.STDOUT)
+            assert os.path.getmtime(entry) == stale, "make -n freshened a cas entry; a dry run must not mutate anything"
+
+            subprocess.check_output(["make", "-f", "Makefile"], universal_newlines=True, stderr=subprocess.STDOUT)
+            assert os.path.getmtime(entry) > stale + 3600, (
+                "the executing make no longer freshens; the cell above is vacuous"
+            )
+
     @uth.requires_functional_compiler
     def test_use_mtime_does_not_freshen(self):
         """Under ``--use-mtime`` the entry's timestamp is a rebuild input.

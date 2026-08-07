@@ -276,9 +276,13 @@ just on first publish, so an entry a build keeps re-publishing does not age
 out on the timestamp it was created with. A generate-then-run workflow
 (``ct-create-makefile`` then a hand-run ``make``) never calls ``execute()``,
 so the generated Makefile carries a parse-time ``_CT_FRESHEN`` assignment
-that does the same job on every invocation. Both are skipped under
-``--use-mtime``, and both are bounded to one refresh per artefact per hour —
-see ``ct-cas-publish`` (1) for the full rationale. This means ``--max-age`` on
+that does the same job on every invocation (skipped under ``make -n`` and
+``make -q``). Both are skipped under ``--use-mtime``, and both are bounded to
+one refresh per artefact per hour — see ``ct-cas-publish`` (1) for the full
+rationale. The Makefile form uses ``touch -c`` so that an entry this sweep
+evicts between ``find``'s stat and ``touch``'s exec is skipped rather than
+recreated empty; without it a concurrent trim and a concurrent build combine
+to publish a zero-byte executable at exit 0. This means ``--max-age`` on
 the ``exedir`` pool measures "how long since any build last published this
 artefact", not "how long since this file was written", which differs from
 the ``obj``/``pch``/``pcm`` pools where mtime is set once at compile time and

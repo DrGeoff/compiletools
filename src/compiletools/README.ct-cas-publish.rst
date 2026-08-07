@@ -126,7 +126,7 @@ A generate-then-run workflow never reaches that pass at all.
 ``ct-create-makefile`` builds the graph, writes the Makefile and
 returns; the user then runs ``make`` by hand, and nothing calls
 ``execute()``. So the make backend also writes a ``_CT_FRESHEN :=
-$(shell find ... -mmin +60 -exec touch -m {} +)`` assignment into the
+$(shell find ... -mmin +60 -exec touch -c -m {} +)`` assignment into the
 generated Makefile. Make expands it once at parse time on every
 invocation, including the no-op rebuild where the publish rule is
 skipped; it creates no target and joins no dependency graph, so it does
@@ -137,6 +137,25 @@ entry owned by another user on a shared pool, and a ``find`` without
 GNU/BSD ``-mmin`` are cache bookkeeping, not build failures. Ninja has
 no parse-time equivalent, and ``ct-cake --backend=ninja`` always runs
 ``execute()``, so ninja is covered by the pass above.
+
+The ``-c`` on that ``touch`` is a correctness requirement. ``find -exec
+... +`` stats the matched paths and runs one ``touch`` at the end, so a
+``ct-trim-cache`` sweep unlinking an entry inside that window lands the
+``touch`` on a path that no longer exists — and ``-mmin +60`` selects
+exactly the population ``--max-age`` evicts. A plain ``touch`` would
+CREATE the entry, empty, with ``mtime=now``; the publish rule then
+hardlinks those zero bytes to ``bin/<name>`` and the build exits 0 with
+an executable that cannot run. The fresh mtime also puts the corrupt
+entry last in line for the next sweep, so it persists. ``-c`` skips the
+missing path, which is what ``os.utime`` does on the execute side, and
+the build relinks the entry normally.
+
+A companion ``CT_DRY_RUN`` assignment suppresses the freshening under
+``make -n`` and ``make -q``, which are contracts to change nothing. It
+reads GNU Make's single-letter options out of the first word of
+``MAKEFLAGS`` at parse time. Every other invocation freshens, including
+``make clean``: the entry is still one this build's graph names, and
+``clean`` removes the published path rather than the cache.
 
 OPTIONS
 =======
