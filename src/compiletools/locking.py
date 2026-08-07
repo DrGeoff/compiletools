@@ -40,6 +40,19 @@ fcntl: Optional[types.ModuleType] = _fcntl_real
 HAS_FCNTL = fcntl is not None
 
 
+class LockStrategyUnavailableError(RuntimeError):
+    """The selected strategy has no lock primitive available at all.
+
+    Distinct from a lock that could not be *taken* (contention, a timeout,
+    ``LockdirLock`` exhausting its retries): nothing on this platform can
+    take it, and no peer holds it either. Callers whose lock is race
+    protection rather than a precondition -- ``cas_publish`` is the one in
+    tree -- may degrade to an unlocked operation on this, and must not
+    degrade on the contention case. Subclasses ``RuntimeError`` so existing
+    handlers keep working.
+    """
+
+
 class FcntlLock:
     """fcntl.lockf()-based locking for GPFS (cross-node, kernel-managed).
 
@@ -75,7 +88,7 @@ class FcntlLock:
         The kernel handles queuing and automatic release on process death.
         """
         if fcntl is None:
-            raise RuntimeError("fcntl module not available (Windows?); cannot use fcntl lock strategy")
+            raise LockStrategyUnavailableError("fcntl module not available (Windows?); cannot use fcntl lock strategy")
 
         # Ensure parent directory exists
         compiletools.lock_utils.ensure_parent_dir(self.lockfile)
@@ -111,7 +124,7 @@ class FcntlLock:
         cross-process fast path (the production case) for the async scheduler.
         """
         if fcntl is None:
-            raise RuntimeError("fcntl module not available (Windows?); cannot use fcntl lock strategy")
+            raise LockStrategyUnavailableError("fcntl module not available (Windows?); cannot use fcntl lock strategy")
         compiletools.lock_utils.ensure_parent_dir(self.lockfile)
         fd = os.open(self.lockfile, os.O_CREAT | os.O_RDWR, 0o666)
         try:
@@ -658,7 +671,7 @@ class FlockLock:
         The kernel handles queuing and automatic release on process death.
         """
         if fcntl is None:
-            raise RuntimeError("fcntl module not available (Windows?); cannot use flock lock strategy")
+            raise LockStrategyUnavailableError("fcntl module not available (Windows?); cannot use flock lock strategy")
 
         # Ensure parent directory exists
         compiletools.lock_utils.ensure_parent_dir(self.lockfile)
@@ -684,7 +697,7 @@ class FlockLock:
         NO fd open. flock locks are per open-file-description, so this detects
         contention both cross-process and in-process (distinct fds)."""
         if fcntl is None:
-            raise RuntimeError("fcntl module not available (Windows?); cannot use flock lock strategy")
+            raise LockStrategyUnavailableError("fcntl module not available (Windows?); cannot use flock lock strategy")
         compiletools.lock_utils.ensure_parent_dir(self.lockfile)
         fd = os.open(self.lockfile, os.O_CREAT | os.O_RDWR, 0o666)
         try:

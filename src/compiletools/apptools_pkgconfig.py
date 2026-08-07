@@ -235,18 +235,44 @@ def _cached_pkg_config_exists(package: str) -> bool:
     return False
 
 
+def _run_pkg_config_query(package: str, option: str) -> str:
+    """Run one flag query and route a nonzero returncode through the policy.
+
+    A passing ``--exists`` does not promise the flag query passes: a ``.pc``
+    with an unresolvable ``Requires.private``, or a broken variable
+    expansion, satisfies the existence probe and fails ``--cflags``. Without
+    this check the empty stdout is indistinguishable from a package that
+    contributes no flags, so the build compiles or links without what it
+    asked for, silently, even under ``--pkg-config-errors=error``.
+
+    stderr is captured to build that diagnostic, so a query that exits 0
+    while still writing to stderr has its output forwarded verbatim rather
+    than swallowed. It is not routed through the failure policy: pkg-config
+    exited 0 and returned usable flags, which is not a failure for
+    ``--pkg-config-errors=error`` to promote.
+    """
+    result = subprocess.run(
+        ["pkg-config", option, package],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if result.returncode != 0:
+        _warn_pkg_config(f"pkg-config {option} {package!r} failed", _pkg_config_stderr(result))
+        return ""
+    stderr = _pkg_config_stderr(result)
+    if stderr:
+        print(stderr, file=sys.stderr)
+    return result.stdout.rstrip()
+
+
 @functools.cache
 def cached_pkg_config(package, option):
     """Cache pkg-config results for one package spec and output option."""
     if not _cached_pkg_config_exists(package):
         return ""
 
-    result = subprocess.run(
-        ["pkg-config", option, package],
-        stdout=subprocess.PIPE,
-        text=True,
-    )
-    return result.stdout.rstrip()
+    return _run_pkg_config_query(package, option)
 
 
 def filter_pkg_config_cflags(cflags_str, verbose=0):
@@ -641,10 +667,5 @@ def _batch_pkg_config(packages: list[str], option: str) -> dict[str, str]:
 
     # All packages exist — query each without the redundant --exists check.
     for pkg in query_packages:
-        r = subprocess.run(
-            ["pkg-config", option, pkg],
-            stdout=subprocess.PIPE,
-            text=True,
-        )
-        out[pkg] = r.stdout.rstrip()
+        out[pkg] = _run_pkg_config_query(pkg, option)
     return out

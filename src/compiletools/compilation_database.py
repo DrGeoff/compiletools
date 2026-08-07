@@ -5,6 +5,7 @@ from typing import Any, Optional
 import stringzilla as sz
 
 import compiletools.apptools
+import compiletools.apptools_pkgconfig
 import compiletools.build_apply
 import compiletools.filesystem_utils
 import compiletools.findtargets
@@ -90,6 +91,14 @@ class CompilationDatabaseCreator:
         # Use Hunter's cached results (populated during huntsource)
         try:
             magic_flags = self.hunter.magicflags(source_file)
+        except compiletools.apptools_pkgconfig.PkgConfigError:
+            # --pkg-config-errors=error is an enforcement policy, and
+            # PkgConfigError subclasses RuntimeError, so only an explicit
+            # carve-out keeps it out of the broad handler below (the same
+            # reasoning as hunter._terminate_on_strict_pkg_config). Absorbing
+            # it would emit a compile database whose entries are missing the
+            # flags the failing package was asked for.
+            raise
         except Exception as e:
             # Magic flags parsing may fail for various reasons
             if self.args.verbose >= 2:
@@ -152,6 +161,9 @@ class CompilationDatabaseCreator:
         """
         try:
             result = self.hunter._file_analysis_result(source_file)
+        except compiletools.apptools_pkgconfig.PkgConfigError:
+            # Same enforcement carve-out as _get_compiler_command's.
+            raise
         except Exception:
             return []
         if result is None:
@@ -207,6 +219,12 @@ class CompilationDatabaseCreator:
             if self.args.verbose >= 6:
                 print(f"CompilationDatabase: Processing {len(source_files)} source files")
 
+        except compiletools.apptools_pkgconfig.PkgConfigError:
+            # Same enforcement carve-out as _get_compiler_command's. Hunter
+            # raises SystemExit for the strict failures it converts itself,
+            # which this handler already lets past; this covers a
+            # PkgConfigError that reaches here unconverted.
+            raise
         except Exception as e:
             if self.args.verbose:
                 print(f"Warning: Error during source hunting: {e}")

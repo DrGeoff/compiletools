@@ -12,6 +12,7 @@ import pytest
 import stringzilla as sz
 
 import compiletools.apptools
+import compiletools.apptools_pkgconfig
 import compiletools.compilation_database
 import compiletools.findtargets
 import compiletools.hunter
@@ -1778,3 +1779,46 @@ class TestCompilationDatabaseDefensivePaths:
         with pytest.raises(SystemExit) as excinfo:
             creator.create_compilation_database()
         assert excinfo.value.code == 1
+
+
+class TestStrictPkgConfigCarveOuts:
+    """Every deliberately broad handler in the CDB must let a
+    ``PkgConfigError`` past, the way ``hunter.py`` does at its own two
+    expansion handlers.
+
+    Measured on the shipped code first: a real strict-mode run
+    (``ct-compilation-database --pkg-config-errors=error`` over a source
+    declaring a missing package) already exits 1 and writes nothing, because
+    ``magicflags._process_magic_flag`` converts the error to ``SystemExit``
+    before any of these handlers sees it. These tests pin the property one
+    layer lower, so a future pkg-config consumer that does not route through
+    that converter cannot reduce an enforcement failure to a verbose-gated
+    warning.
+    """
+
+    def _pkg_config_error(self):
+        return compiletools.apptools_pkgconfig.PkgConfigError("pkg-config package 'ghost' not found")
+
+    def test_magic_flag_lookup_does_not_swallow_it(self):
+        creator = _bare_creator(verbose=0, CXX="g++", CC="gcc")
+        creator.hunter = MagicMock()
+        creator.hunter.magicflags = MagicMock(side_effect=self._pkg_config_error())
+
+        with pytest.raises(compiletools.apptools_pkgconfig.PkgConfigError):
+            creator._get_compiler_command("main.cpp")
+
+    def test_module_kind_probe_does_not_swallow_it(self):
+        creator = _bare_creator(verbose=0, CXX="g++", CC="gcc")
+        creator.hunter = MagicMock()
+        creator.hunter._file_analysis_result = MagicMock(side_effect=self._pkg_config_error())
+
+        with pytest.raises(compiletools.apptools_pkgconfig.PkgConfigError):
+            creator._module_kind_flags("main.cpp")
+
+    def test_source_hunting_does_not_swallow_it(self):
+        creator = _bare_creator(verbose=0, compilation_database_relative=False)
+        creator.hunter = MagicMock()
+        creator.hunter.huntsource = MagicMock(side_effect=self._pkg_config_error())
+
+        with pytest.raises(compiletools.apptools_pkgconfig.PkgConfigError):
+            creator.create_compilation_database()

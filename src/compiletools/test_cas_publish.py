@@ -23,6 +23,7 @@ import time
 import pytest
 
 import compiletools.cas_publish
+import compiletools.filesystem_utils
 import compiletools.locking
 import compiletools.trim_cache
 from compiletools.cas_publish import EXIT_CONCURRENT_TRIM, ConcurrentTrimError, freshen_cas_entry, publish
@@ -699,4 +700,46 @@ class TestLockUnavailableFallback:
             publish(str(cas), str(user))
 
         assert excinfo.value.errno == err
+        assert not user.exists()
+
+
+class TestNoLockPrimitiveFallback:
+    """A platform with no ``fcntl`` module reaches the same warn-and-continue
+    fallback as a filesystem that refuses the lock. Both fcntl-backed
+    strategies raise before any lock exists, so publish had nothing to
+    unwind — it just got a traceback instead of a published artefact."""
+
+    @pytest.mark.parametrize("strategy", ["fcntl", "flock"])
+    def test_publish_proceeds_and_warns_when_fcntl_is_absent(self, cas, user, monkeypatch, capsys, strategy):
+        monkeypatch.setattr(compiletools.locking, "fcntl", None)
+        monkeypatch.setattr(compiletools.filesystem_utils, "get_lock_strategy", lambda _fstype: strategy)
+
+        publish(str(cas), str(user))
+
+        assert user.read_bytes() == cas.read_bytes()
+        warning = capsys.readouterr().err.lower()
+        assert "lock" in warning and "unlocked" in warning, (
+            f"the publish went ahead without a lock and must say so: {warning!r}"
+        )
+
+    def test_a_contended_lockdir_failure_is_not_swallowed(self, cas, user, monkeypatch):
+        """``LockdirLock`` raises a bare ``RuntimeError`` after exhausting its
+        retries. That is contention on a working primitive, not a missing
+        one: publishing unlocked there is exactly the race the entry lock
+        exists to prevent, so it must stay fatal."""
+
+        class ContendedFileLock:
+            def __init__(self, target_file, args):
+                pass
+
+            def __enter__(self):
+                raise RuntimeError("Failed to acquire lock after 3 attempts: /pool/entry.lockdir")
+
+            def __exit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(compiletools.locking, "FileLock", ContendedFileLock)
+
+        with pytest.raises(RuntimeError, match="Failed to acquire lock after 3 attempts"):
+            publish(str(cas), str(user))
         assert not user.exists()

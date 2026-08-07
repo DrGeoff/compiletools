@@ -358,3 +358,96 @@ def test_fully_spaced_constraint_is_the_form_that_reaches_a_probe(monkeypatch):
         f"the constraint was not queried as one intact spec: {probed!r}"
     )
     assert "-DZLIB_OK" in args.CPPFLAGS
+
+
+def _exists_ok_query_fails(cmd, **_kwargs):
+    """``--exists`` succeeds, the flag query fails.
+
+    Measured against pkgconf 1.4.2: a ``.pc`` with an unresolvable
+    ``Requires.private`` exits 0 on ``--exists`` and 1 on ``--cflags``, so
+    ``--exists`` is not a proxy for the flag queries. A bare ``--libs`` on that
+    same ``.pc`` exits 0, so the ``--libs`` test below pins the general
+    contract rather than that specific ``.pc``.
+    """
+    if "--exists" in cmd:
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+    return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="Package 'ghost' not found")
+
+
+def test_failed_query_after_a_passing_exists_warns(monkeypatch):
+    """An empty flag string must not be the only trace of a failed query.
+
+    Without the returncode check, a package whose ``--cflags`` fails is
+    indistinguishable from one that legitimately contributes no flags, and
+    the build compiles without the include paths it asked for.
+    """
+    monkeypatch.setattr(pkgconfig.subprocess, "run", _exists_ok_query_fails)
+
+    with pytest.warns(UserWarning, match=r"pkg-config --cflags 'broken' failed"):
+        assert pkgconfig.cached_pkg_config("broken", "--cflags") == ""
+
+
+def test_failed_query_is_fatal_in_error_mode(monkeypatch):
+    monkeypatch.setattr(pkgconfig.subprocess, "run", _exists_ok_query_fails)
+    pkgconfig.set_pkg_config_errors("error")
+
+    with pytest.raises(pkgconfig.PkgConfigError, match=r"pkg-config --libs 'broken' failed"):
+        pkgconfig.cached_pkg_config("broken", "--libs")
+
+
+def test_failed_query_on_the_batch_fast_path_is_fatal_in_error_mode(monkeypatch):
+    """The batch fast path skips the per-package ``--exists``, so it owns
+    its own returncode check rather than inheriting one."""
+    monkeypatch.setattr(pkgconfig.subprocess, "run", _exists_ok_query_fails)
+    pkgconfig.set_pkg_config_errors("error")
+
+    with pytest.raises(pkgconfig.PkgConfigError, match=r"pkg-config --cflags 'broken' failed"):
+        pkgconfig._batch_pkg_config(["broken"], "--cflags")
+
+
+def test_failed_query_diagnostic_carries_the_pkg_config_stderr(monkeypatch):
+    monkeypatch.setattr(pkgconfig.subprocess, "run", _exists_ok_query_fails)
+
+    with pytest.warns(UserWarning, match=r"Package 'ghost' not found"):
+        pkgconfig.cached_pkg_config("broken", "--cflags")
+
+
+def test_a_warning_from_a_succeeding_query_still_reaches_the_user(monkeypatch, capsys):
+    """Capturing stderr to build the failure diagnostic must not silence the
+    success path.
+
+    A query that exits 0 can still write a diagnostic to stderr, and before
+    stderr was captured it went straight to the terminal, so capturing it
+    without re-emitting would delete that signal. The stub is deliberate:
+    pkgconf 1.4.2 does not reach this path. Eight malformed-``.pc`` shapes
+    were probed and none wrote to stderr on a successful query, including an
+    undefined variable -- which exits 0 with empty stderr and quietly
+    truncates ``-I${nope}/include`` to ``-I/include``, so it is a
+    silent-wrong-flags case rather than the noisy one this test pins. The
+    contract is kept for the implementations that do warn.
+    """
+
+    def succeeds_with_a_warning(cmd, **_kwargs):
+        if "--exists" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="-I/opt/x", stderr="Variable 'prefix' not defined")
+
+    monkeypatch.setattr(pkgconfig.subprocess, "run", succeeds_with_a_warning)
+
+    assert pkgconfig.cached_pkg_config("chatty", "--cflags") == "-I/opt/x"
+    assert "Variable 'prefix' not defined" in capsys.readouterr().err
+
+
+def test_a_succeeding_query_is_not_promoted_to_a_failure_in_error_mode(monkeypatch):
+    """A warning on stderr is not a failed query: pkg-config exited 0 and
+    returned usable flags, so strict mode must not turn it into a fatal."""
+
+    def succeeds_with_a_warning(cmd, **_kwargs):
+        if "--exists" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="-I/opt/x", stderr="Variable 'prefix' not defined")
+
+    monkeypatch.setattr(pkgconfig.subprocess, "run", succeeds_with_a_warning)
+    pkgconfig.set_pkg_config_errors("error")
+
+    assert pkgconfig.cached_pkg_config("chatty", "--cflags") == "-I/opt/x"

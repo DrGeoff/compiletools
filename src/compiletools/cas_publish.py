@@ -128,8 +128,14 @@ def _cas_entry_lock(cas_path: str):
         try:
             lock_args = compiletools.ct_lock_helper.create_args_from_env()
             stack.enter_context(compiletools.locking.FileLock(cas_path, lock_args))
-        except OSError as e:
-            if e.errno not in _UNLOCKED_PUBLISH_ERRNOS:
+        except (compiletools.locking.LockStrategyUnavailableError, OSError) as e:
+            # LockStrategyUnavailableError is a platform with no lock
+            # primitive at all (no ``fcntl`` module) -- the same statement as
+            # an ENOTSUP filesystem, arriving as a RuntimeError rather than an
+            # OSError. Contention on a working primitive (LockdirLock
+            # exhausting its retries) raises a plain RuntimeError and stays
+            # fatal: that one is the race the entry lock exists to prevent.
+            if isinstance(e, OSError) and e.errno not in _UNLOCKED_PUBLISH_ERRNOS:
                 raise
             print(
                 f"Warning: entry lock unavailable, publishing {cas_path} unlocked ({e})",
