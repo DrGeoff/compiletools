@@ -932,6 +932,14 @@ Common Options
     such a build carries the layer's flags while agreeing with the
     equivalent command-line ``--auto-exclude`` on which targets it builds.
 
+**--file-list / --filelist**
+    Instead of building, print the list of source files ct-cake would
+    compile. ``--auto-exclude`` filters this output the same way it filters
+    ``ct-filelist``'s: a file reached only through the dependency walk of a
+    non-excluded target is dropped from the printed list even though a real
+    build would compile it. Targets named explicitly on the command line
+    are never filtered.
+
 **--disable-tests**
     When ``--auto`` is specified, skip automatic building and running of tests.
     Useful when you only want to build executables.

@@ -27,8 +27,9 @@ ct-findtargets [-h] [-c CONFIG_FILE] [--variant VARIANT] [-v] [-q]
                     [--auto-exclude AUTO_EXCLUDE]
                     [--append-AUTO-EXCLUDE AUTO_EXCLUDE]
                     [--prepend-AUTO-EXCLUDE AUTO_EXCLUDE]
-                    [--style {null,flat,indent,args}]
                     [--filenametestmatch | --no-filenametestmatch]
+                    [--style {null,flat,indent,args}]
+                    [--dynamic [DYNAMIC ...]] [--static [STATIC ...]]
                     [--tests [TESTS ...]]
                     [filename ...]
 
@@ -55,13 +56,27 @@ way ``ct-cake --auto`` does, so a subproject conf reached only through
 a discovered target still shapes the final target set (including its
 ``append-AUTO-EXCLUDE`` additions).
 
-``--static`` and ``--dynamic`` are rejected with an error:
-ct-findtargets lists executables and tests only, and its output styles
-have no bucket for libraries, so accepting a library target would
-either mislabel it or silently omit it from output that scripts (such
-as ``ct-build``) consume. Name executables as positional arguments and
-tests with ``--tests``, and build libraries with ``ct-create-makefile
---static``/``--dynamic``.
+Output path shape differs between the two modes: discovery reports
+absolute realpaths (as returned by the tracked-files walk), while a
+positional filename is echoed back in the caller's own spelling,
+unresolved. Harmless for ``ct-build``, which feeds the printed string
+straight to ``ct-create-makefile``, but a caller comparing or
+deduplicating paths across the two modes must resolve them itself.
+
+``--static`` and ``--dynamic`` are registered (so they appear in
+``--help`` and are conf-settable) but rejected with an error before any
+target discovery or pkg-config work runs, unless the value arrives only
+through a conf tier anchored on an explicit target -- invisible to the
+pre-pass, which sees only argv -- which a second, post-parseargs backstop
+call catches: ct-findtargets lists executables and tests only, and its
+output styles have no bucket for libraries, so accepting a library
+target would either mislabel it or silently omit it from output that
+scripts (such as ``ct-build``) consume. Name executables as positional
+arguments and tests with ``--tests``, and build libraries with
+``ct-create-makefile --static``/``--dynamic``. If the value came from a
+ct.conf tier rather than the command line, the error names the conf key
+instead of the flag, since a project may never have passed
+``--static``/``--dynamic`` at all.
 
 --auto-exclude drops files from the search. Give it multiple times to build
 up a list, or set it in a ct.conf. A pattern containing a path separator
@@ -91,9 +106,10 @@ LEADING ``..`` names a path above the gitroot, where ``--auto`` never
 looks, so ``../vendor`` excludes nothing.
 ct-cake and ct-filelist share this search, so an exclusion set
 in a ct.conf applies to all three; targets those tools are told to build by
-name are never filtered. ct-filelist registers the discovery options
-without ``--style``, keeping its own; ct-cake and ct-compilation-database
-register the full set and so still accept ct-findtargets' ``--style``.
+name are never filtered. ct-filelist, ct-cake and ct-compilation-database
+all register ct-findtargets' discovery options without its ``--style``.
+ct-cake keeps ct-filelist's own flat/indent ``--style`` for its
+``--filelist`` output; ct-compilation-database has no ``--style`` at all.
 
 Conf files have two spellings. The bare ``auto-exclude`` key is
 last-writer-wins across the conf hierarchy. It does not contest with the

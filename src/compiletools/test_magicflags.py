@@ -951,11 +951,14 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         - Transitive dependencies possibly missing due to stale guard macros in cache
 
         Fixed in file_analyzer.py by:
-        - Sorting directives by line number before guard detection (line 597-603)
-        - Robust lookahead pattern (up to 5 directives) instead of strict next-directive check
+        - Sorting directives by byte position in `_extract_directives`, so
+          `detect_include_guard` always sees them in source order
+        - `detect_include_guard`'s lookahead (up to 5 directives) for the
+          matching #define instead of requiring it to be the very next one
 
-        This test now passes and validates magic flags are correctly discovered from
-        transitive headers even with non-standard guard patterns.
+        This test now passes and validates the magic flags survive; it does
+        not itself assert that header_a.hpp/header_b.hpp are discovered as
+        transitive dependencies.
         """
 
         source_file = "header_guard_bug/main.cpp"
