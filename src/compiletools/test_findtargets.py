@@ -8,12 +8,12 @@ import pytest
 import compiletools.apptools
 import compiletools.configutils
 import compiletools.file_analyzer
+import compiletools.filelist
 import compiletools.findtargets
 import compiletools.global_hash_registry
 import compiletools.testhelper as uth
 import compiletools.utils
 from compiletools.build_context import BuildContext
-from compiletools.examples_registry import example_path
 
 
 @pytest.fixture(autouse=True)
@@ -330,12 +330,21 @@ class TestFindTargetsTopbindirFilter:
 class TestFindTargetsMain:
     """Test findtargets.main() entry point."""
 
-    def test_main_runs(self, capsys):
-        """Smoke test from a directory whose discovered targets carry no
-        conflicting subproject confs. The repo root's do: --auto discovery
-        there raises ConfContradictionError for every tool on the shared
-        re-anchoring driver, ct-filelist and ct-cake included."""
-        with uth.DirectoryContext(example_path("simple")):
+    def test_main_runs(self, pytestconfig, capsys):
+        """Smoke test from the pytest rootdir.
+
+        This repo's own examples tree carries subproject confs that
+        contradict each other (three examples-end-to-end/*/ct.conf pin
+        different ``-std=`` values), so the re-anchoring walk cannot
+        settle here. That must not stop ct-findtargets reporting: the
+        narrowing of this test to a contradiction-free directory was the
+        regression report for exactly that.
+
+        The rootdir is entered explicitly rather than inherited. Under
+        ``-n`` a worker's cwd is whatever the last test left it at, and an
+        inherited cwd elsewhere makes this pass on an empty target list.
+        """
+        with uth.DirectoryContext(str(pytestconfig.rootpath)):
             with uth.ParserContext():
                 assert compiletools.findtargets.main(argv=["--style=flat", "--shorten"]) == 0
         assert "helloworld_cpp.cpp" in capsys.readouterr().out
@@ -826,9 +835,152 @@ def test_an_explicit_target_suppresses_discovery(reanchor_repo, capsys):
     named = os.path.join("appalpha", "main.cpp")
     with uth.DirectoryContext(str(reanchor_repo)):
         with uth.ParserContext():
-            assert compiletools.findtargets.main(["--style=args", "--filename", named]) == 0
+            assert compiletools.findtargets.main(["--style=args", named]) == 0
     out = capsys.readouterr().out
     assert out.split() == [named]
+
+
+@pytest.fixture
+def contradicting_conf_repo(tmp_path):
+    """Two discoverable targets whose subproject confs set one key to
+    different values at the same tier -- the shape that makes the
+    re-anchoring fixpoint raise ConfContradictionError.
+
+    Same shape this repo's own tree has: three examples-end-to-end/*/ct.conf
+    pin different ``-std=`` values, which is why a bare ct-findtargets at
+    the pytest rootdir walks the identical path.
+    """
+    root = tmp_path / "contradictionrepo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    (root / "ct.conf").write_text("exemarkers = [main]\ntestmarkers = unit_test.hpp\n")
+    for index, (name, std) in enumerate((("appalpha", "c++20"), ("appbeta", "c++23"))):
+        subproject = root / name
+        subproject.mkdir()
+        (subproject / "ct.conf").write_text(f"CXXFLAGS = -std={std}\n")
+        # Distinct bodies: the global hash registry refuses to reverse-look-up
+        # a content hash shared by two tracked files.
+        (subproject / "main.cpp").write_text(f"int main() {{ return {index}; }}\n")
+    return root
+
+
+def test_a_conf_contradiction_still_reports_the_targets_discovery_found(contradicting_conf_repo, capsys):
+    """The tool a user reaches for to understand a confusing tree must not
+    die of the same confusion.
+
+    Discovery's first pass completes and writes its results onto the
+    caller's namespace before any re-anchor can raise, so what survives is
+    exactly the single-pass set -- which is also what this tool reported
+    before the fixpoint existed.
+    """
+    with uth.DirectoryContext(str(contradicting_conf_repo)):
+        with uth.ParserContext():
+            assert compiletools.findtargets.main(["--style=flat"]) == 0
+    out = capsys.readouterr().out
+    assert os.path.join("appalpha", "main.cpp") in out
+    assert os.path.join("appbeta", "main.cpp") in out
+
+
+def test_the_contradiction_and_the_incompleteness_both_reach_stderr(contradicting_conf_repo, capsys):
+    """Exiting 0 tells a caller the list is usable; it must not also imply
+    the list is complete. stderr is the only channel left to say so, and it
+    has to carry both halves -- what went wrong, and what that costs."""
+    with uth.DirectoryContext(str(contradicting_conf_repo)):
+        with uth.ParserContext():
+            compiletools.findtargets.main(["--style=flat"])
+    err = capsys.readouterr().err
+    assert "conflicting subproject configs" in err
+    assert "may be incomplete" in err
+
+
+def test_the_verbose_two_path_reports_too_and_keeps_its_traceback(contradicting_conf_repo, capsys):
+    """Two exceptions reach main, so both need covering.
+
+    _apply_target_conf_layers prints the contradiction and converts it to
+    SystemExit(1) below verbose 2, and re-raises ConfContradictionError at
+    verbose 2 and above so the traceback survives. Catching only the first
+    would leave ``-vv`` -- the flag a user reaches for when the tree is
+    confusing -- as the one mode that still reports nothing.
+    """
+    with uth.DirectoryContext(str(contradicting_conf_repo)):
+        with uth.ParserContext():
+            assert compiletools.findtargets.main(["--style=flat", "-vv"]) == 0
+    captured = capsys.readouterr()
+    assert os.path.join("appbeta", "main.cpp") in captured.out
+    assert "Traceback (most recent call last)" in captured.err
+    assert "may be incomplete" in captured.err
+
+
+def test_a_settling_repo_gets_no_incompleteness_warning(reanchor_repo, capsys):
+    """Control. Without it the assertion above passes just as well against a
+    version that warns on every invocation, which would make the warning
+    worthless as a signal."""
+    with uth.DirectoryContext(str(reanchor_repo)):
+        with uth.ParserContext():
+            assert compiletools.findtargets.main(["--style=flat"]) == 0
+    assert "may be incomplete" not in capsys.readouterr().err
+
+
+@pytest.fixture
+def broken_package_repo(tmp_path):
+    """A repo whose discovered target anchors a conf naming a package
+    pkg-config cannot resolve.
+
+    Round one sees only the root conf and succeeds; the subproject conf is
+    reachable only once app/main.cpp is discovered, so the failure lands in
+    the re-anchoring round -- inside the same call the contradiction catch
+    wraps.
+    """
+    root = tmp_path / "brokenpackagerepo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    (root / "ct.conf").write_text("exemarkers = [main]\ntestmarkers = unit_test.hpp\n")
+    app = root / "app"
+    app.mkdir()
+    (app / "ct.conf").write_text("pkg-config = ct-no-such-package-4a91f2\n")
+    (app / "main.cpp").write_text("int main() { return 0; }\n")
+    return root
+
+
+def test_a_strict_pkg_config_failure_in_a_discovered_conf_stays_fatal(broken_package_repo, capsys):
+    """Reporting a partial set must not widen into a silent degrade.
+
+    gather converts a PkgConfigError to SystemExit(1) below verbose 2 --
+    the same code behind the same verbosity gate as the contradiction
+    conversion. Discriminating on the code rather than the type would turn
+    an enforcement policy the user explicitly armed into a warning and an
+    exit 0, which is the failure mode the compilation-database carve-outs
+    exist to prevent.
+    """
+    with uth.DirectoryContext(str(broken_package_repo)):
+        with uth.ParserContext():
+            with pytest.raises(SystemExit) as excinfo:
+                compiletools.findtargets.main(["--style=flat", "--pkg-config-errors=error"])
+    assert excinfo.value.code == 1
+    err = capsys.readouterr().err
+    assert "may be incomplete" not in err
+    assert "ct-no-such-package-4a91f2" in err
+
+
+def test_the_same_repo_reports_normally_in_warn_mode(broken_package_repo, capsys):
+    """Control on the fixture: without --pkg-config-errors=error the
+    unresolvable package is only a warning, so the fatal exit above is the
+    strict policy firing rather than the repo being broken outright."""
+    with uth.DirectoryContext(str(broken_package_repo)):
+        with uth.ParserContext():
+            assert compiletools.findtargets.main(["--style=flat"]) == 0
+    assert os.path.join("app", "main.cpp") in capsys.readouterr().out
+
+
+def test_ct_filelist_still_fails_hard_on_the_same_repo(contradicting_conf_repo):
+    """The catch belongs to ct-findtargets alone, never to the shared
+    driver. ct-filelist and ct-cake act on the target set instead of
+    reporting it, so a set discovery could not finish is not one they may
+    proceed with."""
+    with uth.DirectoryContext(str(contradicting_conf_repo)):
+        with uth.ParserContext():
+            with pytest.raises(SystemExit):
+                compiletools.filelist.main(["--style=flat"])
 
 
 @pytest.fixture
@@ -850,6 +1002,31 @@ def library_repo(tmp_path):
     return root
 
 
+@pytest.fixture
+def library_repo_with_env_effect(library_repo):
+    """``library_repo`` plus the one conf key that makes ``apply_effects``
+    observable from outside the process.
+
+    ``append-PKG-CONFIG-PATH`` becomes a ``SetEnv`` effect on
+    ``PKG_CONFIG_PATH``, and ``apply_effects`` is the last stage of
+    ``parseargs``. Nothing else ct-findtargets does writes the process
+    environment, so the variable reads out whether the whole gather ->
+    compute -> apply pipeline ran -- a stronger signal than counting
+    pkg-config subprocesses, which only covers the gather half.
+    """
+    (library_repo / "pc").mkdir()
+    (library_repo / "ct.conf").write_text(
+        "exemarkers = [main]\ntestmarkers = unit_test.hpp\nappend-PKG-CONFIG-PATH = ${CONF_DIR}/pc\n"
+    )
+    return library_repo
+
+
+def _run_findtargets(repo, argv):
+    with uth.DirectoryContext(str(repo)):
+        with uth.ParserContext():
+            return compiletools.findtargets.main(argv)
+
+
 class TestLibrarySlotsAreRejected:
     """ct-findtargets reports two buckets, executables and tests, and the
     style classes take exactly those two. ``--static`` / ``--dynamic`` reach
@@ -863,17 +1040,13 @@ class TestLibrarySlotsAreRejected:
     pin; the silent-swallow surface is one release old and is the accident.
     """
 
-    @staticmethod
-    def _run(repo, argv):
-        with uth.DirectoryContext(str(repo)):
-            with uth.ParserContext():
-                return compiletools.findtargets.main(argv)
+    _run = staticmethod(_run_findtargets)
 
     def test_a_named_executable_still_reports(self, library_repo, capsys):
         """Control: the rejection must be specific to the library slots, not
         a blanket refusal of every explicitly named target."""
         named = os.path.join("app", "main.cpp")
-        assert self._run(library_repo, ["--style=args", "--filename", named]) == 0
+        assert self._run(library_repo, ["--style=args", named]) == 0
         assert capsys.readouterr().out.split() == [named]
 
     @pytest.mark.parametrize("flag", ["--static", "--dynamic"])
@@ -887,16 +1060,20 @@ class TestLibrarySlotsAreRejected:
         """The dangerous form. Combined with a named executable the tool
         used to exit 0 printing only the executable -- a plausible answer
         that silently drops the library, which survives far longer
-        downstream than the empty output the flag produces on its own."""
+        downstream than the empty output the flag produces on its own.
+
+        The executable comes first because the library slots take
+        ``nargs="*"``: trailing it after ``--static`` hands both paths to
+        the library slot and leaves the positional empty, which is not the
+        combination under test."""
         with pytest.raises(SystemExit) as excinfo:
             self._run(
                 library_repo,
                 [
                     "--style=args",
+                    os.path.join("app", "main.cpp"),
                     flag,
                     os.path.join("lib", "widget.cpp"),
-                    "--filename",
-                    os.path.join("app", "main.cpp"),
                 ],
             )
         assert excinfo.value.code == 2
@@ -910,7 +1087,81 @@ class TestLibrarySlotsAreRejected:
         with pytest.raises(SystemExit):
             self._run(library_repo, ["--static", os.path.join("lib", "widget.cpp")])
         err = capsys.readouterr().err
-        assert "--static" in err
+        # The subject phrase, not a bare "--static": the remedy sentence
+        # names ct-create-makefile --static/--dynamic too, so only the
+        # subject distinguishes this from the conf-key wording pinned by
+        # TestLibrarySlotRejectionPrecedesTheBuildStateWork.
+        assert "--static cannot be reported" in err
         assert "positional" in err
         assert "--tests" in err
         assert "ct-create-makefile" in err
+
+
+class TestLibrarySlotRejectionPrecedesTheBuildStateWork:
+    """A usage error must land before ``parseargs`` does any work.
+
+    ``parseargs`` runs gather -> compute -> ``apply_effects``, and
+    ``apply_effects`` mutates ``PKG_CONFIG_PATH`` and, on the wild-B
+    linker axis, creates a directory and a symlink; gather spawns
+    pkg-config subprocesses on the way. None of it is recoverable by the
+    caller, because ct-findtargets is a read-only diagnostic and both
+    scripts/ct-build and this test suite keep running in the same process
+    after trapping the ``SystemExit``.
+
+    The second half is the conf-settability the registration brought with
+    it: configargparse derives a ``static`` key from ``--static``, so a
+    project carrying that key in a ct.conf tier gets exit 2 for a flag it
+    never passed, and the message has to say so.
+    """
+
+    def test_an_accepted_invocation_does_apply_the_env_effect(self, library_repo_with_env_effect, monkeypatch):
+        """Control. Without it the assertion in the rejection test passes
+        just as well when the conf key produced no effect at all, which
+        makes the whole pair vacuous."""
+        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+        argv = ["--style=args", os.path.join("app", "main.cpp")]
+        assert _run_findtargets(library_repo_with_env_effect, argv) == 0
+        applied = os.environ.get("PKG_CONFIG_PATH")
+        assert applied is not None
+        assert os.path.realpath(applied) == os.path.realpath(str(library_repo_with_env_effect / "pc"))
+
+    @pytest.mark.parametrize("flag", ["--static", "--dynamic"])
+    def test_a_rejected_invocation_leaves_the_environment_untouched(
+        self, library_repo_with_env_effect, flag, monkeypatch
+    ):
+        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+        argv = ["--style=args", flag, os.path.join("lib", "widget.cpp")]
+        with pytest.raises(SystemExit) as excinfo:
+            _run_findtargets(library_repo_with_env_effect, argv)
+        assert excinfo.value.code == 2
+        assert os.environ.get("PKG_CONFIG_PATH") is None
+
+    def test_a_conf_set_library_slot_names_the_conf_key_not_a_flag(self, library_repo, capsys):
+        """A message telling the user to stop passing ``--static`` sends
+        them hunting through a command line that does not contain it."""
+        (library_repo / "ct.conf").write_text(
+            "exemarkers = [main]\ntestmarkers = unit_test.hpp\nstatic = lib/widget.cpp\n"
+        )
+        with pytest.raises(SystemExit) as excinfo:
+            _run_findtargets(library_repo, ["--style=args"])
+        assert excinfo.value.code == 2
+        err = capsys.readouterr().err
+        assert "conf key static" in err
+        assert "--static cannot be reported" not in err
+
+    def test_a_subproject_conf_reaches_the_post_parse_backstop(self, library_repo, capsys):
+        """The pre-pass reads only the standard conf tiers.
+
+        Conf layers anchored on an explicit target are added inside
+        parseargs by ``_apply_target_conf_layers``, so a subproject
+        ct.conf setting the key is invisible until after the work the
+        pre-pass exists to avoid. That is why the check runs a second
+        time; this pins the second call against being deleted as a
+        duplicate of the first.
+        """
+        subproject = library_repo / "app"
+        (subproject / "ct.conf").write_text("static = lib/widget.cpp\n")
+        with pytest.raises(SystemExit) as excinfo:
+            _run_findtargets(library_repo, ["--style=args", os.path.join("app", "main.cpp")])
+        assert excinfo.value.code == 2
+        assert "conf key static" in capsys.readouterr().err

@@ -794,6 +794,43 @@ class TestCake(BaseCompileToolsTestCase):
             # Should run without error and produce output
             cake._callfilelist()
 
+    @pytest.mark.parametrize("style,indented", [("flat", False), ("indent", True)])
+    def test_callfilelist_honours_the_style_flag(self, style, indented, capsys):
+        """The flag has to reach the list it formats.
+
+        ``_callfilelist`` passed ``style="flat"`` literally, so every value
+        of ``--style`` parsed and none of them changed a byte of output --
+        a surface that answers to nothing.
+        """
+        with uth.TempDirContext():
+            self._tmpdir = os.getcwd()
+            self._create_source_files(["main.cpp", "extra.cpp", "extra.hpp"])
+            self._write_default_config()
+            args = self._make_cake_args(["--filelist", "--style=" + style, "main.cpp"])
+            cake = compiletools.cake.Cake(args)
+            cake._createctobjs()
+            cake._callfilelist()
+        lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+        assert lines
+        assert all(line.startswith("\t") for line in lines) == indented
+
+    def test_the_default_file_list_stays_flat(self, capsys):
+        """Regression budget: narrowing ``--style`` also drops its default
+        from indent to flat, and that must be invisible. It is, because the
+        hardcode meant a default run already emitted flat -- but only a run
+        with no ``--style`` at all proves it."""
+        with uth.TempDirContext():
+            self._tmpdir = os.getcwd()
+            self._create_source_files(["main.cpp", "extra.cpp", "extra.hpp"])
+            self._write_default_config()
+            args = self._make_cake_args(["--filelist", "main.cpp"])
+            cake = compiletools.cake.Cake(args)
+            cake._createctobjs()
+            cake._callfilelist()
+        lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+        assert lines
+        assert not any(line.startswith("\t") for line in lines)
+
     def test_call_compilation_database_skipped_on_clean(self):
         """Test that _call_compilation_database returns early when clean is True."""
         with self._tmpdir_with_config():
@@ -912,10 +949,15 @@ class TestCake(BaseCompileToolsTestCase):
 
 
 class TestCakeStyleSurface:
-    """ct-cake composes ct-filelist's and ct-findtargets' argument sets and
-    both register ``--style`` with incompatible choices. The composed
-    surface is ct-findtargets': null/flat/indent/args, defaulting to
-    indent. It must not depend on which registrar runs first.
+    """ct-cake offers exactly the styles it can act on, which is
+    ct-filelist's set.
+
+    Both ct-filelist and ct-findtargets register a ``--style``, and
+    ct-cake composes both argument sets. The only thing ct-cake formats
+    with a style is the ``--filelist`` output, so advertising
+    ct-findtargets' wider ``null``/``args`` was offering values no code
+    path could honour. ct-compilation-database formats nothing at all and
+    registers no ``--style``.
     """
 
     @staticmethod
@@ -929,16 +971,33 @@ class TestCakeStyleSurface:
         assert len(actions) == 1
         return actions[0]
 
-    def test_cake_offers_every_findtargets_style(self):
+    def test_cake_offers_exactly_the_styles_filelist_implements(self):
         action = self._style_action()
-        assert list(action.choices or []) == list(compiletools.findtargets._STYLE_REGISTRY)
-        assert action.default == "indent"
+        assert list(action.choices or []) == list(compiletools.filelist._STYLE_REGISTRY)
+        assert action.default == "flat"
 
-    @pytest.mark.parametrize("style", ["null", "flat", "indent", "args"])
+    @pytest.mark.parametrize("style", ["flat", "indent"])
     def test_cake_accepts_each_style(self, style):
         assert self._cake_parser().parse_args(["--style=" + style]).style == style
 
-    def test_filelist_keeps_its_own_narrower_style(self):
+    @pytest.mark.parametrize("style", ["null", "args"])
+    def test_cake_rejects_a_style_it_cannot_act_on(self, style, capsys):
+        """The narrowing has to be enforced, not merely advertised.
+        ct-findtargets keeps ``null`` and ``args`` -- they format its own
+        target report -- so an unenforced choices list would go on parsing
+        them here and dropping them on the floor.
+
+        Through ``main``, because this is the one claim in the class that
+        is about what a user at a shell prompt gets. ``main`` composing a
+        registrar that widens the choices back would leave the rebuilt
+        parser above still rejecting them.
+        """
+        with pytest.raises(SystemExit) as exc:
+            compiletools.cake.main(["--style=" + style])
+        assert exc.value.code == 2
+        assert "invalid choice: '" + style + "'" in capsys.readouterr().err
+
+    def test_filelist_keeps_its_own_style(self):
         cap = compiletools.apptools.create_parser("filelist surface", include_config=False)
         compiletools.filelist.Filelist.add_arguments(cap)
         actions = [act for act in cap._actions if "--style" in act.option_strings]
@@ -946,19 +1005,47 @@ class TestCakeStyleSurface:
         assert list(actions[0].choices or []) == list(compiletools.filelist._STYLE_REGISTRY)
         assert actions[0].default == "flat"
 
-    @pytest.mark.parametrize(
-        "main",
-        [compiletools.cake.main, compiletools.compilation_database.main],
-        ids=["ct-cake", "ct-compilation-database"],
-    )
-    def test_composed_tool_help_advertises_the_full_style_set(self, main, capsys):
-        """Read the surface off the real entry point rather than a
-        hand-rebuilt parser, so a change to how a tool composes its
-        registrars cannot leave this pin passing against a stale replica."""
+    def test_findtargets_keeps_its_own_wider_style(self, capsys):
+        """Control on the narrowing: ct-cake gives up ``null``/``args``,
+        ct-findtargets does not. Without this the test above is also
+        satisfied by deleting those two styles outright.
+
+        Asserted through the real entry point, for the same reason
+        ``test_compilation_database_rejects_style_at_its_entry_point``
+        is: ``main`` composes ``add_arguments`` with other registrars,
+        so a parser rebuilt from ``add_arguments`` alone reports a
+        surface the tool need not have. Narrowing the choices inside
+        ``main`` after that call breaks ``--style=args`` for real users
+        while a rebuilt parser still sees all four.
+        """
         with pytest.raises(SystemExit) as exc:
-            main(["--help"])
+            compiletools.findtargets.main(["--help"])
         assert exc.value.code == 0
         helptext = " ".join(capsys.readouterr().out.split())
-        entry = "--style {null,flat,indent,args} Output formatting style"
-        assert entry in helptext
-        assert "(default: indent)" in helptext.split(entry, 1)[1][:60]
+        assert "--style {" + ",".join(compiletools.findtargets._STYLE_REGISTRY) + "}" in helptext
+        assert "(default: indent)" in helptext
+
+    def test_compilation_database_rejects_style_at_its_entry_point(self, capsys):
+        """ct-compilation-database writes JSON. It picked up ``--style``
+        only by composing ct-findtargets' whole argument set, and nothing in
+        it ever read the value.
+
+        Asserted through the real entry point rather than a hand-rebuilt
+        parser: a change to how the tool composes its registrars would
+        leave a replica passing against a surface the tool no longer has.
+        """
+        with pytest.raises(SystemExit) as exc:
+            compiletools.compilation_database.main(["--style=flat"])
+        assert exc.value.code == 2
+        assert "unrecognized arguments: --style=flat" in capsys.readouterr().err
+
+    def test_compilation_database_keeps_the_discovery_flags(self, capsys):
+        """Control on the removal: it must cost ct-compilation-database
+        nothing else. ``--auto`` is what its discovery branch gates on, and
+        it comes from the same registrar ``--style`` was dropped from."""
+        with pytest.raises(SystemExit) as exc:
+            compiletools.compilation_database.main(["--help"])
+        assert exc.value.code == 0
+        helptext = capsys.readouterr().out
+        assert "--auto" in helptext
+        assert "--style" not in helptext

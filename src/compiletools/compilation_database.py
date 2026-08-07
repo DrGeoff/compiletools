@@ -412,8 +412,9 @@ def main(argv=None):
     # Add standard compiletools arguments
     compiletools.hunter.add_arguments(cap)
 
-    # Add findtargets arguments to support --auto mode
-    compiletools.findtargets.add_arguments(cap)
+    # Discovery half only, to support --auto mode. This tool writes JSON and
+    # formats nothing, so ct-findtargets' --style has no reader here.
+    compiletools.findtargets.add_discovery_arguments(cap)
 
     from compiletools.build_context import BuildContext
 

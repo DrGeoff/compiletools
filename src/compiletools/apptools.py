@@ -575,7 +575,10 @@ def _apply_target_conf_layers(cap, argv, args, verbose, auto=False, reparse=True
             if verbose >= 2:
                 raise
             print(str(err), file=sys.stderr)
-            raise SystemExit(1) from None
+            # Typed, not a bare SystemExit(1): gather's strict pkg-config
+            # conversion exits 1 behind this same verbosity gate, and
+            # ct-findtargets must tell the two apart.
+            raise compiletools.configutils.ConfContradictionExit(1) from None
         loaded_layers.extend(new_layers)
         # Fresh, validated layers only: emitting before validation would
         # re-warn on a retried parse after a caught contradiction, and
