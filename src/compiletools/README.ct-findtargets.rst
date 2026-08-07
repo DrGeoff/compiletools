@@ -63,20 +63,39 @@ unresolved. Harmless for ``ct-build``, which feeds the printed string
 straight to ``ct-create-makefile``, but a caller comparing or
 deduplicating paths across the two modes must resolve them itself.
 
-``--static`` and ``--dynamic`` are registered (so they appear in
-``--help`` and are conf-settable) but rejected with an error before any
-target discovery or pkg-config work runs, unless the value arrives only
-through a conf tier anchored on an explicit target -- invisible to the
-pre-pass, which sees only argv -- which a second, post-parseargs backstop
-call catches: ct-findtargets lists executables and tests only, and its
-output styles have no bucket for libraries, so accepting a library
-target would either mislabel it or silently omit it from output that
-scripts (such as ``ct-build``) consume. Name executables as positional
-arguments and tests with ``--tests``, and build libraries with
-``ct-create-makefile --static``/``--dynamic``. If the value came from a
-ct.conf tier rather than the command line, the error names the conf key
-instead of the flag, since a project may never have passed
-``--static``/``--dynamic`` at all.
+``--static`` and ``--dynamic`` are reported, in their own buckets,
+however the value arrives -- on the command line, from any standard
+ct.conf tier, from a conf tier anchored on an explicit target, or from a
+subproject conf that only ``--auto`` discovery reaches. That is a parity
+requirement, not a convenience: ct-cake builds the named library as a
+first-class target (it appears on the generated makefile's ``build:``
+line, and a discovered executable links against it), and ct-filelist and
+ct-compilation-database both act on it too, so a reporter that dropped
+it would answer a different question than the tools it exists to
+describe.
+
+A library slot counts as a named target for the discovery gate, exactly
+as in ct-cake: a slot visible before discovery starts suppresses the
+walk, so ``--auto`` with a gitroot ``ct.conf`` setting ``static``
+reports that library and nothing else. A slot that arrives later,
+through a subproject conf reached by discovery, is added to the set
+discovery already found.
+
+All four buckets reach every ``--style``. ``indent`` prints the four
+headings unconditionally, empty ones reading ``None found``, so the
+output schema does not depend on the tree. ``args`` emits the
+executables as positionals first and then ``--tests``, ``--static`` and
+``--dynamic``, each only when non-empty -- every one of those slots
+takes ``nargs="*"`` and a greedy slot ahead of the positional would
+swallow it. That is the form ``ct-build`` feeds to ct-create-makefile.
+``flat`` joins all four unlabelled and ``null`` prints four lists.
+
+Where a subproject conf CONTRADICTS the configuration already in force,
+ct-findtargets writes the conflict and a "may be incomplete" note to
+stderr, reports the targets its first discovery pass found, and exits 0,
+while ct-cake fails. The asymmetry is deliberate: a reporter may degrade
+and say so, an actor may not proceed on a set discovery could not
+finish.
 
 --auto-exclude drops files from the search. Give it multiple times to build
 up a list, or set it in a ct.conf. A pattern containing a path separator

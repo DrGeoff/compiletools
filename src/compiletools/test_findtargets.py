@@ -201,12 +201,17 @@ class TestFindTargetsStyles:
 
     def test_flat_style(self, capsys):
         style = compiletools.findtargets.FlatStyle()
-        style(["a.cpp", "b.cpp"], ["t.cpp"])
+        style(["a.cpp", "b.cpp"], ["t.cpp"], [], [])
         assert capsys.readouterr().out == "a.cpp b.cpp t.cpp\n"
+
+    def test_flat_style_joins_the_library_buckets_too(self, capsys):
+        style = compiletools.findtargets.FlatStyle()
+        style(["a.cpp"], ["t.cpp"], ["s.cpp"], ["d.cpp"])
+        assert capsys.readouterr().out == "a.cpp t.cpp s.cpp d.cpp\n"
 
     def test_indent_style(self, capsys):
         style = compiletools.findtargets.IndentStyle()
-        style(["main.cpp"], [])
+        style(["main.cpp"], [], [], [])
         out = capsys.readouterr().out
         assert "Executable Targets:" in out
         assert "\tmain.cpp" in out
@@ -214,14 +219,30 @@ class TestFindTargetsStyles:
 
     def test_indent_style_no_exes(self, capsys):
         style = compiletools.findtargets.IndentStyle()
-        style([], ["test.cpp"])
+        style([], ["test.cpp"], [], [])
         out = capsys.readouterr().out
         assert "None found" in out  # no exes
         assert "\ttest.cpp" in out
 
+    def test_indent_style_labels_the_library_buckets(self, capsys):
+        style = compiletools.findtargets.IndentStyle()
+        style([], [], ["s.cpp"], ["d.cpp"])
+        out = capsys.readouterr().out
+        assert "Static Library Targets:\n\ts.cpp" in out
+        assert "Dynamic Library Targets:\n\td.cpp" in out
+
+    def test_indent_style_sections_are_unconditional(self, capsys):
+        """The four section headings are a stable output schema: a caller
+        that greps for a heading must not have to handle its absence."""
+        style = compiletools.findtargets.IndentStyle()
+        style(["main.cpp"], [], [], [])
+        out = capsys.readouterr().out
+        assert "Static Library Targets:\n\tNone found" in out
+        assert "Dynamic Library Targets:\n\tNone found" in out
+
     def test_args_style(self, capsys):
         style = compiletools.findtargets.ArgsStyle()
-        style(["main.cpp"], ["test.cpp"])
+        style(["main.cpp"], ["test.cpp"], [], [])
         out = capsys.readouterr().out
         assert " main.cpp" in out
         assert " --tests" in out
@@ -230,7 +251,7 @@ class TestFindTargetsStyles:
     def test_args_style_no_tests(self, capsys):
         """Test ArgsStyle with no test targets."""
         style = compiletools.findtargets.ArgsStyle()
-        style(["main.cpp"], [])
+        style(["main.cpp"], [], [], [])
         out = capsys.readouterr().out
         assert " main.cpp" in out
         assert "--tests" not in out
@@ -238,18 +259,44 @@ class TestFindTargetsStyles:
     def test_args_style_no_exes(self, capsys):
         """Test ArgsStyle with no executable targets."""
         style = compiletools.findtargets.ArgsStyle()
-        style([], ["test.cpp"])
+        style([], ["test.cpp"], [], [])
         out = capsys.readouterr().out
         assert "--tests" in out
         assert " test.cpp" in out
 
+    def test_args_style_emits_the_library_slots(self, capsys):
+        style = compiletools.findtargets.ArgsStyle()
+        style(["main.cpp"], [], ["s.cpp"], ["d.cpp"])
+        assert capsys.readouterr().out == " main.cpp --static s.cpp --dynamic d.cpp"
+
+    def test_args_style_omits_empty_library_slots(self, capsys):
+        """An empty ``--static`` would consume the following token: the slot
+        takes ``nargs="*"``, so a bare flag followed by ``--dynamic d.cpp``
+        is harmless but a bare flag emitted last swallows nothing and a
+        caller appending its own positional would lose it to the slot."""
+        style = compiletools.findtargets.ArgsStyle()
+        style(["main.cpp"], [], [], [])
+        out = capsys.readouterr().out
+        assert "--static" not in out
+        assert "--dynamic" not in out
+
     def test_null_style(self, capsys):
         """Test NullStyle output."""
         style = compiletools.findtargets.NullStyle()
-        style(["a.cpp"], ["b.cpp"])
+        style(["a.cpp"], ["b.cpp"], [], [])
         out = capsys.readouterr().out
         assert "a.cpp" in out
         assert "b.cpp" in out
+
+    def test_null_style_prints_four_lists(self, capsys):
+        style = compiletools.findtargets.NullStyle()
+        style(["a.cpp"], ["b.cpp"], ["s.cpp"], ["d.cpp"])
+        assert capsys.readouterr().out.splitlines() == [
+            "['a.cpp']",
+            "['b.cpp']",
+            "['s.cpp']",
+            "['d.cpp']",
+        ]
 
 
 class TestFindTargetsProcess:
@@ -1002,166 +1049,139 @@ def library_repo(tmp_path):
     return root
 
 
-@pytest.fixture
-def library_repo_with_env_effect(library_repo):
-    """``library_repo`` plus the one conf key that makes ``apply_effects``
-    observable from outside the process.
-
-    ``append-PKG-CONFIG-PATH`` becomes a ``SetEnv`` effect on
-    ``PKG_CONFIG_PATH``, and ``apply_effects`` is the last stage of
-    ``parseargs``. Nothing else ct-findtargets does writes the process
-    environment, so the variable reads out whether the whole gather ->
-    compute -> apply pipeline ran -- a stronger signal than counting
-    pkg-config subprocesses, which only covers the gather half.
-    """
-    (library_repo / "pc").mkdir()
-    (library_repo / "ct.conf").write_text(
-        "exemarkers = [main]\ntestmarkers = unit_test.hpp\nappend-PKG-CONFIG-PATH = ${CONF_DIR}/pc\n"
-    )
-    return library_repo
-
-
 def _run_findtargets(repo, argv):
     with uth.DirectoryContext(str(repo)):
         with uth.ParserContext():
             return compiletools.findtargets.main(argv)
 
 
-class TestLibrarySlotsAreRejected:
-    """ct-findtargets reports two buckets, executables and tests, and the
-    style classes take exactly those two. ``--static`` / ``--dynamic`` reach
-    the parser only because the re-anchoring driver reparses through this
-    same cap and needs the slots registered, so a named library is accepted
-    and then never printed.
+def _reported(repo, argv, capsys):
+    """Run ct-findtargets --style=args and split its argv-shaped stdout."""
+    assert _run_findtargets(repo, ["--style=args"] + argv) == 0
+    return capsys.readouterr().out.split()
 
-    Base 168b1076 rejected both flags outright -- main() did not register
-    the target arguments, so argparse exited 2 on an unrecognized argument.
-    Restoring that rejection with a diagnostic is the contract these tests
-    pin; the silent-swallow surface is one release old and is the accident.
+
+class TestLibrarySlotsAreReported:
+    """ct-findtargets reports the library slots, in every arrival mode.
+
+    Measured parity target: ct-cake --auto BUILDS the library named by a
+    ``static``/``dynamic`` slot -- it appears on the generated makefile's
+    ``build:`` line and the discovered executable links against it -- and
+    ct-filelist and ct-compilation-database both act on it too. A reporter
+    that dropped it (silently, when the slot arrived through a conf tier
+    only ``--auto`` discovery reaches) or refused to run (exit 2, every
+    other arrival mode) put ct-findtargets alone among the four tools that
+    share the discovery driver.
+
+    Supersedes the ct-review-fixups rejection: with a bucket to print the
+    library in, there is nothing left for the rejection to protect.
     """
-
-    _run = staticmethod(_run_findtargets)
 
     def test_a_named_executable_still_reports(self, library_repo, capsys):
-        """Control: the rejection must be specific to the library slots, not
-        a blanket refusal of every explicitly named target."""
         named = os.path.join("app", "main.cpp")
-        assert self._run(library_repo, ["--style=args", named]) == 0
-        assert capsys.readouterr().out.split() == [named]
+        assert _reported(library_repo, [named], capsys) == [named]
 
     @pytest.mark.parametrize("flag", ["--static", "--dynamic"])
-    def test_a_library_slot_alone_is_rejected(self, library_repo, flag):
-        with pytest.raises(SystemExit) as excinfo:
-            self._run(library_repo, ["--style=args", flag, os.path.join("lib", "widget.cpp")])
-        assert excinfo.value.code == 2
+    def test_a_library_slot_alone_reports_that_library(self, library_repo, flag, capsys):
+        widget = os.path.join("lib", "widget.cpp")
+        assert _reported(library_repo, [flag, widget], capsys) == [flag, widget]
 
     @pytest.mark.parametrize("flag", ["--static", "--dynamic"])
-    def test_a_library_slot_combined_with_filename_is_rejected(self, library_repo, flag, capsys):
-        """The dangerous form. Combined with a named executable the tool
-        used to exit 0 printing only the executable -- a plausible answer
-        that silently drops the library, which survives far longer
-        downstream than the empty output the flag produces on its own.
+    def test_a_library_slot_combined_with_a_filename_reports_both(self, library_repo, flag, capsys):
+        """The formerly dangerous form: exit 0 printing only the executable
+        was a plausible answer that silently dropped the library.
 
         The executable comes first because the library slots take
-        ``nargs="*"``: trailing it after ``--static`` hands both paths to
-        the library slot and leaves the positional empty, which is not the
-        combination under test."""
-        with pytest.raises(SystemExit) as excinfo:
-            self._run(
-                library_repo,
-                [
-                    "--style=args",
-                    os.path.join("app", "main.cpp"),
-                    flag,
-                    os.path.join("lib", "widget.cpp"),
-                ],
-            )
-        assert excinfo.value.code == 2
-        assert "main.cpp" not in capsys.readouterr().out
+        ``nargs="*"``: trailing it after the flag hands both paths to the
+        library slot and leaves the positional empty."""
+        main = os.path.join("app", "main.cpp")
+        widget = os.path.join("lib", "widget.cpp")
+        assert _reported(library_repo, [main, flag, widget], capsys) == [main, flag, widget]
 
-    def test_the_diagnostic_names_the_flag_the_slots_and_the_other_tool(self, library_repo, capsys):
-        """A rejection a user cannot act on is worse than the silence it
-        replaces, so pin the three things the message has to carry: which
-        flag was refused, which slots this tool does report, and where a
-        library build actually goes."""
-        with pytest.raises(SystemExit):
-            self._run(library_repo, ["--static", os.path.join("lib", "widget.cpp")])
-        err = capsys.readouterr().err
-        # The subject phrase, not a bare "--static": the remedy sentence
-        # names ct-create-makefile --static/--dynamic too, so only the
-        # subject distinguishes this from the conf-key wording pinned by
-        # TestLibrarySlotRejectionPrecedesTheBuildStateWork.
-        assert "--static cannot be reported" in err
-        assert "positional" in err
-        assert "--tests" in err
-        assert "ct-create-makefile" in err
+    def test_a_gitroot_conf_slot_suppresses_discovery_and_reports_the_library_alone(self, library_repo, capsys):
+        """Row E. A library slot visible before the discovery gate is an
+        explicit target, so ``--auto`` never walks -- exactly what ct-cake
+        does with the same tree (its ``build:`` line holds the archive and
+        no executable). The contrast against the control below is the
+        assertion: without the key the same tree reports the executable.
+        """
+        conf = library_repo / "ct.conf"
+        control = _reported(library_repo, [], capsys)
+        assert control == [os.path.realpath(str(library_repo / "app" / "main.cpp"))]
+
+        conf.write_text(conf.read_text() + "static = lib/widget.cpp\n")
+        assert _reported(library_repo, [], capsys) == ["--static", "lib/widget.cpp"]
+
+    def test_a_target_anchored_conf_slot_reports_alongside_its_executable(self, library_repo, capsys):
+        """Row D. ``_apply_target_conf_layers`` adds conf tiers anchored on
+        the explicit target from inside parseargs, so the slot lands on the
+        namespace after argv is done with it."""
+        (library_repo / "app" / "ct.conf").write_text("static = lib/widget.cpp\n")
+        main = os.path.join("app", "main.cpp")
+        assert _reported(library_repo, [main], capsys) == [main, "--static", "lib/widget.cpp"]
+
+    def test_a_discovery_reached_conf_slot_is_added_to_the_discovered_set(self, library_repo, capsys):
+        """Row A, the chartered residual, and the other side of the gate
+        from row E: here the slot arrives during re-anchoring, AFTER the
+        gate has already let discovery run, so the library is ADDED to a
+        populated executable set rather than substituted for it.
+        """
+        (library_repo / "app" / "ct.conf").write_text("static = lib/widget.cpp\n")
+        main = os.path.realpath(str(library_repo / "app" / "main.cpp"))
+        assert _reported(library_repo, [], capsys) == [main, "--static", "lib/widget.cpp"]
 
 
-class TestLibrarySlotRejectionPrecedesTheBuildStateWork:
-    """A usage error must land before ``parseargs`` does any work.
+class TestTreesWithoutLibrarySlotsAreUnchanged:
+    """The no-regression half: widening the reporter must not move the
+    output of the trees that have no library slot, which is nearly all of
+    them. Every style is pinned because all four grew buckets."""
 
-    ``parseargs`` runs gather -> compute -> ``apply_effects``, and
-    ``apply_effects`` mutates ``PKG_CONFIG_PATH`` and, on the wild-B
-    linker axis, creates a directory and a symlink; gather spawns
-    pkg-config subprocesses on the way. None of it is recoverable by the
-    caller, because ct-findtargets is a read-only diagnostic and both
-    scripts/ct-build and this test suite keep running in the same process
-    after trapping the ``SystemExit``.
+    @pytest.mark.parametrize(
+        "style,expected",
+        [
+            ("args", " {main}"),
+            ("flat", "{main}\n"),
+            ("null", "['{main}']\n[]\n[]\n[]\n"),
+            (
+                "indent",
+                "Executable Targets:\n\t{main}\n"
+                "Test Targets:\n\tNone found\n"
+                "Static Library Targets:\n\tNone found\n"
+                "Dynamic Library Targets:\n\tNone found\n",
+            ),
+        ],
+    )
+    def test_a_slotless_tree_prints_its_executable_and_empty_buckets(self, library_repo, style, expected, capsys):
+        assert _run_findtargets(library_repo, [f"--style={style}"]) == 0
+        main = os.path.realpath(str(library_repo / "app" / "main.cpp"))
+        assert capsys.readouterr().out == expected.format(main=main)
 
-    The second half is the conf-settability the registration brought with
-    it: configargparse derives a ``static`` key from ``--static``, so a
-    project carrying that key in a ct.conf tier gets exit 2 for a flag it
-    never passed, and the message has to say so.
+
+class TestArgsStyleRoundTripsIntoCtCreateMakefile:
+    """``scripts/ct-build`` pipes ``ct-findtargets --style=args`` straight
+    into ct-create-makefile, so the emitted argv has to parse there and
+    land in the matching slots. Before the widening the round trip lost
+    libraries silently: findtargets printed only the executable, and
+    ct-create-makefile built only the executable, in a tree ct-cake built
+    a library for.
+
+    The parser is rebuilt from the two ``apptools`` registrars that own
+    the target slots in ``makefile_backend.main`` rather than run end to
+    end, which keeps this pin cheap and local to the emitted spelling;
+    ``test_target_parity.py`` runs the whole pipeline and compares the
+    resulting target sets.
     """
 
-    def test_an_accepted_invocation_does_apply_the_env_effect(self, library_repo_with_env_effect, monkeypatch):
-        """Control. Without it the assertion in the rejection test passes
-        just as well when the conf key produced no effect at all, which
-        makes the whole pair vacuous."""
-        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
-        argv = ["--style=args", os.path.join("app", "main.cpp")]
-        assert _run_findtargets(library_repo_with_env_effect, argv) == 0
-        applied = os.environ.get("PKG_CONFIG_PATH")
-        assert applied is not None
-        assert os.path.realpath(applied) == os.path.realpath(str(library_repo_with_env_effect / "pc"))
+    def test_the_emitted_argv_lands_in_ct_create_makefile_slots(self, library_repo, tmp_path, capsys):
+        (library_repo / "app" / "ct.conf").write_text("static = lib/widget.cpp\n")
+        emitted = _reported(library_repo, [], capsys)
+        assert "--static" in emitted, "fixture must emit a library slot or the round trip is vacuous"
 
-    @pytest.mark.parametrize("flag", ["--static", "--dynamic"])
-    def test_a_rejected_invocation_leaves_the_environment_untouched(
-        self, library_repo_with_env_effect, flag, monkeypatch
-    ):
-        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
-        argv = ["--style=args", flag, os.path.join("lib", "widget.cpp")]
-        with pytest.raises(SystemExit) as excinfo:
-            _run_findtargets(library_repo_with_env_effect, argv)
-        assert excinfo.value.code == 2
-        assert os.environ.get("PKG_CONFIG_PATH") is None
+        with uth.DirectoryContext(str(tmp_path)):
+            with uth.ParserContext():
+                cap = compiletools.apptools.create_parser("round trip", argv=emitted)
+                compiletools.apptools.add_target_arguments_ex(cap)
+                parsed = cap.parse_known_args(emitted)[0]
 
-    def test_a_conf_set_library_slot_names_the_conf_key_not_a_flag(self, library_repo, capsys):
-        """A message telling the user to stop passing ``--static`` sends
-        them hunting through a command line that does not contain it."""
-        (library_repo / "ct.conf").write_text(
-            "exemarkers = [main]\ntestmarkers = unit_test.hpp\nstatic = lib/widget.cpp\n"
-        )
-        with pytest.raises(SystemExit) as excinfo:
-            _run_findtargets(library_repo, ["--style=args"])
-        assert excinfo.value.code == 2
-        err = capsys.readouterr().err
-        assert "conf key static" in err
-        assert "--static cannot be reported" not in err
-
-    def test_a_subproject_conf_reaches_the_post_parse_backstop(self, library_repo, capsys):
-        """The pre-pass reads only the standard conf tiers.
-
-        Conf layers anchored on an explicit target are added inside
-        parseargs by ``_apply_target_conf_layers``, so a subproject
-        ct.conf setting the key is invisible until after the work the
-        pre-pass exists to avoid. That is why the check runs a second
-        time; this pins the second call against being deleted as a
-        duplicate of the first.
-        """
-        subproject = library_repo / "app"
-        (subproject / "ct.conf").write_text("static = lib/widget.cpp\n")
-        with pytest.raises(SystemExit) as excinfo:
-            _run_findtargets(library_repo, ["--style=args", os.path.join("app", "main.cpp")])
-        assert excinfo.value.code == 2
-        assert "conf key static" in capsys.readouterr().err
+        assert parsed.static == ["lib/widget.cpp"]
+        assert parsed.filename == [os.path.realpath(str(library_repo / "app" / "main.cpp"))]
