@@ -30,8 +30,8 @@ def configure_pkg_config_errors(args) -> None:
 def apply_effects(state: BuildState, context) -> None:
     """Execute state.effects against the live process (env, filesystem).
 
-    SetEnv mirrors _setup_pkg_config_overrides_locked's save-original
-    protocol: context._original_pkg_config_path is set only for
+    SetEnv follows a save-original protocol:
+    context._original_pkg_config_path is set only for
     PKG_CONFIG_PATH and only when the value actually changes, to True
     when the var was previously unset (so restore_pkg_config_path can
     tell "delete it" from "put this string back"). The save is guarded
@@ -100,6 +100,25 @@ def populate_args(args, state: BuildState) -> None:
     args.cas_exedir = state.names.cas_exedir
 
 
+def get_build_state_or_none(args) -> BuildState | None:
+    """Return the stashed BuildState, or None when populate_args never ran.
+
+    The only production reader of the ``args._build_state`` stash, and the
+    primitive ``get_build_state`` raises on top of. ``populate_args`` above
+    is the only writer. The one other direct reader in the tree is
+    ``testhelper.stub_build_state``, which plants real name values on a
+    MagicMock args and is exempt by name in
+    ``test_build_apply.TestPopulateArgs.test_no_module_reaches_past_the_build_state_accessors``,
+    the lint that pins both halves.
+
+    Use this only where a missing state is a legitimate, handled state --
+    Namer's permanent fallback for the resolver-only diagnostic tools, and
+    the ``-vv`` args banner. Everywhere else use ``get_build_state``, whose
+    named error points a hand-built test namespace at its fixture gap.
+    """
+    return getattr(args, "_build_state", None)
+
+
 def get_build_state(args) -> BuildState:
     """Return the BuildState populate_args stashed on *args*.
 
@@ -110,7 +129,7 @@ def get_build_state(args) -> BuildState:
     that built args by hand; route it through parseargs or
     testhelper.finalize_flag_state.
     """
-    state = getattr(args, "_build_state", None)
+    state = get_build_state_or_none(args)
     if state is None:
         raise RuntimeError(
             "args carries no BuildState: this namespace never went through "

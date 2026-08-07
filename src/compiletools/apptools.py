@@ -19,16 +19,10 @@ import compiletools.apptools_compiler
 # ``apptools.<name>`` call sites, ``from compiletools.apptools import ...``
 # importers, and test/patch targets keep working with identical object
 # identity. All are pure re-exports consumed only by external modules /
-# tests (``_setup_pkg_config_overrides`` and ``_add_flags_from_pkg_config``
-# have no internal callers), so they
-# carry the redundant ``name as name`` alias to mark them as intentional
-# re-exports for the F401 linter. ``_PKG_CONFIG_OVERRIDE_LOCK`` is the single
-# ``threading.Lock`` instance defined in the leaf module; re-exporting it by
-# binding keeps ``apptools._PKG_CONFIG_OVERRIDE_LOCK`` and
-# ``apptools_pkgconfig._PKG_CONFIG_OVERRIDE_LOCK`` the SAME object (a copy
-# would break mutual exclusion). ``apptools.clear_cache`` fans out to
-# ``compiletools.apptools_pkgconfig.clear_cache`` (the module import just
-# below) to clear the moved ``cached_pkg_config`` memo.
+# tests, so they carry the redundant ``name as name`` alias to mark them as
+# intentional re-exports for the F401 linter. ``apptools.clear_cache`` fans
+# out to ``compiletools.apptools_pkgconfig.clear_cache`` (the module import
+# just below) to clear the moved ``cached_pkg_config`` memo.
 import compiletools.apptools_pkgconfig
 import compiletools.configutils
 import compiletools.git_utils
@@ -234,12 +228,6 @@ from compiletools.apptools_compiler import (
     tool_version as tool_version,
 )
 from compiletools.apptools_pkgconfig import (
-    _PKG_CONFIG_OVERRIDE_LOCK as _PKG_CONFIG_OVERRIDE_LOCK,
-)
-from compiletools.apptools_pkgconfig import (
-    _add_flags_from_pkg_config as _add_flags_from_pkg_config,
-)
-from compiletools.apptools_pkgconfig import (
     _batch_pkg_config as _batch_pkg_config,
 )
 from compiletools.apptools_pkgconfig import (
@@ -247,12 +235,6 @@ from compiletools.apptools_pkgconfig import (
 )
 from compiletools.apptools_pkgconfig import (
     _PkgConfigOrigin as _PkgConfigOrigin,
-)
-from compiletools.apptools_pkgconfig import (
-    _setup_pkg_config_overrides as _setup_pkg_config_overrides,
-)
-from compiletools.apptools_pkgconfig import (
-    _setup_pkg_config_overrides_locked as _setup_pkg_config_overrides_locked,
 )
 from compiletools.apptools_pkgconfig import (
     cached_pkg_config as cached_pkg_config,
@@ -734,11 +716,11 @@ def reanchor_config_for_discovered_targets(args):
     if after == before:
         return None
 
-    # The first parseargs latched context.pkg_config_overrides_applied, so
-    # the re-run below would early-return and drop any prepend-/append-
-    # PKG-CONFIG-PATH contributed by the freshly loaded target layers.
-    # Restore resets the latch (and un-mutates PKG_CONFIG_PATH) so the
-    # re-apply sees the pre-override environment plus the widened conf set.
+    # The first parseargs already wrote its merged value into
+    # PKG_CONFIG_PATH. Un-mutating before the re-run makes the second
+    # merge read the true pre-build environment as its ``existing``, so
+    # the result is a function of the widened conf set alone rather than
+    # of how many times parseargs has run.
     args._context.restore_pkg_config_path()
     return parseargs(cap, argv, context=args._context)
 
@@ -1404,11 +1386,12 @@ def _stash_private_attrs(args, cap, context, argv):
     Every namespace ``parseargs`` finishes needs all three:
 
     * ``_parser`` — read by ``verboseprintconfig`` (``print_values()`` at
-      verbose >= 3) and passed into ``_setup_pkg_config_overrides_locked``
-      for conf-file provenance attribution at verbose >= 4.
-    * ``_context`` — read unconditionally by the pkg-config override
-      setup in parseargs' pre-gather block and by ``resubstitute``;
-      missing it is an AttributeError.
+      verbose >= 3) and passed into
+      ``emit_pkg_config_path_provenance`` for conf-file provenance
+      attribution at verbose >= 4.
+    * ``_context`` — read unconditionally by ``gather_inputs``,
+      ``apply_effects`` and ``resubstitute``; missing it is an
+      AttributeError.
     * ``_argv`` — routes the pre-gather ``resolve_variant`` (the ``-vv``
       provenance trace) through the explicit_config branch when
       ``--config=path`` was supplied, and lets a CLI
@@ -1664,7 +1647,9 @@ def verbose_print_args(args):
     # so display those for the registered slots -- this banner promises the
     # FINAL aggregated values.
     display = dict(args.__dict__)
-    state = getattr(args, "_build_state", None)
+    import compiletools.build_apply
+
+    state = compiletools.build_apply.get_build_state_or_none(args)
     if state is not None:
         derived = {
             "CPPFLAGS": state.cppflags,

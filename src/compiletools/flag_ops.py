@@ -1,11 +1,20 @@
 """Pure, dependency-free token helpers for compile-flag manipulation.
 
-This is a true *leaf* module: it imports only the standard library and
-must never import ``apptools``, ``flags``, ``headerdeps``, or any other
-heavier compiletools module. Its sole purpose is to hold the pure
-token-list operations that both ``apptools`` and ``flags`` need, so that
-``flags.py`` can import them at top level without reintroducing the
-historical ``flags <-> apptools`` import cycle.
+This is a *leaf* module: its module-level import surface is the standard
+library alone, and it must never import ``apptools``, ``flags``,
+``headerdeps``, or any other heavier compiletools module at module level.
+That surface is what lets ``flags.py`` import these helpers at top level
+without reintroducing the historical ``flags <-> apptools`` import cycle,
+which is the whole reason the module exists.
+
+One deliberate exception, call-time only: ``dedup_tokens`` imports
+``compiletools.utils`` inside the function body to reuse
+``deduplicate_compiler_flags`` rather than fork a second copy of the
+pair-aware equality. Deferring it keeps the module-level surface clean.
+Both halves are enforced by the ``flag-ops-is-a-leaf`` import-linter
+contract, which forbids the edges and names that one exemption
+explicitly -- so a new call-time import fails ``lint-imports`` and has to
+argue for itself rather than arriving unnoticed.
 
 The helpers here operate purely on pre-tokenized flag sequences (lists
 or tuples of ``str``). They perform no filesystem access and have no

@@ -50,6 +50,9 @@ class BuildInputs:
     cas_exedir_raw: str | None = None
     pkg_config_path: str | None = None
     compiler_identity: str = ""
+    # No pure stage reads this. It records the quiet-adjusted level gather
+    # itself ran at, which is the only observable of the unclamped
+    # verbose-minus-quiet arithmetic below short of capturing stderr.
     verbose: int = 0
 
 
@@ -113,7 +116,7 @@ def _merged_pkg_config_specs(args):
 
 
 def _compute_pkg_config_path(args, verbose=0):
-    """The value _setup_pkg_config_overrides_locked would write: existing
+    """The value the build runs under: the existing
     env merged with the conf/CLI prepend/append lists and the
     auto-discovered cwd/gitroot ct.conf.d/pkgconfig candidates. Emits the
     verbose >= 4 provenance lines (gather is the impure boundary; the
@@ -250,11 +253,23 @@ def _flag_name_already_present(args, flag_name):
     stage dedups exact tokens only, so gather replicates the substring
     rule by nulling the field).
 
-    Note: this any()-across-slots scope is BROADER than the originals'
-    per-slot check -- a macro present in only one of CPPFLAGS/CFLAGS/
-    CXXFLAGS suppresses injection into all three, not just the slot it
-    was found in. Blessed divergence D1 in
-    docs/superpowers/specs/2026-08-04-functional-build-state-design.md.
+    Blessed divergence D1, recorded here because the design doc it was
+    labelled in is not in this repo: the any()-across-slots scope is
+    BROADER than the original's, which ran three independent
+    ``if "-DCT_PROJECT_VERSION" not in args.<SLOT>`` checks and so still
+    injected into the other two. A macro the user set in only one of
+    CPPFLAGS/CFLAGS/CXXFLAGS now suppresses injection into all three.
+
+    Blessed rather than fixed because per-slot suppression is
+    unrepresentable downstream: ``project_version`` / ``project_name`` are
+    ONE BuildInputs field each, consumed by ``stage_project_macros`` for
+    all three slots, so the only suppression gather can express is nulling
+    the field. Reaching the divergent case needs the user to hand-set the
+    macro in one or two of the three slots while also passing
+    --projectversion / --projectname -- both of which are themselves
+    deprecated (_PROJECT_MACRO_DEPRECATION_MESSAGE fires on the raw opt-in
+    below), so the divergence is scoped to a feature already on the way
+    out. Widening, not narrowing: the new rule injects strictly less.
     """
     return any(flag_name in (getattr(args, slot, None) or "") for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS"))
 
@@ -308,20 +323,16 @@ def _raw_dir_value(args, attr):
 
 
 def _anchored_cas_dir(args, attr, gitroot, cwd_real):
-    """Raw cas-dir value with the resolve_cas_directory_arguments
-    gitroot-anchoring gate ported: a value supplied while the invocation
-    cwd differs from the gitroot is anchored to the gitroot
-    (os.path.join passes absolute values through unchanged)."""
-    import os
-
-    import compiletools.wrappedos
+    """Raw cas-dir value through the shared gitroot-anchoring gate, the
+    same one ``resolve_cas_directory_arguments`` applies for the diagnostic
+    tools. None (unsupplied) stays None so ``cas_dir_name`` derives the
+    default from the pure side."""
+    from compiletools.apptools_argparse import anchor_cas_dir_to_gitroot
 
     raw = _raw_dir_value(args, attr)
     if raw is None:
         return None
-    if compiletools.wrappedos.realpath(gitroot) != cwd_real:
-        return compiletools.wrappedos.normpath(os.path.join(gitroot, raw))
-    return raw
+    return anchor_cas_dir_to_gitroot(raw, gitroot, cwd_real)
 
 
 def gather_inputs(args, context) -> BuildInputs:

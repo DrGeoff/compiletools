@@ -157,6 +157,99 @@ class TestPopulateArgs:
         with pytest.raises(RuntimeError, match="populate_args"):
             get_build_state(bare)
 
+    def test_get_build_state_or_none_returns_stash_or_none(self):
+        """The optional accessor: the stash when populate_args ran, None
+        otherwise. It is the primitive get_build_state raises on top of, so
+        the two must agree on the populated case by identity."""
+        from compiletools.build_apply import get_build_state, get_build_state_or_none
+
+        state = _state()
+        args = argparse.Namespace(verbose=0)
+        populate_args(args, state)
+        assert get_build_state_or_none(args) is state
+        assert get_build_state(args) is get_build_state_or_none(args)
+
+        assert get_build_state_or_none(argparse.Namespace(verbose=0)) is None
+
+    def test_no_module_reaches_past_the_build_state_accessors(self):
+        """Lint: nothing touches the ``args._build_state`` stash outside the
+        accessors -- not by dot-access, not by ``getattr``/``setattr``, not
+        through a ``__dict__`` or ``vars()`` subscript.
+
+        ONE predicate over two node kinds, rather than one lint per spelling:
+        an ``ast.Attribute`` named ``_build_state`` (dot-access), and an
+        ``ast.Constant`` whose value IS the bare stash name (every string
+        spelling at once). The constant arm strictly subsumes a
+        ``getattr``-shaped regex, which is why there is no longer a second
+        lint beside this one: ``args.__dict__["_build_state"]`` and
+        ``vars(args)["_build_state"]`` both carry the name as a literal and
+        neither is a ``getattr`` call, so the regex scored them clean.
+
+        Backends' ``self._build_state`` is a different object (the instance
+        attribute a backend set from ``get_build_state(args)``) and is
+        deliberately not matched.
+
+        ``ast``, not text: ``apptools`` has three docstrings that NAME the
+        stash. Those are prose about the contract, not uses of it, and only
+        a parse separates them -- a docstring is a single Constant holding
+        the whole paragraph, never one equal to the bare name.
+
+        Exempt files are checked live, so a stale entry fails here instead
+        of silently widening the lint. Within ``build_apply`` the two
+        legitimate sites are pinned to the functions that own them, so a
+        third use elsewhere in that same file is still caught.
+        """
+        import ast
+        import pathlib
+
+        # ``populate_args`` is the writer and ``get_build_state_or_none`` the
+        # sole reader; ``stub_build_state`` plants real name values on a
+        # MagicMock args, whose auto-created stash cannot be reached through
+        # an accessor that only reads.
+        exempt = {
+            "build_apply.py": "populate_args (writer) + get_build_state_or_none (reader)",
+            "testhelper.py": "stub_build_state, MagicMock planter",
+        }
+        build_apply_owners = ("populate_args", "get_build_state_or_none")
+
+        def stash_sites(tree):
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Attribute) and node.attr == "_build_state":
+                    if isinstance(node.value, ast.Name) and node.value.id == "self":
+                        continue
+                    yield node.lineno
+                elif isinstance(node, ast.Constant) and node.value == "_build_state":
+                    yield node.lineno
+
+        srcdir = pathlib.Path(__file__).parent
+        sites: dict[str, list[str]] = {}
+        trees = {}
+        for path in sorted(srcdir.glob("*.py")):
+            if path.name.startswith("test_"):
+                continue
+            trees[path.name] = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for lineno in stash_sites(trees[path.name]):
+                sites.setdefault(path.name, []).append(f"{path.name}:{lineno}")
+
+        unexpected = {name: hits for name, hits in sites.items() if name not in exempt}
+        assert not unexpected, f"read args._build_state through build_apply's accessors instead; found: {unexpected}"
+
+        stale = [f"{name} ({why})" for name, why in exempt.items() if name not in sites]
+        assert not stale, f"exemption no longer needed, drop it: {stale}"
+
+        # The build_apply exemption is per-file, so confirm each of its hits
+        # really is inside an owning accessor rather than merely sharing the file.
+        owned = [
+            range(node.lineno, (node.end_lineno or node.lineno) + 1)
+            for node in ast.walk(trees["build_apply.py"])
+            if isinstance(node, ast.FunctionDef) and node.name in build_apply_owners
+        ]
+        assert len(owned) == len(build_apply_owners), f"expected {build_apply_owners} in build_apply.py, found {owned}"
+        strays = [
+            lineno for lineno in stash_sites(trees["build_apply.py"]) if not any(lineno in span for span in owned)
+        ]
+        assert not strays, f"build_apply.py touches the stash outside {build_apply_owners} at lines {strays}"
+
     def test_finalize_flag_state_routes_through_populate_args(self):
         """testhelper.finalize_flag_state must not hand-mirror
         populate_args' namespace writes: it builds a synthetic state and

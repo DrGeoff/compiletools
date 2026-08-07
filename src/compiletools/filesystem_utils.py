@@ -9,6 +9,7 @@ This module provides filesystem type detection and policy decisions for:
 import contextlib
 import errno
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -124,6 +125,56 @@ def atomic_copy(src: str, dst: str) -> None:
     atomic_replace(dst, populate)
 
 
+_OCTAL_ESCAPE_RE = re.compile(r"\\([0-7]{3})")
+
+
+def unescape_mount_field(field: str) -> str:
+    """Decode the octal escapes the kernel writes into /proc/mounts fields.
+
+    proc(5) mangles exactly four characters in the device and mountpoint
+    fields -- space (``\\040``), tab (``\\011``), newline (``\\012``) and
+    backslash (``\\134``) -- so a mountpoint containing any of them arrives
+    here escaped and must be decoded before it can be compared against a
+    realpath.
+
+    One left-to-right pass, never a sequence of ``str.replace`` calls.
+    ``\\134`` is the escape for a literal backslash, so a mountpoint whose
+    real name is ``/mnt/\\040`` is written ``/mnt/\\134040``; replacing
+    ``\\040`` before ``\\134`` (or after it) decodes the tail of that
+    escape a second time and yields ``/mnt/ ``. The single pass consumes
+    all four characters of ``\\134`` and resumes past them, so the
+    remaining ``040`` stays literal text.
+    """
+    return _OCTAL_ESCAPE_RE.sub(lambda m: chr(int(m.group(1), 8)), field)
+
+
+def parse_mount_lines(lines) -> list[tuple[str, str]]:
+    """Return ``(mountpoint, fstype)`` for each well-formed /proc/mounts line,
+    with the mountpoint unescaped. Short lines are skipped."""
+    mounts = []
+    for line in lines:
+        parts = line.split()
+        if len(parts) >= 3:
+            mounts.append((unescape_mount_field(parts[1]), parts[2]))
+    return mounts
+
+
+def match_mountpoint(path: str, mounts) -> str | None:
+    """Filesystem type of the most specific mountpoint containing *path*.
+
+    *path* must already be a realpath. Longest mountpoint wins, and the
+    match is a component-boundary prefix test (``trimmed + "/"``), not a
+    bare ``startswith`` -- ``/data2`` is not under ``/data``. Plain string
+    comparison: hosts can carry 400+ mount entries, so per-entry Path
+    construction is too slow for this loop.
+    """
+    for mountpoint, fstype in sorted(mounts, key=lambda x: len(x[0]), reverse=True):
+        trimmed = mountpoint.rstrip("/")
+        if path == trimmed or path.startswith(trimmed + "/"):
+            return fstype
+    return None
+
+
 @lru_cache(maxsize=128)
 def get_filesystem_type(path: str) -> str:
     """Detect filesystem type for given path.
@@ -136,27 +187,12 @@ def get_filesystem_type(path: str) -> str:
     try:
         # Linux: Parse /proc/mounts
         path = os.path.realpath(path)
-        mounts = []
-
         with open("/proc/mounts") as f:
-            for line in f:
-                parts = line.split()
-                if len(parts) >= 3:
-                    mountpoint, fstype = parts[1], parts[2]
-                    # Unescape octal sequences in mount paths (spaces, etc)
-                    mountpoint = mountpoint.replace("\\040", " ")
-                    mounts.append((mountpoint, fstype))
+            mounts = parse_mount_lines(f)
 
-        # Sort by length descending to find most specific mount
-        mounts.sort(key=lambda x: len(x[0]), reverse=True)
-
-        # Find matching mount point. Plain string-prefix comparison on the
-        # realpath'd input: hosts can have 400+ mount entries, so per-entry
-        # Path construction is too slow for this loop.
-        for mountpoint, fstype in mounts:
-            trimmed = mountpoint.rstrip("/")
-            if path == trimmed or path.startswith(trimmed + "/"):
-                return fstype
+        fstype = match_mountpoint(path, mounts)
+        if fstype is not None:
+            return fstype
 
     except (FileNotFoundError, PermissionError, OSError):
         # /proc/mounts not available, try fallback

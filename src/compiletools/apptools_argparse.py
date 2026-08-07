@@ -555,22 +555,48 @@ def add_cas_directory_arguments(cap, variant):
     )
 
 
-def resolve_cas_directory_arguments(args):
-    """Apply the unsupplied-sentinel defaults and variant-suffix
-    auto-append to ``args.cas_objdir`` / ``cas_pchdir`` / ``cas_pcmdir``
-    / ``cas_exedir`` using ``args.variant`` as the suffix, then anchor
-    any *relative* cas dir to the gitroot. Idempotent.
+def anchor_cas_dir_to_gitroot(raw, gitroot, cwd_real):
+    """THE cas-dir gitroot-anchoring gate. Impure (it stats), and the only
+    implementation -- ``resolve_cas_directory_arguments`` and
+    ``build_inputs._anchored_cas_dir`` both call it, so the diagnostic tools
+    and a ct-cake build cannot anchor differently.
 
-    Gitroot-anchoring (``os.path.join(git_root, value)``, a no-op for
-    already-absolute values) makes a relative ``--cas-*dir`` mean
-    "relative to the gitroot" — matching the gitroot-anchored default.
-    It is applied only when the gitroot differs from the invocation cwd
-    (i.e. ct-cake was invoked from a subdir of the gitroot — the only
-    case that trips the bug below). From the gitroot itself, or outside
-    any repo (where ``find_git_root()`` falls back to the cwd), a
-    relative value is left as-is, preserving the documented
-    bare-relative-stays-literal contract (``test_conf_env_expansion``).
-    This is load-bearing for two reasons:
+    A *relative* cas dir means "relative to the gitroot", matching the
+    gitroot-anchored default; ``os.path.join`` passes absolute values
+    through unchanged. Applied only when the gitroot differs from the
+    invocation cwd, i.e. ct-cake was invoked from a subdir of the gitroot,
+    which is the only case that trips the precompile-rule bug (``cd
+    <gitroot> && -o <relpath>``). From the gitroot itself, or outside any
+    repo where ``find_git_root()`` falls back to the cwd, a relative value
+    stays literal (the no-auto-anchor contract; ``test_conf_env_expansion``).
+
+    Empty is returned unchanged, never anchored: an empty cas dir means
+    "disabled", and joining it onto the gitroot would silently name the
+    repository root as the pool, pointing a trim scan at the whole tree.
+    """
+    if not raw:
+        return raw
+    if compiletools.wrappedos.realpath(gitroot) != cwd_real:
+        return compiletools.wrappedos.normpath(os.path.join(gitroot, raw))
+    return raw
+
+
+def resolve_cas_directory_arguments(args):
+    """Apply the unsupplied-sentinel defaults to ``args.cas_objdir`` /
+    ``cas_pchdir`` / ``cas_pcmdir`` / ``cas_exedir``, anchor any
+    *relative* cas dir to the gitroot, then append the ``args.variant``
+    suffix. Idempotent.
+
+    Both of the latter two steps are shared with the ct-cake path rather
+    than reimplemented here: ``anchor_cas_dir_to_gitroot`` (also called by
+    ``build_inputs._anchored_cas_dir``) and ``build_state.cas_dir_name``
+    (also called by ``stage_resolve_names``). The two paths name the same
+    on-disk pools — one writing them, the other scanning and trimming
+    them — so a divergence is a trim scan pointed at the wrong directory.
+    The anchor-then-suffix order matches gather's, where the anchoring
+    happens while reading the raw value and the naming in the pure stage.
+
+    Gitroot-anchoring is load-bearing for two reasons:
 
     * The PCH/PCM precompile rules run under ``cwd=anchor_root``
       (``cd <gitroot> && g++ ... -o <cas-path>``) for cross-user
@@ -611,13 +637,14 @@ def resolve_cas_directory_arguments(args):
     ``set_allow_fake_git`` propagation at the top of this function:
     without it, the flag would be a silent no-op for them.
     """
-    # Deferred import: ``unsupplied_replacement`` / ``_ensure_variant_suffix``
-    # and the ``_UNSUPPLIED_*`` sentinels stay in the apptools core.
-    # apptools imports this module for re-export, so reaching back
-    # through the facade at call time is the accepted cycle-break
-    # (same pattern as apptools_validate). apptools is fully
-    # initialised by call time.
+    # Deferred imports: ``unsupplied_replacement`` and the ``_UNSUPPLIED_*``
+    # sentinels stay in the apptools core, and build_state pulls in
+    # configutils, which imports this module. apptools imports this module
+    # for re-export too, so reaching back through the facade at call time is
+    # the accepted cycle-break (same pattern as apptools_validate). Both are
+    # fully initialised by call time.
     import compiletools.apptools as _apptools
+    from compiletools.build_state import canonical_variant_name, cas_dir_name
 
     # Propagate --allow-fake-git into the git_utils module-level setting
     # BEFORE any find_git_root() call below resolves a default. This is the
@@ -626,7 +653,16 @@ def resolve_cas_directory_arguments(args):
     # diagnostic-only tools that bypass parseargs rely on it firing here.
     compiletools.git_utils.set_allow_fake_git(getattr(args, "allow_fake_git", False))
 
-    variant = args.variant
+    # Canonicalize the variant before it names anything, and write it back:
+    # ct-cake canonicalizes (populate_args stores stage_resolve_names' value),
+    # so ``--variant=debug.gcc`` names ``cas-objdir/gcc.debug`` for a build. A
+    # diagnostic tool keeping the literal spelling would scan a directory no
+    # build ever writes. args.variant is written, not just used locally,
+    # because ``cell_pool_root(args.cas_objdir, args.variant)`` strips the
+    # suffix back off -- the two must be the same string.
+    canonical_order, _order_source = compiletools.configutils.get_canonical_order(argv=getattr(args, "_argv", None))
+    variant = canonical_variant_name(args.variant or "", canonical_order)
+    args.variant = variant
     # Only gitroot-anchor a relative cas dir when the gitroot actually differs
     # from the invocation cwd -- i.e. ct-cake was invoked from a subdir of the
     # gitroot, which is the only case that trips the precompile-rule bug
@@ -646,32 +682,27 @@ def resolve_cas_directory_arguments(args):
     # found) the queried directory / cwd as a fallback. It never returns a
     # falsy value, so cas dirs are always anchored at that root -- there is no
     # "no gitroot" bindir-relative fallback branch.
-    def _resolve(attr, kind, registered):
-        if not registered:
-            return None
+    def _resolve(attr, kind):
+        if not hasattr(args, attr):
+            return
         git_root = compiletools.git_utils.find_git_root()
-        default_value = os.path.join(git_root, f"cas-{kind}dir", variant)
         current = getattr(args, attr)
-        new = _apptools.unsupplied_replacement(current, default_value, args.verbose, f"cas-{kind}dir")
-        new = _apptools._ensure_variant_suffix(new, variant)
-        if compiletools.wrappedos.realpath(git_root) != cwd_real:
-            new = compiletools.wrappedos.normpath(os.path.join(git_root, new))
-        setattr(args, attr, new)
-        return git_root
-
-    _resolve("cas_objdir", "obj", hasattr(args, "cas_objdir"))
-    _resolve("cas_pchdir", "pch", hasattr(args, "cas_pchdir"))
-    _resolve("cas_pcmdir", "pcm", hasattr(args, "cas_pcmdir"))
-
-    if hasattr(args, "cas_exedir"):
-        git_root_exe = compiletools.git_utils.find_git_root()
-        default_cas_exedir = os.path.join(git_root_exe, "cas-exedir", variant)
-        args.cas_exedir = _apptools.unsupplied_replacement(
-            args.cas_exedir, default_cas_exedir, args.verbose, "cas-exedir"
+        # unsupplied_replacement owns the sentinel swap and its verbose
+        # notification; the default it substitutes is the same string
+        # cas_dir_name derives, so re-naming below is a no-op on it.
+        supplied = _apptools.unsupplied_replacement(
+            current, os.path.join(git_root, f"cas-{kind}dir", variant), args.verbose, f"cas-{kind}dir"
         )
-        args.cas_exedir = _apptools._ensure_variant_suffix(args.cas_exedir, variant)
-        if compiletools.wrappedos.realpath(git_root_exe) != cwd_real:
-            args.cas_exedir = compiletools.wrappedos.normpath(os.path.join(git_root_exe, args.cas_exedir))
+        anchored = anchor_cas_dir_to_gitroot(supplied, git_root, cwd_real)
+        setattr(args, attr, cas_dir_name(anchored, kind, variant, git_root))
+
+    for attr, kind in (
+        ("cas_objdir", "obj"),
+        ("cas_pchdir", "pch"),
+        ("cas_pcmdir", "pcm"),
+        ("cas_exedir", "exe"),
+    ):
+        _resolve(attr, kind)
 
 
 def add_output_directory_arguments(cap, variant):

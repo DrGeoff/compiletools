@@ -229,9 +229,11 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
             with patch("compiletools.git_utils.find_git_root", return_value=tmpdir):
                 compiletools.apptools.clear_cache()
 
-                # Apply the override (prepends ct.conf.d/pkgconfig/ to PKG_CONFIG_PATH)
+                # Apply the override (prepends ct.conf.d/pkgconfig/ to
+                # PKG_CONFIG_PATH) through the production gather/compute/apply
+                # chain, the same one parseargs runs.
                 ctx = BuildContext()
-                compiletools.apptools._setup_pkg_config_overrides(ctx)
+                uth.apply_pkg_config_overrides(ctx)
 
                 # Create a source file that requests the 'conditional' package
                 source_content = "//#PKG-CONFIG=conditional\nint main() { return 0; }\n"
@@ -452,8 +454,8 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                 source_file = str(files["test_cli_override.cpp"])
 
                 # Pass --prepend-PKG-CONFIG-PATH through the argument parser
-                # so _setup_pkg_config_overrides is called once (from parseargs)
-                # with both project and CLI overrides in the correct priority.
+                # so parseargs performs the override once, with both project
+                # and CLI overrides in the correct priority.
                 mf = tb.create_magic_parser(
                     [
                         "--magic=direct",
