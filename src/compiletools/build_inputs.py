@@ -50,6 +50,9 @@ class BuildInputs:
     cas_exedir_raw: str | None = None
     pkg_config_path: str | None = None
     compiler_identity: str = ""
+    # No pure stage reads this. It records the quiet-adjusted level gather
+    # itself ran at, which is the only observable of the unclamped
+    # verbose-minus-quiet arithmetic below short of capturing stderr.
     verbose: int = 0
 
 

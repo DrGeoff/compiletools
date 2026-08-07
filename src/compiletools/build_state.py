@@ -244,8 +244,11 @@ class BuildState:
     cflags: str
     cxxflags: str
     ldflags: str
-    pkg_config_path: str | None
     effects: tuple[Effect, ...]
+    # No production consumer reads this: it is the schema fact ("did this
+    # CAP register the slot at all?") that a post-parseargs consumer cannot
+    # otherwise reach, because BuildInputs is internal to gather. The live
+    # reader is test_resubstitute_convergence's three-slot-cap precondition.
     registered_slots: frozenset[str]
 
 
@@ -274,7 +277,6 @@ def compute_build_state(inputs: BuildInputs) -> BuildState:
         cflags=shlex.join(ts.c),
         cxxflags=shlex.join(ts.cxx),
         ldflags=shlex.join(ts.ld),
-        pkg_config_path=inputs.pkg_config_path,
         effects=effects,
         registered_slots=inputs.registered_slots,
     )

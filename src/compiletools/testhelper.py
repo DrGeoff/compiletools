@@ -1173,10 +1173,9 @@ def finalize_flag_state(args) -> None:
     they can never drift from what production writes; the raw slot
     attrs are never touched (populate_args never writes them). It
     does NOT run gather (no pkg-config, no git subprocess for flags, no
-    env): ``pkg_config_path`` is None and ``effects`` is empty in the
-    synthesized state -- a consumer of either of those
-    fields will see the None/empty form in every fixture-driven test,
-    and a fixture wanting the real values must go through ``parseargs``.
+    env): ``effects`` is empty in the synthesized state, so a consumer of
+    that field sees the empty form in every fixture-driven test, and a
+    fixture wanting the real effects must go through ``parseargs``.
     """
     from compiletools.apptools_compiler import compiler_identity
     from compiletools.build_apply import populate_args
@@ -1209,7 +1208,6 @@ def finalize_flag_state(args) -> None:
         cflags=strings["CFLAGS"],
         cxxflags=strings["CXXFLAGS"],
         ldflags=strings["LDFLAGS"],
-        pkg_config_path=None,
         effects=(),
         registered_slots=frozenset(registered),
     )
