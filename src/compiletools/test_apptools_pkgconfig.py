@@ -1,5 +1,7 @@
 """Focused tests for package-spec handling in :mod:`apptools_pkgconfig`."""
 
+import contextlib
+import signal
 import subprocess
 import warnings
 
@@ -406,6 +408,32 @@ def test_a_succeeding_query_is_not_promoted_to_a_failure_in_error_mode(monkeypat
     assert pkgconfig.cached_pkg_config("chatty", "--cflags") == "-I/opt/x"
 
 
+class _DidNotTerminate(Exception):
+    """Raised by ``_fails_if_it_does_not_terminate`` when the alarm fires."""
+
+
+@contextlib.contextmanager
+def _fails_if_it_does_not_terminate(seconds=5):
+    """Turn a hang into a test failure.
+
+    A cycle guard's failure mode is a spin, not a wrong answer, so the only
+    assertion that can catch its removal is a deadline. SIGALRM rather than a
+    thread because the walk is synchronous and single-threaded; pytest-xdist
+    runs each test in its worker's main thread, where SIGALRM is deliverable.
+    """
+
+    def _fire(_signum, _frame):
+        raise _DidNotTerminate(f"did not terminate within {seconds}s")
+
+    previous = signal.signal(signal.SIGALRM, _fire)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+
+
 def _write_pc(directory, name, body):
     path = directory / f"{name}.pc"
     path.write_text(body, encoding="utf-8")
@@ -631,3 +659,92 @@ class TestBareDetachedPkgConfigFlags:
         monkeypatch.setattr(pkgconfig.subprocess, "run", models_only_exists_and_cflags)
 
         assert pkgconfig.cached_pkg_config("narrow", "--cflags") == "-I/opt/x"
+
+
+class TestTheRequiresClosureTerminatesOnCycles:
+    """A ``Requires`` cycle must terminate rather than spin.
+
+    The shipped ``cycle-alpha``/``cycle-beta`` example pair does NOT exercise
+    this: both halves are Cflags/Libs only, so each closure is a single node.
+    That pair is cyclic in link order, which is what it was shipped for. The
+    cycle the seen set exists to stop has to be constructed, and it is
+    constructed here -- a cycle guard whose only evidence is an artefact that
+    cannot reach it survives the refactor that deletes it.
+    """
+
+    @staticmethod
+    def _write_cycle(tmp_path):
+        _write_pc(tmp_path, "cyc-a", "Name: A\nDescription: d\nVersion: 1\nRequires: cyc-b\nCflags: -I/opt/a\n")
+        _write_pc(tmp_path, "cyc-b", "Name: B\nDescription: d\nVersion: 1\nRequires: cyc-a\nCflags: -I/opt/b\n")
+
+    @pytest.mark.parametrize(
+        "entry,expected",
+        [("cyc-a", ["cyc-a", "cyc-b"]), ("cyc-b", ["cyc-b", "cyc-a"])],
+    )
+    def test_a_two_cycle_terminates_and_returns_both_packages(self, tmp_path, monkeypatch, entry, expected):
+        """Entered from either end: both nodes come back, once each, in
+        breadth-first order from the entry point."""
+        self._write_cycle(tmp_path)
+        monkeypatch.setenv("PKG_CONFIG_PATH", str(tmp_path))
+
+        with _fails_if_it_does_not_terminate():
+            closure = pkgconfig._pc_requires_closure(entry)
+
+        assert [name for name, _path in closure] == expected
+
+    def test_a_self_require_terminates_and_returns_one_package(self, tmp_path, monkeypatch):
+        """The degenerate cycle: the seen set is seeded with the entry point,
+        so a package requiring itself must not enqueue itself."""
+        _write_pc(tmp_path, "selfy", "Name: S\nDescription: d\nVersion: 1\nRequires: selfy\nCflags: -I/opt/s\n")
+        monkeypatch.setenv("PKG_CONFIG_PATH", str(tmp_path))
+
+        with _fails_if_it_does_not_terminate():
+            closure = pkgconfig._pc_requires_closure("selfy")
+
+        assert [name for name, _path in closure] == ["selfy"]
+
+    def test_the_shipped_cycle_pair_carries_no_requires_edge(self, pkgconfig_env):
+        """Pins the premise of this class rather than asserting it in prose.
+
+        If someone later adds a ``Requires`` line to the shipped pair, this
+        fails and the docstring above stops being true -- which is the moment
+        to reconsider whether the constructed fixtures are still needed.
+
+        ``pkgconfig_env`` points PKG_CONFIG_PATH at the in-repo pkgs/
+        directory so the lookup cannot come up empty on a machine with no
+        ambient PKG_CONFIG_PATH; a skip here would make the assertion
+        unreachable in the default environment, which is the state this test
+        exists to detect.
+        """
+        for package in ("cycle-alpha", "cycle-beta"):
+            path = pkgconfig._locate_pc_file(package)
+            assert path is not None, f"{package}.pc missing from {pkgconfig_env}"
+            requires = [line for line in pkgconfig._read_pc_file(path) if line.lstrip().startswith("Requires")]
+            assert requires == [], (package, path, requires)
+
+    def test_the_seen_set_is_what_stops_the_cycle(self, tmp_path, monkeypatch):
+        """Anti-vacuity: the guard above only means something if the timeout
+        it relies on can actually fire. Re-run the same two-cycle through a
+        copy of the walk with the seen check removed and assert it does NOT
+        terminate, so a future timeout that silently stopped working cannot
+        make the three tests above pass for free.
+        """
+        self._write_cycle(tmp_path)
+        monkeypatch.setenv("PKG_CONFIG_PATH", str(tmp_path))
+
+        def unguarded_closure(package):
+            queue = [package]
+            while queue:
+                current = queue.pop(0)
+                path = pkgconfig._locate_pc_file(current)
+                if path is None:
+                    continue
+                for line in pkgconfig._read_pc_file(path):
+                    keyword = pkgconfig._PC_KEYWORD_RE.match(line)
+                    if keyword is None or keyword.group(1) not in ("Requires", "Requires.private"):
+                        continue
+                    queue.extend(pkgconfig._pc_required_packages(keyword.group(2)))
+
+        with pytest.raises(_DidNotTerminate):
+            with _fails_if_it_does_not_terminate():
+                unguarded_closure("cyc-a")

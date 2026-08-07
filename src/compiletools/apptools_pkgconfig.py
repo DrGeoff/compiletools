@@ -417,8 +417,12 @@ def _pc_requires_closure(package: str) -> list[tuple[str, str]]:
 
     The consumer's flags carry its dependencies' flags, so a dependency's
     typo truncates the consumer's compile line -- and the consumer is the only
-    name the user typed. Cycles are terminated by the seen set; the shipped
-    ``cycle-alpha``/``cycle-beta`` example pair is exactly that shape.
+    name the user typed. Cycles are terminated by the seen set. No shipped
+    ``.pc`` fixture carries a ``Requires`` edge, so the cycles that reach this
+    walk are constructed in
+    ``test_apptools_pkgconfig.TestTheRequiresClosureTerminatesOnCycles``; the
+    shipped ``cycle-alpha``/``cycle-beta`` pair is cyclic in link order only
+    and never enters the queue.
     """
     found: list[tuple[str, str]] = []
     seen = {package}
