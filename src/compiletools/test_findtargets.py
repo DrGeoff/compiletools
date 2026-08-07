@@ -681,6 +681,71 @@ class TestAutoExcludePatternNormalisation:
         assert not self._excluded(tmp_path, "///", "src/main.cpp")
 
 
+# The root-slash family, where a pattern's meaning is decided by how many
+# separators it carries and nothing else. ``git check-ignore`` is the
+# authority the --auto-exclude docstring appeals to, so the agreement is
+# measured against a real repository rather than restated.
+_ROOT_PATTERN_ORACLE_FILES = ("src/vendor/a.cpp", "vendor/b.cpp", "vendor/sub/c.cpp", "top.cpp")
+_ROOT_PATTERN_ORACLE_PATTERNS = ("/", "//", "///", "/*", "vendor/", "/vendor")
+
+
+class TestRootPatternsAgreeWithGitignore:
+    """A bare ``/`` excludes NOTHING, and ``/*`` excludes everything.
+
+    The one-character difference is the whole decision. ``/`` looks like the
+    anchored spelling of the tree root, which under the "a directory name
+    excludes its whole subtree" rule would exclude every file -- the silent
+    discover-nothing outcome ``_commits_to_a_path_inside`` exists to prevent.
+    git resolves it the other way, and these cells prove compiletools agrees
+    with git rather than merely claiming to.
+    """
+
+    @staticmethod
+    def _tree(tmp_path):
+        root = tmp_path / "rootpatterns"
+        root.mkdir()
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        for relpath in _ROOT_PATTERN_ORACLE_FILES:
+            path = root / relpath
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("int main() { return 0; }\n")
+        return root
+
+    @staticmethod
+    def _git_ignored(root, pattern):
+        (root / ".gitignore").write_text(pattern + "\n")
+        return {
+            relpath
+            for relpath in _ROOT_PATTERN_ORACLE_FILES
+            if subprocess.run(["git", "check-ignore", "-q", relpath], cwd=str(root)).returncode == 0
+        }
+
+    @staticmethod
+    def _excluded(root, pattern):
+        return {
+            relpath
+            for relpath in _ROOT_PATTERN_ORACLE_FILES
+            if compiletools.findtargets.is_auto_excluded(
+                os.path.join(str(root), relpath), (pattern,), anchor_root=str(root)
+            )
+        }
+
+    @pytest.mark.parametrize("pattern", _ROOT_PATTERN_ORACLE_PATTERNS)
+    def test_the_exclusion_set_matches_what_git_ignores(self, tmp_path, pattern):
+        root = self._tree(tmp_path)
+        assert self._excluded(root, pattern) == self._git_ignored(root, pattern)
+
+    def test_the_oracle_discriminates(self, tmp_path):
+        """Guard against a vacuous pass. If ``git check-ignore`` reported
+        nothing ignored for every pattern -- an unreadable .gitignore, a git
+        that refuses to answer -- the agreement above would hold trivially
+        against an implementation that also excludes nothing. Pin the two
+        ends of the range the parametrized cells run over."""
+        root = self._tree(tmp_path)
+        assert self._git_ignored(root, "/*") == set(_ROOT_PATTERN_ORACLE_FILES)
+        assert self._git_ignored(root, "/") == set()
+
+
 class TestAutoExcludeInDiscovery:
     """The exclusion applies inside FindTargets.__call__, so both the
     tracked-files generator and the os.walk fallback honour it."""

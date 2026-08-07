@@ -180,6 +180,15 @@ def is_auto_excluded(filepath, patterns, anchor_root=""):
     that one anchored spelling -- globs included, so ``//*`` excludes
     everything exactly as the ``/*`` it is a spelling of already did.
 
+    A pattern of separators alone excludes NOTHING. It survives
+    normalisation as a bare ``/``, which names no path under the anchor and
+    whose subtree candidate is the unmatchable ``//*``. Reading it as the
+    tree root instead -- excluding every file over one character -- is the
+    silent discover-nothing outcome ``_commits_to_a_path_inside`` exists to
+    prevent, and ``git check-ignore`` resolves it the same way (pinned by
+    ``TestRootPatternsAgreeWithGitignore``). ``/*`` is the spelling that
+    excludes everything.
+
     A pattern without a separator is fnmatched against each component of
     the *anchor_root*-relative path -- so ``vendor`` excludes every file
     under any ``vendor`` directory (never ``vendorlib``: components match
@@ -233,9 +242,8 @@ def is_auto_excluded(filepath, patterns, anchor_root=""):
                 candidates = [absolute, relative, os.sep + relative]
             else:
                 candidates = [relative, os.sep + relative]
-            subtree = pattern.rstrip(os.sep)
             if any(
-                fnmatch.fnmatch(candidate, pattern) or (subtree and fnmatch.fnmatch(candidate, subtree + os.sep + "*"))
+                fnmatch.fnmatch(candidate, pattern) or fnmatch.fnmatch(candidate, pattern + os.sep + "*")
                 for candidate in candidates
             ):
                 return True
