@@ -220,3 +220,20 @@ def test_auto_exclude_drops_a_vendored_header_the_walk_pulled_in(vendor_repo, ca
     listed = {line.strip() for line in capsys.readouterr().out.splitlines() if line.strip()}
     assert os.path.realpath(str(vendor_repo / "app" / "main.cpp")) in listed
     assert os.path.realpath(str(vendor_repo / "vendor" / "thirdparty.hpp")) not in listed
+
+
+def test_an_extrafile_survives_a_pattern_that_excludes_it_from_the_walk(vendor_repo, capsys: Any) -> None:
+    """Explicit beats exclude, on an invocation where the SAME pattern drops
+    the SAME file from the dependency walk. --extrafile is the caller naming
+    a file, so nothing filters it; the walk reached that identical header
+    without being asked and --auto-exclude=vendor does drop it there. Both
+    halves run in one command, so the extras union is the only route by
+    which the header can reach the output.
+
+    Routing extras through _not_auto_excluded alongside the swept set makes
+    this fail while every other test in this file survives, which is what
+    pins the boundary between the two rulings that produced this code."""
+    _run_filelist(vendor_repo, ["--auto", "--auto-exclude=vendor", "--extrafile", "vendor/thirdparty.hpp"])
+    listed = {line.strip() for line in capsys.readouterr().out.splitlines() if line.strip()}
+    assert os.path.realpath(str(vendor_repo / "app" / "main.cpp")) in listed
+    assert os.path.realpath(str(vendor_repo / "vendor" / "thirdparty.hpp")) in listed
