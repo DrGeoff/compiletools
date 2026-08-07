@@ -1041,11 +1041,17 @@ def test_an_explicit_target_suppresses_discovery(reanchor_repo, capsys):
     discovered one. scripts/ct-build feeds this string to ct-create-makefile,
     so a merged list hands it the named target twice -- once in the caller's
     spelling and once in the discovered absolute one, which ordered_unique
-    cannot collapse."""
+    cannot collapse.
+
+    The target is a POSITIONAL. There is no --filename option: argparse
+    prefix-resolves that spelling to --filenametestmatch, a store_true whose
+    default is already True, and the path that follows lands on the
+    positional anyway -- so the option spelling passed for the wrong reason.
+    """
     named = os.path.join("appalpha", "main.cpp")
     with uth.DirectoryContext(str(reanchor_repo)):
         with uth.ParserContext():
-            assert compiletools.findtargets.main(["--style=args", "--filename", named]) == 0
+            assert compiletools.findtargets.main(["--style=args", named]) == 0
     out = capsys.readouterr().out
     assert out.split() == [named]
 
