@@ -654,12 +654,14 @@ version against the string ``libxml-2.0``.
 
 ``--pkg-config-errors {warn,error}`` (default ``warn``) controls what
 happens when a pkg-config package fails: a malformed specification
-(above), a package ``pkg-config --exists`` reports missing, or a
-package that exists but whose ``--cflags``/``--libs`` query itself
-fails (a broken ``Requires.private`` chain, a bad ``.pc`` variable
-expansion). In ``warn`` mode each failure is a ``UserWarning`` and
-contributes zero flags; the build continues, possibly with an
-incomplete link. In ``error`` mode the first failure raises
+(above), or a package ``pkg-config --exists`` reports missing. (A
+package that exists but whose own ``--cflags``/``--libs`` query fails
+— a broken ``Requires.private`` chain, a bad ``.pc`` variable
+expansion — is not yet routed through this policy; that query's
+return code is currently discarded, so it contributes empty flags
+regardless of ``--pkg-config-errors``.) In ``warn`` mode each failure
+is a ``UserWarning`` and contributes zero flags; the build continues,
+possibly with an incomplete link. In ``error`` mode the first failure raises
 ``PkgConfigError`` and stops the build — failures are not reported in
 declaration order, so expect the *first encountered*, not necessarily
 the *first written*, specification in the diagnostic. Use ``error``
