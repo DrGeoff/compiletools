@@ -1321,9 +1321,9 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
         ``(expanded_value, source_file_abspath, lineno,
         pre_expansion_literal)`` tuples in parse order.
 
-        Consumers: ``_setup_pkg_config_overrides_locked`` (``verbose >= 4``)
-        attributes each emitted pkg-config path back to the conf file (and
-        line) that contributed it, and
+        Consumers: ``apptools_pkgconfig.emit_pkg_config_path_provenance``
+        (``verbose >= 4``) attributes each emitted pkg-config path back to
+        the conf file (and line) that contributed it, and
         ``apptools._note_shadowed_bare_values`` (``verbose >= 1``)
         names the origin of bare-key values discarded by
         last-writer-wins.
