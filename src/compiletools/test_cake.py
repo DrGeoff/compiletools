@@ -981,14 +981,21 @@ class TestCakeStyleSurface:
         assert self._cake_parser().parse_args(["--style=" + style]).style == style
 
     @pytest.mark.parametrize("style", ["null", "args"])
-    def test_cake_rejects_a_style_it_cannot_act_on(self, style):
+    def test_cake_rejects_a_style_it_cannot_act_on(self, style, capsys):
         """The narrowing has to be enforced, not merely advertised.
         ct-findtargets keeps ``null`` and ``args`` -- they format its own
         target report -- so an unenforced choices list would go on parsing
-        them here and dropping them on the floor."""
+        them here and dropping them on the floor.
+
+        Through ``main``, because this is the one claim in the class that
+        is about what a user at a shell prompt gets. ``main`` composing a
+        registrar that widens the choices back would leave the rebuilt
+        parser above still rejecting them.
+        """
         with pytest.raises(SystemExit) as exc:
-            self._cake_parser().parse_args(["--style=" + style])
+            compiletools.cake.main(["--style=" + style])
         assert exc.value.code == 2
+        assert "invalid choice: '" + style + "'" in capsys.readouterr().err
 
     def test_filelist_keeps_its_own_style(self):
         cap = compiletools.apptools.create_parser("filelist surface", include_config=False)
@@ -998,16 +1005,25 @@ class TestCakeStyleSurface:
         assert list(actions[0].choices or []) == list(compiletools.filelist._STYLE_REGISTRY)
         assert actions[0].default == "flat"
 
-    def test_findtargets_keeps_its_own_wider_style(self):
+    def test_findtargets_keeps_its_own_wider_style(self, capsys):
         """Control on the narrowing: ct-cake gives up ``null``/``args``,
         ct-findtargets does not. Without this the test above is also
-        satisfied by deleting those two styles outright."""
-        cap = compiletools.apptools.create_parser("findtargets surface", include_config=False)
-        compiletools.findtargets.add_arguments(cap)
-        actions = [act for act in cap._actions if "--style" in act.option_strings]
-        assert len(actions) == 1
-        assert list(actions[0].choices or []) == list(compiletools.findtargets._STYLE_REGISTRY)
-        assert actions[0].default == "indent"
+        satisfied by deleting those two styles outright.
+
+        Asserted through the real entry point, for the same reason
+        ``test_compilation_database_rejects_style_at_its_entry_point``
+        is: ``main`` composes ``add_arguments`` with other registrars,
+        so a parser rebuilt from ``add_arguments`` alone reports a
+        surface the tool need not have. Narrowing the choices inside
+        ``main`` after that call breaks ``--style=args`` for real users
+        while a rebuilt parser still sees all four.
+        """
+        with pytest.raises(SystemExit) as exc:
+            compiletools.findtargets.main(["--help"])
+        assert exc.value.code == 0
+        helptext = " ".join(capsys.readouterr().out.split())
+        assert "--style {" + ",".join(compiletools.findtargets._STYLE_REGISTRY) + "}" in helptext
+        assert "(default: indent)" in helptext
 
     def test_compilation_database_rejects_style_at_its_entry_point(self, capsys):
         """ct-compilation-database writes JSON. It picked up ``--style``
