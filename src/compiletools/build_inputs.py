@@ -253,11 +253,23 @@ def _flag_name_already_present(args, flag_name):
     stage dedups exact tokens only, so gather replicates the substring
     rule by nulling the field).
 
-    Note: this any()-across-slots scope is BROADER than the originals'
-    per-slot check -- a macro present in only one of CPPFLAGS/CFLAGS/
-    CXXFLAGS suppresses injection into all three, not just the slot it
-    was found in. Blessed divergence D1 in
-    docs/superpowers/specs/2026-08-04-functional-build-state-design.md.
+    Blessed divergence D1, recorded here because the design doc it was
+    labelled in is not in this repo: the any()-across-slots scope is
+    BROADER than the original's, which ran three independent
+    ``if "-DCT_PROJECT_VERSION" not in args.<SLOT>`` checks and so still
+    injected into the other two. A macro the user set in only one of
+    CPPFLAGS/CFLAGS/CXXFLAGS now suppresses injection into all three.
+
+    Blessed rather than fixed because per-slot suppression is
+    unrepresentable downstream: ``project_version`` / ``project_name`` are
+    ONE BuildInputs field each, consumed by ``stage_project_macros`` for
+    all three slots, so the only suppression gather can express is nulling
+    the field. Reaching the divergent case needs the user to hand-set the
+    macro in one or two of the three slots while also passing
+    --projectversion / --projectname -- both of which are themselves
+    deprecated (_PROJECT_MACRO_DEPRECATION_MESSAGE fires on the raw opt-in
+    below), so the divergence is scoped to a feature already on the way
+    out. Widening, not narrowing: the new rule injects strictly less.
     """
     return any(flag_name in (getattr(args, slot, None) or "") for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS"))
 

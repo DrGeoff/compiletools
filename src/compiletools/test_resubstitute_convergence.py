@@ -119,9 +119,26 @@ class TestResubstitute:
 
     def test_auto_rerun_with_overlapping_pkg_config_converges(self, tmp_path, monkeypatch):
         """Two pkg-config packages sharing a Cflags/Libs token: the core
-        dedups the shared tokens at the END of the pipeline (stage_dedup,
-        blessed divergence D5), and the re-run must reproduce pass 1's
-        already-deduped result exactly."""
+        dedups the shared tokens at the END of the pipeline (stage_dedup),
+        and the re-run must reproduce pass 1's already-deduped result
+        exactly.
+
+        Blessed divergence D5, recorded here because the design doc it was
+        labelled in is not in this repo. The original
+        ``_add_flags_from_pkg_config`` string-concatenated each package's
+        --cflags onto CPPFLAGS/CFLAGS/CXXFLAGS and its --libs onto LDFLAGS
+        with NO dedup at all, so a token two packages both name survived
+        twice on the compile and link lines. ``stage_dedup`` now collapses
+        it once, at the end, over all four slots -- pair-aware and
+        first-occurrence-wins, so relative order is unchanged and only the
+        later copy disappears.
+
+        Blessed rather than fixed because the duplicate is what made the
+        old pipeline non-idempotent: dedup by POSITION (one uniform pass
+        after the merge) is what lets a re-run be a fixed point without a
+        per-append guard, which is precisely the property this file
+        exists to pin. The counts below are 1, not 2, by that choice.
+        """
         for name, lib in (("ctresub9alpha", "-lctresub9alpha"), ("ctresub9beta", "-lctresub9beta")):
             (tmp_path / f"{name}.pc").write_text(
                 f"Name: {name}\nDescription: resubstitute overlap pin\nVersion: 1.0.0\n"
@@ -189,7 +206,10 @@ class TestCdbAutoConverges:
     """compilation_database's --auto refresh routes through
     apptools.resubstitute (test_cdb_rerun_site_uses_resubstitute pins the
     call site) and must converge cleanly even when pkg-config packages
-    share Cflags/Libs tokens (the D5 shape)."""
+    share Cflags/Libs tokens -- the same overlap shape
+    ``test_auto_rerun_with_overlapping_pkg_config_converges`` covers, whose
+    docstring records why the end-of-pipeline dedup (blessed divergence
+    D5) is the property that makes the re-run a fixed point."""
 
     def _write_overlapping_pc_files(self, tmp_path):
         for name, lib in (("ctcdb9alpha", "-lctcdb9alpha"), ("ctcdb9beta", "-lctcdb9beta")):
