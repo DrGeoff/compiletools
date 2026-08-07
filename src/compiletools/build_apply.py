@@ -18,6 +18,14 @@ def configure_pkg_config_errors(args) -> None:
     process on the second ``parseargs`` of any base-arguments-only tool --
     the same silent-disarm hazard ``apptools_pkgconfig.clear_cache``
     deliberately avoids.
+
+    Once armed, strict mode is sticky for the life of the process: only a
+    namespace that carries ``pkg_config_errors`` can lower it, and this
+    function never lowers it on a namespace's behalf. An embedder driving
+    multiple builds in one process (e.g. a library caller running one build
+    under ``--pkg-config-errors=error`` and a later one that should be
+    lenient) must call ``apptools_pkgconfig.set_pkg_config_errors("warn")``
+    explicitly between builds.
     """
     from compiletools.apptools_pkgconfig import set_pkg_config_errors
 

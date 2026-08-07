@@ -451,3 +451,22 @@ def test_a_succeeding_query_is_not_promoted_to_a_failure_in_error_mode(monkeypat
     pkgconfig.set_pkg_config_errors("error")
 
     assert pkgconfig.cached_pkg_config("chatty", "--cflags") == "-I/opt/x"
+
+
+def test_a_repeated_batch_warning_is_forwarded_only_once(monkeypatch, capsys):
+    """``_batch_pkg_config``'s all-exist fast path calls the uncached
+    ``_run_pkg_config_query`` directly, so a package queried across two
+    batch rounds in one process must not print the same stderr twice."""
+
+    def succeeds_with_a_warning(cmd, **_kwargs):
+        if "--exists" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="-I/opt/x", stderr="Variable 'prefix' not defined")
+
+    monkeypatch.setattr(pkgconfig.subprocess, "run", succeeds_with_a_warning)
+
+    assert pkgconfig._batch_pkg_config(["chatty"], "--cflags") == {"chatty": "-I/opt/x"}
+    assert pkgconfig._batch_pkg_config(["chatty"], "--cflags") == {"chatty": "-I/opt/x"}
+
+    err = capsys.readouterr().err
+    assert err.count("Variable 'prefix' not defined") == 1

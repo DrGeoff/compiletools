@@ -55,6 +55,13 @@ way ``ct-cake --auto`` does, so a subproject conf reached only through
 a discovered target still shapes the final target set (including its
 ``append-AUTO-EXCLUDE`` additions).
 
+Output path shape differs between the two modes: discovery reports
+absolute realpaths (as returned by the tracked-files walk), while a
+positional filename is echoed back in the caller's own spelling,
+unresolved. Harmless for ``ct-build``, which feeds the printed string
+straight to ``ct-create-makefile``, but a caller comparing or
+deduplicating paths across the two modes must resolve them itself.
+
 ``--static`` and ``--dynamic`` are rejected with an error:
 ct-findtargets lists executables and tests only, and its output styles
 have no bucket for libraries, so accepting a library target would

@@ -127,6 +127,7 @@ def clear_cache():
     """
     cached_pkg_config.cache_clear()
     _cached_pkg_config_exists.cache_clear()
+    _forwarded_pkg_config_stderr.clear()
 
 
 def get_pkg_config_errors() -> Literal["warn", "error"]:
@@ -235,6 +236,9 @@ def _cached_pkg_config_exists(package: str) -> bool:
     return False
 
 
+_forwarded_pkg_config_stderr: set[tuple[str, str, str]] = set()
+
+
 def _run_pkg_config_query(package: str, option: str) -> str:
     """Run one flag query and route a nonzero returncode through the policy.
 
@@ -246,10 +250,18 @@ def _run_pkg_config_query(package: str, option: str) -> str:
     asked for, silently, even under ``--pkg-config-errors=error``.
 
     stderr is captured to build that diagnostic, so a query that exits 0
-    while still writing to stderr has its output forwarded verbatim rather
-    than swallowed. It is not routed through the failure policy: pkg-config
-    exited 0 and returned usable flags, which is not a failure for
-    ``--pkg-config-errors=error`` to promote.
+    while still writing to stderr has its (whitespace-stripped, see
+    ``_pkg_config_stderr``) output forwarded rather than swallowed. It is
+    not routed through the failure policy: pkg-config exited 0 and returned
+    usable flags, which is not a failure for ``--pkg-config-errors=error``
+    to promote.
+
+    Forwarding is deduplicated per ``(package, option, stderr)`` for the
+    life of the process: this function is reached both cached
+    (``cached_pkg_config``, at most once per spec) and uncached
+    (``_batch_pkg_config``'s all-exist fast path), and the same package
+    queried through both, or through two batch rounds, would otherwise
+    print an identical warning once per call.
     """
     result = subprocess.run(
         ["pkg-config", option, package],
@@ -262,7 +274,10 @@ def _run_pkg_config_query(package: str, option: str) -> str:
         return ""
     stderr = _pkg_config_stderr(result)
     if stderr:
-        print(stderr, file=sys.stderr)
+        key = (package, option, stderr)
+        if key not in _forwarded_pkg_config_stderr:
+            _forwarded_pkg_config_stderr.add(key)
+            print(stderr, file=sys.stderr)
     return result.stdout.rstrip()
 
 

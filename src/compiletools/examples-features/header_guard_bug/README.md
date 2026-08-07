@@ -25,8 +25,10 @@ false and skipped the rest of `header_a.hpp` — including its
 
 ## Fix
 
-`detect_include_guard()` in `file_analyzer.py` now sorts directives by
-line number before pairing an `#ifndef` with its `#define`, and looks
+`_extract_directives()` in `file_analyzer.py` flattens and sorts
+directives by byte position before `detect_include_guard()` ever sees
+them, so pairing an `#ifndef` with its `#define` is no longer sensitive
+to type-grouping order. `detect_include_guard()` additionally looks
 ahead up to five directives for the matching `#define` instead of
 requiring it to be the very next one.
 
@@ -39,6 +41,7 @@ requiring it to be the very next one.
 ## What the regression test asserts
 
 `test_header_guard_bug_transitive_magic_flags` builds `main.cpp` and
-asserts both `header_a.hpp` and `header_b.hpp` are discovered as
-transitive dependencies, and that `header_b.hpp`'s magic flags survive
-into the final flag set.
+asserts `header_b.hpp`'s magic flags (`zlib` in `PKG-CONFIG`, `-lm` in
+`LDFLAGS`) survive into the final flag set. Discovery of `header_a.hpp`
+and `header_b.hpp` as transitive dependencies is implied by that
+result, not asserted directly.
