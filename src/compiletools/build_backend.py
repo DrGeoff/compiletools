@@ -2090,6 +2090,17 @@ class BuildBackend(abc.ABC):
                     return False
         return has_build_rules
 
+    @staticmethod
+    def _published_cas_entries(graph: BuildGraph) -> list[str]:
+        """Return the CAS entry path behind every publish rule in *graph*.
+
+        A publish rule's sole input is the cas-exedir / cas-libdir entry it
+        exposes at a user-facing path. Shared by the execute-side freshening
+        pass and by ``MakefileBackend``'s in-Makefile freshening, so both name
+        the same set of entries.
+        """
+        return [rule.inputs[0] for rule in graph.rules_by_type(RuleType.SYMLINK) if rule.inputs]
+
     def _freshen_published_cas_entries(self, graph: BuildGraph) -> None:
         """Mark every CAS entry this build publishes as still in use.
 
@@ -2138,17 +2149,15 @@ class BuildBackend(abc.ABC):
         if getattr(self.args, "use_mtime", False):
             return
         cutoff = time.time() - _FRESHEN_MIN_AGE_SECONDS
-        for rule in graph.rules_by_type(RuleType.SYMLINK):
-            if not rule.inputs:
-                continue
+        for entry in self._published_cas_entries(graph):
             try:
                 # NOT cached: this pass and any peer publish both move the
                 # mtime being read, and rule inputs can be workspace-relative.
-                if os.path.getmtime(rule.inputs[0]) > cutoff:
+                if os.path.getmtime(entry) > cutoff:
                     continue
             except OSError:
                 continue
-            compiletools.cas_publish.freshen_cas_entry(rule.inputs[0])
+            compiletools.cas_publish.freshen_cas_entry(entry)
 
     def _record_link_signatures(self, graph: BuildGraph) -> None:
         """Persist a content-addressable signature for every link/library

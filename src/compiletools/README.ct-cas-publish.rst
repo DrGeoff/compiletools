@@ -107,6 +107,22 @@ entry in daily use within an hour of current, far inside any
 ``--max-age`` a sweep expresses in days. Make compares the published
 path against the entry live and is unaffected either way.
 
+A generate-then-run workflow never reaches that pass at all.
+``ct-create-makefile`` builds the graph, writes the Makefile and
+returns; the user then runs ``make`` by hand, and nothing calls
+``execute()``. So the make backend also writes a ``_CT_FRESHEN :=
+$(shell find ... -mmin +60 -exec touch -m {} +)`` assignment into the
+generated Makefile. Make expands it once at parse time on every
+invocation, including the no-op rebuild where the publish rule is
+skipped; it creates no target and joins no dependency graph, so it does
+not change what make decides to build. Same one-hour floor, same
+``--use-mtime`` exclusion (under which no assignment is emitted at
+all). Errors are swallowed — an entry a peer trim already evicted, an
+entry owned by another user on a shared pool, and a ``find`` without
+GNU/BSD ``-mmin`` are cache bookkeeping, not build failures. Ninja has
+no parse-time equivalent, and ``ct-cake --backend=ninja`` always runs
+``execute()``, so ninja is covered by the pass above.
+
 OPTIONS
 =======
 

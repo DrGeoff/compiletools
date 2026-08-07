@@ -273,9 +273,12 @@ Linker-artefact directory trimming
 freshens the mtime of every ``cas-exedir`` entry its build publishes at the
 start of ``execute()`` (``BuildBackend._freshen_published_cas_entries``), not
 just on first publish, so an entry a build keeps re-publishing does not age
-out on the timestamp it was created with (this pass is skipped under
-``--use-mtime``, and is bounded to one refresh per artefact per hour — see
-``ct-cas-publish`` (1) for the full rationale). This means ``--max-age`` on
+out on the timestamp it was created with. A generate-then-run workflow
+(``ct-create-makefile`` then a hand-run ``make``) never calls ``execute()``,
+so the generated Makefile carries a parse-time ``_CT_FRESHEN`` assignment
+that does the same job on every invocation. Both are skipped under
+``--use-mtime``, and both are bounded to one refresh per artefact per hour —
+see ``ct-cas-publish`` (1) for the full rationale. This means ``--max-age`` on
 the ``exedir`` pool measures "how long since any build last published this
 artefact", not "how long since this file was written", which differs from
 the ``obj``/``pch``/``pcm`` pools where mtime is set once at compile time and
