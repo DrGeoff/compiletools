@@ -18,6 +18,7 @@ import compiletools.magicflags
 import compiletools.namer
 import compiletools.utils
 from compiletools.build_backend import (
+    _FRESHEN_MIN_AGE_SECONDS,
     CAS_PRODUCER_TYPES,
     BuildBackend,
     _register_make_cli_arguments,
@@ -148,6 +149,75 @@ class MakefileBackend(BuildBackend):
             f".ct-make-timing.{suffix}.jsonl",
         )
 
+    def _freshen_directive(self, graph: BuildGraph) -> str:
+        """Return the parse-time directive that freshens this build's CAS entries.
+
+        Empty string when there is nothing to emit (no publish rules, or
+        ``--use-mtime``, where a published exe's timestamp is a rebuild input
+        rather than cache bookkeeping — same exclusion
+        ``BuildBackend._freshen_published_cas_entries`` applies).
+
+        Why a directive and not a rule. ``ct-create-makefile`` writes the
+        Makefile and returns; nothing calls ``execute()``, so the execute-side
+        freshening pass never runs on a generate-then-run workflow. Hanging the
+        freshening off the publish rule would not help either: make skips that
+        rule precisely when ``bin/<name>`` is already current, which is every
+        no-op rebuild — the case the freshening exists for. A ``$(shell ...)``
+        in a ``:=`` assignment runs once at parse time on every invocation of
+        the generated Makefile, creates no target and joins no dependency
+        graph, so it reaches the skipped case without perturbing what make
+        decides to build.
+
+        ``find -mmin +N`` applies the same age floor as the execute-side pass,
+        so an entry inside the floor is left alone and ninja's republish
+        problem (documented on that method) cannot be reintroduced by a user
+        who runs both build files over one cas pool. ``-maxdepth 0`` restricts
+        find to the named paths. Failures are swallowed: an entry a peer trim
+        already evicted, an entry owned by another user on a shared pool, and
+        a ``find`` without GNU/BSD ``-mmin`` are all cache bookkeeping, not
+        build errors.
+
+        ``touch -c`` is load-bearing, not tidiness. Plain ``touch`` CREATES a
+        missing file, and ``find -exec ... +`` stats the paths and runs one
+        ``touch`` at the end, so a peer trim unlinking an entry inside that
+        window lands the ``touch`` on a path that no longer exists — and
+        ``-mmin +N`` selects precisely the population ``--max-age`` evicts. The
+        result is a zero-byte cas entry with ``mtime=now``, which the publish
+        rule then hardlinks to ``bin/<name>``: a silent wrong build at exit 0,
+        made sticky because the fresh mtime puts it last in line for eviction.
+        That is the first locking invariant's hazard (an empty ``mtime=now``
+        artefact a peer make reads as up-to-date) in a new place. ``-c`` skips
+        the missing path instead, and the next build relinks the entry.
+
+        ``CT_DRY_RUN`` suppresses the whole assignment under ``make -n`` and
+        ``make -q``, which must not mutate anything. GNU Make reserves the
+        first word of ``MAKEFLAGS`` for the single-letter option cluster and
+        leaves it EMPTY when there are none, so a long option can never lead;
+        the ``-`` prefix then makes the word a flag cluster whichever it is.
+        The letters arrive the same way from the command line, from an
+        inherited ``MAKEFLAGS`` environment variable, and in a recursive
+        ``$(MAKE)`` sub-invocation. ``make -t`` is deliberately NOT covered: it
+        creates empty files by design and is already documented as
+        inappropriate against a CAS-only build.
+        """
+        if getattr(self.args, "use_mtime", False):
+            return ""
+        entries = self._published_cas_entries(graph)
+        if not entries:
+            return ""
+        minutes = _FRESHEN_MIN_AGE_SECONDS // 60
+        shells = [
+            "$(shell find "
+            + " ".join(_make_quote(entry) for entry in entries[i : i + _RM_CHUNK_SIZE])
+            + f" -maxdepth 0 -mmin +{minutes} -exec touch -c -m {{}} + 2>/dev/null)"
+            for i in range(0, len(entries), _RM_CHUNK_SIZE)
+        ]
+        dry = "CT_DRY_RUN := $(findstring n,$(firstword -$(MAKEFLAGS)))$(findstring q,$(firstword -$(MAKEFLAGS)))"
+        body = "_CT_FRESHEN := $(if $(CT_DRY_RUN),," + "".join(shells) + ")"
+        # `#` in a path would start a Make comment here (a variable-assignment
+        # line, unlike a recipe line where `#` reaches the shell verbatim).
+        return dry + "\n" + body.replace("#", "\\#")
+
     def _write_makefile(self, graph: BuildGraph, f) -> None:
         """Write a complete Makefile from the BuildGraph."""
         f.write(f"{self._build_file_header_token()}\n\n")
@@ -190,6 +260,10 @@ class MakefileBackend(BuildBackend):
             # surviving `${EPOCHREALTIME-}` as a Make variable lookup at
             # recipe expansion time, eating it.
             f.write(f"CT_NS_EXPR = {_NS_EXPR_INLINE}\n\n")
+
+        freshen = self._freshen_directive(graph)
+        if freshen:
+            f.write(freshen + "\n\n")
 
         # Write phony rules first so "all" is the default target
         phony_rules = [r for r in graph.rules if r.rule_type == RuleType.PHONY]

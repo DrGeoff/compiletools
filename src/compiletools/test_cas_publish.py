@@ -544,7 +544,11 @@ class TestConcurrentTrimLossReporting:
         assert rc == EXIT_CONCURRENT_TRIM
         assert rc not in (0, 1, 2), "the loss code must be distinguishable from success/generic/usage"
         err = capsys.readouterr().err
-        assert "concurrent trim" in err.lower()
+        assert "ct-trim-cache" in err, (
+            "the message must name the likely actor by tool name: no build reads the exit "
+            "code (make erases it, ct-cake collapses it to 1), so this text is the whole "
+            "escalation the user gets"
+        )
         assert missing in err
         assert "rerun" in err.lower(), "the message must tell the user what to do"
         assert "never produced" in err.lower(), (
