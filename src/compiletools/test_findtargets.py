@@ -252,6 +252,160 @@ class TestFindTargetsStyles:
         assert "b.cpp" in out
 
 
+_EXES = ["app/main.cpp"]
+_TESTS = ["test_widget.cpp"]
+_STATIC = ["lib/widget.cpp"]
+_DYNAMIC = ["lib/plugin.cpp"]
+
+_BUCKET_COMBOS = {
+    "nothing at all": ([], [], [], []),
+    "exes and tests only": (_EXES, _TESTS, [], []),
+    "static only": (_EXES, [], _STATIC, []),
+    "dynamic only": (_EXES, [], [], _DYNAMIC),
+    "both libraries": (_EXES, [], _STATIC, _DYNAMIC),
+    "all four buckets": (_EXES, _TESTS, _STATIC, _DYNAMIC),
+}
+
+# Every style crossed with every bucket combination, spelled out verbatim
+# rather than recomputed, so a change to any style's rendering has to be
+# retyped here to pass. The two "exes and tests only" rows and the "nothing at
+# all" rows are the output the two-bucket styles produced before the library
+# buckets existed; they are the compatibility contract, not just examples.
+_EXPECTED_OUTPUT = {
+    ("null", "nothing at all"): "[]\n[]\n",
+    ("null", "exes and tests only"): "['app/main.cpp']\n['test_widget.cpp']\n",
+    ("null", "static only"): "['app/main.cpp']\n[]\nstatic: ['lib/widget.cpp']\n",
+    ("null", "dynamic only"): "['app/main.cpp']\n[]\ndynamic: ['lib/plugin.cpp']\n",
+    ("null", "both libraries"): "['app/main.cpp']\n[]\nstatic: ['lib/widget.cpp']\ndynamic: ['lib/plugin.cpp']\n",
+    ("null", "all four buckets"): (
+        "['app/main.cpp']\n['test_widget.cpp']\nstatic: ['lib/widget.cpp']\ndynamic: ['lib/plugin.cpp']\n"
+    ),
+    ("flat", "nothing at all"): "\n",
+    ("flat", "exes and tests only"): "app/main.cpp test_widget.cpp\n",
+    ("flat", "static only"): "app/main.cpp lib/widget.cpp\n",
+    ("flat", "dynamic only"): "app/main.cpp lib/plugin.cpp\n",
+    ("flat", "both libraries"): "app/main.cpp lib/widget.cpp lib/plugin.cpp\n",
+    ("flat", "all four buckets"): "app/main.cpp test_widget.cpp lib/widget.cpp lib/plugin.cpp\n",
+    ("indent", "nothing at all"): ("Executable Targets:\n\tNone found\nTest Targets:\n\tNone found\n"),
+    ("indent", "exes and tests only"): ("Executable Targets:\n\tapp/main.cpp\nTest Targets:\n\ttest_widget.cpp\n"),
+    ("indent", "static only"): (
+        "Executable Targets:\n\tapp/main.cpp\nTest Targets:\n\tNone found\nStatic Library Targets:\n\tlib/widget.cpp\n"
+    ),
+    ("indent", "dynamic only"): (
+        "Executable Targets:\n\tapp/main.cpp\nTest Targets:\n\tNone found\nDynamic Library Targets:\n\tlib/plugin.cpp\n"
+    ),
+    ("indent", "both libraries"): (
+        "Executable Targets:\n\tapp/main.cpp\n"
+        "Test Targets:\n\tNone found\n"
+        "Static Library Targets:\n\tlib/widget.cpp\n"
+        "Dynamic Library Targets:\n\tlib/plugin.cpp\n"
+    ),
+    ("indent", "all four buckets"): (
+        "Executable Targets:\n\tapp/main.cpp\n"
+        "Test Targets:\n\ttest_widget.cpp\n"
+        "Static Library Targets:\n\tlib/widget.cpp\n"
+        "Dynamic Library Targets:\n\tlib/plugin.cpp\n"
+    ),
+    ("args", "nothing at all"): "",
+    ("args", "exes and tests only"): " app/main.cpp --tests test_widget.cpp",
+    ("args", "static only"): " app/main.cpp --static lib/widget.cpp",
+    ("args", "dynamic only"): " app/main.cpp --dynamic lib/plugin.cpp",
+    ("args", "both libraries"): " app/main.cpp --static lib/widget.cpp --dynamic lib/plugin.cpp",
+    ("args", "all four buckets"): (
+        " app/main.cpp --tests test_widget.cpp --static lib/widget.cpp --dynamic lib/plugin.cpp"
+    ),
+}
+
+
+class TestLibraryBucketsInEveryStyle:
+    """Every style reports named libraries, and only when there are any.
+
+    ct-findtargets registers ``--static`` / ``--dynamic`` because the
+    re-anchoring driver reparses through the same parser. Reporting them is
+    what turns that accident into the capability the styles were missing. The
+    opt-in rule -- a library section appears only when its bucket is
+    non-empty -- is what makes the change free for every existing consumer,
+    so it is pinned as byte equality against the pre-library output rather
+    than asserted in a comment.
+    """
+
+    @pytest.mark.parametrize("style,combo", sorted(_EXPECTED_OUTPUT))
+    def test_each_style_renders_every_bucket_combination_verbatim(self, capsys, style, combo):
+        compiletools.findtargets._STYLE_REGISTRY[style]()(*_BUCKET_COMBOS[combo])
+        assert capsys.readouterr().out == _EXPECTED_OUTPUT[(style, combo)]
+
+    @pytest.mark.parametrize("style", sorted(compiletools.findtargets._STYLE_REGISTRY))
+    @pytest.mark.parametrize("combo", ["nothing at all", "exes and tests only"])
+    def test_empty_library_buckets_render_what_the_two_argument_call_renders(self, capsys, style, combo):
+        """The compatibility contract, from both ends. Passing the library
+        buckets explicitly-but-empty must equal omitting them, AND that shared
+        output must equal the verbatim table -- otherwise the two calls could
+        agree on output neither of them produced before."""
+        styleobj = compiletools.findtargets._STYLE_REGISTRY[style]()
+        executables, tests, _static, _dynamic = _BUCKET_COMBOS[combo]
+        styleobj(executables, tests)
+        omitted = capsys.readouterr().out
+        styleobj(executables, tests, [], [])
+        assert capsys.readouterr().out == omitted
+        assert omitted == _EXPECTED_OUTPUT[(style, combo)]
+
+
+class TestArgsStyleRoundTrip:
+    """ArgsStyle output is consumed by ct-create-makefile, so what it writes
+    has to reparse into the slots it came from."""
+
+    @staticmethod
+    def _reparse(tokens):
+        cap = _bare_parser("args style round trip")
+        compiletools.apptools.add_target_arguments(cap)
+        args = cap.parse_args(tokens)
+        return tuple(list(getattr(args, slot) or []) for slot in ("filename", "tests", "static", "dynamic"))
+
+    @pytest.mark.parametrize("combo", sorted(_BUCKET_COMBOS))
+    def test_the_emitted_tokens_reparse_into_the_buckets_they_came_from(self, capsys, combo):
+        buckets = _BUCKET_COMBOS[combo]
+        compiletools.findtargets.ArgsStyle()(*buckets)
+        assert self._reparse(capsys.readouterr().out.split()) == buckets
+
+
+# What scripts/ct-build composes: all=$(ct-findtargets --style=args $@) then
+# ct-create-makefile ${all} $@. The user's own argv is appended AFTER the
+# generated tokens, so every slot is written twice.
+_CT_BUILD_ARGVS = (
+    ["--static", "lib/widget.cpp"],
+    ["--dynamic", "lib/plugin.cpp"],
+    ["app/main.cpp", "--static", "lib/widget.cpp"],
+    ["app/main.cpp", "--tests", "t/test_widget.cpp", "--static", "lib/widget.cpp", "--dynamic", "lib/plugin.cpp"],
+    # The residual: a positional AFTER an nargs="*" option in the USER's own
+    # argv is absorbed by that option. Single-pass ct-create-makefile does the
+    # same thing, so the double pass must not make it worse -- which is what
+    # the equality below measures, not that the parse is what a user meant.
+    ["--static", "lib/widget.cpp", "app/main.cpp"],
+)
+
+
+class TestCtBuildDoublePass:
+    """ct-build feeds the ArgsStyle output to ct-create-makefile followed by
+    the user's own argv, so every named target arrives twice. The four slots
+    must come out of the double pass exactly as they come out of a single
+    direct ct-create-makefile invocation.
+    """
+
+    @pytest.mark.parametrize("argv", _CT_BUILD_ARGVS, ids=lambda argv: " ".join(argv))
+    def test_the_doubled_argv_yields_the_single_pass_slots(self, capsys, argv):
+        single = TestArgsStyleRoundTrip._reparse(argv)
+        compiletools.findtargets.ArgsStyle()(*single)
+        generated = capsys.readouterr().out.split()
+        assert TestArgsStyleRoundTrip._reparse(generated + argv) == single
+
+    def test_the_double_pass_cases_actually_populate_a_library_slot(self):
+        """Guard against a vacuous sweep: if every argv above parsed to four
+        empty slots the equality would hold against a style that emits
+        nothing."""
+        populated = [argv for argv in _CT_BUILD_ARGVS if any(TestArgsStyleRoundTrip._reparse(argv)[2:])]
+        assert len(populated) == len(_CT_BUILD_ARGVS)
+
+
 class TestFindTargetsProcess:
     """Test FindTargets.process method."""
 

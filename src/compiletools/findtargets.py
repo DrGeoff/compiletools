@@ -252,44 +252,71 @@ def is_auto_excluded(filepath, patterns, anchor_root=""):
     return False
 
 
+# Every style takes the same four buckets, and the two library buckets are
+# rendered ONLY when non-empty. That opt-in rule is what makes the capability
+# free for existing consumers: a run that names no library produces output
+# byte-identical to the two-bucket version's, in all four styles, pinned by
+# ``TestLibraryBucketsInEveryStyle``. The buckets default to empty so the
+# two-argument call ``FindTargets.process`` makes at verbose>=2 keeps working.
+
+
 class NullStyle:
-    def __call__(self, executabletargets, testtargets):
+    def __call__(self, executabletargets, testtargets, statictargets=(), dynamictargets=()):
         print(executabletargets)
         print(testtargets)
+        # Labelled, unlike the first two lines: a library bucket appears only
+        # when populated, so an unlabelled third line would be unreadable when
+        # only one of the two is present.
+        for label, targets in (("static", statictargets), ("dynamic", dynamictargets)):
+            if targets:
+                print(f"{label}: {targets}")
 
 
 class FlatStyle:
-    def __call__(self, executabletargets, testtargets):
-        print(" ".join(executabletargets + testtargets))
+    def __call__(self, executabletargets, testtargets, statictargets=(), dynamictargets=()):
+        print(" ".join([*executabletargets, *testtargets, *statictargets, *dynamictargets]))
 
 
 class IndentStyle:
-    def __call__(self, executabletargets, testtargets):
-        print("Executable Targets:")
-        if executabletargets:
-            for target in executabletargets:
-                print(f"\t{target}")
-        else:
-            print("\tNone found")
+    def __call__(self, executabletargets, testtargets, statictargets=(), dynamictargets=()):
+        for heading, targets in (
+            ("Executable Targets:", executabletargets),
+            ("Test Targets:", testtargets),
+        ):
+            print(heading)
+            if targets:
+                for target in targets:
+                    print(f"\t{target}")
+            else:
+                print("\tNone found")
 
-        print("Test Targets:")
-        if testtargets:
-            for target in testtargets:
-                print(f"\t{target}")
-        else:
-            print("\tNone found")
+        for heading, targets in (
+            ("Static Library Targets:", statictargets),
+            ("Dynamic Library Targets:", dynamictargets),
+        ):
+            if targets:
+                print(heading)
+                for target in targets:
+                    print(f"\t{target}")
 
 
 class ArgsStyle:
-    def __call__(self, executabletargets, testtargets):
-        if executabletargets:
-            for target in executabletargets:
-                sys.stdout.write(f" {target}")
+    def __call__(self, executabletargets, testtargets, statictargets=(), dynamictargets=()):
+        # Positionals first, and every option after them. argparse's nargs="*"
+        # is greedy, so a positional emitted after an option token is absorbed
+        # into that option's list on the reparse.
+        for target in executabletargets:
+            sys.stdout.write(f" {target}")
 
-        if testtargets:
-            sys.stdout.write(" --tests")
-            for target in testtargets:
-                sys.stdout.write(f" {target}")
+        for flag, targets in (
+            ("--tests", testtargets),
+            ("--static", statictargets),
+            ("--dynamic", dynamictargets),
+        ):
+            if targets:
+                sys.stdout.write(f" {flag}")
+                for target in targets:
+                    sys.stdout.write(f" {target}")
 
 
 _STYLE_REGISTRY = {
