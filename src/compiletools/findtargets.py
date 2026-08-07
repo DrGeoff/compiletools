@@ -504,10 +504,13 @@ def main(argv=None):
 
     styleclass = _STYLE_REGISTRY[args.style.lower()]
     styleobj = styleclass()
-    # Report what ct-cake --auto would build: the same fixpoint of
-    # discovery and config re-anchoring, not a single discovery pass that
-    # misses whatever a discovered target's subproject conf changes.
-    args = discover_targets_and_reanchor(args, context)
+    # Same gate as cake.process(): an explicit target is the whole target
+    # set, and --no-auto means do not walk. Discovery then runs the fixpoint
+    # of discovery and config re-anchoring rather than a single pass, so the
+    # report matches what ct-cake --auto builds even when a discovered
+    # target's subproject conf changes the set.
+    if args.auto and not any([args.filename, args.static, args.dynamic, args.tests]):
+        args = discover_targets_and_reanchor(args, context)
     styleobj(list(args.filename or []), list(args.tests or []))
 
     return 0
