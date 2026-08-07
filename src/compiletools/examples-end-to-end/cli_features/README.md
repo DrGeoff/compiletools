@@ -21,7 +21,7 @@ The script walks through 11 numbered steps, one per feature:
 | 5 | clangd / clang-tidy database | `--compilation-database` |
 | 6 | Per-build timing report | `--timing` |
 | 7 | Stable per-invocation log dir | `--diagnostics-dir` |
-| 8 | Mtime fallback for the touch workflow | `--use-mtime=True` |
+| 8 | Mtime fallback for the touch workflow | `--backend=make --use-mtime=True` |
 | 9 | Custom CAS paths | `--cas-{obj,pch,pcm,exe}dir` |
 | 10 | Clean build artefacts | `--clean` |
 | 11 | Clean artefacts + this build's CAS slice | `--realclean` |

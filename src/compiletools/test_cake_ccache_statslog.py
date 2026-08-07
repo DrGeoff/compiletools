@@ -180,7 +180,6 @@ class TestCcacheStatslogProcessFlow:
                 "--cas-objdir",
                 str(objdir),
                 "--ccache-statslog=auto",
-                "--filename",
                 "irrelevant.cpp",
             ]
         )
@@ -213,7 +212,6 @@ class TestCcacheStatslogProcessFlow:
             "--cas-objdir",
             str(objdir),
             "--ccache-statslog=auto",
-            "--filename",
             "irrelevant.cpp",
         ]
         args = _build_args(argv)
@@ -253,7 +251,6 @@ class TestCcacheStatslogProcessFlow:
             str(objdir),
             "--ccache-statslog",
             str(explicit),
-            "--filename",
             "irrelevant.cpp",
         ]
         args = _build_args(argv)
@@ -286,7 +283,6 @@ class TestCcacheStatslogProcessFlow:
             "--cas-objdir",
             str(objdir),
             "--ccache-statslog=auto",
-            "--filename",
             "irrelevant.cpp",
         ]
         args = _build_args(argv)
@@ -316,7 +312,6 @@ class TestCcacheStatslogProcessFlow:
             "--cas-objdir",
             str(objdir),
             "--ccache-statslog=auto",
-            "--filename",
             "irrelevant.cpp",
         ]
         args = _build_args(argv)
@@ -348,7 +343,6 @@ class TestCcacheStatslogProcessFlow:
             "--cas-objdir",
             str(objdir),
             "--ccache-statslog=auto",
-            "--filename",
             "irrelevant.cpp",
         ]
         args = _build_args(argv)
@@ -387,7 +381,6 @@ class TestCcacheStatslogProcessFlow:
             "--cas-objdir",
             str(objdir),
             "--ccache-statslog=auto",
-            "--filename",
             "irrelevant.cpp",
         ]
         args = _build_args(argv)
@@ -423,7 +416,6 @@ class TestCcacheStatslogProcessFlow:
             str(bindir),
             "--cas-objdir",
             str(objdir),
-            "--filename",
             "irrelevant.cpp",
         ]
         args = _build_args(argv)
@@ -456,7 +448,6 @@ class TestCcacheStatslogProcessFlow:
             "--cas-objdir",
             str(objdir),
             "--ccache-statslog=auto",
-            "--filename",
             "irrelevant.cpp",
         ]
         args = _build_args(argv)
@@ -507,7 +498,6 @@ class TestCcacheStatslogRootSpanLift:
             "--timing",
             "--otel-export",
             "--ccache-statslog=auto",
-            "--filename",
             "irrelevant.cpp",
         ]
         args = _build_args(argv)

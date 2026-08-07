@@ -48,7 +48,7 @@ def _emulate_finally_block(args):
 def _bindir_objdir_argv(tmp_path, *extras):
     """Return (bindir, objdir, argv) for the recurring
     --bindir/--cas-objdir/--timing skeleton. ``*extras`` appends extra
-    argv items (e.g. ``--filename irrelevant.cpp``)."""
+    argv items (e.g. the ``irrelevant.cpp`` target positional)."""
     bindir = tmp_path / "bin"
     objdir = tmp_path / "obj"
     argv = ["--bindir", str(bindir), "--cas-objdir", str(objdir), "--timing", *extras]
@@ -109,7 +109,7 @@ def test_diagnostics_timing_json_written_through_process(monkeypatch, tmp_path):
     invoked; we only assert that the finally block ran and wrote timing.json
     at the resolved diagnostics location even when ``_call_backend`` raises.
     """
-    bindir, _objdir, argv = _bindir_objdir_argv(tmp_path, "--filename", "irrelevant.cpp")
+    bindir, _objdir, argv = _bindir_objdir_argv(tmp_path, "irrelevant.cpp")
     args = _build_args(argv)
 
     # Short-circuit the parts of process() that would do real work. We keep
@@ -183,7 +183,6 @@ def test_otel_export_failure_does_not_fail_build(monkeypatch, tmp_path, capsys):
         str(objdir),
         "--timing",
         "--otel-export",
-        "--filename",
         "irrelevant.cpp",
     ]
     args = _build_args(argv)
@@ -224,7 +223,6 @@ def test_otel_export_with_no_timing_hard_errors(tmp_path):
         str(objdir),
         "--otel-export",
         "--no-timing",
-        "--filename",
         "irrelevant.cpp",
     ]
     args = _build_args(argv)
@@ -247,7 +245,6 @@ def test_otel_export_implies_timing(tmp_path):
         "--cas-objdir",
         str(objdir),
         "--otel-export",
-        "--filename",
         "irrelevant.cpp",
     ]
     args = _build_args(argv)
@@ -272,7 +269,6 @@ def test_otel_export_with_timing_no_warning(monkeypatch, tmp_path, capsys):
         str(objdir),
         "--timing",
         "--otel-export",
-        "--filename",
         "irrelevant.cpp",
     ]
     args = _build_args(argv)
@@ -304,7 +300,7 @@ def test_ct_rule_outcomes_log_restored_on_exception(monkeypatch, tmp_path):
     the next invocation in the same Python process (in-process batch mode,
     tests, REPL).
     """
-    _bindir, _objdir, argv = _bindir_objdir_argv(tmp_path, "--filename", "irrelevant.cpp")
+    _bindir, _objdir, argv = _bindir_objdir_argv(tmp_path, "irrelevant.cpp")
     args = _build_args(argv)
 
     def _stub_createctobjs(self):
@@ -350,7 +346,7 @@ def test_env_vars_restored_even_when_timer_disabled(monkeypatch, tmp_path):
     invariant with respect to caller-owned environment state regardless
     of timer.enabled.
     """
-    _bindir, _objdir, argv = _bindir_objdir_argv(tmp_path, "--filename", "irrelevant.cpp")
+    _bindir, _objdir, argv = _bindir_objdir_argv(tmp_path, "irrelevant.cpp")
     args = _build_args(argv)
 
     def _stub_createctobjs(self):
