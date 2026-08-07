@@ -59,10 +59,25 @@ The whole sequence runs while holding the ``<cas-path>.lock`` sidecar,
 the same lock ``ct-trim-cache`` takes before evicting an entry, so a
 publish and a concurrent trim of the same CAS entry are totally
 ordered. Trim first leaves nothing to publish: the helper reports
-``CAS entry missing at publish (<path>): removed by a concurrent trim,
-or never produced; rerun the build`` and exits ``3``, and the next
-build rebuilds the artefact. Publish first raises
-the entry's ``nlink`` to 2, which trim's hard-link protection honours.
+``CAS entry missing at publish (<path>): removed by a concurrent
+ct-trim-cache sweep, or never produced by its build rule; rerun the
+build`` and exits ``3``, and the next build rebuilds the artefact.
+Publish first raises the entry's ``nlink`` to 2, which trim's hard-link
+protection honours.
+
+Rerunning the build is the whole remedy, and it is the only mechanism
+that works. This helper links an entry, it never produces one, so
+retrying the publish re-fails deterministically however many times it
+runs; only re-entering the build graph reaches the link rule that
+recreates the entry. Nothing in compiletools retries a lost publish for
+that reason.
+
+Exit ``3`` is for a human or a wrapper running ``ct-cas-publish``
+directly. No build reads it: make exits ``2`` and keeps the ``3`` only
+in its ``Error 3`` text, ninja exits ``3``, the Shake backend raises a
+``CalledProcessError`` carrying ``3``, and ``ct-cake`` renders all
+three and exits ``1``. The message above is what actually reaches the
+user, and it streams to stderr under every backend.
 
 Those two are the only outcomes on the hardlink path. A publish that
 fell back to ``symlink()`` leaves the entry at ``nlink == 1``, which
@@ -212,9 +227,13 @@ EXIT CODES
     is recoverable: rerun the build and the artefact is relinked into
     the cache. A producer rule that exits 0 without writing its output
     lands here too, which a rerun will not fix, so the message names
-    both. Distinct from ``1`` so a wrapper COULD retry this case without
-    retrying real errors — no in-tree caller does this today; the
-    generated build recipes treat any nonzero exit as a hard failure.
+    both. Distinct from ``1`` for a human or a wrapper reading this
+    helper's exit directly; no build reads it, because make erases the
+    code and ``ct-cake`` collapses every failure to ``1``. A wrapper
+    that sees this code should rerun the BUILD, not this command — the
+    helper cannot produce the entry it lost, so re-invoking it re-fails
+    every time. The generated build recipes treat any nonzero exit as a
+    hard failure and do not retry.
 
 CONCURRENCY
 ===========

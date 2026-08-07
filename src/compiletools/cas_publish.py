@@ -63,8 +63,15 @@ import compiletools.filesystem_utils
 import compiletools.locking
 
 # Exit code for "the CAS entry was evicted by a concurrent trim". Distinct from
-# 0 (published), 1 (generic failure) and 2 (argparse usage) so a build can tell
-# the recoverable loss apart from a real error.
+# 0 (published), 1 (generic failure) and 2 (argparse usage) for a human or a
+# wrapper invoking ``ct-cas-publish`` DIRECTLY. No build reads it, and no build
+# can: make exits 2 and keeps the 3 only in its "Error 3" text, ninja exits 3,
+# shake raises a CalledProcessError carrying 3 -- and ``cake.main`` then renders
+# every one of those and returns 1. Propagating the code out of ``ct-cake``
+# would mean it holds on shake and ninja and silently not on make, which is a
+# worse contract than the uniform 1; parsing make's text to recover it is not
+# on the table. The escalation that actually reaches the user is the message
+# below, which streams to stderr under all three backends.
 EXIT_CONCURRENT_TRIM = 3
 
 # Lock-acquisition errnos an unlocked publish is allowed to proceed through.
@@ -98,17 +105,21 @@ class ConcurrentTrimError(Exception):
 
     Raised when the under-lock existence re-check finds the entry gone, or
     when ``os.link`` reports ``ENOENT`` for it (the residual window on a pool
-    where the lock could not be taken). A concurrent ``ct-trim-cache`` eviction
-    is the reachable cause and rerunning the build rebuilds the artefact; a
-    producer rule that exits 0 without writing its output reaches the same
-    state, so the message names the missing entry rather than asserting an
-    actor it cannot distinguish.
+    where the lock could not be taken). A concurrent ``ct-trim-cache`` sweep is
+    the likely actor and the message names it, but a producer rule that exits 0
+    without writing its output reaches a byte-identical state, so the message
+    keeps both causes rather than asserting one it cannot distinguish.
+
+    Rerunning the build is the remedy and the only mechanism that works: this
+    helper can link an entry, never produce one, so retrying the publish
+    re-fails deterministically. Only re-entering the build graph reaches the
+    link rule that recreates the entry.
     """
 
     def __init__(self, cas_path: str):
         super().__init__(
-            f"CAS entry missing at publish ({cas_path}): removed by a concurrent trim, "
-            "or never produced; rerun the build"
+            f"CAS entry missing at publish ({cas_path}): removed by a concurrent "
+            "ct-trim-cache sweep, or never produced by its build rule; rerun the build"
         )
         self.cas_path = cas_path
 
