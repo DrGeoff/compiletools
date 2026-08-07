@@ -477,6 +477,22 @@ def discover_targets_and_reanchor(args, context):
     )
 
 
+def _reject_library_slots(cap, args):
+    """Refuse --static/--dynamic, which this tool registers but cannot report.
+
+    The style classes take an executable bucket and a test bucket, so a named
+    library has nowhere to go and is dropped from the output.
+    """
+    named = [flag for flag, value in (("--static", args.static), ("--dynamic", args.dynamic)) if value]
+    if not named:
+        return
+    cap.error(
+        f"{' and '.join(named)} cannot be reported by ct-findtargets, which lists executables and tests only. "
+        "Use --filename and --tests to name those explicitly, "
+        "and build libraries with ct-create-makefile --static/--dynamic."
+    )
+
+
 def main(argv=None):
     cap = compiletools.apptools.create_parser("Find C/C++ files with main functions and unit tests", argv=argv)
     add_arguments(cap)
@@ -489,6 +505,7 @@ def main(argv=None):
 
     context = BuildContext()
     args = compiletools.apptools.parseargs(cap, argv, context=context)
+    _reject_library_slots(cap, args)
 
     styleclass = _STYLE_REGISTRY[args.style.lower()]
     styleobj = styleclass()

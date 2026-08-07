@@ -829,3 +829,88 @@ def test_an_explicit_target_suppresses_discovery(reanchor_repo, capsys):
             assert compiletools.findtargets.main(["--style=args", "--filename", named]) == 0
     out = capsys.readouterr().out
     assert out.split() == [named]
+
+
+@pytest.fixture
+def library_repo(tmp_path):
+    """A repo with one executable and one library source, so ``--static``
+    can name a real file that parseargs will resolve and hash."""
+    root = tmp_path / "libraryrepo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    (root / "ct.conf").write_text("exemarkers = [main]\ntestmarkers = unit_test.hpp\n")
+
+    app = root / "app"
+    app.mkdir()
+    (app / "main.cpp").write_text("int main() { return 0; }\n")
+
+    lib = root / "lib"
+    lib.mkdir()
+    (lib / "widget.cpp").write_text("int widget() { return 3; }\n")
+    return root
+
+
+class TestLibrarySlotsAreRejected:
+    """ct-findtargets reports two buckets, executables and tests, and the
+    style classes take exactly those two. ``--static`` / ``--dynamic`` reach
+    the parser only because the re-anchoring driver reparses through this
+    same cap and needs the slots registered, so a named library is accepted
+    and then never printed.
+
+    Base 168b1076 rejected both flags outright -- main() did not register
+    the target arguments, so argparse exited 2 on an unrecognized argument.
+    Restoring that rejection with a diagnostic is the contract these tests
+    pin; the silent-swallow surface is one release old and is the accident.
+    """
+
+    @staticmethod
+    def _run(repo, argv):
+        with uth.DirectoryContext(str(repo)):
+            with uth.ParserContext():
+                return compiletools.findtargets.main(argv)
+
+    def test_a_named_executable_still_reports(self, library_repo, capsys):
+        """Control: the rejection must be specific to the library slots, not
+        a blanket refusal of every explicitly named target."""
+        named = os.path.join("app", "main.cpp")
+        assert self._run(library_repo, ["--style=args", "--filename", named]) == 0
+        assert capsys.readouterr().out.split() == [named]
+
+    @pytest.mark.parametrize("flag", ["--static", "--dynamic"])
+    def test_a_library_slot_alone_is_rejected(self, library_repo, flag):
+        with pytest.raises(SystemExit) as excinfo:
+            self._run(library_repo, ["--style=args", flag, os.path.join("lib", "widget.cpp")])
+        assert excinfo.value.code == 2
+
+    @pytest.mark.parametrize("flag", ["--static", "--dynamic"])
+    def test_a_library_slot_combined_with_filename_is_rejected(self, library_repo, flag, capsys):
+        """The dangerous form. Combined with a named executable the tool
+        used to exit 0 printing only the executable -- a plausible answer
+        that silently drops the library, which survives far longer
+        downstream than the empty output the flag produces on its own."""
+        with pytest.raises(SystemExit) as excinfo:
+            self._run(
+                library_repo,
+                [
+                    "--style=args",
+                    flag,
+                    os.path.join("lib", "widget.cpp"),
+                    "--filename",
+                    os.path.join("app", "main.cpp"),
+                ],
+            )
+        assert excinfo.value.code == 2
+        assert "main.cpp" not in capsys.readouterr().out
+
+    def test_the_diagnostic_names_the_flag_the_slots_and_the_other_tool(self, library_repo, capsys):
+        """A rejection a user cannot act on is worse than the silence it
+        replaces, so pin the three things the message has to carry: which
+        flag was refused, which slots this tool does report, and where a
+        library build actually goes."""
+        with pytest.raises(SystemExit):
+            self._run(library_repo, ["--static", os.path.join("lib", "widget.cpp")])
+        err = capsys.readouterr().err
+        assert "--static" in err
+        assert "--filename" in err
+        assert "--tests" in err
+        assert "ct-create-makefile" in err
