@@ -269,6 +269,18 @@ Linker-artefact directory trimming
    The companion ``<path>.manifest`` is unlinked best-effort
    alongside the cas entry.
 
+**Published entries get their mtime freshened outside of trim.** Every backend
+freshens the mtime of every ``cas-exedir`` entry its build publishes at the
+start of ``execute()`` (``BuildBackend._freshen_published_cas_entries``), not
+just on first publish, so an entry a build keeps re-publishing does not age
+out on the timestamp it was created with (this pass is skipped under
+``--use-mtime``, and is bounded to one refresh per artefact per hour — see
+``ct-cas-publish`` (1) for the full rationale). This means ``--max-age`` on
+the ``exedir`` pool measures "how long since any build last published this
+artefact", not "how long since this file was written", which differs from
+the ``obj``/``pch``/``pcm`` pools where mtime is set once at compile time and
+never subsequently touched.
+
 PCM directory trimming
 ----------------------
 Identical algorithm to PCH trimming, with one bucketing twist:
@@ -614,6 +626,26 @@ Orphan-cell Modes
     lock-safe (contended cells are deferred, not hard-failed). Mutually exclusive
     with ``--list-resolvable`` / ``--list-unresolvable`` / ``--all-variants``; a
     single ``--cas-*-only`` flag scopes it to one cache. Honours ``--dry-run``.
+
+``--purge-ca-siblings``
+    Destructive, one-time migration. During the ``cas-exedir`` trim, unlink the
+    dead second content-addressed name (``<stem>_<64hex>_<20hex>``) that a shake
+    release up to and including 12.1.1 wrote beside every static/shared library
+    entry and hardlinked to it. The pair held each other above ``nlink > 1``
+    forever, so no ``--keep-count`` / ``--max-age`` / ``--max-size`` setting
+    could reclaim either, and each distinct link key added another
+    unreclaimable singleton bucket. A fixed shake never writes the sibling
+    again, so this clears a bounded residue; it frees no bytes directly (the
+    inode survives via the real entry) but unpins the real entry so the normal
+    policy can evict it later. **Requires ``--max-age > 0``**: the age floor
+    means "no build has touched this inode for N days", so a peer is unlikely
+    to be mid-copy; a WARM sibling (within the cutoff) is spared and reported
+    as ``ca_siblings_skipped_warm``. Applies to the ``cas-exedir`` trim only —
+    rejected (exit 1) if combined with ``--cas-objdir-only`` /
+    ``--cas-pchdir-only`` / ``--cas-pcmdir-only``, or with any of the
+    standalone pool modes (``--list-resolvable`` / ``--list-unresolvable`` /
+    ``--purge-unresolvable``). Honours ``--dry-run``. Do not run it until no
+    pre-fix (<= 12.1.1) peer remains on the shared pool.
 
 Output Options
 --------------

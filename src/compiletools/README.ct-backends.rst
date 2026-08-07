@@ -275,8 +275,15 @@ re-running the producer.
 Pass ``--use-mtime=True`` to restore legacy mtime semantics for
 interactive workflows where re-touching a source should force a
 rebuild even when the producer key would not change.  The flag is
-registered in ``apptools.add_output_directory_arguments`` so all
-backends accept it consistently.
+registered in ``apptools.add_output_directory_arguments`` so every
+backend's parser accepts it, but only ``make`` and ``ninja`` honor it:
+their rule emitters consume the prereq list as a literal mtime
+comparison.  cmake, bazel, and shake use their own change detection
+and cannot deliver "touch to force rebuild" semantics, so
+``--use-mtime=True`` against one of those (**shake is the default
+backend**) is a hard ``ValueError`` at backend construction rather
+than a silently ignored no-op — pair it with an explicit
+``--backend=make`` or ``--backend=ninja``.
 
 **Caveats of CAS-only mode:**
 

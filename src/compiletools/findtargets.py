@@ -68,7 +68,7 @@ def add_discovery_arguments(cap):
             "Merged into the --auto-exclude pattern list. Use the "
             "append-AUTO-EXCLUDE / prepend-AUTO-EXCLUDE form in conf files "
             "(uppercase -- the lowercase append-auto-exclude spelling is "
-            "silently ignored) so a subproject ADDS exclusions instead of "
+            "dropped as unknown, noted at verbose>=1) so a subproject ADDS exclusions instead of "
             "last-writer-wins clobbering the whole list. A command-line "
             "--auto-exclude appends to the conf values either way; there is "
             "no un-exclude. Order is irrelevant for an exclusion set, so "

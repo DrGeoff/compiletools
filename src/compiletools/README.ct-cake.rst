@@ -330,7 +330,8 @@ globally-configured hooks that individual projects may need to opt
 out of.
 Conf keys are case-sensitive — the accumulating forms must be spelled
 with the uppercase option name (``append-PREBUILD-SCRIPT``, not
-``append-prebuild-script``; the lowercase form is silently ignored).
+``append-prebuild-script``; the lowercase form is dropped as unknown,
+noted at ``-v`` since it is a near-miss of a registered key).
 
 An environment variable (e.g. ``PREBUILD_SCRIPT``) overrides
 conf-file values per the standard hierarchy (environment variables >
@@ -564,8 +565,12 @@ content-addressable action cache, trace_backend's verifying
 traces) and a touched-but-otherwise-unchanged source is invisible
 to all of them — they cannot deliver "touch to force rebuild"
 semantics regardless of how the flag is set. Passing
-``--use-mtime=True`` against one of those backends emits a
-stderr warning and is otherwise ignored.
+``--use-mtime=True`` against one of those backends is a hard error
+(``ValueError`` at backend construction) rather than a silently
+ignored no-op, since silently ignoring the opt-in would mislead the
+user about what their flag does. **shake is the default backend**,
+so ``--use-mtime=True`` requires pairing it with an explicit
+``--backend=make`` or ``--backend=ninja``.
 
 Caveats of ``--use-mtime=False`` mode
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -633,7 +638,10 @@ see a no-op (the source content didn't change → CAS key is unchanged
 → cached object reused). To audit, run ``ct-trim-cache --dry-run`` and
 verify the kept-vs-removed split matches expectations. To restore the
 legacy behavior, pass ``--use-mtime=True`` or set ``use_mtime=True``
-in the relevant ``ct.conf``.
+in the relevant ``ct.conf`` — **and also pass** ``--backend=make`` **or**
+``--backend=ninja``, since the default backend separately flipped to
+``shake`` (see ``README.ct-backends.rst``), and shake raises rather than
+ignoring ``--use-mtime=True``.
 
 Cache trimming for cas-exedir uses the shared ``ct-trim-cache`` tool:
 

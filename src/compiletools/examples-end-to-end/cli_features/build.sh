@@ -15,7 +15,7 @@ step "2. Build a single target with a custom output name (-o / --output)"
 # -o renames the produced binary; useful for scripted builds that need
 # a stable name independent of the source filename.
 ct-cake alpha.cpp -o alpha_renamed
-ls bin/*/alpha_renamed
+ls alpha_renamed
 
 step "3. --disable-tests / --disable-exes (subset of --auto)"
 ct-cake --auto --disable-tests   # build exes only
@@ -44,10 +44,12 @@ ls /tmp/ct-diag-$$
 
 step "8. --use-mtime=True: restore classical mtime semantics"
 # CAS-only mode (the default --use-mtime=False) ignores mtime, so
-# `touch alpha.cpp` does NOT trigger a rebuild. With --use-mtime=True
-# the Make/Ninja backends honor mtime and a touch forces a rebuild.
+# `touch alpha.cpp` does NOT trigger a rebuild. --use-mtime=True only
+# has meaning for the Make/Ninja backends, so it must be paired with
+# --backend=make (or ninja) -- shake is the default backend and rejects
+# --use-mtime=True outright.
 touch alpha.cpp
-ct-cake alpha.cpp --use-mtime=True
+ct-cake alpha.cpp --backend=make --use-mtime=True
 
 step "9. --cas-objdir / --cas-pchdir / --cas-pcmdir / --cas-exedir overrides"
 # Point any of the four CAS layers at a custom path -- handy for
