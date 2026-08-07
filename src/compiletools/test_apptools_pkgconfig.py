@@ -416,10 +416,15 @@ def test_a_warning_from_a_succeeding_query_still_reaches_the_user(monkeypatch, c
     """Capturing stderr to build the failure diagnostic must not silence the
     success path.
 
-    pkg-config exits 0 while writing real diagnostics to stderr -- an
-    undefined variable expands to nothing and the flags come back quietly
-    short. Before stderr was captured it went straight to the terminal, so
-    capturing it without re-emitting would delete that signal.
+    A query that exits 0 can still write a diagnostic to stderr, and before
+    stderr was captured it went straight to the terminal, so capturing it
+    without re-emitting would delete that signal. The stub is deliberate:
+    pkgconf 1.4.2 does not reach this path. Eight malformed-``.pc`` shapes
+    were probed and none wrote to stderr on a successful query, including an
+    undefined variable -- which exits 0 with empty stderr and quietly
+    truncates ``-I${nope}/include`` to ``-I/include``, so it is a
+    silent-wrong-flags case rather than the noisy one this test pins. The
+    contract is kept for the implementations that do warn.
     """
 
     def succeeds_with_a_warning(cmd, **_kwargs):
