@@ -656,16 +656,16 @@ version against the string ``libxml-2.0``.
 happens when a pkg-config package fails: a malformed specification
 (above), a package ``pkg-config --exists`` reports missing, or a
 package that exists but whose ``--cflags``/``--libs`` query itself
-fails (a broken ``Requires.private`` chain, a bad ``.pc`` variable
-expansion). In ``warn`` mode each failure is a ``UserWarning`` and
-contributes zero flags; the build continues, possibly with an
-incomplete link. In ``error`` mode the first failure raises
-``PkgConfigError`` and stops the build — failures are not reported in
-declaration order, so expect the *first encountered*, not necessarily
-the *first written*, specification in the diagnostic. Use ``error``
-in CI to turn a silently-incomplete build into a build failure at the
-point pkg-config resolution breaks, rather than downstream at link
-time with a confusing "undefined reference" error.
+fails (a broken ``Requires.private`` chain). In ``warn`` mode each
+failure is a ``UserWarning`` and contributes zero flags; the build
+continues, possibly with an incomplete link. In ``error`` mode the
+first failure raises ``PkgConfigError`` and stops the build — failures
+are not reported in declaration order, so expect the *first
+encountered*, not necessarily the *first written*, specification in
+the diagnostic. Use ``error`` in CI to turn a silently-incomplete
+build into a build failure at the point pkg-config resolution breaks,
+rather than downstream at link time with a confusing "undefined
+reference" error.
 
 **Environment Variable Mapping**
 
