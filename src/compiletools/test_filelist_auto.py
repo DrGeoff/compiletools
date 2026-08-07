@@ -222,6 +222,38 @@ def test_auto_exclude_drops_a_vendored_header_the_walk_pulled_in(vendor_repo, ca
     assert os.path.realpath(str(vendor_repo / "vendor" / "thirdparty.hpp")) not in listed
 
 
+def test_no_merge_lists_a_vendored_header_when_nothing_excludes_it(vendor_repo, capsys: Any) -> None:
+    """Control for the --no-merge pair below: the header the walk reached is
+    in the per-target report when no pattern drops it."""
+    _run_filelist(vendor_repo, ["--auto", "--no-merge"])
+    listed = {line.strip() for line in capsys.readouterr().out.splitlines() if line.strip()}
+    assert os.path.realpath(str(vendor_repo / "app" / "main.cpp")) in listed
+    assert os.path.realpath(str(vendor_repo / "vendor" / "thirdparty.hpp")) in listed
+
+
+def test_no_merge_drops_a_vendored_header_the_walk_pulled_in(vendor_repo, capsys: Any) -> None:
+    """--auto-exclude governs the per-target report too, not only the merged
+    list. Today one shared _not_auto_excluded call precedes the merge branch,
+    so this passes for free; what it pins is that the filter STAYS shared.
+    Moving that call inside the ``if self.args.merge`` arm fails this test and
+    no other in this file."""
+    _run_filelist(vendor_repo, ["--auto", "--no-merge", "--auto-exclude=vendor"])
+    listed = {line.strip() for line in capsys.readouterr().out.splitlines() if line.strip()}
+    assert os.path.realpath(str(vendor_repo / "app" / "main.cpp")) in listed
+    assert os.path.realpath(str(vendor_repo / "vendor" / "thirdparty.hpp")) not in listed
+
+
+def test_no_merge_prints_each_target_once(vendor_repo, capsys: Any) -> None:
+    """The named target is printed as the report's heading, so the branch
+    removes it from the dependency list it then hands to the style object.
+    Dropping that removal prints main.cpp twice, which the merged path cannot
+    show -- ordered_unique collapses it there."""
+    _run_filelist(vendor_repo, ["--auto", "--no-merge"])
+    printed = [line.strip() for line in capsys.readouterr().out.splitlines() if line.strip()]
+    target = os.path.realpath(str(vendor_repo / "app" / "main.cpp"))
+    assert printed.count(target) == 1
+
+
 def test_an_extrafile_survives_a_pattern_that_excludes_it_from_the_walk(vendor_repo, capsys: Any) -> None:
     """Explicit beats exclude, on an invocation where the SAME pattern drops
     the SAME file from the dependency walk. --extrafile is the caller naming
