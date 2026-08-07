@@ -336,6 +336,11 @@ def _locate_pc_file(package: str) -> str | None:
     """
     for directory in _pkg_config_search_dirs():
         candidate = os.path.join(directory, f"{package}.pc")
+        # NOT wrappedos: the search dirs come from PKG_CONFIG_PATH, whose
+        # entries are user-supplied and may be relative, so a cached answer
+        # keyed on the candidate string would survive a chdir and resolve
+        # against the wrong directory. The walk is per-package on a
+        # diagnostic path, so the cache would buy little anyway.
         if os.path.isfile(candidate):
             return candidate
     return None
