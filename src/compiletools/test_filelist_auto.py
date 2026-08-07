@@ -182,3 +182,41 @@ def test_auto_exclude_reaches_the_files_swept_in_beside_a_test(sibling_repo, cap
     listed = {line.strip() for line in capsys.readouterr().out.splitlines() if line.strip()}
     assert os.path.realpath(str(sibling_repo / "app" / "test_widget.cpp")) in listed
     assert os.path.realpath(str(sibling_repo / "app" / "generated_table.inc")) not in listed
+
+
+@pytest.fixture
+def vendor_repo(tmp_path):
+    """A repo whose one target includes a header from a vendored subtree.
+
+    The header reaches the output only through the hunter's dependency walk
+    -- it is not a target and not a sweep sibling -- which is the shape
+    README.ct-filelist.rst's ``--auto-exclude=vendor`` example describes."""
+    root = tmp_path / "vendorrepo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    (root / "ct.conf").write_text("exemarkers = [main]\ntestmarkers = unit_test.hpp\n")
+
+    vendor = root / "vendor"
+    vendor.mkdir()
+    (vendor / "thirdparty.hpp").write_text("#pragma once\ninline int vendored() { return 7; }\n")
+
+    app = root / "app"
+    app.mkdir()
+    (app / "main.cpp").write_text('#include "../vendor/thirdparty.hpp"\nint main() { return vendored(); }\n')
+    return root
+
+
+def test_a_vendored_header_is_listed_when_nothing_excludes_it(vendor_repo, capsys: Any) -> None:
+    _run_filelist(vendor_repo, ["--auto"])
+    listed = {line.strip() for line in capsys.readouterr().out.splitlines() if line.strip()}
+    assert os.path.realpath(str(vendor_repo / "vendor" / "thirdparty.hpp")) in listed
+
+
+def test_auto_exclude_drops_a_vendored_header_the_walk_pulled_in(vendor_repo, capsys: Any) -> None:
+    """--auto-exclude filters ct-filelist's OUTPUT, not only its discovery:
+    ct-cake does compile this header, and the packaging list still must not
+    ship it. The target that includes it stays."""
+    _run_filelist(vendor_repo, ["--auto", "--auto-exclude=vendor"])
+    listed = {line.strip() for line in capsys.readouterr().out.splitlines() if line.strip()}
+    assert os.path.realpath(str(vendor_repo / "app" / "main.cpp")) in listed
+    assert os.path.realpath(str(vendor_repo / "vendor" / "thirdparty.hpp")) not in listed
