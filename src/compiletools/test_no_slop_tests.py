@@ -207,20 +207,9 @@ _R6_NAME_PROMISE_ALLOWLIST: frozenset[str] = frozenset(
     }
 )
 
-# R7: phantom --flags awaiting the fix on a sibling review branch. These are
-# NOT exceptions — they are real defects owned by another member, allowlisted
-# only so this branch lands green. ct-findtargets registers no --filename; the
-# token prefix-resolves to --filenametestmatch and the path falls through to
-# the positional. Fixed on gericksson/ct-review-fixups-cliflow @ 9d5fd488;
-# DELETE these three lines when that merges (test_allowlist_entries_still_
-# trip_their_rule will name them the moment they stop firing).
-_R7_PHANTOM_FLAG_ALLOWLIST: frozenset[str] = frozenset(
-    {
-        "test_findtargets.py::test_a_library_slot_combined_with_filename_is_rejected",
-        "test_findtargets.py::test_a_named_executable_still_reports",
-        "test_findtargets.py::test_an_explicit_target_suppresses_discovery",
-    }
-)
+# R7: no entries. Every entry needs an inline justification and is
+# typo-guarded by test_allowlist_entries_are_live.
+_R7_PHANTOM_FLAG_ALLOWLIST: frozenset[str] = frozenset()
 
 
 # ---------------------------------------------------------------------------
