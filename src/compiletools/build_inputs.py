@@ -155,8 +155,8 @@ def _compute_pkg_config_path(args, verbose=0):
 
 def _query_pkg_config(packages, pkg_config_path, want_libs, verbose, context):
     """Query pkg-config per package, memoized on *context* keyed
-    ``(pkg, pkg_config_path, errors_policy)``. Returns results in
-    declaration order.
+    ``(pkg, pkg_config_path, errors_policy, want_libs)``. Returns results
+    in declaration order.
 
     ``_batch_pkg_config`` reads the global environment, so the computed
     PKG_CONFIG_PATH is set/restored around the query (temporary; the
@@ -180,6 +180,13 @@ def _query_pkg_config(packages, pkg_config_path, want_libs, verbose, context):
     dict, so without the policy in the key a warm warn-mode empty result
     would be served after strict mode is armed and enforcement would never
     fire.
+
+    ``want_libs`` is in the key for the same reason: it decides whether the
+    entry carries libs at all, so a ``False`` entry's ``libs=()`` served to
+    a later ``True`` caller would silently drop the package's link flags. A
+    ``True`` entry is deliberately not reused for a later ``False`` caller
+    either -- one extra ``--cflags`` query is cheaper than a key whose
+    entries mean different things.
     """
     import os
 
@@ -189,7 +196,7 @@ def _query_pkg_config(packages, pkg_config_path, want_libs, verbose, context):
     cache = context.pkg_config_query_cache
     errors_policy = pkgconf.get_pkg_config_errors()
 
-    uncached = [pkg for pkg in packages if (pkg, pkg_config_path, errors_policy) not in cache]
+    uncached = [pkg for pkg in packages if (pkg, pkg_config_path, errors_policy, want_libs) not in cache]
     if uncached:
         original = os.environ.get("PKG_CONFIG_PATH")
         if pkg_config_path is not None:
@@ -208,9 +215,9 @@ def _query_pkg_config(packages, pkg_config_path, want_libs, verbose, context):
             cflags = tuple(split_command_cached(filtered)) if filtered else ()
             libs_str = batch_libs.get(pkg, "")
             libs = tuple(split_command_cached(libs_str)) if libs_str else ()
-            cache[(pkg, pkg_config_path, errors_policy)] = PkgConfigResult(cflags=cflags, libs=libs)
+            cache[(pkg, pkg_config_path, errors_policy, want_libs)] = PkgConfigResult(cflags=cflags, libs=libs)
 
-    return tuple((pkg, cache[(pkg, pkg_config_path, errors_policy)]) for pkg in packages)
+    return tuple((pkg, cache[(pkg, pkg_config_path, errors_policy, want_libs)]) for pkg in packages)
 
 
 def _project_macro_value(args, value_attr, cmd_attr, verbose):

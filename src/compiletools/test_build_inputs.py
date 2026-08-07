@@ -264,6 +264,27 @@ class TestPkgConfigGathering:
             gather_inputs(args, context)
             assert len(calls) == 2
 
+    def test_a_libs_needing_gather_is_not_served_the_libs_free_memo(self, monkeypatch):
+        """want_libs decides whether the memo entry carries libs at all.
+        A namespace with no LDFLAGS slot queries --cflags only and stores
+        libs=(); without want_libs in the key that empty tuple is then
+        served to a later gather over the same context that DOES register
+        LDFLAGS, so the package's link flags never reach the build.
+        """
+        calls = []
+        monkeypatch.setattr(
+            compiletools.apptools_pkgconfig,
+            "_batch_pkg_config",
+            self._fake_batch({"foo": "-I/opt/x/include"}, {"foo": "-lfoo"}, calls),
+        )
+        with uth.TempDirContext():
+            context = BuildContext()
+            narrow = gather_inputs(_minimal_args(pkg_config=["foo"]), context)
+            assert dict(narrow.pkg_config_results)["foo"].libs == (), "Precondition: no LDFLAGS slot, no libs query."
+
+            widened = gather_inputs(_minimal_args(pkg_config=["foo"], LDFLAGS=""), context)
+            assert dict(widened.pkg_config_results)["foo"].libs == ("-lfoo",)
+
     def test_prepend_and_append_pkg_config_merge_in_declaration_order(self, monkeypatch):
         calls = []
         monkeypatch.setattr(

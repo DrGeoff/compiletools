@@ -82,10 +82,12 @@ class BuildContext:
         self.repo_has_symlinks: bool | None = None
 
         # -- apptools pkg-config state --
-        # Keyed (package_spec, pkg_config_path, errors_policy) by
+        # Keyed (package_spec, pkg_config_path, errors_policy, want_libs) by
         # build_inputs._query_pkg_config; the policy is in the key because a
-        # warn-mode result must not be served once strict mode is armed.
-        self.pkg_config_query_cache: dict[tuple[str, str | None, str], PkgConfigResult] = {}
+        # warn-mode result must not be served once strict mode is armed, and
+        # want_libs because a libs-free entry must not be served to a caller
+        # that needs libs.
+        self.pkg_config_query_cache: dict[tuple[str, str | None, str, bool], PkgConfigResult] = {}
         self.pkg_config_overrides_applied: bool = False
         # Sentinel: True means PKG_CONFIG_PATH was unset before override.
         # str means we saved that prior value. None means no override active.
