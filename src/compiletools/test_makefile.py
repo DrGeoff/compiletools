@@ -935,12 +935,20 @@ class TestGenerateThenRunFreshening:
         Reading the argv the emitter actually wrote keeps the cell honest: a
         hand-written ``touch -c -m`` control would pass while the Makefile on
         disk said something else.
+
+        The extraction fails loudly rather than recovering a plausible-looking
+        argv, because a silently wrong lift would make the caller's assertion
+        vacuous: exactly one ``_CT_FRESHEN`` line, exactly one ``-exec`` per
+        ``find``, and the recovered argv must actually start with ``touch``.
         """
         with open(os.path.join(tempdir, "Makefile")) as f:
             text = f.read()
-        line = next(line for line in text.splitlines() if line.startswith("_CT_FRESHEN"))
-        payload = line.split(" -exec ", 1)[1].split(" {} +", 1)[0]
-        return payload.split()
+        lines = [line for line in text.splitlines() if line.startswith("_CT_FRESHEN")]
+        assert len(lines) == 1, f"expected exactly one _CT_FRESHEN line, got {lines}"
+        assert lines[0].count(" -exec ") == 1, f"more than one -exec to lift from:\n{lines[0]}"
+        argv = lines[0].split(" -exec ", 1)[1].split(" {} +", 1)[0].split()
+        assert argv[0] == "touch", f"lifted argv is not a touch: {argv}"
+        return argv
 
     @staticmethod
     def _published_exe(tempdir):
@@ -952,6 +960,38 @@ class TestGenerateThenRunFreshening:
         ]
         assert len(candidates) == 1, f"expected exactly one published exe, got {candidates}"
         return candidates[0]
+
+    def test_every_chunk_carries_the_same_touch_spelling(self):
+        """``_RM_CHUNK_SIZE`` splits the entries across several ``find`` calls.
+
+        The end-to-end cells build one artefact and therefore only ever see the
+        first chunk. A pool large enough to split would be uniform by
+        construction today, but nothing states that, so an emitter that grew a
+        per-chunk branch could leave later chunks creating evicted entries with
+        every cell still green.
+        """
+        entries = [
+            f"/tmp/cas-exe/ab/app{i}_deadbeef.exe" for i in range(compiletools.makefile_backend._RM_CHUNK_SIZE + 5)
+        ]
+        graph = BuildGraph()
+        for i, entry in enumerate(entries):
+            graph.add_rule(
+                BuildRule(
+                    output=f"/tmp/bin/app{i}",
+                    inputs=[entry],
+                    command=["ct-cas-publish", "--cas-path", entry, "--user-path", f"/tmp/bin/app{i}"],
+                    rule_type="symlink",
+                )
+            )
+        backend = MakefileBackend(args=_make_args(), hunter=MagicMock())
+
+        directive = backend._freshen_directive(graph)
+
+        finds = directive.count("$(shell find ")
+        assert finds == 2, f"expected the entries to split across two find calls, got {finds}"
+        assert directive.count("-exec touch -c -m {} +") == finds, (
+            f"a chunk was emitted without the -c that stops an evicted entry being recreated:\n{directive}"
+        )
 
     @uth.requires_functional_compiler
     def test_the_freshening_does_not_create_an_entry_a_peer_trim_removed(self):

@@ -190,11 +190,15 @@ class MakefileBackend(BuildBackend):
         the missing path instead, and the next build relinks the entry.
 
         ``CT_DRY_RUN`` suppresses the whole assignment under ``make -n`` and
-        ``make -q``, which must not mutate anything. GNU Make puts its
-        single-letter options in the first word of ``MAKEFLAGS`` at parse time;
-        the leading ``-`` makes that word a flag cluster even when the first
-        word is a long option, so a long option containing ``n`` at worst skips
-        a freshening (harmless) rather than licensing one.
+        ``make -q``, which must not mutate anything. GNU Make reserves the
+        first word of ``MAKEFLAGS`` for the single-letter option cluster and
+        leaves it EMPTY when there are none, so a long option can never lead;
+        the ``-`` prefix then makes the word a flag cluster whichever it is.
+        The letters arrive the same way from the command line, from an
+        inherited ``MAKEFLAGS`` environment variable, and in a recursive
+        ``$(MAKE)`` sub-invocation. ``make -t`` is deliberately NOT covered: it
+        creates empty files by design and is already documented as
+        inappropriate against a CAS-only build.
         """
         if getattr(self.args, "use_mtime", False):
             return ""
