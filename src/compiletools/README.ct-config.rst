@@ -386,10 +386,11 @@ Conf files are read in low-to-high priority order:
 ``ct.conf (bundled→cwd) < axis_1 (bundled→cwd) < axis_2 < ... < composite_override < --config``.
 Scalar keys (``CC``, ``CXX``, …) follow last-writer-wins — as do
 list-valued keys without the prefix (``pkg-config``,
-``prebuild-script``, ``postbuild-script``). Append-style
+``prebuild-script``, ``postbuild-script``, ``auto-exclude``). Append-style
 keys (``append-CFLAGS``, ``append-CXXFLAGS``, ``append-LDFLAGS``,
 ``append-INCLUDE``, ``append-PKG-CONFIG-PATH``, ``append-PKG-CONFIG``,
-``append-PREBUILD-SCRIPT``, ``append-POSTBUILD-SCRIPT``, …) accumulate
+``append-PREBUILD-SCRIPT``, ``append-POSTBUILD-SCRIPT``,
+``append-AUTO-EXCLUDE``, …) accumulate
 across the entire stack. Conf keys are case-sensitive: the key must
 match the CLI option's spelling exactly (minus the leading dashes), so
 lowercase forms like ``append-prebuild-script`` are dropped as

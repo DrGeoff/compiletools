@@ -27,8 +27,10 @@ ct-findtargets [-h] [-c CONFIG_FILE] [--variant VARIANT] [-v] [-q]
                     [--auto-exclude AUTO_EXCLUDE]
                     [--append-AUTO-EXCLUDE AUTO_EXCLUDE]
                     [--prepend-AUTO-EXCLUDE AUTO_EXCLUDE]
-                    [--style {indent,null,args,flat}]
+                    [--style {null,flat,indent,args}]
                     [--filenametestmatch | --no-filenametestmatch]
+                    [--tests [TESTS ...]]
+                    [filename ...]
 
 
 DESCRIPTION
@@ -42,6 +44,24 @@ compile to either an executable or a unit test.  The default settings are
 
 A filename that starts with "test" and also satisfies the exemarkers will
 be reported as a test, unless --no-filenametestmatch is set.
+
+Naming targets explicitly suppresses discovery, the same gate ct-cake
+uses: with a positional filename or ``--tests`` given, ct-findtargets
+reports exactly those targets and never walks the filesystem. With
+``--no-auto`` and nothing named it reports nothing — ``--no-auto``
+means "do not walk", and the correct output for "do not walk, nothing
+named" is empty. Discovered targets re-anchor configuration the same
+way ``ct-cake --auto`` does, so a subproject conf reached only through
+a discovered target still shapes the final target set (including its
+``append-AUTO-EXCLUDE`` additions).
+
+``--static`` and ``--dynamic`` are rejected with an error:
+ct-findtargets lists executables and tests only, and its output styles
+have no bucket for libraries, so accepting a library target would
+either mislabel it or silently omit it from output that scripts (such
+as ``ct-build``) consume. Name executables as positional arguments and
+tests with ``--tests``, and build libraries with ``ct-create-makefile
+--static``/``--dynamic``.
 
 --auto-exclude drops files from the search. Give it multiple times to build
 up a list, or set it in a ct.conf. A pattern containing a path separator
