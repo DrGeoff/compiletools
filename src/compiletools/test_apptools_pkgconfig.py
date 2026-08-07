@@ -3,6 +3,7 @@
 import contextlib
 import signal
 import subprocess
+import time
 import warnings
 
 import pytest
@@ -408,12 +409,17 @@ def test_a_succeeding_query_is_not_promoted_to_a_failure_in_error_mode(monkeypat
     assert pkgconfig.cached_pkg_config("chatty", "--cflags") == "-I/opt/x"
 
 
+# Wall-clock budget for the cycle-guard deadline. Shared so the anti-vacuity
+# arm's own bound stays a fixed multiple of the alarm it validates.
+_DEADLINE_SECONDS = 5
+
+
 class _DidNotTerminate(Exception):
     """Raised by ``_fails_if_it_does_not_terminate`` when the alarm fires."""
 
 
 @contextlib.contextmanager
-def _fails_if_it_does_not_terminate(seconds=5):
+def _fails_if_it_does_not_terminate(seconds=_DEADLINE_SECONDS):
     """Turn a hang into a test failure.
 
     A cycle guard's failure mode is a spin, not a wrong answer, so the only
@@ -728,13 +734,28 @@ class TestTheRequiresClosureTerminatesOnCycles:
         copy of the walk with the seen check removed and assert it does NOT
         terminate, so a future timeout that silently stopped working cannot
         make the three tests above pass for free.
+
+        The walk carries its OWN wall-clock bound because this arm would
+        otherwise test the deadline using the deadline: with SIGALRM
+        neutered, the four ordinary cells stay green in ~0.26s while this
+        one spins to whatever external timeout the runner has (measured at
+        exit 124 against a 25s bound), so a dead alarm shows up as a hung
+        xdist worker instead of a red test. Exceeding 3x the alarm makes it
+        red at the cost of one extra monotonic() per iteration -- the spin
+        itself is far more expensive, at ~287k _locate_pc_file plus ~287k
+        _read_pc_file calls (real filesystem I/O) per suite run.
         """
         self._write_cycle(tmp_path)
         monkeypatch.setenv("PKG_CONFIG_PATH", str(tmp_path))
 
         def unguarded_closure(package):
+            started = time.monotonic()
             queue = [package]
             while queue:
+                assert time.monotonic() - started < _DEADLINE_SECONDS * 3, (
+                    f"the cycle spun past {_DEADLINE_SECONDS * 3}s without SIGALRM firing: "
+                    "the deadline this arm exists to validate is not being delivered"
+                )
                 current = queue.pop(0)
                 path = pkgconfig._locate_pc_file(current)
                 if path is None:
