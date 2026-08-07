@@ -111,7 +111,7 @@ def test_fetch_step_registers_external_include_dirs(monkeypatch) -> None:
         monkeypatch.chdir(main_repo)
 
         context = BuildContext()
-        args = _build_cake_args(main_repo, ["--filename", "main.cpp", "--externals-dir", externals_dir], context)
+        args = _build_cake_args(main_repo, ["main.cpp", "--externals-dir", externals_dir], context)
 
         cake = compiletools.cake.Cake(args, context=context)
         changed = cake._fetch_and_register_externals()
@@ -144,7 +144,7 @@ def test_fetch_step_no_targets_is_noop(monkeypatch) -> None:
         monkeypatch.chdir(main_repo)
         context = BuildContext()
         # Point at a non-existent target so the file filter drops it.
-        args = _build_cake_args(main_repo, ["--filename", "does-not-exist.cpp"], context)
+        args = _build_cake_args(main_repo, ["does-not-exist.cpp"], context)
         cake = compiletools.cake.Cake(args, context=context)
         assert cake._fetch_and_register_externals() is False
 
@@ -164,9 +164,7 @@ def test_fetch_step_no_fetch_offline_surfaces_fetcherror(monkeypatch) -> None:
         monkeypatch.chdir(main_repo)
 
         context = BuildContext()
-        args = _build_cake_args(
-            main_repo, ["--filename", "main.cpp", "--externals-dir", externals_dir, "--no-fetch"], context
-        )
+        args = _build_cake_args(main_repo, ["main.cpp", "--externals-dir", externals_dir, "--no-fetch"], context)
         cake = compiletools.cake.Cake(args, context=context)
 
         with pytest.raises(FetchError) as excinfo:
@@ -196,9 +194,7 @@ def test_filelist_does_not_clone_missing_external(monkeypatch) -> None:
         context = BuildContext()
         # Note: no --no-fetch on the command line; --filelist alone must be
         # enough to keep the fetch step offline.
-        args = _build_cake_args(
-            main_repo, ["--filename", "main.cpp", "--externals-dir", externals_dir, "--filelist"], context
-        )
+        args = _build_cake_args(main_repo, ["main.cpp", "--externals-dir", externals_dir, "--filelist"], context)
         cake = compiletools.cake.Cake(args, context=context)
 
         with pytest.raises(FetchError) as excinfo:
@@ -238,9 +234,7 @@ def test_filelist_uses_present_external_without_network(monkeypatch, capsys) -> 
         monkeypatch.chdir(main_repo)
 
         context = BuildContext()
-        args = _build_cake_args(
-            main_repo, ["--filename", "main.cpp", "--externals-dir", externals_dir, "--filelist"], context
-        )
+        args = _build_cake_args(main_repo, ["main.cpp", "--externals-dir", externals_dir, "--filelist"], context)
         cake = compiletools.cake.Cake(args, context=context)
         cake.process()
 
@@ -316,7 +310,6 @@ def test_main_fetcherror_returns_nonzero_and_writes_stderr(monkeypatch, capsys) 
             config,
             "--exemarkers=main",
             "--testmarkers=unittest.hpp",
-            "--filename",
             "main.cpp",
             "--externals-dir",
             externals_dir,
