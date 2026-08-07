@@ -202,6 +202,53 @@ class TestPopulateArgs:
         source = inspect.getsource(get_build_state_or_none)
         assert pattern.search(source), f"the surviving site is outside get_build_state_or_none: {sites}"
 
+    def test_no_module_reaches_past_the_build_state_accessors(self):
+        """Lint: nothing touches ``args._build_state`` by dot-access either.
+
+        The getattr lint above only pins one spelling, so
+        ``args._build_state.flags`` would bypass the accessor with no lint
+        hit. Backends' ``self._build_state`` is a different object (the
+        instance attribute a backend set from ``get_build_state(args)``) and
+        is deliberately not matched.
+
+        Two sites are exempt, and the exemption is checked live rather than
+        asserted in prose: a stale entry fails here rather than silently
+        widening the lint.
+
+        The scan is ``ast``-based, not textual: docstrings that name the
+        stash (``apptools`` has three) are prose about the contract, not
+        uses of it, and a regex cannot tell them apart.
+        """
+        import ast
+        import pathlib
+
+        # ``populate_args`` is the writer; ``stub_build_state`` plants real
+        # name values on a MagicMock args, whose auto-created stash cannot be
+        # reached through an accessor that only reads.
+        exempt = {
+            "build_apply.py": "populate_args, the sole writer",
+            "testhelper.py": "stub_build_state, MagicMock planter",
+        }
+
+        srcdir = pathlib.Path(__file__).parent
+        sites: dict[str, list[str]] = {}
+        for path in sorted(srcdir.glob("*.py")):
+            if path.name.startswith("test_"):
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if not (isinstance(node, ast.Attribute) and node.attr == "_build_state"):
+                    continue
+                if isinstance(node.value, ast.Name) and node.value.id == "self":
+                    continue
+                sites.setdefault(path.name, []).append(f"{path.name}:{node.lineno}")
+
+        unexpected = {name: hits for name, hits in sites.items() if name not in exempt}
+        assert not unexpected, f"read args._build_state through build_apply's accessors instead; found: {unexpected}"
+
+        stale = [f"{name} ({why})" for name, why in exempt.items() if name not in sites]
+        assert not stale, f"exemption no longer needed, drop it: {stale}"
+
     def test_finalize_flag_state_routes_through_populate_args(self):
         """testhelper.finalize_flag_state must not hand-mirror
         populate_args' namespace writes: it builds a synthetic state and

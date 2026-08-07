@@ -103,12 +103,18 @@ def populate_args(args, state: BuildState) -> None:
 def get_build_state_or_none(args) -> BuildState | None:
     """Return the stashed BuildState, or None when populate_args never ran.
 
-    The sole reader of the ``_build_state`` attribute name, and the
-    primitive ``get_build_state`` raises on top of. Use this only where a
-    missing state is a legitimate, handled state -- Namer's permanent
-    fallback for the resolver-only diagnostic tools, and the ``-vv`` args
-    banner. Everywhere else use ``get_build_state``, whose named error
-    points a hand-built test namespace at its fixture gap.
+    The only production reader of the ``args._build_state`` stash, and the
+    primitive ``get_build_state`` raises on top of. ``populate_args`` above
+    is the only writer. The one other direct reader in the tree is
+    ``testhelper.stub_build_state``, which plants real name values on a
+    MagicMock args and is exempt by name in
+    ``test_build_apply.TestPopulateArgs.test_no_module_reaches_past_the_build_state_accessors``,
+    the lint that pins both halves.
+
+    Use this only where a missing state is a legitimate, handled state --
+    Namer's permanent fallback for the resolver-only diagnostic tools, and
+    the ``-vv`` args banner. Everywhere else use ``get_build_state``, whose
+    named error points a hand-built test namespace at its fixture gap.
     """
     return getattr(args, "_build_state", None)
 
