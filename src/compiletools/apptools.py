@@ -1664,7 +1664,9 @@ def verbose_print_args(args):
     # so display those for the registered slots -- this banner promises the
     # FINAL aggregated values.
     display = dict(args.__dict__)
-    state = getattr(args, "_build_state", None)
+    import compiletools.build_apply
+
+    state = compiletools.build_apply.get_build_state_or_none(args)
     if state is not None:
         derived = {
             "CPPFLAGS": state.cppflags,

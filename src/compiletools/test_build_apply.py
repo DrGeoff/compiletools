@@ -157,6 +157,51 @@ class TestPopulateArgs:
         with pytest.raises(RuntimeError, match="populate_args"):
             get_build_state(bare)
 
+    def test_get_build_state_or_none_returns_stash_or_none(self):
+        """The optional accessor: the stash when populate_args ran, None
+        otherwise. It is the primitive get_build_state raises on top of, so
+        the two must agree on the populated case by identity."""
+        from compiletools.build_apply import get_build_state, get_build_state_or_none
+
+        state = _state()
+        args = argparse.Namespace(verbose=0)
+        populate_args(args, state)
+        assert get_build_state_or_none(args) is state
+        assert get_build_state(args) is get_build_state_or_none(args)
+
+        assert get_build_state_or_none(argparse.Namespace(verbose=0)) is None
+
+    def test_no_module_hand_rolls_the_build_state_getattr(self):
+        """Lint: the ``getattr(args, "_build_state", None)`` spelling must
+        exist in exactly one place -- ``get_build_state_or_none``'s own body.
+        Every other reader goes through an accessor, so the stash attribute
+        name has a single point of change and the "never populated" case has
+        a single meaning.
+        """
+        import inspect
+        import pathlib
+        import re
+
+        from compiletools.build_apply import get_build_state_or_none
+
+        pattern = re.compile(r"""getattr\(\s*[\w.]+\s*,\s*["']_build_state["']""")
+        srcdir = pathlib.Path(__file__).parent
+        sites = [
+            f"{path.name}:{lineno}"
+            for path in sorted(srcdir.glob("*.py"))
+            if not path.name.startswith("test_")
+            for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+            if pattern.search(line)
+        ]
+        assert len(sites) == 1 and sites[0].startswith("build_apply.py:"), (
+            f"getattr(args, '_build_state', None) must appear only inside get_build_state_or_none; found: {sites}"
+        )
+
+        # ...and that one site really is inside the accessor, not merely in
+        # the same file.
+        source = inspect.getsource(get_build_state_or_none)
+        assert pattern.search(source), f"the surviving site is outside get_build_state_or_none: {sites}"
+
     def test_finalize_flag_state_routes_through_populate_args(self):
         """testhelper.finalize_flag_state must not hand-mirror
         populate_args' namespace writes: it builds a synthetic state and
