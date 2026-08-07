@@ -282,6 +282,133 @@ class TestSpellingsThatAlreadyWork:
         assert value is False
 
 
+class TestValuesOutsideTheBooleanVocabulary:
+    @pytest.mark.parametrize("name", sorted(_EXPECTED_FLAG_ARGUMENT_NAMES))
+    def test_an_unrecognised_conf_value_still_reports_the_configargparse_error(self, tmp_path, name, capsys):
+        """A fix that gives falsey values a meaning must not quietly give
+        every other value one too. configargparse's eight-word vocabulary
+        stays the arbiter, and a word outside it keeps exiting 2 with
+        configargparse's own message rather than being read as false.
+        """
+        conf = tmp_path / "ct.conf"
+        conf.write_text(f"{name} = maybe\n")
+        parser = _probe_parser(conf, name, default=False, helper=compiletools.utils.add_flag_argument)
+        with pytest.raises(SystemExit) as excinfo:
+            parser.parse_known_args([])
+        assert excinfo.value.code == 2
+        assert f"Unexpected value for {name}: 'maybe'" in capsys.readouterr().err
+
+
+class TestTheCommandLineOverridesTheConfFile:
+    """The second defect, in the same translation function.
+
+    Making a falsey conf value live is not enough on its own: stock
+    configargparse skips a conf entry only when the SAME action's option
+    string was typed, so the injected partner option lands next to the typed
+    one and the mutually exclusive group exits 2. Measured on the production
+    parser pair, ``no-auto = True`` plus ``--auto`` exits 2 today, and a
+    falsey-only fix would newly break ``auto = False`` plus ``--auto`` --
+    turning a silent True into a crash for exactly the users who wrote the
+    inert spelling. So both halves are pinned here.
+    """
+
+    @pytest.mark.parametrize("name", sorted(_EXPECTED_FLAG_ARGUMENT_NAMES))
+    def test_the_plain_form_on_the_command_line_beats_the_no_key_conf_entry(self, tmp_path, name):
+        value, unknown = _parse_with_conf(
+            tmp_path,
+            name,
+            f"no-{name} = True\n",
+            default=False,
+            helper=compiletools.utils.add_flag_argument,
+            argv=[f"--{name}"],
+        )
+        assert unknown == []
+        assert value is True
+
+    @pytest.mark.parametrize("name", sorted(_EXPECTED_FLAG_ARGUMENT_NAMES))
+    def test_the_no_form_on_the_command_line_beats_the_truthy_conf_entry(self, tmp_path, name):
+        value, unknown = _parse_with_conf(
+            tmp_path,
+            name,
+            f"{name} = True\n",
+            default=False,
+            helper=compiletools.utils.add_flag_argument,
+            argv=[f"--no-{name}"],
+        )
+        assert unknown == []
+        assert value is False
+
+    @pytest.mark.parametrize("name", sorted(_EXPECTED_FLAG_ARGUMENT_NAMES))
+    def test_the_plain_form_on_the_command_line_beats_the_falsey_conf_entry(self, tmp_path, name):
+        """The row that makes the two halves inseparable: this is a silent
+        True today, and a falsey-only fix would make it exit 2."""
+        value, unknown = _parse_with_conf(
+            tmp_path,
+            name,
+            f"{name} = False\n",
+            default=False,
+            helper=compiletools.utils.add_flag_argument,
+            argv=[f"--{name}"],
+        )
+        assert unknown == []
+        assert value is True
+
+    @pytest.mark.parametrize("name", sorted(_EXPECTED_FLAG_ARGUMENT_NAMES))
+    def test_an_abbreviated_no_form_beats_the_truthy_conf_entry(self, tmp_path, name):
+        """``--no-au`` is not a registered option string; argparse resolves
+        it to ``--no-auto`` by unambiguous prefix. A suppression check that
+        compares option strings literally -- which is what
+        ``configargparse.already_on_command_line`` does -- misses it and the
+        conf entry injects the conflicting partner anyway. Truncating by one
+        character keeps the prefix unambiguous for every name in the matrix.
+        """
+        value, unknown = _parse_with_conf(
+            tmp_path,
+            name,
+            f"{name} = True\n",
+            default=False,
+            helper=compiletools.utils.add_flag_argument,
+            argv=[f"--no-{name}"[:-1]],
+        )
+        assert unknown == []
+        assert value is False
+
+    @pytest.mark.parametrize("name", sorted(_EXPECTED_FLAG_ARGUMENT_NAMES))
+    def test_an_abbreviated_plain_form_beats_the_falsey_conf_entry(self, tmp_path, name):
+        value, unknown = _parse_with_conf(
+            tmp_path,
+            name,
+            f"{name} = False\n",
+            default=False,
+            helper=compiletools.utils.add_flag_argument,
+            argv=[f"--{name}"[:-1]],
+        )
+        assert unknown == []
+        assert value is True
+
+
+class TestTheDoubleNegativeConfKey:
+    @pytest.mark.parametrize("name", sorted(_EXPECTED_FLAG_ARGUMENT_NAMES))
+    def test_a_falsey_value_on_the_no_key_turns_the_flag_on(self, tmp_path, name):
+        """The one row where the fix changes an outcome rather than
+        restoring one. ``no-auto = False`` is inert today, so the default
+        stands; under the symmetric rule -- a truthy value applies the option
+        its key names, a falsey value applies the opposite -- it reads as
+        written and turns the flag on. Named separately from the falsey
+        sweep because it is a semantic choice, not a bug fix.
+        """
+        value, unknown = _parse_with_conf(
+            tmp_path,
+            name,
+            f"no-{name} = False\n",
+            default=False,
+            helper=compiletools.utils.add_flag_argument,
+            argv=[],
+        )
+        assert unknown == []
+        assert value is True
+
+
 class TestCommandLineShapeIsUnchanged:
     """A fix that reaches for ``nargs="?"`` + ``to_bool`` would fix the conf
     file and break the command line: an optional-value flag swallows the

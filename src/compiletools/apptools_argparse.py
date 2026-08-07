@@ -1062,6 +1062,22 @@ _CONF_DIR_SEGMENT_HEADER_PREFIX = "# --- "
 _CONF_DIR_SEGMENT_HEADER_SUFFIX = " ---"
 _CONF_DIR_PLACEHOLDER = "${CONF_DIR}"
 
+# The words configargparse accepts for a conf-file / env-var boolean
+# (``convert_item_to_command_line_arg``). Read by
+# ``_ComposingArgumentParser.convert_item_to_command_line_arg``, which must
+# recognise exactly this vocabulary and no more: a word outside it has to
+# keep reaching configargparse's own error path.
+_CONF_BOOLEAN_WORDS = {
+    "true": True,
+    "yes": True,
+    "on": True,
+    "1": True,
+    "false": False,
+    "no": False,
+    "off": False,
+    "0": False,
+}
+
 
 def _open_conf_file_utf8(path, *args, **kwargs):
     """Open a conf file as UTF-8, replacing any invalid bytes.
@@ -1403,6 +1419,110 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
             captured.setdefault(action.dest, []).append(value)
         return clean, captured
 
+    def _boolean_negation_partner(self, action):
+        """The ``--no-<name>`` action paired with *action* (or vice versa).
+
+        ``utils.add_flag_argument`` registers a ``store_true`` and a
+        ``store_false`` against one ``dest`` inside a mutually exclusive
+        group; the pair is identified by that shared ``dest`` plus opposite
+        ``const``. Returns None for anything else -- a lone ``store_true``
+        keeps stock behavior. An ambiguous match (more than one candidate)
+        also returns None rather than guessing.
+        """
+        if not isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction)):
+            return None
+        candidates = [
+            other
+            for other in self._actions
+            if other is not action
+            and other.dest == action.dest
+            and isinstance(other, (argparse._StoreTrueAction, argparse._StoreFalseAction))
+            and other.const is not action.const
+            and other.option_strings
+        ]
+        return candidates[0] if len(candidates) == 1 else None
+
+    def _command_line_names_any(self, cli_args, actions):
+        """Whether *cli_args* names any of *actions*, abbreviations included.
+
+        ``configargparse.already_on_command_line`` compares option strings
+        literally, so ``--no-au`` slips past it even though argparse resolves
+        that prefix to ``--no-auto``. Resolving the prefix here is what keeps
+        an abbreviated flag able to override a conf file.
+        """
+        targets = set(actions)
+        for token in cli_args:
+            if len(token) < 2 or token[0] not in self.prefix_chars:
+                continue
+            name = token.split("=", 1)[0]
+            exact = self._option_string_actions.get(name)
+            if exact is not None:
+                if exact in targets:
+                    return True
+                continue
+            if not self.allow_abbrev:
+                continue
+            # Ambiguous prefixes are argparse's error to raise, not ours to
+            # resolve; only a prefix reaching one action counts as typed.
+            matched = {tup[0] for tup in self._get_option_tuples(name)}
+            if len(matched) == 1 and matched & targets:
+                return True
+        return False
+
+    def convert_item_to_command_line_arg(self, action, key, value):
+        """Make a *falsey* conf-file / env-var value turn a flag OFF.
+
+        ``store_true`` takes no value, so configargparse translates a
+        truthy conf entry into a bare ``--flag`` token and drops a falsey
+        one on the floor -- no token, no diagnostic. Every flag registered
+        through ``utils.add_flag_argument`` is therefore un-turn-off-able
+        from a conf file or an env var; the only spelling that reaches the
+        parser is the partner key, ``no-flag = True``. Emitting the partner
+        option here is what makes ``flag = False`` mean what it says.
+
+        Also restores "the command line wins": stock configargparse skips a
+        conf value only when the SAME action's option string is already on
+        the command line, so ``no-auto = True`` in a conf plus ``--auto`` on
+        the command line injected ``--no-auto`` alongside it and the
+        mutually exclusive group turned that into exit 2. Suppressing the
+        injection when either form was typed, in full or abbreviated, makes
+        the command line override the conf file as it does for every other
+        key.
+
+        The rule is symmetric in the key rather than keyed on the action's
+        ``const``: a truthy value applies the option the key names, a falsey
+        value applies its opposite. So ``no-auto = False`` turns the flag ON,
+        the one place this changes an outcome rather than restoring one --
+        the inert reading left the default standing.
+
+        Scope: the suppression reads the command line only. A conf value
+        conflicting with the PARTNER key set by an env var, or by another
+        key in the same conf hierarchy, still reaches the mutually
+        exclusive group and still exits 2 -- unchanged from before this
+        override, and out of the reach of a function that sees one item at
+        a time.
+        """
+        partner = self._boolean_negation_partner(action)
+        if partner is None:
+            return super().convert_item_to_command_line_arg(action, key, value)
+
+        cli = getattr(self, "_ct_command_line_args", None) or []
+        if self._command_line_names_any(cli, (action, partner)):
+            return []
+
+        # configargparse's own boolean vocabulary, deliberately not
+        # utils.to_bool's wider one: a value it rejects must keep producing
+        # its error, not silently gain a meaning on this code path only.
+        requested = _CONF_BOOLEAN_WORDS.get(value.strip().lower()) if isinstance(value, str) else None
+        if requested is False:
+            # A conf key names an option; a truthy value applies that option
+            # (stock behavior, delegated below) and a falsey value applies
+            # its opposite. Symmetric in the key, so "no-auto = False" says
+            # what it looks like it says too -- leaving the double negative
+            # inert would be the same defect in the other spelling.
+            return [partner.option_strings[-1]]
+        return super().convert_item_to_command_line_arg(action, key, value)
+
     def parse_known_args(
         self,
         args=None,
@@ -1419,6 +1539,9 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
             args = list(args)
 
         clean_args, captured_cli = self._extract_cli_append_prepend(args)
+        # Read by convert_item_to_command_line_arg, which configargparse
+        # calls from inside super().parse_known_args and hands no argv.
+        self._ct_command_line_args = list(clean_args)
 
         # Make the ENV_VAR_DISABLED sentinel collision-proof: even if a
         # real process exports a variable with this exact name, drop it
