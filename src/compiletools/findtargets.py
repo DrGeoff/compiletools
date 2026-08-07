@@ -524,6 +524,52 @@ def discover_targets_and_reanchor(args, context):
     )
 
 
+def _exemarkers_present_in(filepath, markers):
+    """Return the configured exemarkers whose text appears in the file."""
+    try:
+        with open(filepath, encoding="utf-8", errors="replace") as infile:
+            text = infile.read()
+    except OSError:
+        return []
+    return [marker for marker in markers if marker in text]
+
+
+def _warn_about_executables_in_library_slots(args, context):
+    """Warn when a source named as a library target carries an exemarker.
+
+    ``--static`` and ``--dynamic`` each take a list, so a positional written
+    after one is absorbed into it: ``--static lib/widget.cpp app/main.cpp``
+    puts both sources in the library and leaves the executable slot empty.
+    That combination builds -- the archive gets main.o and no executable is
+    produced -- so nothing downstream reports it.
+    """
+    slots = (("--static", args.static or []), ("--dynamic", args.dynamic or []))
+    if not any(targets for _flag, targets in slots):
+        return
+    if not args.exemarkers or args.verbose < 0:
+        return
+
+    from compiletools.global_hash_registry import get_file_hash
+
+    compiletools.file_analyzer.set_analyzer_args(args, context)
+    for flag, targets in slots:
+        for target in targets:
+            try:
+                content_hash = get_file_hash(target, context)
+                result = compiletools.file_analyzer.analyze_file(content_hash, context)
+            except (OSError, FileNotFoundError):
+                continue
+            if result.marker_type != MarkerType.EXE:
+                continue
+            markers = ", ".join(_exemarkers_present_in(target, args.exemarkers) or args.exemarkers)
+            print(
+                f"Warning: {target} is named as a {flag} target but contains an executable "
+                f"marker ({markers}). A positional written after {flag} is absorbed into its "
+                f"list, so name executables before {flag}.",
+                file=sys.stderr,
+            )
+
+
 def main(argv=None):
     cap = compiletools.apptools.create_parser("Find C/C++ files with main functions and unit tests", argv=argv)
     add_arguments(cap)
@@ -546,6 +592,7 @@ def main(argv=None):
     # target's subproject conf changes the set.
     if args.auto and not any([args.filename, args.static, args.dynamic, args.tests]):
         args = discover_targets_and_reanchor(args, context)
+    _warn_about_executables_in_library_slots(args, context)
     # Discovery never populates the library slots -- static-versus-dynamic has
     # no source-level signal, so only the caller can say which sources are a
     # library -- but a named one is reported rather than silently dropped, and

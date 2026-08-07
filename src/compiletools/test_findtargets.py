@@ -1171,3 +1171,102 @@ class TestLibrarySlotsAreReported:
         argv = [_EXE_TARGET, flag, _LIB_TARGET]
         generated = self._run(library_repo, ["--style=args", *argv], capsys).split()
         assert TestArgsStyleRoundTrip._reparse(generated + argv) == TestArgsStyleRoundTrip._reparse(argv)
+
+
+def _expected_warning(target, flag, markers):
+    return (
+        f"Warning: {target} is named as a {flag} target but contains an executable "
+        f"marker ({markers}). A positional written after {flag} is absorbed into its "
+        f"list, so name executables before {flag}."
+    )
+
+
+class TestExemarkerInALibrarySlotWarns:
+    """``--static``/``--dynamic`` take a list, so a positional written AFTER
+    one is absorbed into it. The result builds: ``ct-build --static
+    lib/widget.cpp app/main.cpp`` exits 0, archives main.o into libwidget.a
+    and produces no executable. Nothing downstream notices -- the same
+    single-pass ``ct-create-makefile`` invocation produces the identical
+    artefact set, so this is the CLI shape, not a ct-build wart.
+
+    The warning is the mitigation: it names the file, the exemarker that
+    makes it look like an executable, and the ordering rule that explains
+    how it got there. It does NOT refuse -- a source carrying ``main`` can
+    legitimately live in a library -- so the exit code stays 0 and the
+    target is still reported.
+    """
+
+    @staticmethod
+    def _run(repo, argv, capsys):
+        with uth.DirectoryContext(str(repo)):
+            with uth.ParserContext():
+                assert compiletools.findtargets.main(argv) == 0
+        return capsys.readouterr()
+
+    @pytest.mark.parametrize("flag", _LIB_FLAGS)
+    def test_a_library_slot_holding_an_executable_source_warns(self, library_repo, capsys, flag):
+        captured = self._run(library_repo, ["--style=args", flag, _EXE_TARGET], capsys)
+        assert captured.err.strip() == _expected_warning(_EXE_TARGET, flag, "main")
+
+    @pytest.mark.parametrize("flag", _LIB_FLAGS)
+    def test_a_genuine_library_source_is_silent(self, library_repo, capsys, flag):
+        """Anti-vacuity for the test above: the same invocation over a source
+        with no exemarker must produce no stderr at all, so the warning is
+        keyed on the marker rather than on the slot being populated."""
+        captured = self._run(library_repo, ["--style=args", flag, _LIB_TARGET], capsys)
+        assert captured.err == ""
+
+    @pytest.mark.parametrize("flag", _LIB_FLAGS)
+    def test_the_accident_that_motivates_the_warning_is_the_one_that_fires(self, library_repo, capsys, flag):
+        """The real shape: the user wrote the executable positional after the
+        library flag and argparse absorbed it. Both sources land in the
+        library slot, the executable slot is empty, and only the source
+        carrying the exemarker is named."""
+        captured = self._run(library_repo, ["--style=args", flag, _LIB_TARGET, _EXE_TARGET], capsys)
+        assert captured.out.split() == [flag, _LIB_TARGET, _EXE_TARGET]
+        assert captured.err.strip() == _expected_warning(_EXE_TARGET, flag, "main")
+
+    @pytest.mark.parametrize("flag", _LIB_FLAGS)
+    def test_warning_not_refusal(self, library_repo, capsys, flag):
+        """Exit 0 and the target still reported: a source carrying ``main``
+        in a library is legal, so the run must not be blocked."""
+        captured = self._run(library_repo, ["--style=args", flag, _EXE_TARGET], capsys)
+        assert captured.out.split() == [flag, _EXE_TARGET]
+
+    @pytest.mark.parametrize("flag", _LIB_FLAGS)
+    def test_the_warning_reaches_the_default_verbosity(self, library_repo, capsys, flag):
+        """No -v anywhere in the argv above; this pins that explicitly, and
+        pins -q as the way to turn it off, since the audience is exactly the
+        user who typed the accident without asking for diagnostics."""
+        loud = self._run(library_repo, ["--style=args", flag, _EXE_TARGET], capsys)
+        assert loud.err != ""
+        quiet = self._run(library_repo, ["--style=args", "-q", flag, _EXE_TARGET], capsys)
+        assert quiet.err == ""
+
+    @pytest.mark.parametrize("flag", _LIB_FLAGS)
+    def test_a_named_library_that_does_not_exist_is_not_an_error(self, library_repo, capsys, flag):
+        """The check hashes and analyses the named file; a path that resolves
+        to nothing must fall through to the report rather than crash there."""
+        captured = self._run(library_repo, ["--style=args", flag, "lib/absent.cpp"], capsys)
+        assert captured.out.split() == [flag, "lib/absent.cpp"]
+        assert captured.err == ""
+
+    def test_both_slots_are_checked_in_one_run(self, library_repo, capsys):
+        """--static and --dynamic can both be populated; each is scanned."""
+        argv = ["--style=args", "--static", _EXE_TARGET, "--dynamic", _EXE_TARGET]
+        captured = self._run(library_repo, argv, capsys)
+        assert captured.err.splitlines() == [
+            _expected_warning(_EXE_TARGET, "--static", "main"),
+            _expected_warning(_EXE_TARGET, "--dynamic", "main"),
+        ]
+
+    def test_the_marker_named_is_the_one_configured(self, library_repo, capsys, tmp_path):
+        """Anti-tautology for the marker text: with a different exemarker
+        configured, the warning names THAT marker, so ``main`` above is read
+        out of the file rather than hardcoded."""
+        (library_repo / "lib" / "plugin.cpp").write_text("void wxIMPLEMENT_APP() {}\n")
+        argv = ["--style=args", "--exemarkers=wxIMPLEMENT_APP", "--static", os.path.join("lib", "plugin.cpp")]
+        captured = self._run(library_repo, argv, capsys)
+        assert captured.err.strip() == _expected_warning(
+            os.path.join("lib", "plugin.cpp"), "--static", "wxIMPLEMENT_APP"
+        )

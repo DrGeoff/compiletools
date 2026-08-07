@@ -66,7 +66,14 @@ lists the executable and the library, rather than dropping the library
 from output that scripts (such as ``ct-build``) consume. Write the
 positionals BEFORE the library flag: ``--static`` and ``--dynamic``
 each take a list, so a positional written after one is absorbed into
-that list.
+that list. That accident builds rather than failing -- the executable's
+object is archived into the library and no executable is produced -- so
+a source in a library slot that carries an exemarker draws a warning on
+stderr naming the file, the marker and the ordering rule. It is a
+warning, not a refusal: a source carrying ``main`` can legitimately be
+part of a library. ``-q`` silences it. The warning reaches the
+ct-findtargets route only; ``ct-create-makefile`` does not read
+exemarkers, so the same mistake made directly against it is unwarned.
 
 Discovery never INVENTS a library target. Whether a source belongs in a
 static library, a shared library or an executable is a partition its
