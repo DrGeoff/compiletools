@@ -1062,6 +1062,22 @@ _CONF_DIR_SEGMENT_HEADER_PREFIX = "# --- "
 _CONF_DIR_SEGMENT_HEADER_SUFFIX = " ---"
 _CONF_DIR_PLACEHOLDER = "${CONF_DIR}"
 
+# The words configargparse accepts for a conf-file / env-var boolean
+# (``convert_item_to_command_line_arg``). Read by
+# ``_ComposingArgumentParser.convert_item_to_command_line_arg``, which must
+# recognise exactly this vocabulary and no more: a word outside it has to
+# keep reaching configargparse's own error path.
+_CONF_BOOLEAN_WORDS = {
+    "true": True,
+    "yes": True,
+    "on": True,
+    "1": True,
+    "false": False,
+    "no": False,
+    "off": False,
+    "0": False,
+}
+
 
 def _open_conf_file_utf8(path, *args, **kwargs):
     """Open a conf file as UTF-8, replacing any invalid bytes.
@@ -1305,9 +1321,9 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
         ``(expanded_value, source_file_abspath, lineno,
         pre_expansion_literal)`` tuples in parse order.
 
-        Consumers: ``_setup_pkg_config_overrides_locked`` (``verbose >= 4``)
-        attributes each emitted pkg-config path back to the conf file (and
-        line) that contributed it, and
+        Consumers: ``apptools_pkgconfig.emit_pkg_config_path_provenance``
+        (``verbose >= 4``) attributes each emitted pkg-config path back to
+        the conf file (and line) that contributed it, and
         ``apptools._note_shadowed_bare_values`` (``verbose >= 1``)
         names the origin of bare-key values discarded by
         last-writer-wins.
@@ -1332,6 +1348,21 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
                 a.env_var = compiletools.utils.ENV_VAR_DISABLED  # type: ignore[attr-defined]
 
     def _open_config_files(self, command_line_args):
+        # configargparse folds env-var tokens into the argv it hands here,
+        # before it reads a single conf file. Recording the widened list is
+        # what lets convert_item_to_command_line_arg see an env-set partner
+        # option, so an env var beats a conf file for a flag pair as it
+        # already does for every other key.
+        #
+        # configargparse skips this method entirely when a caller passes
+        # config_file_contents, so on that path the stash keeps the
+        # un-widened argv and an env var contradicting a conf key for a flag
+        # pair exits 2 instead of winning. Nothing in compiletools passes
+        # that argument (pinned by
+        # test_conf_boolean_flags.TestTheConfigFileContentsPath); reading
+        # os.environ here instead is refuted by measurement, because the env
+        # item would then suppress its own token.
+        self._ct_command_line_args = list(command_line_args)
         streams = super()._open_config_files(command_line_args)
         if len(streams) < 2:
             return streams
@@ -1403,6 +1434,144 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
             captured.setdefault(action.dest, []).append(value)
         return clean, captured
 
+    def _boolean_negation_partner(self, action):
+        """The ``--no-<name>`` action paired with *action* (or vice versa).
+
+        ``utils.add_flag_argument`` registers a ``store_true`` and a
+        ``store_false`` against one ``dest`` inside a mutually exclusive
+        group; the pair is identified by that shared ``dest`` plus opposite
+        ``const``. Returns None for anything else -- a lone ``store_true``
+        keeps stock behavior. An ambiguous match (more than one candidate)
+        also returns None rather than guessing.
+
+        The CANDIDATE is typed by its ``const``, not by its action class,
+        so ``utils.add_boolean_argument``'s value-converting arm is
+        reachable too: there the positive half is ``nargs="?"`` with
+        ``const=True`` and only the ``--no-<name>`` half is a
+        ``store_false``. Requiring both halves to be flag actions left
+        ``no-use-mtime = False`` (and the same spelling for
+        ``no-file-locking`` and ``no-allow-magic-source-in-header``)
+        inert -- the identical defect in the double-negative spelling.
+        Emitting a bare ``--use-mtime`` for that key is safe because
+        configargparse appends its conf and env tokens AFTER the command
+        line, so the optional value slot has no user positional to swallow.
+
+        A ``const`` of None excludes a candidate outright. A boolean
+        partner always carries a boolean ``const``; a plain value-taking
+        store action never does, and admitting one as a second candidate
+        trips the ambiguity guard below. ``cake.py``'s deprecated
+        ``--CT_PREPROCESS`` synonym is registered against the
+        ``preprocess`` dest and is exactly that shape, which is why the
+        dest needs this conjunct where a two-action dest does not.
+        """
+        if not isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction)):
+            return None
+        candidates = [
+            other
+            for other in self._actions
+            if other is not action
+            and other.dest == action.dest
+            and other.const is not None
+            and other.const is not action.const
+            and other.option_strings
+        ]
+        return candidates[0] if len(candidates) == 1 else None
+
+    def _command_line_names_any(self, cli_args, actions):
+        """Whether *cli_args* names any of *actions*, abbreviations included.
+
+        ``configargparse.already_on_command_line`` compares option strings
+        literally, so ``--no-au`` slips past it even though argparse resolves
+        that prefix to ``--no-auto``. Resolving the prefix here is what keeps
+        an abbreviated flag able to override a conf file.
+        """
+        targets = set(actions)
+        for token in cli_args:
+            if len(token) < 2 or token[0] not in self.prefix_chars:
+                continue
+            name = token.split("=", 1)[0]
+            exact = self._option_string_actions.get(name)
+            if exact is not None:
+                if exact in targets:
+                    return True
+                continue
+            if not self.allow_abbrev:
+                continue
+            # Ambiguous prefixes are argparse's error to raise, not ours to
+            # resolve; only a prefix reaching one action counts as typed.
+            matched = {tup[0] for tup in self._get_option_tuples(name)}
+            if len(matched) == 1 and matched & targets:
+                return True
+        return False
+
+    def convert_item_to_command_line_arg(self, action, key, value):
+        """Make a *falsey* conf-file / env-var value turn a flag OFF.
+
+        ``store_true`` takes no value, so configargparse translates a
+        truthy conf entry into a bare ``--flag`` token and drops a falsey
+        one on the floor -- no token, no diagnostic. Every flag registered
+        through ``utils.add_flag_argument`` is therefore un-turn-off-able
+        from a conf file or an env var; the only spelling that reaches the
+        parser is the partner key, ``no-flag = True``. Emitting the partner
+        option here is what makes ``flag = False`` mean what it says.
+
+        Also restores the normal precedence, command line over env var over
+        conf file. Stock configargparse skips a conf value only when the
+        SAME action's option string is already present, so ``no-auto =
+        True`` in a conf plus ``--auto`` on the command line injected
+        ``--no-auto`` alongside it and the mutually exclusive group turned
+        that into exit 2. Suppressing the injection when either form of the
+        pair is already present -- in full or abbreviated -- gives these
+        flags the precedence every other key has. ``_open_config_files``
+        supplies the env half of that list, because configargparse folds
+        env-var tokens into the argv before it opens a conf file.
+
+        The rule is symmetric in the key rather than keyed on the action's
+        ``const``: a truthy value applies the option the key names, a falsey
+        value applies its opposite. So ``no-auto = False`` turns the flag ON,
+        the one place this changes an outcome rather than restoring one --
+        the inert reading left the default standing.
+
+        Scope -- three ways two sources still reach the mutually exclusive
+        group and exit 2, all out of reach of a function handed one item at
+        a time with no view of the growing argv. Two conflicting keys within
+        the conf hierarchy itself (``auto = True`` in one file, ``no-auto =
+        True`` in another). Two env vars naming opposite halves (``AUTO=1``
+        with ``NO_AUTO=1``): configargparse converts every env item before
+        it splices any of them into the argv, so neither call can see the
+        other. And a caller passing ``config_file_contents`` directly, where
+        configargparse skips ``_open_config_files`` entirely, leaving the
+        stash un-widened so an env var contradicting a conf key exits 2
+        instead of winning -- no compiletools caller does (pinned by
+        ``test_conf_boolean_flags.TestTheConfigFileContentsPath``).
+        """
+        partner = self._boolean_negation_partner(action)
+        if partner is None:
+            return super().convert_item_to_command_line_arg(action, key, value)
+
+        # configargparse's own boolean vocabulary, deliberately not
+        # utils.to_bool's wider one and not whitespace-tolerant either: a
+        # value it rejects must keep producing its error, not silently gain
+        # a meaning on this code path only. Checked BEFORE the suppression
+        # so a malformed value is diagnosed whether or not the command line
+        # happens to name the pair.
+        requested = _CONF_BOOLEAN_WORDS.get(value.lower()) if isinstance(value, str) else None
+        if requested is None:
+            return super().convert_item_to_command_line_arg(action, key, value)
+
+        cli = getattr(self, "_ct_command_line_args", None) or []
+        if self._command_line_names_any(cli, (action, partner)):
+            return []
+
+        if requested is False:
+            # A conf key names an option; a truthy value applies that option
+            # (stock behavior, delegated below) and a falsey value applies
+            # its opposite. Symmetric in the key, so "no-auto = False" says
+            # what it looks like it says too -- leaving the double negative
+            # inert would be the same defect in the other spelling.
+            return [partner.option_strings[-1]]
+        return super().convert_item_to_command_line_arg(action, key, value)
+
     def parse_known_args(
         self,
         args=None,
@@ -1419,6 +1588,9 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
             args = list(args)
 
         clean_args, captured_cli = self._extract_cli_append_prepend(args)
+        # Read by convert_item_to_command_line_arg, which configargparse
+        # calls from inside super().parse_known_args and hands no argv.
+        self._ct_command_line_args = list(clean_args)
 
         # Make the ENV_VAR_DISABLED sentinel collision-proof: even if a
         # real process exports a variable with this exact name, drop it
