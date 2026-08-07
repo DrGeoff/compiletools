@@ -805,3 +805,27 @@ def test_main_reports_the_target_set_the_reanchor_fixpoint_settles_on(reanchor_r
     out = capsys.readouterr().out
     assert os.path.join("appalpha", "main.cpp") in out
     assert os.path.join("appbeta", "main.cpp") not in out
+
+
+def test_no_auto_reports_nothing(reanchor_repo, capsys):
+    """--no-auto means "do not walk", so with nothing named the target set is
+    empty. Same contract as ct-filelist's
+    test_no_auto_keeps_a_bare_invocation_silent."""
+    with uth.DirectoryContext(str(reanchor_repo)):
+        with uth.ParserContext():
+            assert compiletools.findtargets.main(["--style=args", "--no-auto"]) == 0
+    assert capsys.readouterr().out.strip() == ""
+
+
+def test_an_explicit_target_suppresses_discovery(reanchor_repo, capsys):
+    """A named target is the whole target set: it must not merge with the
+    discovered one. scripts/ct-build feeds this string to ct-create-makefile,
+    so a merged list hands it the named target twice -- once in the caller's
+    spelling and once in the discovered absolute one, which ordered_unique
+    cannot collapse."""
+    named = os.path.join("appalpha", "main.cpp")
+    with uth.DirectoryContext(str(reanchor_repo)):
+        with uth.ParserContext():
+            assert compiletools.findtargets.main(["--style=args", "--filename", named]) == 0
+    out = capsys.readouterr().out
+    assert out.split() == [named]
