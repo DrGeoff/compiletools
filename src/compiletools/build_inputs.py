@@ -323,20 +323,16 @@ def _raw_dir_value(args, attr):
 
 
 def _anchored_cas_dir(args, attr, gitroot, cwd_real):
-    """Raw cas-dir value with the resolve_cas_directory_arguments
-    gitroot-anchoring gate ported: a value supplied while the invocation
-    cwd differs from the gitroot is anchored to the gitroot
-    (os.path.join passes absolute values through unchanged)."""
-    import os
-
-    import compiletools.wrappedos
+    """Raw cas-dir value through the shared gitroot-anchoring gate, the
+    same one ``resolve_cas_directory_arguments`` applies for the diagnostic
+    tools. None (unsupplied) stays None so ``cas_dir_name`` derives the
+    default from the pure side."""
+    from compiletools.apptools_argparse import anchor_cas_dir_to_gitroot
 
     raw = _raw_dir_value(args, attr)
     if raw is None:
         return None
-    if compiletools.wrappedos.realpath(gitroot) != cwd_real:
-        return compiletools.wrappedos.normpath(os.path.join(gitroot, raw))
-    return raw
+    return anchor_cas_dir_to_gitroot(raw, gitroot, cwd_real)
 
 
 def gather_inputs(args, context) -> BuildInputs:

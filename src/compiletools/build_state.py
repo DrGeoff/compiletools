@@ -198,7 +198,48 @@ def _with_variant_suffix(raw: str | None, variant: str) -> str:
     normalized = posixpath.normpath(raw)
     if normalized == variant or normalized.endswith("/" + variant):
         return normalized
-    return normalized + "/" + variant
+    # posixpath.join, not ``+ "/" +``: for the root path the latter builds
+    # ``//<variant>``, and a POSIX path beginning with exactly two slashes is
+    # implementation-defined rather than a plain absolute path.
+    return posixpath.join(normalized, variant)
+
+
+def canonical_variant_name(variant_raw: str, canonical_order) -> str:
+    """THE variant naming rule. Pure, and the only implementation.
+
+    Shared for the same reason ``cas_dir_name`` is: the variant IS the last
+    path component of every cas dir, so a build that canonicalizes
+    ``debug.gcc`` to ``gcc.debug`` while a diagnostic tool keeps the literal
+    spelling has the two naming different pools. ``stage_resolve_names`` and
+    ``resolve_cas_directory_arguments`` both call this.
+    """
+    tokens = [t for t in _VARIANT_SEP_RE.split(variant_raw.strip()) if t]
+    return ".".join(compiletools.configutils.canonicalize_variant_tokens(tokens, list(canonical_order)))
+
+
+def cas_dir_name(raw: str | None, kind: str, variant: str, gitroot: str) -> str:
+    """THE cas-dir naming rule. Pure, and the only implementation.
+
+    Both resolution paths route their naming through here so they cannot
+    drift: ``stage_resolve_names`` for a ct-cake build, and
+    ``apptools_argparse.resolve_cas_directory_arguments`` for the diagnostic
+    tools (ct-cache-report / ct-trim-cache / ct-cleanup-locks) that parse
+    with ``cap.parse_args`` and never reach the gather->compute pipeline.
+    Those two must agree exactly: they name the same on-disk pool, one
+    writing it and the other scanning and trimming it.
+
+    ``raw is None`` means unsupplied and derives the gitroot-anchored
+    default ``<gitroot>/cas-<kind>dir/<variant>``. Empty means explicitly
+    disabled and stays empty -- it must NOT become the gitroot, which is
+    what an anchoring step applied to ``""`` would produce, pointing a trim
+    scan at the whole repository.
+
+    Idempotent, so re-running on its own output is a fixed point and the
+    NON_CANONICAL trim-cache class cannot be minted here.
+    """
+    if raw is None:
+        raw = posixpath.join(gitroot, f"cas-{kind}dir")
+    return _with_variant_suffix(raw, variant)
 
 
 def stage_resolve_names(inputs: BuildInputs) -> NameState:
@@ -206,14 +247,13 @@ def stage_resolve_names(inputs: BuildInputs) -> NameState:
     canonicalization fixed point: re-running on its own output changes
     nothing (the NON_CANONICAL trim-cache class cannot be minted here).
 
-    An unsupplied (None) cas-dir raw derives the gitroot-anchored default
-    ``<gitroot>/cas-<kind>dir/<variant>``, mirroring
-    ``resolve_cas_directory_arguments`` (gather's gitroot is
-    ``find_git_root()``, which falls back to the cwd outside a repo, so
-    the default stays absolute in production)."""
-    tokens = [t for t in _VARIANT_SEP_RE.split(inputs.variant_raw.strip()) if t]
-    canonical = compiletools.configutils.canonicalize_variant_tokens(tokens, list(inputs.canonical_order))
-    variant = ".".join(canonical)
+    Cas-dir naming is delegated to ``cas_dir_name``, which
+    ``resolve_cas_directory_arguments`` also calls -- one implementation,
+    so the paths a build writes and the paths the diagnostic tools scan
+    cannot drift apart. Gather's gitroot is ``find_git_root()``, which
+    falls back to the cwd outside a repo, so the default stays absolute in
+    production."""
+    variant = canonical_variant_name(inputs.variant_raw, inputs.canonical_order)
     if inputs.bindir_raw is None:
         bindir = "bin/" + variant
     elif inputs.bindir_raw == "":
@@ -222,9 +262,7 @@ def stage_resolve_names(inputs: BuildInputs) -> NameState:
         bindir = posixpath.normpath(inputs.bindir_raw)
 
     def _cas_dir(raw: str | None, kind: str) -> str:
-        if raw is None:
-            raw = posixpath.join(inputs.gitroot, f"cas-{kind}dir")
-        return _with_variant_suffix(raw, variant)
+        return cas_dir_name(raw, kind, variant, inputs.gitroot)
 
     return NameState(
         variant=variant,
