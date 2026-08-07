@@ -189,7 +189,15 @@ class Filelist:
             check_filename(filename)
             realpath = compiletools.wrappedos.realpath(filename)
             files = self._hunter.required_files(realpath)
-            filteredfiles = filterobject(files)
+            filteredfiles = set(filterobject(files))
+            # The walk reached these, the caller did not name them, so
+            # --auto-exclude governs them: ct-cake compiles a vendored header
+            # and a packaging list still must not ship it. The named target
+            # itself is the explicit-target case and survives.
+            target_walked = realpath in filteredfiles
+            filteredfiles = self._not_auto_excluded(filteredfiles - {realpath})
+            if target_walked:
+                filteredfiles.add(realpath)
 
             if self.args.merge:
                 mergedfiles.extend(filteredfiles)

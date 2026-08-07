@@ -110,7 +110,14 @@ OPTIONS
                     forms mean; a leading ``/`` survives normalisation, so
                     ``/vendor/`` still anchors at the gitroot, as does any
                     number of leading slashes.
-                    Explicitly named targets are never filtered. In a ct.conf
+                    In ct-filelist the patterns filter the OUTPUT LISTING as
+                    well as discovery: a file reached only through the
+                    dependency walk of a non-excluded target -- a vendored
+                    header, say -- is dropped from the list even though
+                    ``ct-cake`` compiles it. Packaging is what the list is
+                    for. Explicitly named files (a filename on the command
+                    line, ``--extrafile``, ``--extrafilelist``) are never
+                    filtered. In a ct.conf
                     the bare ``auto-exclude`` key is last-writer-wins between
                     conf files; use ``append-AUTO-EXCLUDE`` (uppercase) to
                     accumulate across the conf hierarchy instead. A
