@@ -463,11 +463,15 @@ class TestTheDiscoveryGateHasTwoSides:
 
 
 class TestTheSlotLineIsWhatCausesTheLibrary:
-    """Control arm. Without it, "both tools report the library" would pass
-    against a fixture where something else entirely put the source there."""
+    """A causal-delta pin, NOT a both-states control: the with-line arm minus
+    the without-line arm must equal the library, in each tool independently.
+    The findtargets with-line leg is the parity assertion and is red until the
+    reporting fix lands; the without-line legs are the embedded control that
+    stops the pin passing against a fixture where something else entirely put
+    the source there, and they are green in both states."""
 
     @pytest.mark.parametrize("slot", ["static", "dynamic"])
-    def test_a_tree_without_the_conf_line_reports_no_library_in_either_tool(self, tmp_path, capsys, slot):
+    def test_the_library_appears_in_both_tools_only_when_the_conf_line_is_present(self, tmp_path, capsys, slot):
         bucket = STATIC if slot == "static" else DYNAMIC
         with_slot = make_fixture(tmp_path, slot_line=f"{slot} = lib/orphan.cpp", name="withslot")
         without = make_fixture(tmp_path, name="withoutslot")
