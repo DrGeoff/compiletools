@@ -1,6 +1,10 @@
 # #undef cache invariant fixture
 
-Fixture for `test_preprocessing_cache.py::TestPreprocessingCache::test_invariant_cache_honors_undef`.
+Fixture for `test_undef_bug_sample.py` and
+`test_headertree_hunter_agreement.py` (the cache-invariant unit test
+`test_preprocessing_cache.py::TestPreprocessingCache::test_invariant_cache_honors_undef`
+pins the same bug but builds its directives synthetically and does not
+read this directory).
 
 ## The bug this pins
 
@@ -30,18 +34,24 @@ its `PKG-CONFIG` flag) was never discovered.
 
 ## Fix
 
-`MacroState` gained a `file_undefs` field recording which macros a
-file's processing removed. Both the cache-hit and cache-miss
-reconstruction paths now call `.without_keys(cached.file_undefs)`
-after `.with_updates(...)`, so an `#undef` is applied on top of the
-merge instead of being silently absorbed by it.
+`ProcessingResult` gained a `file_undefs` field recording which macros
+a file's processing removed, and `MacroState` gained a
+`without_keys()` method to subtract them. Both cache-hit
+reconstruction paths (macro-invariant and macro-variant) now call
+`.without_keys(cached.file_undefs)` after `.with_updates(...)`, so an
+`#undef` is applied on top of the merge instead of being silently
+absorbed by it. The cache-miss path needs no subtraction — it builds
+the outgoing state from the preprocessor's post-`#undef` macros
+directly and merely records `file_undefs` for later reconstruction.
 
 ## What the regression test asserts
 
-`test_invariant_cache_honors_undef` processes a file that `#undef`s a
-macro and asserts the returned macro state no longer contains it —
-pinning the cache invariant directly. `test_undef_bug_sample.py` and
-`test_headertree_hunter_agreement.py` additionally drive this sample
-end-to-end: they build `main.cpp`'s header dependency graph and assert
-`should_be_included.hpp` is discovered and its `PKG-CONFIG` flag is
-extracted.
+`test_invariant_cache_honors_undef` processes a synthetic `#undef`
+directive and asserts the returned macro state no longer contains the
+macro — pinning the cache invariant directly. `test_undef_bug_sample.py`
+drives this sample end-to-end: it builds `main.cpp`'s header dependency
+graph and asserts `should_be_included.hpp` is discovered and its
+`PKG-CONFIG` flag is extracted. `test_headertree_hunter_agreement.py`
+uses the sample differently: it asserts only that `ct-headertree` and
+the hunter walk agree on the header set, without pinning what that set
+contains.

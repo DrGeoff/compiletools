@@ -171,10 +171,16 @@ shared pool another user can lock, and that user's trim can still evict
 mid-publish. A hardlinked
 ``user_path`` survives it — ``nlink`` pins the inode, so only the
 cache name is lost — but a publish that fell back to ``symlink()``
-under ``EXDEV`` can be left dangling. Any other lock error propagates
-rather than being hidden behind a silently unlocked publish;
-``EINVAL`` is excluded on purpose, since it cannot be told apart from
-a malformed lock request.
+under ``EXDEV`` can be left dangling. A platform with no lock
+primitive at all (no ``fcntl`` module, so ``FileLock`` raises
+``LockStrategyUnavailableError`` before any errno exists) degrades the
+same way — it is the ``ENOSYS`` statement arriving as a
+``RuntimeError`` instead of an ``OSError``. Any other lock error
+propagates rather than being hidden behind a silently unlocked
+publish — in particular contention on a *working* primitive
+(``LockdirLock`` exhausting its retries) stays fatal, since that is
+the race the entry lock exists to prevent. ``EINVAL`` is excluded on
+purpose, since it cannot be told apart from a malformed lock request.
 
 EXIT CODES
 ==========
@@ -184,12 +190,14 @@ EXIT CODES
     fallback) at the byte-equivalent CAS entry, and the sidecar
     manifest has been written if ``--source-realpath`` was supplied.
 1
-    Failure — an unrecovered ``OSError`` from ``link()`` / ``symlink()``
-    / ``rename()`` propagated out of an uncaught exception. The
-    ``user_path`` is never left in a partial state. A command-line
-    usage error (missing ``--cas-path`` / ``--user-path``, bad flag)
-    is a separate case: argparse exits ``2`` for those, before
-    ``publish()`` ever runs.
+    Failure — an uncaught exception propagated: an unrecovered
+    ``OSError`` from ``link()`` / ``symlink()`` / ``rename()`` (or the
+    ``makedirs`` that precedes them), a lock ``OSError`` outside the
+    six unlocked-publish errnos above, or lock contention on a working
+    primitive (``LockdirLock`` retry exhaustion). The ``user_path`` is
+    never left in a partial state. A command-line usage error (missing
+    ``--cas-path`` / ``--user-path``, bad flag) is a separate case:
+    argparse exits ``2`` for those, before ``publish()`` ever runs.
 3
     The CAS entry was missing when the publish tried to link it. A
     concurrent ``ct-trim-cache`` eviction is the reachable cause, and it

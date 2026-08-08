@@ -641,9 +641,10 @@ Orphan-cell Modes
     means "no build has touched this inode for N days", so a peer is unlikely
     to be mid-copy; a WARM sibling (within the cutoff) is spared and reported
     as ``ca_siblings_skipped_warm``. Applies to the ``cas-exedir`` trim only —
-    rejected (exit 1) if combined with ``--cas-objdir-only`` /
-    ``--cas-pchdir-only`` / ``--cas-pcmdir-only``, or with any of the
-    standalone pool modes (``--list-resolvable`` / ``--list-unresolvable`` /
+    rejected (exit 1) if combined with anything that excludes that pool
+    (``--cas-objdir-only`` / ``--cas-pchdir-only`` / ``--cas-pcmdir-only``
+    or ``--cas-exedir-skip``), or with any of the standalone pool modes
+    (``--list-resolvable`` / ``--list-unresolvable`` /
     ``--purge-unresolvable``). Honours ``--dry-run``. Do not run it until no
     pre-fix (<= 12.1.1) peer remains on the shared pool.
 

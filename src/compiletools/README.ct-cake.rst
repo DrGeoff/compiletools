@@ -476,14 +476,21 @@ Per-compiler placement details
   ``--precompile -o <pcm_path>``. Importers reference the cached path
   via ``-fmodule-file=<name>=<pcm_path>``.
 * **gcc** is steered by a per-makefile mapper file
-  (``{dirname(makefilename)}/.module-mapper.txt``) generated each
-  build. Each line maps a module name -- or, for header units, the
-  resolved absolute system-header path -- to its cache path. gcc's
-  ``-fmodule-mapper`` flag is automatically injected into every gcc
-  compile command in the build. The per-makefile placement avoids a
-  race that ``{cas-objdir}/.module-mapper.txt`` would have when two
-  parallel ``ct-cake`` invocations target the same variant with
-  different module sets.
+  (``{dirname(makefilename)}/.module-mapper.txt``, falling back to
+  ``{bindir}/.module-mapper.txt`` when the makefile name has no
+  directory component, and to ``./.module-mapper.txt`` when the bindir
+  is empty too) generated each build. Each line maps a module name --
+  or, for header units, the resolved absolute system-header path -- to
+  its cache path. gcc's ``-fmodule-mapper`` flag is automatically
+  injected into every gcc compile command in the build. The
+  per-makefile placement avoids a race that
+  ``{cas-objdir}/.module-mapper.txt`` would have when two parallel
+  ``ct-cake`` invocations target the same variant with different
+  module sets -- except in the last-resort cwd case: with an empty
+  bindir AND a directory-less makefile name, every invocation in the
+  same cwd shares ``./.module-mapper.txt`` and concurrent gcc-module
+  builds there race again; give either one a directory to keep them
+  apart.
 
 Cache keys are workspace-path-independent
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -938,7 +945,13 @@ Common Options
     ``ct-filelist``'s: a file reached only through the dependency walk of a
     non-excluded target is dropped from the printed list even though a real
     build would compile it. Targets named explicitly on the command line
-    are never filtered.
+    are never filtered. The listing is formatted by ``--style``.
+
+**--style {flat,indent}**
+    Output format for the ``--filelist`` listing (ct-cake registers
+    ct-filelist's ``--style``, not ct-findtargets' four-value one).
+    ``flat`` (default) prints one path per line; ``indent`` prefixes
+    each line with a tab. No effect on a normal build.
 
 **--disable-tests**
     When ``--auto`` is specified, skip automatic building and running of tests.
@@ -1082,6 +1095,13 @@ Common Options
     any other mechanism. Useful for fallback paths or system-wide package
     locations as a last resort. May be repeated to append multiple directories.
     Example: ``ct-cake --append-PKG-CONFIG-PATH=/usr/local/lib/pkgconfig``
+
+**--pkg-config-errors {warn,error}**
+    What a failing pkg-config package does to the build: ``warn``
+    (default) emits a ``UserWarning`` and contributes zero flags;
+    ``error`` stops the build at the first failure. See ct-config(1)
+    "Strict pkg-config failures" for the full trigger list.
+    Example: ``ct-cake --pkg-config-errors=error``
 
 **--static / --dynamic**
     Build a static or dynamic library instead of an executable.

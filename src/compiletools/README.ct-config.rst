@@ -679,6 +679,13 @@ build into a build failure at the point pkg-config resolution breaks,
 rather than downstream at link time with a confusing "undefined
 reference" error.
 
+A query that *succeeds* (exit 0) while writing to stderr is not a
+failure in either mode: the diagnostic is forwarded to ct's stderr
+once per distinct ``(package, query, message)`` — the same query
+reached again through another caching layer or a re-parse warns once,
+not once per call — and the returned flags are used as normal. Only a
+nonzero exit engages the ``warn``/``error`` policy.
+
 **Environment Variable Mapping**
 
 Command-line options automatically map to environment variables by:
