@@ -307,7 +307,9 @@ class TestTheCakeReaderIsNotVacuous:
         with uth.DirectoryContext(str(root)), uth.ParserContext():
             returncode = compiletools.cake.main(argv + ["--backend=make", "--makefilename=" + str(built)])
         assert returncode == 0
-        assert parse_cake_makefile(root, built.read_text()) == cake_targets(root, argv)
+        built_targets = parse_cake_makefile(root, built.read_text())
+        assert nonempty(built_targets), "the cake reader found no targets at all"
+        assert built_targets == cake_targets(root, argv)
 
 
 class TestTheFindtargetsReaderIsNotVacuous:
