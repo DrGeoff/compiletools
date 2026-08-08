@@ -23,6 +23,12 @@ conf file required — the composition synthesizes them on demand.
 ./build.sh
 ```
 
+The `gcc,debug,asan` step links against the AddressSanitizer runtime,
+which some distros package separately from gcc. On Fedora/RHEL install
+it with `sudo dnf install libasan` (and `libubsan` / `libtsan` if you
+try those axes); without it the link fails with
+`ld: cannot find /usr/lib64/libasan.so.8.0.0`.
+
 Each invocation produces a separate `bin/<canonical-variant>/` and
 shares CAS entries across builds whose toolchain/flags actually agree.
 

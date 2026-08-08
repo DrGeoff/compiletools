@@ -95,6 +95,17 @@ concern. The bundled axes (run ``ct-list-variants`` to see them all):
 - **Specialized:** ``cfi`` (clang CFI), ``shadow-call-stack`` (aarch64),
   ``time-trace`` (clang compile profiling)
 
+The sanitizer axes need the matching runtime libraries installed, and
+several distros package those separately from the compiler itself. On
+Fedora/RHEL the gcc runtimes are ``libasan``, ``libubsan``, and
+``libtsan`` (``sudo dnf install libasan libubsan libtsan``); a missing
+one fails at link time with e.g.
+``ld: cannot find /usr/lib64/libasan.so.8.0.0``. Debian/Ubuntu ship
+them as dependencies of the gcc package, so no extra step is normally
+needed there. For clang the sanitizer runtimes come from compiler-rt
+(Fedora: ``compiler-rt``; Debian/Ubuntu: ``libclang-rt-<N>-dev``).
+``msan`` is clang-only — gcc has no MemorySanitizer.
+
 To build with gcc, mold as the linker, C++20, the release optimization
 level, and AddressSanitizer you ask for::
 
