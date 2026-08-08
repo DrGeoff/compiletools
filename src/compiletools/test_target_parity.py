@@ -371,6 +371,13 @@ ROWS = (
         {STATIC: ("lib/orphan.cpp",)},
     ),
     (
+        "argv_dynamic",
+        None,
+        "subproject",
+        ("--dynamic", "lib/orphan.cpp"),
+        {DYNAMIC: ("lib/orphan.cpp",)},
+    ),
+    (
         "gitroot_conf_static",
         "static = lib/orphan.cpp",
         "gitroot",
@@ -606,8 +613,17 @@ class TestKnownDivergenceOnAContradictoryTree:
         reported = parse_findtargets_indent(root, captured.out)
         assert reported[EXES] == frozenset({"app0/main.cpp", "app1/main.cpp"})
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(SystemExit) as refusal:
             with uth.DirectoryContext(str(root)), uth.ParserContext():
                 compiletools.cake.main(
                     argv + ["--backend=make", "--makefilename=" + str(root / "Makefile.x"), "--clean"]
                 )
+        # A bare pytest.raises(SystemExit) is satisfied by SystemExit(0),
+        # so it is green against a ct-cake that generates the makefile and
+        # exits clean -- the state this test says cannot happen. Pin the
+        # code, and the conflict in the message: exit 1 for an unrelated
+        # reason reads identically otherwise.
+        assert refusal.value.code == 1
+        refusal_err = capsys.readouterr().err
+        assert "conflicting subproject configs" in refusal_err
+        assert "-std=c++20" in refusal_err and "-std=c++23" in refusal_err
