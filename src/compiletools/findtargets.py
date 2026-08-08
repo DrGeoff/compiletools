@@ -3,8 +3,6 @@ import os
 import sys
 import traceback
 
-import configargparse
-
 import compiletools.apptools
 import compiletools.build_apply
 import compiletools.configutils
@@ -249,43 +247,51 @@ def is_auto_excluded(filepath, patterns, anchor_root=""):
 
 
 class NullStyle:
-    def __call__(self, executabletargets, testtargets):
+    def __call__(self, executabletargets, testtargets, statictargets, dynamictargets):
         print(executabletargets)
         print(testtargets)
+        print(statictargets)
+        print(dynamictargets)
 
 
 class FlatStyle:
-    def __call__(self, executabletargets, testtargets):
-        print(" ".join(executabletargets + testtargets))
+    def __call__(self, executabletargets, testtargets, statictargets, dynamictargets):
+        print(" ".join(executabletargets + testtargets + statictargets + dynamictargets))
 
 
 class IndentStyle:
-    def __call__(self, executabletargets, testtargets):
-        print("Executable Targets:")
-        if executabletargets:
-            for target in executabletargets:
+    def __call__(self, executabletargets, testtargets, statictargets, dynamictargets):
+        sections = (
+            ("Executable Targets:", executabletargets),
+            ("Test Targets:", testtargets),
+            ("Static Library Targets:", statictargets),
+            ("Dynamic Library Targets:", dynamictargets),
+        )
+        for heading, targets in sections:
+            print(heading)
+            for target in targets or ["None found"]:
                 print(f"\t{target}")
-        else:
-            print("\tNone found")
-
-        print("Test Targets:")
-        if testtargets:
-            for target in testtargets:
-                print(f"\t{target}")
-        else:
-            print("\tNone found")
 
 
 class ArgsStyle:
-    def __call__(self, executabletargets, testtargets):
-        if executabletargets:
-            for target in executabletargets:
-                sys.stdout.write(f" {target}")
+    """Emit the target set as an argv for ct-cake / ct-create-makefile.
 
-        if testtargets:
-            sys.stdout.write(" --tests")
-            for target in testtargets:
-                sys.stdout.write(f" {target}")
+    ``scripts/ct-build`` pipes this straight into ct-create-makefile, so
+    the positional executables come first and every ``nargs="*"`` slot
+    follows: a greedy slot ahead of the positional swallows it. Each slot
+    is emitted only when non-empty for the same reason -- a bare trailing
+    ``--static`` would consume whatever the caller appends.
+    """
+
+    def __call__(self, executabletargets, testtargets, statictargets, dynamictargets):
+        for target in executabletargets:
+            sys.stdout.write(f" {target}")
+
+        for flag, targets in (("--tests", testtargets), ("--static", statictargets), ("--dynamic", dynamictargets)):
+            if targets:
+                sys.stdout.write(f" {flag}")
+                for target in targets:
+                    sys.stdout.write(f" {target}")
 
 
 _STYLE_REGISTRY = {
@@ -321,7 +327,9 @@ class FindTargets:
 
         if args.verbose >= 2:
             styleobj = IndentStyle()
-            styleobj(executabletargets, testtargets)
+            # Discovery classifies into these two buckets only; the library
+            # slots reach the report from the conf tiers, not from here.
+            styleobj(executabletargets, testtargets, [], [])
 
     def __call__(self, path=None):
         """Do the file system search and
@@ -493,54 +501,6 @@ def discover_targets_and_reanchor(args, context):
     )
 
 
-_LIBRARY_SLOTS = (("--static", "static"), ("--dynamic", "dynamic"))
-
-
-def _conf_file_sourced_keys(cap):
-    """The conf keys configargparse credited to a config file on the last parse.
-
-    A key the command line also supplied is absent: configargparse drops
-    the conf entry once argv carries the same option. Membership therefore
-    means "this value did not come from argv", which is the distinction
-    the diagnostic needs and is exact without scanning argv for tokens
-    that argparse may have reached by abbreviation.
-    """
-    keys = set()
-    for source, settings in cap.get_source_to_settings_dict().items():
-        if source.startswith(configargparse._CONFIG_FILE_SOURCE_KEY):
-            keys.update(settings)
-    return keys
-
-
-def _reject_library_slots(cap, args):
-    """Refuse --static/--dynamic, which this tool registers but cannot report.
-
-    The style classes take an executable bucket and a test bucket, so a named
-    library has nowhere to go and is dropped from the output.
-
-    Registering the slots also made them conf-settable -- configargparse
-    derives a ``static`` key from the option string -- so a project can
-    reach here without passing anything. Naming the flag in that case
-    sends the user hunting through a command line that does not contain
-    it, hence the conf-key wording.
-    """
-    named = [(flag, key) for flag, key in _LIBRARY_SLOTS if getattr(args, key, None)]
-    if not named:
-        return
-    from_conf = _conf_file_sourced_keys(cap)
-    subjects = [f"conf key {key}" if key in from_conf else flag for flag, key in named]
-    remedy = (
-        "Name executables as positional arguments and tests with --tests, "
-        "and build libraries with ct-create-makefile --static/--dynamic."
-    )
-    if any(key in from_conf for _, key in named):
-        remedy += " ct-create-makefile reads the same conf key, so the value belongs in a conf layer that tool sees."
-    cap.error(
-        f"{' and '.join(subjects)} cannot be reported by ct-findtargets, "
-        f"which lists executables and tests only. {remedy}"
-    )
-
-
 def _warn_target_set_may_be_incomplete():
     """Say that the report below is the first discovery pass, not the fixpoint.
 
@@ -568,20 +528,8 @@ def main(argv=None):
 
     from compiletools.build_context import BuildContext
 
-    # Reject ahead of parseargs. A usage error argparse can decide on its
-    # own must not first run gather -> compute -> apply_effects, which
-    # spawns pkg-config subprocesses, mutates PKG_CONFIG_PATH and can
-    # create the wild-B linker symlink dir -- none of it recoverable by a
-    # caller that traps the SystemExit. parse_known_args on this same
-    # parser resolves abbreviations and the standard conf tiers exactly as
-    # the real parse will, and does no work beyond reading conf files.
-    _reject_library_slots(cap, cap.parse_known_args(argv)[0])
-
     context = BuildContext()
     args = compiletools.apptools.parseargs(cap, argv, context=context)
-    # Backstop: _apply_target_conf_layers adds conf tiers anchored on the
-    # explicit targets, which the pre-pass above cannot see.
-    _reject_library_slots(cap, args)
 
     styleclass = _STYLE_REGISTRY[args.style.lower()]
     styleobj = styleclass()
@@ -605,6 +553,11 @@ def main(argv=None):
             # pkg-config conversion, which uses the same code and gate --
             # degrading an enforcement failure to a warning.
             _warn_target_set_may_be_incomplete()
-    styleobj(list(args.filename or []), list(args.tests or []))
+    styleobj(
+        list(args.filename or []),
+        list(args.tests or []),
+        list(args.static or []),
+        list(args.dynamic or []),
+    )
 
     return 0
