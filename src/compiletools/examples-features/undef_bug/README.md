@@ -23,7 +23,11 @@ branched on `#ifndef`/`#ifdef` for that macro then took the wrong path.
 - `cleans_up.hpp` — includes `defines_macro.hpp`, then `#undef
   TEMP_BUFFER_SIZE`
 - `should_be_included.hpp` — carries `//#PKG-CONFIG=leaked-macro-pkg`;
-  meant to be reachable only when `TEMP_BUFFER_SIZE` is undefined
+  meant to be reachable only when `TEMP_BUFFER_SIZE` is undefined. Its
+  include guard is deliberately `SHOULD_NOT_SEE_MACRO_HPP`, unrelated to
+  the filename: guards are macro state, not a naming convention, and a
+  guard detector that guessed the name from the filename would be wrong
+  here — keep the mismatch.
 - `uses_conditional.hpp` — includes `cleans_up.hpp`, then `#ifndef
   TEMP_BUFFER_SIZE` guards the include of `should_be_included.hpp`
 - `main.cpp` — includes `uses_conditional.hpp`
