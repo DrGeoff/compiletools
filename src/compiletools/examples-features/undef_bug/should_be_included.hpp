@@ -1,5 +1,5 @@
-#ifndef SHOULD_NOT_SEE_MACRO_HPP
-#define SHOULD_NOT_SEE_MACRO_HPP
+#ifndef SHOULD_BE_INCLUDED_HPP
+#define SHOULD_BE_INCLUDED_HPP
 
 // This header should ONLY be included if TEMP_BUFFER_SIZE is NOT defined
 // It represents functionality that should be excluded when the macro exists
@@ -11,4 +11,4 @@ inline void alternative_implementation() {
     // when TEMP_BUFFER_SIZE has been cleaned up
 }
 
-#endif // SHOULD_NOT_SEE_MACRO_HPP
+#endif // SHOULD_BE_INCLUDED_HPP

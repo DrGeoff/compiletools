@@ -17,14 +17,15 @@ main.o: main.cpp uses_conditional.hpp cleans_up.hpp defines_macro.hpp \
 </output>
 */
 
-// BUG: With preprocessing_cache bug:
-// - After processing cleans_up.hpp, TEMP_BUFFER_SIZE is still in macro state
-// - #ifndef TEMP_BUFFER_SIZE evaluates to FALSE
-// - should_not_see_macro.hpp is NOT included
-// - PKG-CONFIG=leaked-macro-pkg is NOT extracted
+// BUG (fixed; kept as the regression fixture): with the pre-fix
+// preprocessing_cache:
+// - After processing cleans_up.hpp, TEMP_BUFFER_SIZE was still in macro state
+// - #ifndef TEMP_BUFFER_SIZE evaluated to FALSE
+// - should_be_included.hpp was NOT included
+// - PKG-CONFIG=leaked-macro-pkg was NOT extracted
 //
-// Expected: 3 headers (uses_conditional, cleans_up, defines_macro, should_not_see_macro)
-// Buggy: 3 headers (missing should_not_see_macro)
+// Expected: 4 headers (uses_conditional, cleans_up, defines_macro, should_be_included)
+// Buggy: 3 headers (missing should_be_included)
 
 #include "uses_conditional.hpp"
 

@@ -17,8 +17,10 @@ SYNOPSIS
 ========
 ct-findtargets [-h] [-c CONFIG_FILE] [--variant VARIANT] [-v] [-q]
                     [--version] [-?] [--ID ID]
-                    [--CPP CPP] [--CC CC] [--CXX CXX] [--CPPFLAGS CPPFLAGS]
-                    [--CXXFLAGS CXXFLAGS] [--CFLAGS CFLAGS]
+                    [--CPP CPP] [--CC CC] [--CXX CXX]
+                    [--CPPFLAGS CPPFLAGS [CPPFLAGS ...]]
+                    [--CXXFLAGS CXXFLAGS [CXXFLAGS ...]]
+                    [--CFLAGS CFLAGS [CFLAGS ...]]
                     [--git-root | --no-git-root]
                     [--include INCLUDE [INCLUDE ...]]
                     [--shorten | --no-shorten] [--bindir BINDIR]
@@ -27,13 +29,19 @@ ct-findtargets [-h] [-c CONFIG_FILE] [--variant VARIANT] [-v] [-q]
                     [--disable-tests | --no-disable-tests]
                     [--disable-exes | --no-disable-exes]
                     [--auto-exclude AUTO_EXCLUDE]
-                    [--append-AUTO-EXCLUDE AUTO_EXCLUDE]
                     [--prepend-AUTO-EXCLUDE AUTO_EXCLUDE]
+                    [--append-AUTO-EXCLUDE AUTO_EXCLUDE]
                     [--filenametestmatch | --no-filenametestmatch]
                     [--style {null,flat,indent,args}]
                     [--dynamic [DYNAMIC ...]] [--static [STATIC ...]]
                     [--tests [TESTS ...]]
                     [filename ...]
+
+The synopsis is abridged to the options this page documents;
+``ct-findtargets --help`` shows the full inherited build-system surface
+(``--variant-canonical-order``, the ``--cas-*dir`` family, pkg-config
+and locking options, and the ``--prepend-*``/``--append-*`` flag
+variants). See ``ct-config`` (1) and ``ct-commandline`` (1).
 
 
 DESCRIPTION
@@ -139,7 +147,8 @@ an exclusion set in a ct.conf applies to all four tools; targets those
 tools are told to build by name are never filtered. ct-filelist, ct-cake and ct-compilation-database
 all register ct-findtargets' discovery options without its ``--style``.
 ct-cake keeps ct-filelist's own flat/indent ``--style`` for its
-``--filelist`` output; ct-compilation-database has no ``--style`` at all.
+``--filelist`` output; ct-compilation-database has no ``--style`` at all
+(nor does ct-create-makefile, which registers neither tool's options).
 
 Conf files have two spellings. The bare ``auto-exclude`` key is
 last-writer-wins across the conf hierarchy. It does not contest with the

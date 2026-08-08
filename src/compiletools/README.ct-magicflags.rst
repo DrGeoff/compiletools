@@ -170,6 +170,14 @@ order is::
 
     --prepend-PKG-CONFIG-PATH  >  cwd/ct.conf.d/pkgconfig/  >  gitroot/ct.conf.d/pkgconfig/  >  $PKG_CONFIG_PATH  >  --append-PKG-CONFIG-PATH
 
+One process-lifetime caveat: a package's existence verdict and flag
+output are memoised per ``(package, query)`` — not per
+``PKG_CONFIG_PATH`` — so a long-lived embedder that changes the path
+between builds in the same process keeps the first verdict for packages
+already probed, until something clears the pkg-config caches
+(``apptools.clear_cache``). Ordinary CLI invocations are unaffected —
+each run is a fresh process.
+
 Use ``--prepend-PKG-CONFIG-PATH`` to override all project and system paths
 (e.g., ``ct-cake --prepend-PKG-CONFIG-PATH=/opt/custom/pkgconfig`` to test
 a patched version). Use ``--append-PKG-CONFIG-PATH`` as a fallback for

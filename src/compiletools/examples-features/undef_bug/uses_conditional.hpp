@@ -4,14 +4,14 @@
 // Include the header that cleans up TEMP_BUFFER_SIZE
 #include "cleans_up.hpp"
 
-// BUG: With the preprocessing_cache bug, TEMP_BUFFER_SIZE is still defined here
-// even though cleans_up.hpp did #undef TEMP_BUFFER_SIZE
+// BUG (fixed): with the pre-fix preprocessing_cache, TEMP_BUFFER_SIZE was
+// still defined here even though cleans_up.hpp did #undef TEMP_BUFFER_SIZE
 //
-// This means:
-// - The #ifndef will incorrectly evaluate to FALSE
-// - should_not_see_macro.hpp will NOT be included
-// - PKG-CONFIG=leaked-macro-pkg will NOT be extracted
-// - The build will be WRONG
+// That meant:
+// - The #ifndef incorrectly evaluated to FALSE
+// - should_be_included.hpp was NOT included
+// - PKG-CONFIG=leaked-macro-pkg was NOT extracted
+// - The build was WRONG
 
 #ifndef TEMP_BUFFER_SIZE
     // This should be included because cleans_up.hpp undefined the macro

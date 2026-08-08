@@ -4,7 +4,8 @@
 // - zlib: Compress weapon asset data
 // - libm: Math library for damage calculations
 //
-// Bug: These magic flags are NOT discovered when Pass 2 skips header_a.hpp
+// Bug (fixed): pre-fix these magic flags were NOT discovered because Pass 2
+// skipped header_a.hpp
 
 #ifndef HEADER_B_HPP_GUARD
 // Break guard detection pattern

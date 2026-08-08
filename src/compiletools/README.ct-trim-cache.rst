@@ -270,6 +270,8 @@ Linker-artefact directory trimming
    alongside the cas entry.
 
 **Published entries get their mtime freshened outside of trim.** Every backend
+that publishes through ``cas-exedir`` (cmake and bazel self-manage exe
+placement and emit no publish rules)
 freshens the mtime of every ``cas-exedir`` entry its build publishes at the
 start of ``execute()`` (``BuildBackend._freshen_published_cas_entries``), not
 just on first publish, so an entry a build keeps re-publishing does not age
