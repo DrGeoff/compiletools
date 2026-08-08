@@ -166,12 +166,11 @@ class Filelist:
         extras |= self._not_auto_excluded(swept)
 
         mergedfiles = []
+        filteredextras = filterobject({compiletools.wrappedos.realpath(fname) for fname in extras})
         if self.args.merge:
-            filteredfiles = filterobject({compiletools.wrappedos.realpath(fname) for fname in extras})
-            mergedfiles.extend(filteredfiles)
+            mergedfiles.extend(filteredextras)
         else:
-            for fname in extras:
-                realpath = compiletools.wrappedos.realpath(fname)
+            for realpath in sorted(filteredextras):
                 print(self.styleobject.adjust(realpath))
 
         followable = []
@@ -202,14 +201,11 @@ class Filelist:
             if self.args.merge:
                 mergedfiles.extend(filteredfiles)
             else:
-                try:
-                    # Remove realpath from the list so that the style object
-                    # doesn't have to worry about it.
-                    filteredfiles = [f for f in filteredfiles if f != realpath]
-                except KeyError:
-                    pass
-                print(self.styleobject.adjust(realpath))
-                self.styleobject(sorted(filteredfiles))
+                # The heading obeys --filter like the merged listing does:
+                # filteredfiles only holds the target when the filter kept it.
+                if realpath in filteredfiles:
+                    print(self.styleobject.adjust(realpath))
+                self.styleobject(sorted(f for f in filteredfiles if f != realpath))
 
         if self.args.merge:
             mergedfiles = compiletools.utils.ordered_unique(mergedfiles)

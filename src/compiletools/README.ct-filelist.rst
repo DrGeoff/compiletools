@@ -50,14 +50,23 @@ OPTIONS
 **Output Control**
 
 --style {flat,indent}
-                    Output formatting style. ``flat`` outputs one file per line.
-                    ``indent`` shows the dependency tree with indentation.
+                    Output formatting style. ``flat`` outputs one file per
+                    line. ``indent`` prefixes every dependency line with a
+                    tab -- a single fixed level, not a nested tree; under
+                    the default ``--merge`` the whole listing is one
+                    uniformly indented block, and only ``--no-merge`` adds
+                    a second level (unindented per-target headings above
+                    their indented dependencies).
                     (default: flat)
 
 --filter {header,source,all}
                     Filter output to show only headers, only source files,
                     or all files. Useful for packaging when you need to
-                    separate headers from implementation files.
+                    separate headers from implementation files. Applies to
+                    the whole listing in both merge modes: extras obey it,
+                    and a ``--no-merge`` heading whose target the filter
+                    drops is omitted while the group's surviving
+                    dependencies still print.
                     (default: all)
 
 --shorten
@@ -66,8 +75,12 @@ OPTIONS
                     (default: False)
 
 --merge
-                    Merge all outputs into a single list.
-                    Use ``--no-merge`` to keep separate lists per input file.
+                    Merge all outputs into a single sorted list.
+                    Use ``--no-merge`` to keep separate lists per input
+                    file: any extras print first as their own sorted,
+                    unheaded block (they belong to no input file), then
+                    each target prints as a heading line followed by its
+                    sorted dependencies.
                     (default: True)
 
 **Build Targets**
@@ -117,7 +130,11 @@ OPTIONS
                     ``ct-cake`` compiles it. Packaging is what the list is
                     for. Explicitly named files (a filename on the command
                     line, ``--extrafile``, ``--extrafilelist``) are never
-                    filtered. In a ct.conf
+                    filtered; files a DIRECTORY sweep turns up are --
+                    ``--extradir`` listings and the sweep of every file
+                    beside a ``--tests`` file name the directory, not the
+                    files, so the patterns govern what the sweep keeps.
+                    In a ct.conf
                     the bare ``auto-exclude`` key is last-writer-wins between
                     conf files; use ``append-AUTO-EXCLUDE`` (uppercase) to
                     accumulate across the conf hierarchy instead. A
@@ -132,6 +149,9 @@ OPTIONS
 
 --tests TEST.cpp
                     Include files needed for building test executables.
+                    Also sweeps in every file in the test file's own
+                    directory (auxiliary data the test reads at runtime);
+                    ``--auto-exclude`` filters that sweep.
 
 **Extra Files**
 
@@ -141,7 +161,9 @@ OPTIONS
 
 --extradir DIR
                     Extra directories to add all files from to the filelist.
-                    Can be specified multiple times.
+                    Can be specified multiple times. ``--auto-exclude``
+                    filters what the sweep turns up (the directory was
+                    named, the files were not).
 
 --extrafilelist FILE
                     Read the given file to find a list of extra files to add.
@@ -160,7 +182,9 @@ OPTIONS
 --variant VARIANT
                     Build variant to use for dependency resolution
                     (debug, release, etc.). Determines which compiler
-                    configuration is active. (default: blank)
+                    configuration is active. (default: whatever the active
+                    ct.conf hierarchy sets; the bundled ct.conf ships
+                    ``variant = gcc.cxx26.debug``)
 
 -v, --verbose       Increase verbosity. Can be specified multiple times.
 
@@ -182,8 +206,11 @@ and ``ct-commandline`` (1) for the complete reference of compiler and build opti
                     Add git root to include paths for dependency detection.
                     (default: True)
 
---include PATH      Add additional include paths for header dependency
-                    resolution. Can be specified multiple times.
+--include PATH [PATH ...]
+                    Add additional include paths for header dependency
+                    resolution. One occurrence takes several paths; a
+                    repeated occurrence REPLACES the earlier one. Use
+                    ``--append-INCLUDE`` to accumulate instead.
 
 --pkg-config LIBS   Use pkg-config to resolve library dependencies.
                     Can be specified multiple times.
@@ -216,17 +243,19 @@ Show only source files:
 
     ct-filelist --filter=source mylib.cpp
 
-Show dependency tree with indentation:
+Group dependencies under their target (heading + tab-indented deps):
 
 .. code-block:: bash
 
-    ct-filelist --style=indent myfile.cpp
+    ct-filelist --no-merge --style=indent myfile.cpp
 
-Include extra files for packaging:
+Include extra files for packaging (the positional target comes first --
+the ``--extrafile`` / ``--extradir`` options greedily take every
+following bare word as their own):
 
 .. code-block:: bash
 
-    ct-filelist --extradir ../icons --extrafile README.md myfile.cpp
+    ct-filelist myfile.cpp --extradir=../icons --extrafile=README.md
 
 List files for a library build:
 

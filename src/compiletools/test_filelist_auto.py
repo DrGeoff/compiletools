@@ -269,3 +269,36 @@ def test_an_extrafile_survives_a_pattern_that_excludes_it_from_the_walk(vendor_r
     listed = {line.strip() for line in capsys.readouterr().out.splitlines() if line.strip()}
     assert os.path.realpath(str(vendor_repo / "app" / "main.cpp")) in listed
     assert os.path.realpath(str(vendor_repo / "vendor" / "thirdparty.hpp")) in listed
+
+
+def test_no_merge_filter_drops_a_source_extrafile(vendor_repo, capsys: Any) -> None:
+    """--filter applies to extras in BOTH merge modes. The merged branch has
+    always routed extras through the filter; the --no-merge branch printed
+    them raw from 2016 until this fix, so a packaging run asking for headers
+    only still shipped every --extrafile source."""
+    _run_filelist(vendor_repo, ["--no-auto", "--no-merge", "--filter=header", "--extrafile", "app/main.cpp"])
+    out = capsys.readouterr().out
+    assert os.path.realpath(str(vendor_repo / "app" / "main.cpp")) not in out
+    assert not out.strip(), f"--filter=header must leave a source-only extras run empty, got:\n{out}"
+
+
+def test_no_merge_filter_drops_the_target_heading_but_keeps_its_headers(vendor_repo, capsys: Any) -> None:
+    """Merge-mode parity for the heading: a merged --filter=header run omits
+    the .cpp target from the listing, so the per-target report omits its
+    heading line too — the group's surviving dependencies still print."""
+    _run_filelist(vendor_repo, ["--no-merge", "--filter=header", "app/main.cpp"])
+    listed = [line.strip() for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert os.path.realpath(str(vendor_repo / "vendor" / "thirdparty.hpp")) in listed
+    assert os.path.realpath(str(vendor_repo / "app" / "main.cpp")) not in listed
+
+
+def test_no_merge_prints_extras_in_sorted_order(vendor_repo, capsys: Any) -> None:
+    """The merged listing is sorted; the --no-merge extras block iterated a
+    raw set, so its order varied run to run. Pin the sort so packaging
+    scripts can diff two runs."""
+    names = ["zeta.hpp", "alpha.hpp", "mid.hpp", "beta.hpp", "omega.hpp"]
+    for name in names:
+        (vendor_repo / name).write_text("#pragma once\n")
+    _run_filelist(vendor_repo, ["--no-auto", "--no-merge", "--extrafile", *names])
+    printed = [line.strip() for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert printed == sorted(os.path.realpath(str(vendor_repo / name)) for name in names)
