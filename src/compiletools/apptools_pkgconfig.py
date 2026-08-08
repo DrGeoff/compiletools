@@ -243,8 +243,9 @@ def _run_pkg_config_query(package: str, option: str) -> str:
     """Run one flag query and route a nonzero returncode through the policy.
 
     A passing ``--exists`` does not promise the flag query passes: a ``.pc``
-    with an unresolvable ``Requires.private``, or a broken variable
-    expansion, satisfies the existence probe and fails ``--cflags``. Without
+    with an unresolvable ``Requires.private`` satisfies the existence probe
+    and fails ``--cflags``. (An undefined ``.pc`` variable is NOT such a
+    case: it expands to empty and the query still exits 0.) Without
     this check the empty stdout is indistinguishable from a package that
     contributes no flags, so the build compiles or links without what it
     asked for, silently, even under ``--pkg-config-errors=error``.
@@ -257,7 +258,8 @@ def _run_pkg_config_query(package: str, option: str) -> str:
     to promote.
 
     Forwarding is deduplicated per ``(package, option, stderr)`` for the
-    life of the process: this function is reached both cached
+    life of the process (``clear_cache`` resets the memo, deliberately, so
+    tests see a fresh forward): this function is reached both cached
     (``cached_pkg_config``, at most once per spec) and uncached
     (``_batch_pkg_config``'s all-exist fast path), and the same package
     queried through both, or through two batch rounds, would otherwise

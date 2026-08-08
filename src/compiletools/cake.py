@@ -1166,9 +1166,10 @@ def main(argv=None):
     with context.pkg_config_path_restored():
         # Conf contradictions (explicit-target and --auto alike) are rendered
         # to stderr inside apptools._apply_target_conf_layers, which raises
-        # SystemExit(1) at verbose < 2 and the raw ConfContradictionError at
-        # verbose >= 2 -- both propagate through main() untouched, same as
-        # the validate_otel_timing_pair SystemExit below.
+        # ConfContradictionExit (a SystemExit carrying code 1) at verbose < 2
+        # and the raw ConfContradictionError at verbose >= 2 -- both propagate
+        # through main() untouched, same as the validate_otel_timing_pair
+        # SystemExit below.
         args = compiletools.apptools.parseargs(cap, argv, context=context)
         # Relocate the Makefile into the bindir.
         Cake._hide_makefilename(args)

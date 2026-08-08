@@ -3367,8 +3367,9 @@ class BuildBackend(abc.ABC):
         source to force a rebuild" semantics — a touch without a
         content change is invisible to a content-hash-based rebuild
         check. Backends in this group leave this method at the False
-        default; ``BuildBackend.__init__`` then warns the user that
-        their explicit opt-in is being silently ignored.
+        default; ``BuildBackend.__init__`` then raises ``ValueError``
+        on an explicit ``--use-mtime=True`` rather than silently
+        ignoring the opt-in.
         """
         return False
 
