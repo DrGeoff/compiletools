@@ -327,11 +327,13 @@ class MagicFlagsBase:
             print(f"Added -I {flag} to CPPFLAGS, CFLAGS, and CXXFLAGS")
         return flagsforfilename
 
-    def _handle_pkg_config(self, flag, expander=None):
+    def _handle_pkg_config(self, flag, filename, expander=None):
         """Expand a ``//#PKG-CONFIG=pkg1 pkg2 ...`` annotation.
 
         Args:
             flag: The (already-expanded) value of the magic flag.
+            filename: Path of the file the annotation came from, used as
+                the ``FlagTokenizeError`` source attribution below.
             expander: Optional ``SimplePreprocessor`` used to expand macros
                 inside the pkg-config output (e.g. ``$LIB_SUFFIX``). Passed
                 explicitly rather than read from ``self._expander`` so this
@@ -343,10 +345,19 @@ class MagicFlagsBase:
         agree on what counts as one package. A version-constrained spec
         (``zlib >= 1.2``) is one element, not three, and is passed to
         pkg-config intact so the version floor is enforced.
+
+        This tokenize call is the FIRST thing this method does, before any
+        pkg-config subprocess runs -- load-bearing ordering. It used to
+        silently degrade a malformed spec into an invented package name
+        that got queried before the generic ``//#`` tokenizer at the
+        bottom of ``_process_magic_flag`` could raise its diagnostic;
+        tokenizing eagerly here (and letting the caller's
+        ``FlagTokenizeError`` handler render it) means the good
+        diagnostic wins and no subprocess ever runs for the bad value.
         """
         flagsforfilename = defaultdict(list)
 
-        packages = compiletools.apptools.tokenize_pkg_config_specs([str(flag)])
+        packages = compiletools.apptools.tokenize_pkg_config_specs([str(flag)], slot="//#PKG-CONFIG", source=filename)
 
         first_l_per_pkg = []  # Track first -l per package for hard orderings
 
@@ -671,7 +682,9 @@ class MagicFlagsBase:
         # If the magic was PKG-CONFIG then call pkg-config
         if magic == sz.Str("PKG-CONFIG"):
             try:
-                self._extend_flags_from_dict(flagsforfilename, self._handle_pkg_config(flag, expander=expander))
+                self._extend_flags_from_dict(
+                    flagsforfilename, self._handle_pkg_config(flag, filename, expander=expander)
+                )
             except compiletools.apptools_pkgconfig.PkgConfigError as exc:
                 # Verbosity must not invert the policy. SystemExit is the
                 # termination that survives the deliberately broad
@@ -682,6 +695,14 @@ class MagicFlagsBase:
                     exc, f"PKG-CONFIG requested by {filename}."
                 )
                 print(message, file=sys.stderr)
+                raise SystemExit(1) from None
+            except compiletools.utils.FlagTokenizeError as exc:
+                # Same carve-out as the PkgConfigError case just above: a
+                # malformed //#PKG-CONFIG= spec (caught inside
+                # _handle_pkg_config, before any pkg-config subprocess
+                # runs) must not be downgraded to a warning by Hunter's
+                # broad except Exception.
+                print(str(exc), file=sys.stderr)
                 raise SystemExit(1) from None
             # PKG-CONFIG generates flags for other keys AND adds itself to PKG-CONFIG key
 

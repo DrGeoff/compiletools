@@ -4,6 +4,7 @@ import warnings
 import pytest
 import stringzilla as sz
 
+import compiletools.apptools
 import compiletools.apptools_pkgconfig as pkgconfig
 import compiletools.headerdeps
 import compiletools.magicflags
@@ -405,6 +406,36 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         assert excinfo.value.code == 1
         error_output = capsys.readouterr().err
         assert str(files["bad_magic_cxxflags_vv.cpp"]) in error_output
+
+    def test_unbalanced_quote_in_pkg_config_magic_flag_names_the_source_file_and_skips_query(self, capsys, monkeypatch):
+        """coverage-gaps Task 9: a malformed //#PKG-CONFIG= value must be
+        tokenized (and fail) BEFORE any pkg-config subprocess runs -- the
+        ordering bug this task fixes. Previously
+        ``tokenize_pkg_config_specs`` silently degraded an unbalanced quote
+        into an invented package name via a ``fragment.split()`` fallback,
+        so a query for that invented package ran before the generic
+        magic-flag tokenizer at the bottom of ``_process_magic_flag`` could
+        raise the real diagnostic. cached_pkg_config is stubbed to fail the
+        test if called at all, proving the query never happens; the
+        SystemExit(1)/no-traceback/source-file-naming assertions mirror the
+        CXXFLAGS carve-out above.
+        """
+
+        def _fail_if_called(*_args, **_kwargs):
+            raise AssertionError("pkg-config must not be queried for a malformed //#PKG-CONFIG= value")
+
+        monkeypatch.setattr(compiletools.apptools, "cached_pkg_config", _fail_if_called)
+
+        files = uth.write_sources({"bad_magic_pkgconfig.cpp": '//#PKG-CONFIG=zlib "unterminated\nint main() {}\n'})
+
+        with pytest.raises(SystemExit) as excinfo:
+            self._parse_with_magic("direct", str(files["bad_magic_pkgconfig.cpp"]))
+
+        assert excinfo.value.code == 1
+        error_output = capsys.readouterr().err
+        assert str(files["bad_magic_pkgconfig.cpp"]) in error_output
+        assert "//#PKG-CONFIG" in error_output
+        assert "Traceback" not in error_output
 
     def test_pkg_config_error_mode_renders_magic_annotation_failures_cleanly(self, capsys):
         files = uth.write_sources(

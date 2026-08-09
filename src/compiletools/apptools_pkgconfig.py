@@ -58,14 +58,14 @@ import warnings
 from typing import Literal
 
 import compiletools.wrappedos
-from compiletools.utils import split_command_cached
+from compiletools.utils import split_command_cached, tokenize_flags_or_raise
 
 _PKG_CONFIG_COMPARISON_RE = re.compile(r"^(?:==|>=|<=|!=|=|<|>)(?P<operand>.*)$")
 _PKG_CONFIG_TRAILING_COMPARISON_RE = re.compile(r"^.+?(?:==|>=|<=|!=|=|<|>)$")
 _pkg_config_errors: Literal["warn", "error"] = "warn"
 
 
-def tokenize_pkg_config_specs(values: list[str]) -> list[str]:
+def tokenize_pkg_config_specs(values: list[str], *, slot: str = "pkg-config", source: str | None = None) -> list[str]:
     """Split pkg-config values into package specs, preserving constraints.
 
     Configargparse's ``action='append'`` representation can contain a whole
@@ -84,14 +84,21 @@ def tokenize_pkg_config_specs(values: list[str]) -> list[str]:
     first version character into the operator, while ``zlib>= 1.2`` becomes
     two invented package names. A trailing comparison without a version also
     remains attached so it produces one malformed diagnostic.
+
+    *slot*/*source* attribute a raised ``FlagTokenizeError`` to the calling
+    surface: the CLI/conf ``pkg-config`` value (default) or a magic
+    ``//#PKG-CONFIG=`` annotation (``slot="//#PKG-CONFIG"``, ``source`` the
+    file it came from). Deliberately no ``fragment.split()`` fallback on a
+    shlex failure -- a malformed fragment used to silently degrade into an
+    invented package name that then queried pkg-config before the generic
+    magic-flag tokenizer's diagnostic could fire; raising here instead
+    means the caller (``magicflags._handle_pkg_config``) fails fast, before
+    any pkg-config subprocess runs for the malformed value.
     """
     specs: list[str] = []
     for value in values:
         for fragment in value.split(","):
-            try:
-                tokens = shlex.split(fragment)
-            except ValueError:
-                tokens = fragment.split()
+            tokens = tokenize_flags_or_raise(fragment, slot=slot, source=source)
 
             i = 0
             while i < len(tokens):
