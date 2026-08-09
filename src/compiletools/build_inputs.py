@@ -222,18 +222,30 @@ def _query_pkg_config(packages, pkg_config_path, want_libs, verbose, context):
     return tuple((pkg, cache[(pkg, pkg_config_path, errors_policy, want_libs)]) for pkg in packages)
 
 
-def _project_macro_value(args, value_attr, cmd_attr, verbose):
+def _project_macro_value(args, value_attr, cmd_attr, verbose, *, slot):
     """Port of _set_project_version/_set_project_name value acquisition:
     the explicit value wins; otherwise the *cmd output's first word.
-    Returns the escaped literal or None when the user did not opt in."""
+    Returns the escaped literal or None when the user did not opt in.
+
+    *cmd* is shlex-tokenized via tokenize_flags_or_raise (slot=*slot*,
+    e.g. "project-version-cmd") rather than a plain whitespace .split() --
+    an unbalanced quote in the conf/CLI value now raises FlagTokenizeError
+    instead of silently mis-splitting into a garbage argv. The tokenize
+    call sits inside the same try as the subprocess call but is unaffected
+    by the except tuple below (FlagTokenizeError isn't CalledProcessError/
+    OSError), so it propagates to the gather_inputs caller unchanged.
+    """
     import subprocess
     import sys
+
+    from compiletools.utils import tokenize_flags_or_raise
 
     value = getattr(args, value_attr, None)
     cmd = getattr(args, cmd_attr, None)
     if not value and cmd:
         try:
-            value = subprocess.check_output(cmd.split(), universal_newlines=True).strip("\n").split()[0]
+            argv = tokenize_flags_or_raise(cmd, slot=slot)
+            value = subprocess.check_output(argv, universal_newlines=True).strip("\n").split()[0]
         except (subprocess.CalledProcessError, OSError) as err:
             sys.stderr.write(f"Could not use {cmd_attr} = {cmd} to set {value_attr}.\n")
             if verbose <= 2:
@@ -279,14 +291,31 @@ def _include_paths_with_gitroots(args, gitroot):
     gather computes the widened tuple instead of mutating args.INCLUDE.
     An empty gitroot set silently no-ops (unreachable in production
     since find_git_root falls back to the cwd).
+
+    Each contributing string (the bare INCLUDE value, and each
+    --prepend-INCLUDE / --append-INCLUDE element) is shlex-tokenized
+    individually via tokenize_flags_or_raise rather than whitespace-split
+    on the concatenated string: a quoted space-containing path now
+    survives as one token instead of shredding into fragments with
+    literal quote characters, and an unbalanced quote raises
+    FlagTokenizeError (attributed to INCLUDE/prepend-INCLUDE/
+    append-INCLUDE) instead of silently misparsing.
     """
     from compiletools.git_utils import find_git_root
+    from compiletools.utils import tokenize_flags_or_raise
 
     include = getattr(args, "INCLUDE", "") or ""
     prepend = [e for e in (getattr(args, "prepend_include", None) or ()) if e not in include]
     merged = " ".join(prepend + [include]) if prepend else include
     append = [e for e in (getattr(args, "append_include", None) or ()) if e not in merged]
-    paths = " ".join([merged] + append).split()
+
+    paths: list[str] = []
+    for element in prepend:
+        paths.extend(tokenize_flags_or_raise(element, slot="prepend-INCLUDE"))
+    if include:
+        paths.extend(tokenize_flags_or_raise(include, slot="INCLUDE"))
+    for element in append:
+        paths.extend(tokenize_flags_or_raise(element, slot="append-INCLUDE"))
 
     if getattr(args, "git_root", False) and any(hasattr(args, attr) for attr in _TARGET_ATTRS):
         roots = {gitroot} if gitroot else set()
@@ -369,8 +398,10 @@ def gather_inputs(args, context) -> BuildInputs:
     want_libs = "LDFLAGS" in registered
     pkg_config_results = _query_pkg_config(packages, pkg_config_path, want_libs, verbose, context)
 
-    project_version = _project_macro_value(args, "projectversion", "projectversioncmd", verbose)
-    project_name = _project_macro_value(args, "projectname", "projectnamecmd", verbose)
+    project_version = _project_macro_value(
+        args, "projectversion", "projectversioncmd", verbose, slot="project-version-cmd"
+    )
+    project_name = _project_macro_value(args, "projectname", "projectnamecmd", verbose, slot="project-name-cmd")
     # Deprecation warning fires on the raw opt-in, before any
     # suppression logic. Context-level once-latch: gather never mutates args.
     if (project_version is not None or project_name is not None) and not getattr(
@@ -408,7 +439,10 @@ def gather_inputs(args, context) -> BuildInputs:
         prefix_map_target=getattr(args, "ffile_prefix_map_target", "."),
         project_version=project_version,
         project_name=project_name,
-        link_driver_is_clang=compiler_kind(apptools._effective_link_driver(args)) == "clang",
+        link_driver_is_clang=compiler_kind(
+            apptools._effective_link_driver(args), slot=apptools._effective_link_driver_slot(args)
+        )
+        == "clang",
         wild_b_selected=apptools._variant_has_axis(args, "wild-B"),
         variant_raw=getattr(args, "variant", "") or "",
         canonical_order=tuple(canonical_order),

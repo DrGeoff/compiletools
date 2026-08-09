@@ -235,6 +235,66 @@ class TestFlagTokenizeAttribution:
 
 
 @pytest.mark.usefixtures("parsers_reset")
+class TestTask9IncludeAndProjectMacroTokenizeAttribution:
+    """coverage-gaps Task 9: INCLUDE and project-version/name-cmd used to
+    silently degrade a malformed quote (whitespace .split() / str.split())
+    instead of raising. Mutation guard: reverting
+    _include_paths_with_gitroots' tokenize_flags_or_raise calls back to a
+    plain " ".join(...).split() makes every test in this class fail --
+    the malformed-quote tests stop raising, and
+    test_quoted_space_containing_include_path_survives_as_one_path starts
+    failing because the quoted path shreds again.
+    """
+
+    def test_include_with_unbalanced_quote_is_attributed(self):
+        with uth.TempDirContext():
+            args = _minimal_args(INCLUDE='/opt/"unterminated')
+            with pytest.raises(compiletools.utils.FlagTokenizeError, match="INCLUDE"):
+                gather_inputs(args, BuildContext())
+
+    def test_prepend_include_with_unbalanced_quote_is_attributed(self):
+        with uth.TempDirContext():
+            args = _minimal_args(prepend_include=['/opt/"unterminated'])
+            with pytest.raises(compiletools.utils.FlagTokenizeError, match="prepend-INCLUDE"):
+                gather_inputs(args, BuildContext())
+
+    def test_append_include_with_unbalanced_quote_is_attributed(self):
+        with uth.TempDirContext():
+            args = _minimal_args(append_include=['/opt/"unterminated'])
+            with pytest.raises(compiletools.utils.FlagTokenizeError, match="append-INCLUDE"):
+                gather_inputs(args, BuildContext())
+
+    def test_quoted_space_containing_include_path_survives_as_one_path(self):
+        """Behavior improvement: a quoted --INCLUDE path with a space now
+        parses as ONE path instead of shredding into fragments with
+        literal quote characters (the old plain .split() behavior)."""
+        with uth.TempDirContext():
+            args = _minimal_args(INCLUDE='"/opt/has space/include" /opt/plain')
+            inputs = gather_inputs(args, BuildContext())
+            assert "/opt/has space/include" in inputs.include_paths
+            assert "/opt/plain" in inputs.include_paths
+            assert not any('"' in p for p in inputs.include_paths)
+
+    def test_project_version_cmd_with_unbalanced_quote_is_attributed(self):
+        with uth.TempDirContext():
+            args = _minimal_args(projectversioncmd='echo "unterminated')
+            with pytest.raises(compiletools.utils.FlagTokenizeError, match="project-version-cmd"):
+                gather_inputs(args, BuildContext())
+
+    def test_project_name_cmd_with_unbalanced_quote_is_attributed(self):
+        with uth.TempDirContext():
+            args = _minimal_args(projectnamecmd='echo "unterminated')
+            with pytest.raises(compiletools.utils.FlagTokenizeError, match="project-name-cmd"):
+                gather_inputs(args, BuildContext())
+
+    def test_pkg_config_cli_spec_with_unbalanced_quote_is_attributed(self):
+        with uth.TempDirContext():
+            args = _minimal_args(pkg_config=['zlib "unterminated'])
+            with pytest.raises(compiletools.utils.FlagTokenizeError, match="pkg-config"):
+                gather_inputs(args, BuildContext())
+
+
+@pytest.mark.usefixtures("parsers_reset")
 class TestPkgConfigGathering:
     def _fake_batch(self, cflags_by_pkg, libs_by_pkg, calls):
         def fake(packages, option):

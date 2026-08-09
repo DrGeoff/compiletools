@@ -134,13 +134,13 @@ class Cake:
             return False
 
         # Build the new include-dir list from the just-fetched externals.
-        # NOTE: args.INCLUDE is a whitespace-separated string by long-standing
-        # convention, so this split/join cannot represent an externals path that
-        # itself contains a space. That is a pre-existing INCLUDE limitation (the
-        # scan layer supports spaces via raw-string extra_include_dirs, but the
-        # INCLUDE round-trip here does not). Externals-dir paths with spaces are
-        # unsupported; use --externals-dir to point at a space-free location.
-        existing = set(self.args.INCLUDE.split())
+        # args.INCLUDE is a shlex-tokenized string (see
+        # build_inputs._include_paths_with_gitroots): read the existing
+        # entries through the same helper rather than a bare .split(), and
+        # write the new entries back with shlex.join so an externals-dir
+        # path containing a space round-trips as one token instead of
+        # shredding on the next parse.
+        existing = set(compiletools.utils.tokenize_flags_or_raise(self.args.INCLUDE or "", slot="INCLUDE"))
         new_dirs = []
 
         def _add(directory):
@@ -161,7 +161,7 @@ class Cake:
         if not new_dirs:
             return False
 
-        self.args.INCLUDE = (self.args.INCLUDE + " " + " ".join(new_dirs)).strip()
+        self.args.INCLUDE = ((self.args.INCLUDE or "") + " " + shlex.join(new_dirs)).strip()
         if self.args.verbose > 4:
             print("Cake registered //#GIT= external include dirs: " + " ".join(new_dirs))
         return True
