@@ -1015,7 +1015,8 @@ def test_the_same_repo_reports_normally_in_warn_mode(broken_package_repo, capsys
     strict policy firing rather than the repo being broken outright."""
     with uth.DirectoryContext(str(broken_package_repo)):
         with uth.ParserContext():
-            assert compiletools.findtargets.main(["--style=flat"]) == 0
+            with pytest.warns(UserWarning, match="ct-no-such-package-4a91f2"):
+                assert compiletools.findtargets.main(["--style=flat"]) == 0
     assert os.path.join("app", "main.cpp") in capsys.readouterr().out
 
 
