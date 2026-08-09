@@ -68,6 +68,16 @@ class TestStageXxpend:
         ts = stage_xxpend(inputs, TokenState(cxx=("-O2",)))
         assert ts.cxx == ("-O2",)
 
+    def test_append_keeps_already_present_token_in_place(self):
+        inputs = _inputs(append_cxxflags=("-O2",))
+        ts = stage_xxpend(inputs, TokenState(cxx=("-O2", "-Wall", "-g")))
+        assert ts.cxx == ("-O2", "-Wall", "-g")
+
+    def test_prepend_keeps_already_present_token_in_place(self):
+        inputs = _inputs(prepend_cxxflags=("-Wall",))
+        ts = stage_xxpend(inputs, TokenState(cxx=("-O2", "-Wall", "-g")))
+        assert ts.cxx == ("-O2", "-Wall", "-g")
+
     def test_other_slots_untouched(self):
         inputs = _inputs(prepend_cxxflags=("-P",))
         ts = stage_xxpend(inputs, TokenState(cpp=("-DX",), cxx=()))
