@@ -20,14 +20,18 @@ class PreProcessor:
         # args.CPP is an exe-name string (outside the BuildState); the cpp
         # flag tokens come from the stashed state. Never .split() a raw
         # string that may be shlex.join'd -- quoted tokens would become
-        # literal-quote argv garbage -- so the two raw strings go through
-        # shlex splitting.
+        # literal-quote argv garbage -- so args.CPP goes through shlex
+        # splitting. extraargs is a pre-split token sequence (e.g.
+        # ["-MM", "-I/dir with space"]) -- no string round-trip: joining
+        # then re-splitting shredded space-containing include dirs and
+        # leaked a bare ValueError on quote characters, outside this
+        # FlagTokenizeError catch.
         state = compiletools.build_apply.get_build_state(self.args)
         try:
             cmd = (
                 compiletools.utils.split_compiler_command(self.args.CPP, slot="CPP")
                 + list(state.flags.cpp)
-                + compiletools.utils.split_command_cached(extraargs)
+                + list(extraargs)
             )
         except compiletools.utils.FlagTokenizeError as exc:
             # This is the single choke point every --headerdeps=cpp /

@@ -42,7 +42,7 @@ class TestPreProcessorProcess:
 
     def test_source_file(self, make_pp, mock_check_output):
         """Non-header file is passed directly to the command."""
-        result = make_pp().process("/tmp/foo.cpp", "-DFOO")
+        result = make_pp().process("/tmp/foo.cpp", ["-DFOO"])
         cmd = mock_check_output.call_args[0][0]
         assert cmd[-1] == "/tmp/foo.cpp"
         assert "-DFOO" in cmd
@@ -51,7 +51,7 @@ class TestPreProcessorProcess:
     @pytest.mark.parametrize("path", ["/tmp/foo.hpp", "/tmp/foo.h"], ids=["hpp", "h"])
     def test_header_file(self, make_pp, mock_check_output, path):
         """Header files use -include with /dev/null and -x c++."""
-        make_pp().process(path, "")
+        make_pp().process(path, [])
         cmd = mock_check_output.call_args[0][0]
         assert "-include" in cmd
         assert path in cmd
@@ -61,18 +61,18 @@ class TestPreProcessorProcess:
 
     def test_redirect_stderr_to_stdout(self, make_pp, mock_check_output):
         """redirect_stderr_to_stdout passes stderr=STDOUT."""
-        make_pp().process("/tmp/foo.cpp", "", redirect_stderr_to_stdout=True)
+        make_pp().process("/tmp/foo.cpp", [], redirect_stderr_to_stdout=True)
         assert mock_check_output.call_args[1]["stderr"] == subprocess.STDOUT
 
     def test_no_redirect_stderr(self, make_pp, mock_check_output):
         """Without redirect, stderr defaults to inherit (None)."""
-        make_pp().process("/tmp/foo.cpp", "")
+        make_pp().process("/tmp/foo.cpp", [])
         assert mock_check_output.call_args[1].get("stderr") is None
 
     @pytest.mark.usefixtures("mock_check_output")
     def test_verbose_3_prints_cmd(self, make_pp, capsys):
         """verbose >= 3 prints the command."""
-        make_pp(verbose=3).process("/tmp/foo.cpp", "")
+        make_pp(verbose=3).process("/tmp/foo.cpp", [])
         out = capsys.readouterr().out
         assert "cpp" in out
         assert "foo.cpp" in out
@@ -80,7 +80,7 @@ class TestPreProcessorProcess:
     def test_verbose_5_prints_output(self, make_pp, mock_check_output, capsys):
         """verbose >= 5 prints the output."""
         mock_check_output.return_value = "preprocessed stuff"
-        make_pp(verbose=5).process("/tmp/foo.cpp", "")
+        make_pp(verbose=5).process("/tmp/foo.cpp", [])
         assert "preprocessed stuff" in capsys.readouterr().out
 
     @pytest.mark.parametrize(
@@ -99,27 +99,34 @@ class TestPreProcessorProcess:
         """Subprocess errors are printed to stderr and re-raised."""
         with mock.patch("subprocess.check_output", side_effect=exc):
             with pytest.raises(raises_type):
-                make_pp().process("/tmp/foo.cpp", "")
+                make_pp().process("/tmp/foo.cpp", [])
         assert expected_stderr in capsys.readouterr().err
 
     def test_cppflags_split_into_cmd(self, make_pp, mock_check_output):
         """CPPFLAGS from args are split and included in the command."""
-        make_pp(cppflags="-I/usr/include -DBAR").process("/tmp/foo.cpp", "")
+        make_pp(cppflags="-I/usr/include -DBAR").process("/tmp/foo.cpp", [])
         cmd = mock_check_output.call_args[0][0]
         assert "-I/usr/include" in cmd
         assert "-DBAR" in cmd
 
     def test_flags_cpp_tokens_used_verbatim(self, mock_check_output):
-        """The argv takes the build state's cpp tokens as-is: a token with
-        an embedded space (a shlex.join'd raw string would carry it quoted)
-        arrives as ONE argv element, and CPP/extraargs are shlex-split so
-        quoted segments in either survive as single elements."""
+        """The argv takes the build state's cpp tokens and extraargs as-is:
+        a token with an embedded space (a shlex.join'd raw string would
+        carry it quoted) arrives as ONE argv element, and CPP is
+        shlex-split so quoted segments in it survive as a single element."""
         args = _make_args(cpp="ccache 'my cpp'", cppflags="-DMSG='hello world'")
-        PreProcessor(args).process("/tmp/foo.cpp", "-include 'weird dir/pre.h'")
+        PreProcessor(args).process("/tmp/foo.cpp", ["-include", "weird dir/pre.h"])
         cmd = mock_check_output.call_args[0][0]
         assert cmd[:2] == ["ccache", "my cpp"]
         assert "-DMSG=hello world" in cmd
         assert "weird dir/pre.h" in cmd
+
+    def test_process_takes_pre_split_token_list(self, make_pp, mock_check_output):
+        """extraargs is a token sequence end-to-end; a '-I/has space/inc'
+        element must reach the argv as ONE token."""
+        make_pp().process("/tmp/foo.cpp", ["-MM", "-I/has space/inc"])
+        cmd = mock_check_output.call_args[0][0]
+        assert "-I/has space/inc" in cmd
 
     def test_unbalanced_quote_in_cpp_raises_systemexit_not_a_traceback(self, make_pp, capsys):
         """coverage-gaps Task 9 review finding Q2: this is the single
@@ -136,7 +143,7 @@ class TestPreProcessorProcess:
         traceback-free message instead of a raw exception."""
         pp = make_pp(cpp='ccache "cpp')
         with pytest.raises(SystemExit) as excinfo:
-            pp.process("/tmp/foo.cpp", "")
+            pp.process("/tmp/foo.cpp", [])
         assert excinfo.value.code == 1
         error_output = capsys.readouterr().err
         assert "CPP" in error_output

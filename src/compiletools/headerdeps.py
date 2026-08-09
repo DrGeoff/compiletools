@@ -547,14 +547,10 @@ class CppHeaderDeps(HeaderDepsBase):
     def __init__(self, args, context, *, extra_include_dirs=None):
         HeaderDepsBase.__init__(self, args, context=context, extra_include_dirs=extra_include_dirs)
         self.preprocessor = compiletools.preprocessor.PreProcessor(args)
-        # CppHeaderDeps drives cpp -MM off the state's cpp flags; feed extra
-        # -I dirs to the preprocessor command line rather than args (no mutation).
-        # PreProcessor.process naively .split()s its args (as it already does for
-        # CPPFLAGS), so these are emitted unquoted for consistency — a space in
-        # an include path is unsupported on the cpp path either way, the same
-        # pre-existing limitation CPPFLAGS has. DirectHeaderDeps (the default,
-        # and what fetch uses) keeps raw strings and handles spaces fine.
-        self._extra_include_args = " ".join(f"-I{d}" for d in self._extra_include_dirs)
+        # Kept as a token list end-to-end: PreProcessor.process consumes
+        # pre-split tokens, so a space in an include path survives as one
+        # -I token. (DirectHeaderDeps keeps raw strings; see CLAUDE.md.)
+        self._extra_include_args = [f"-I{d}" for d in self._extra_include_dirs]
 
     def process(self, filename: str, macro_cache_key: MacroCacheKey) -> list[str]:
         """Process using cpp -MM (raises error if macro_cache_key non-empty).
@@ -589,7 +585,7 @@ class CppHeaderDeps(HeaderDepsBase):
         if any(realpath_obj.is_relative_to(syspath) for syspath in system_paths):
             return []
 
-        extraargs = "-MM " + self._extra_include_args if self._extra_include_args else "-MM"
+        extraargs = ["-MM", *self._extra_include_args]
         output = self.preprocessor.process(realpath, extraargs=extraargs)
 
         # output will be something like
