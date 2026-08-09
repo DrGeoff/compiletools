@@ -1129,17 +1129,35 @@ def _render_generic_error(err: BaseException) -> None:
     print(f"Error: {err}", file=sys.stderr)
 
 
+def _render_flag_tokenize_error(err: compiletools.utils.FlagTokenizeError) -> None:
+    """FlagTokenizeError's own str() is already the full WHERE/WHAT/HOW
+    diagnostic, prefixed with ``ct: error: ...`` (see
+    ``utils._render_flag_tokenize_error`` / ``tokenize_flags_or_raise``) --
+    the same rendering parseargs-time boundaries
+    (``apptools.parseargs``/``apptools.resubstitute``) print verbatim, with
+    no added prefix. A build-time raise (TESTPREFIX, --build-only-changed,
+    defense-in-depth CC/CXX/LD) that reaches this generic renderer must
+    match that framing rather than wrapping it in the generic tail's own
+    ``Error: `` prefix, which would double it to
+    ``Error: ct: error: ...``.
+    """
+    print(str(err), file=sys.stderr)
+
+
 # Fatal-error rendering for main(): first matching entry wins, so order is
 # semantic. LDFLAGSCycleError must be listed before the generic tail (it is
 # a ValueError) so ONLY the cycle error is rendered through the Rich
 # cycle-error formatter — unrelated ValueErrors would confuse the user with
-# a panel that doesn't apply. FetchError needs no entry of its own: its
-# messages already name the offending external and its URL, so the generic
-# stderr print is the right rendering.
+# a panel that doesn't apply. FlagTokenizeError must also precede the
+# generic tail for the same reason (see _render_flag_tokenize_error).
+# FetchError needs no entry of its own: its messages already name the
+# offending external and its URL, so the generic stderr print is the right
+# rendering.
 _FATAL_ERROR_RENDERERS: list = [
     (subprocess.CalledProcessError, _render_called_process_error),
     (OSError, _render_os_error),
     (compiletools.utils.LDFLAGSCycleError, _print_rich_error),
+    (compiletools.utils.FlagTokenizeError, _render_flag_tokenize_error),
     (Exception, _render_generic_error),
 ]
 
