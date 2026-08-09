@@ -1540,9 +1540,12 @@ class TestCompilationDatabaseModuleFlags:
 
         monkeypatch.setattr(compiletools.apptools_compiler, "_compiler_major_version", lambda _c, **_kw: ("gcc", 16))
         compiletools.apptools_compiler._compiler_kind_probe.cache_clear()
-        creator = self._make_creator(cxx="g++", module_imports=("math",))
-        flags = creator._module_kind_flags("/src/main.cpp")
-        assert "-fmodules-ts" in flags, f"gcc TU with import math; needs -fmodules-ts, got {flags!r}"
+        try:
+            creator = self._make_creator(cxx="g++", module_imports=("math",))
+            flags = creator._module_kind_flags("/src/main.cpp")
+            assert "-fmodules-ts" in flags, f"gcc TU with import math; needs -fmodules-ts, got {flags!r}"
+        finally:
+            compiletools.apptools_compiler._compiler_kind_probe.cache_clear()
 
     def test_clang_header_unit_importer_gets_fmodules(self):
         """A TU with `import <vector>;` compiled under clang must carry -fmodules
