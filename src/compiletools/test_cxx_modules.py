@@ -204,11 +204,16 @@ class TestCompilerKindClassification:
         # distros (e.g. Termux) where g++/gcc are clang symlinks. This
         # class tests the *classification* logic in isolation, so neutralise
         # the probe to None (=> "couldn't read banner, trust the basename")
-        # and clear the lru_cache so prior real-host calls don't bleed in.
-        import compiletools.apptools as _ap
+        # and clear the probe's lru_cache so prior real-host calls don't
+        # bleed in. Patch the leaf apptools_compiler module directly (not
+        # the apptools facade re-export) -- _compiler_kind_probe's bare
+        # global lookup of _compiler_major_version resolves against
+        # apptools_compiler's own module namespace, and it holds the cache
+        # since compiler_kind itself is now an uncached validating wrapper.
+        import compiletools.apptools_compiler as _ap
 
         monkeypatch.setattr(_ap, "_compiler_major_version", lambda _c, **_kw: None)
-        _ap.compiler_kind.cache_clear()
+        _ap._compiler_kind_probe.cache_clear()
 
     def test_bare_gpp(self):
         # Even if g++ doesn't resolve, fallback should still recognize the name.
@@ -237,6 +242,66 @@ class TestCompilerKindClassification:
 
     def test_unknown_basename(self):
         assert compiler_kind("/usr/bin/some-shim") == "unknown"
+
+
+def test_compiler_kind_probes_once_for_forced_gcc_ish_basename(monkeypatch):
+    """Non-vacuity anchor for the slot-identity test below: force the
+    gcc-ish basename branch (the same "g++ might actually be a clang
+    symlink" path ``TestCompilerKindClassification`` neutralises) so the
+    --version-probe count can never pass just because the probe never runs.
+
+    slot= is error attribution, not identity: the same compiler string
+    asked about under slot="CXX" and slot="LD" must hit one cached probe,
+    not fragment the cache into two --version probe calls.
+    """
+    import compiletools.apptools_compiler as ac
+
+    ac._compiler_kind_probe.cache_clear()
+    calls = []
+
+    def counting_probe(compiler_path, **kwargs):
+        calls.append((compiler_path, kwargs.get("slot")))
+        return ("gcc", 16)
+
+    monkeypatch.setattr(ac, "_compiler_major_version", counting_probe)
+
+    first = ac.compiler_kind("g++", slot="CXX")
+    second = ac.compiler_kind("g++", slot="LD")
+    assert first == second == "gcc"
+    assert len(calls) == 1, f"cache fragmented on slot: --version probed {len(calls)} times for one compiler string"
+
+
+def test_compiler_kind_probes_once_across_slot_spellings(monkeypatch):
+    """slot= is error attribution, not identity: the same compiler string
+    asked about under slot="CXX" and slot="LD" must hit one cached probe,
+    not fragment the cache into two --version subprocess runs.
+
+    Uses the real functional compiler so the probe path runs an actual
+    --version invocation rather than a stub; the forced-gcc-ish variant
+    above pins the non-vacuity half (calls == 1 on a deterministic gcc-ish
+    basename). On a clang-basenamed host this test's own probe count can
+    legitimately be 0 (the gcc-ish verification branch is never entered),
+    so the assertion here is <= 1 rather than == 1.
+    """
+    import compiletools.apptools_compiler as ac
+
+    cxx = compiletools.apptools.get_functional_cxx_compiler()
+    assert cxx, "Precondition: need a functional compiler to probe."
+
+    ac._compiler_kind_probe.cache_clear()
+    calls = []
+    real_probe = ac._compiler_major_version
+
+    def counting_probe(compiler_path, **kwargs):
+        calls.append((compiler_path, kwargs.get("slot")))
+        return real_probe(compiler_path, **kwargs)
+
+    monkeypatch.setattr(ac, "_compiler_major_version", counting_probe)
+
+    first = ac.compiler_kind(cxx, slot="CXX")
+    second = ac.compiler_kind(cxx, slot="LD")
+    assert first == second
+    assert len(calls) <= 1, f"cache fragmented on slot: --version probed {len(calls)} times for one compiler string"
 
 
 class TestFileAnalysisResultModuleFields:
