@@ -1208,7 +1208,21 @@ _FLATTENED_REPARSED_ATTRS = frozenset({"CPPFLAGS", "CFLAGS", "CXXFLAGS", "INCLUD
 _ATOMIC_TOKEN_REPARSED_ATTRS = frozenset({"INCLUDE", "prepend_include", "append_include"})
 
 
-def _strip_quotes(args):
+def _cli_spelling_for_dest(dest: str, cap=None) -> str:
+    """Map an argparse dest ("prepend_include") to the CLI spelling the
+    user actually typed ("prepend-INCLUDE") for error attribution, so the
+    quote-stripping pre-pass and the gather-side tokenizers report one
+    option under one name. Falls back to the dest when the parser is
+    unavailable (direct test-helper callers) or the dest is unknown."""
+    actions = getattr(cap, "_actions", None) if cap is not None else None
+    if actions:
+        for action in actions:
+            if action.dest == dest and action.option_strings:
+                return max(action.option_strings, key=len).lstrip("-")
+    return dest
+
+
+def _strip_quotes(args, cap=None):
     """Remove shell quotes from arguments while preserving content quotes.
 
     Uses proper shell parsing to understand when quotes are shell quoting
@@ -1219,6 +1233,14 @@ def _strip_quotes(args):
     assigning a dict stash inserts keys mid-iteration (RuntimeError), a
     tuple stash rejects item assignment (TypeError), and _argv must stay
     verbatim for the variant re-resolve.
+
+    *cap*, when supplied, is the configargparse parser used to map each
+    attribute's argparse dest to its CLI spelling (via
+    ``_cli_spelling_for_dest``) for the FlagTokenizeError raised on an
+    unbalanced quote -- so this pre-pass names the option the same way
+    the gather-side tokenizers do. Direct callers that don't have a
+    parser handy (test helpers) fall back to the dest name, matching the
+    prior behaviour.
     """
     for name in vars(args):
         if name.startswith("_"):
@@ -1226,15 +1248,24 @@ def _strip_quotes(args):
         value = getattr(args, name)
         if value is not None:
             raise_on_malformed = name not in _UNQUOTE_RAISE_EXEMPT
+            slot = _cli_spelling_for_dest(name, cap)
             # Can't just use the for loop directly because that would
             # try and process every character in a string
             if compiletools.utils.is_non_string_iterable(value):
                 for index, element in enumerate(value):
-                    value[index] = _safely_unquote_string(element, slot=name, raise_on_malformed=raise_on_malformed)
+                    value[index] = _safely_unquote_string(
+                        element, slot=slot, raise_on_malformed=raise_on_malformed, atomic_key=name
+                    )
             else:
                 try:
                     # Otherwise assume its a string
-                    setattr(args, name, _safely_unquote_string(value, slot=name, raise_on_malformed=raise_on_malformed))
+                    setattr(
+                        args,
+                        name,
+                        _safely_unquote_string(
+                            value, slot=slot, raise_on_malformed=raise_on_malformed, atomic_key=name
+                        ),
+                    )
                 except (AttributeError, ValueError, TypeError):
                     logging.debug("Could not unquote arg %s (type %s)", name, type(value).__name__)
 
@@ -1262,7 +1293,7 @@ def _retokenization_would_split(text: str) -> bool:
         return False
 
 
-def _safely_unquote_string(value, *, slot="quoted value", raise_on_malformed=True):
+def _safely_unquote_string(value, *, slot="quoted value", raise_on_malformed=True, atomic_key=None):
     """Safely remove shell quotes from a string using proper parsing.
 
     Only removes quotes that are actual shell quotes, not content quotes.
@@ -1274,6 +1305,16 @@ def _safely_unquote_string(value, *, slot="quoted value", raise_on_malformed=Tru
     ``raise_on_malformed=False`` (as _strip_quotes does for
     _UNQUOTE_RAISE_EXEMPT attrs, and _note_shadowed_bare_values always
     does for the same reason) to keep the old best-effort fallback instead.
+
+    *slot* is purely for error attribution -- since quote-followups Task 2
+    it is the CLI spelling (``prepend-INCLUDE``), not the argparse dest
+    (``prepend_include``), so it must not be used to gate behaviour.
+    *atomic_key*, defaulting to *slot* when omitted, is the dest-keyed
+    lookup used for the ``_ATOMIC_TOKEN_REPARSED_ATTRS`` round-trip-safety
+    check below -- callers with a dest/slot split (``_strip_quotes``) pass
+    the dest explicitly; callers without one (recursion, the
+    ``_note_shadowed_bare_values`` bare-value path) fall back to *slot*,
+    matching pre-Task-2 behaviour where the two were the same string.
 
     Round-trip safety for ``_ATOMIC_TOKEN_REPARSED_ATTRS`` (INCLUDE plus its
     prepend_include/append_include list-element siblings): INCLUDE is
@@ -1337,6 +1378,9 @@ def _safely_unquote_string(value, *, slot="quoted value", raise_on_malformed=Tru
     if not isinstance(value, str):
         return value
 
+    if atomic_key is None:
+        atomic_key = slot
+
     # Strip whitespace first
     value = value.strip()
 
@@ -1352,7 +1396,7 @@ def _safely_unquote_string(value, *, slot="quoted value", raise_on_malformed=Tru
         if len(tokens) == 1:
             unquoted = tokens[0]
 
-            if slot in _ATOMIC_TOKEN_REPARSED_ATTRS and _retokenization_would_split(unquoted):
+            if atomic_key in _ATOMIC_TOKEN_REPARSED_ATTRS and _retokenization_would_split(unquoted):
                 return value
 
             # Nested quoting (e.g. conf value '"-DFOO"' quoted once by the
@@ -1361,7 +1405,9 @@ def _safely_unquote_string(value, *, slot="quoted value", raise_on_malformed=Tru
             if (unquoted.startswith('"') and unquoted.endswith('"')) or (
                 unquoted.startswith("'") and unquoted.endswith("'")
             ):
-                return _safely_unquote_string(unquoted, slot=slot, raise_on_malformed=raise_on_malformed)
+                return _safely_unquote_string(
+                    unquoted, slot=slot, raise_on_malformed=raise_on_malformed, atomic_key=atomic_key
+                )
             return unquoted
         return value
     except ValueError:
@@ -1666,7 +1712,7 @@ def parseargs(cap, argv, verbose=None, *, context):
     # otherwise it would escape parseargs as a raw traceback in every CLI
     # tool that calls it, not just the ones with their own broad handler.
     try:
-        _strip_quotes(args)
+        _strip_quotes(args, cap=cap)
     except compiletools.utils.FlagTokenizeError as err:
         if args.verbose >= 2:
             raise

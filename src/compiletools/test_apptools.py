@@ -260,6 +260,33 @@ def test_unbalanced_quote_in_include_renders_a_clean_remedy(capsys):
 
 
 @pytest.mark.usefixtures("parsers_reset")
+def test_strip_quotes_error_names_the_cli_spelling(capsys):
+    """quote-followups Task 2: the unbalanced-quote error from the
+    quote-stripping pre-pass (_strip_quotes) must name the option as the
+    user typed it (prepend-INCLUDE), not the argparse dest
+    (prepend_include) -- one option, one spelling, matching what
+    gather-side tokenizers (build_inputs._slot_tokens et al.) already say
+    for the same option. Before the fix, _strip_quotes passed the raw
+    vars(args) attribute name as slot, which for --prepend-INCLUDE /
+    --append-INCLUDE is the dest, not the CLI spelling."""
+    with _temp_repo_with_ct_conf("gcc", "gcc") as (repo_root, conf_d):
+        with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+            fh.write("CC = gcc\nCXX = g++\nLD = g++\n")
+
+        with pytest.raises(SystemExit) as excinfo:
+            _parseargs_for_variant(
+                repo_root,
+                ["--variant=gcc", "--no-git-root", '--prepend-INCLUDE="/opt/unclosed'],
+            )
+
+    assert excinfo.value.code == 1
+    error_output = capsys.readouterr().err
+    assert "prepend-INCLUDE" in error_output
+    assert "prepend_include" not in error_output
+    assert "Traceback" not in error_output
+
+
+@pytest.mark.usefixtures("parsers_reset")
 def test_single_token_quoted_include_path_with_space_survives_real_parseargs():
     """coverage-gaps Task 9 review finding Q1: a SINGLE-TOKEN --INCLUDE
     value containing a space (no manual quoting needed at this layer --
@@ -909,6 +936,21 @@ class TestStripQuotes:
         assert args._dict_stash == {"CPPFLAGS": '"-DFOO"'}
         assert args._tuple_stash == (("CPPFLAGS", '"-DFOO"'),)
         assert args._argv == ['--CPPFLAGS="-DFOO"']
+
+
+def test_cli_spelling_for_dest_maps_and_falls_back():
+    """quote-followups Task 2: _cli_spelling_for_dest maps an argparse
+    dest to the longest registered CLI option string (stripped of its
+    leading dashes) for the option that owns it, and falls back to the
+    dest itself when the parser is unavailable or the dest is unknown --
+    the fallback is what keeps every existing direct _strip_quotes(args)
+    caller (no cap) working unchanged."""
+    cap = apptools.create_parser("mapper test", argv=[], include_config=False)
+    compiletools.hunter.add_arguments(cap)
+    assert apptools._cli_spelling_for_dest("prepend_include", cap) == "prepend-INCLUDE"
+    assert apptools._cli_spelling_for_dest("INCLUDE", cap) == "INCLUDE"
+    assert apptools._cli_spelling_for_dest("no_such_dest", cap) == "no_such_dest"
+    assert apptools._cli_spelling_for_dest("prepend_include", None) == "prepend_include"
 
 
 class TestDeriveCCompilerFromCxx:
