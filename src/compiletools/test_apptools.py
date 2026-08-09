@@ -1180,6 +1180,135 @@ class TestSetupPkgConfigOverrides:
             f"PKG_CONFIG_PATH={dirs!r}"
         )
 
+    def test_two_layered_conf_files_axis_wins_append_through_parseargs(self, monkeypatch, tmp_path, capsys):
+        """Append-group mirror of test_two_layered_conf_files_axis_wins_through_parseargs:
+        project ``ct.conf`` and a higher-priority axis conf each set
+        ``append-PKG-CONFIG-PATH``. After running through the real
+        ``parseargs`` pipeline, the axis-conf directory must land leftmost
+        *within the appended tail* of ``PKG_CONFIG_PATH`` — the documented
+        reversal in ``_merged_pkg_config_path_entries`` (highest-priority
+        source ends up leftmost in its group) applies symmetrically to
+        append, not just prepend. Before this test, only single-element
+        append lists were ever exercised end-to-end, so this within-append-
+        group ordering had zero real-``parseargs`` coverage.
+        """
+        conf_dir = tmp_path / "ct.conf.d"
+        conf_dir.mkdir(parents=True)
+        # Project ct.conf is lower-priority than the axis conf inside
+        # the variant composition; its append should land second (rightmost)
+        # within the appended tail.
+        base_pkgconfig = conf_dir / "pkgconfig-base"
+        base_pkgconfig.mkdir()
+        (tmp_path / "ct.conf").write_text(
+            "variant = axisY\nappend-PKG-CONFIG-PATH = ${CONF_DIR}/ct.conf.d/pkgconfig-base\n"
+        )
+        # Axis conf is higher priority — its append must win within the group.
+        axis_conf = conf_dir / "axisY.conf"
+        axis_pkgconfig = conf_dir / "pkgconfig-axisY"
+        axis_pkgconfig.mkdir()
+        axis_conf.write_text("append-PKG-CONFIG-PATH = ${CONF_DIR}/pkgconfig-axisY\n")
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+        monkeypatch.setattr(
+            "compiletools.git_utils.find_git_root",
+            lambda filename=None: str(tmp_path),
+        )
+
+        # --no-git-root keeps the test focused on the layered conf
+        # appends — without it, ct.conf.d/pkgconfig (auto-discovered)
+        # would also land in PKG_CONFIG_PATH, muddying the assertion.
+        argv = ["--variant=axisY", "--no-git-root"]
+        with uth.DirectoryContext(str(tmp_path)):
+            cap = apptools.create_parser("layered conf append test", argv=argv)
+            apptools.add_common_arguments(cap, argv=argv)
+            with uth.ParserContext():
+                ctx = BuildContext()
+                args = apptools.parseargs(cap, argv, context=ctx)
+
+        # The accumulator carries both appends, in conf-hierarchy
+        # order (project ct.conf first, axis conf second).
+        appends = [os.path.normpath(p) for p in (args.append_pkg_config_path or [])]
+        assert str(base_pkgconfig) in appends, f"project ct.conf's append didn't reach args: {appends!r}"
+        assert str(axis_pkgconfig) in appends, f"axis conf's append didn't reach args: {appends!r}"
+
+        dirs = os.environ["PKG_CONFIG_PATH"].split(os.pathsep)
+        axis_idx = dirs.index(str(axis_pkgconfig))
+        base_idx = dirs.index(str(base_pkgconfig))
+        assert axis_idx < base_idx, (
+            f"Axis-conf append must land leftmost (winning) within the "
+            f"appended tail over project ct.conf append; got "
+            f"axis@{axis_idx}, base@{base_idx}, PKG_CONFIG_PATH={dirs!r}"
+        )
+
+    def test_gitroot_pkgconfig_dir_auto_discovered_through_real_parseargs(self, monkeypatch, tmp_path, pkgconfig_dir):
+        """{gitroot}/ct.conf.d/pkgconfig on disk lands in
+        ``os.environ["PKG_CONFIG_PATH"]`` after a REAL ``parseargs`` run —
+        i.e. the gather-side auto-discovery in
+        ``build_inputs._compute_pkg_config_path`` (exercised via
+        ``apply_effects``' ``SetEnv``), not the legacy
+        ``_setup_pkg_config_overrides`` writer the other tests in this
+        class exercise directly. ``cwd`` is a subdirectory distinct from
+        gitroot with no ``pkgconfig`` dir of its own, isolating the
+        gitroot-candidate discovery specifically (as opposed to the
+        cwd-candidate one)."""
+        (tmp_path / "ct.conf").write_text("variant = myaxis\n")
+        (tmp_path / "ct.conf.d" / "myaxis.conf").write_text("# empty axis, no CC/CXX needed\n")
+
+        subdir = tmp_path / "subdir"
+        subdir.mkdir()
+
+        monkeypatch.chdir(subdir)
+        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+        monkeypatch.setattr(
+            "compiletools.git_utils.find_git_root",
+            lambda filename=None: str(tmp_path),
+        )
+
+        argv = ["--variant=myaxis"]
+        with uth.DirectoryContext(str(subdir)):
+            cap = apptools.create_parser("gitroot auto-discovery test", argv=argv)
+            apptools.add_common_arguments(cap, argv=argv)
+            with uth.ParserContext():
+                ctx = BuildContext()
+                apptools.parseargs(cap, argv, context=ctx)
+
+        entries = os.environ.get("PKG_CONFIG_PATH", "").split(os.pathsep)
+        assert str(pkgconfig_dir) in entries, (
+            f"gitroot ct.conf.d/pkgconfig was not auto-discovered into PKG_CONFIG_PATH: {entries!r}"
+        )
+
+    def test_gitroot_pkgconfig_dir_deduplicated_when_cwd_equals_gitroot(self, monkeypatch, tmp_path, pkgconfig_dir):
+        """When ``cwd`` IS the gitroot, the on-disk ``ct.conf.d/pkgconfig``
+        dir is independently discovered by both the cwd-candidate and the
+        gitroot-candidate probes in
+        ``build_inputs._compute_pkg_config_path``; the
+        ``repo_pkgconfig not in cwd_candidates`` guard must keep it out of
+        the final ``PKG_CONFIG_PATH`` twice."""
+        (tmp_path / "ct.conf").write_text("variant = myaxis\n")
+        (tmp_path / "ct.conf.d" / "myaxis.conf").write_text("# empty axis, no CC/CXX needed\n")
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+        monkeypatch.setattr(
+            "compiletools.git_utils.find_git_root",
+            lambda filename=None: str(tmp_path),
+        )
+
+        argv = ["--variant=myaxis"]
+        with uth.DirectoryContext(str(tmp_path)):
+            cap = apptools.create_parser("cwd==gitroot dedup test", argv=argv)
+            apptools.add_common_arguments(cap, argv=argv)
+            with uth.ParserContext():
+                ctx = BuildContext()
+                apptools.parseargs(cap, argv, context=ctx)
+
+        entries = os.environ.get("PKG_CONFIG_PATH", "").split(os.pathsep)
+        assert entries.count(str(pkgconfig_dir)) == 1, (
+            f"cwd==gitroot pkgconfig dir must appear exactly once in PKG_CONFIG_PATH, "
+            f"got {entries.count(str(pkgconfig_dir))}: {entries!r}"
+        )
+
 
 @pytest.mark.usefixtures("parsers_reset")
 class TestAppendFlagsAccumulateAcrossConfHierarchy:

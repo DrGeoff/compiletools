@@ -539,6 +539,18 @@ class TestComputePkgConfigPath:
         result = compute_pkg_config_path("", ["/low", "/high", "/cli"], None, [], [])
         assert result == os.pathsep.join(["/cli", "/high", "/low"])
 
+    def test_higher_priority_source_wins_within_append_group(self):
+        """append_paths arrive in the same [low conf, ..., high conf, CLI]
+        order as prepend_paths, and the documented reversal in
+        _merged_pkg_config_path_entries is symmetric for append: the
+        highest-priority source still lands leftmost, this time within the
+        appended tail. Only single-element append lists were previously
+        exercised (test_append_forces_existing_entry_to_end), so the
+        within-group ordering for a multi-entry append list had zero
+        coverage."""
+        result = compute_pkg_config_path("", None, ["/low", "/high", "/cli"], [], [])
+        assert result == os.pathsep.join(["/cli", "/high", "/low"])
+
     def test_duplicate_candidate_entries_are_deduplicated(self):
         result = compute_pkg_config_path("", ["/x"], None, ["/x"], ["/x"])
         assert result == "/x"
