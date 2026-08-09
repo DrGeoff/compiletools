@@ -1231,7 +1231,7 @@ class CppMagicFlags(MagicFlagsBase):
             MacroState with core (compiler+cmdline) and variable (file-defined) macros
         """
         # Run preprocessor with -dM -E to dump macros
-        extraargs = "-dM -E"
+        extraargs = ["-dM", "-E"]
         macro_dump = self.preprocessor.process(realpath=filename, extraargs=extraargs, redirect_stderr_to_stdout=True)
 
         # Parse lines like: #define MACRO_NAME value
@@ -1291,7 +1291,7 @@ class CppMagicFlags(MagicFlagsBase):
 
     def _readfile(self, filename):
         """Preprocess the given filename but leave comments"""
-        extraargs = "-C -E"
+        extraargs = ["-C", "-E"]
         return self.preprocessor.process(realpath=filename, extraargs=extraargs, redirect_stderr_to_stdout=True)
 
     def get_structured_data(self, filename: str) -> list[dict[str, Union[str, list[dict]]]]:

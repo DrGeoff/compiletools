@@ -1530,9 +1530,16 @@ class TestCompilationDatabaseModuleFlags:
         accepted -std=c++20, which is environment-dependent."""
         # compiler_kind introspects --version on gcc-ish basenames; pin
         # the probe so "g++" classifies as gcc on hosts (e.g. Termux)
-        # where g++ is actually a clang symlink.
-        monkeypatch.setattr(compiletools.apptools, "_compiler_major_version", lambda _c, **_kw: ("gcc", 16))
-        compiletools.apptools.compiler_kind.cache_clear()
+        # where g++ is actually a clang symlink. Patch the leaf
+        # apptools_compiler module directly (not the apptools facade
+        # re-export) -- _compiler_kind_probe's bare global lookup of
+        # _compiler_major_version resolves against apptools_compiler's own
+        # module namespace, and it holds the cache since compiler_kind
+        # itself is now an uncached validating wrapper.
+        import compiletools.apptools_compiler
+
+        monkeypatch.setattr(compiletools.apptools_compiler, "_compiler_major_version", lambda _c, **_kw: ("gcc", 16))
+        compiletools.apptools_compiler._compiler_kind_probe.cache_clear()
         creator = self._make_creator(cxx="g++", module_imports=("math",))
         flags = creator._module_kind_flags("/src/main.cpp")
         assert "-fmodules-ts" in flags, f"gcc TU with import math; needs -fmodules-ts, got {flags!r}"

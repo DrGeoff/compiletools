@@ -180,7 +180,6 @@ def find_system_std_module_source(cxx: str | None, kind: str) -> str | None:
     return candidate if os.path.isfile(candidate) else None
 
 
-@functools.lru_cache(maxsize=64)
 def compiler_kind(cxx: str | None, *, slot: str = "compiler command") -> str:
     """Classify a C++ compiler binary as ``"gcc"`` / ``"clang"`` / ``"unknown"``.
 
@@ -195,7 +194,8 @@ def compiler_kind(cxx: str | None, *, slot: str = "compiler command") -> str:
     ``-fmodules-ts`` at it fails the compile. Symmetric reverse case
     (``clang`` symlinked to gcc) is exceedingly rare and not probed; the
     basename wins for the clang side. The probe happens at most once per
-    unique input string because the function is ``lru_cache``-d.
+    unique *cxx* string because the classification work is delegated to
+    the ``lru_cache``-d :func:`_compiler_kind_probe`.
 
     Falls back to scanning the original string for ``clang`` / ``gcc`` /
     ``g++`` substrings when the binary can't be located -- callers that
@@ -212,9 +212,29 @@ def compiler_kind(cxx: str | None, *, slot: str = "compiler command") -> str:
     default for callers (e.g. ``build_inputs.gather_inputs``, which may
     be probing either CXX or LD depending on ``_effective_link_driver``)
     that don't know a single fixed role for the string.
+
+    ``slot`` is error attribution only -- a malformed *cxx* raises
+    FlagTokenizeError naming the caller's slot -- and is deliberately NOT
+    part of the probe's cache key: gather asks under slot="LD" while
+    hunter/build_backend ask under slot="CXX" for the same string, and
+    keying the lru_cache on (cxx, slot) ran the --version probe twice.
     """
     if not cxx:
         return "unknown"
+    # Validates + attributes; split_command_cached memoizes the successful
+    # split so this adds no repeated work on the hot path.
+    split_compiler_command(cxx, slot=slot)
+    return _compiler_kind_probe(cxx)
+
+
+@functools.lru_cache(maxsize=64)
+def _compiler_kind_probe(cxx: str) -> str:
+    """Cached classification body for :func:`compiler_kind`, keyed on the
+    compiler string alone (no ``slot``). Not for direct use -- callers
+    always want the validating/attributing wrapper above; this exists so
+    the probe cache can't fragment across ``slot`` spellings of the same
+    *cxx* string.
+    """
     resolved = shutil.which(cxx) or cxx
     base = os.path.basename(resolved).lower()
     # Strip versions/wrappers like ``g++-15`` or ``clang++-22.1.3``.
@@ -227,7 +247,13 @@ def compiler_kind(cxx: str | None, *, slot: str = "compiler command") -> str:
         # flags at it and the compile fails. Use the resolved path so
         # ``--version`` is the binary on disk; fall through to "gcc" if
         # the probe can't parse a recognised banner.
-        probe = _compiler_major_version(resolved, slot=slot)
+        #
+        # Pass no slot (default "compiler command"): the wrapper
+        # `compiler_kind` already validated `cxx` via split_compiler_command
+        # before the probe runs, and split_command_cached is deterministic
+        # and cached -- so the probe's internal split is a replay of an
+        # already-successful split and cannot newly raise.
+        probe = _compiler_major_version(resolved)
         if probe is not None and probe[0] == "clang":
             return "clang"
         return "gcc"
@@ -552,8 +578,9 @@ def clear_cache():
     Mirrors exactly the subset of ``cache_clear()`` calls the original
     monolithic :func:`compiletools.apptools.clear_cache` performed on the
     functions that now live here: ``_get_functional_cxx_compiler_cached``,
-    ``compiler_identity``, ``compiler_kind``, ``compiler_default_cxx_std``,
-    and ``find_system_std_module_source``.
+    ``compiler_identity``, ``compiler_kind`` (via its cache-holding probe
+    ``_compiler_kind_probe``), ``compiler_default_cxx_std``, and
+    ``find_system_std_module_source``.
 
     Note: ``tool_version`` is ``@functools.cache``-decorated but was NOT
     cleared by the original ``apptools.clear_cache`` — that omission is
@@ -564,6 +591,6 @@ def clear_cache():
     """
     _get_functional_cxx_compiler_cached.cache_clear()
     compiler_identity.cache_clear()
-    compiler_kind.cache_clear()
+    _compiler_kind_probe.cache_clear()
     compiler_default_cxx_std.cache_clear()
     find_system_std_module_source.cache_clear()

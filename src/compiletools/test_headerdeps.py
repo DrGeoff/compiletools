@@ -637,6 +637,26 @@ class TestHeaderDepsUnitTests(tb.BaseCompileToolsTestCase):
         except NotImplementedError:
             pass
 
+    @uth.requires_functional_compiler
+    def test_cpp_headerdeps_resolves_header_in_space_containing_extra_dir(self, tmp_path):
+        """extra_include_dirs entries with spaces must survive to the cpp -MM
+        argv as single -I tokens — the old ' '.join/re-split round-trip
+        shredded '/has space/inc' into '-I/has' + 'space/inc'."""
+        spaced = tmp_path / "has space" / "inc"
+        spaced.mkdir(parents=True)
+        (spaced / "spaced_dep.hpp").write_text("#pragma once\n")
+        src = tmp_path / "consumer.cpp"
+        src.write_text('#include "spaced_dep.hpp"\nint main() { return 0; }\n')
+
+        args = self._make_args()
+        deps_object = compiletools.headerdeps.CppHeaderDeps(
+            args, context=BuildContext(), extra_include_dirs=[str(spaced)]
+        )
+        deps = deps_object.process(str(src), frozenset())
+        assert any(d.endswith("spaced_dep.hpp") for d in deps), (
+            f"header in space-containing extra include dir not resolved; got {deps}"
+        )
+
     def test_direct_clear_instance_cache(self):
         """Test DirectHeaderDeps.clear_instance_cache."""
         args = self._make_args()
