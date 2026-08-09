@@ -120,3 +120,24 @@ class TestPreProcessorProcess:
         assert cmd[:2] == ["ccache", "my cpp"]
         assert "-DMSG=hello world" in cmd
         assert "weird dir/pre.h" in cmd
+
+    def test_unbalanced_quote_in_cpp_raises_systemexit_not_a_traceback(self, make_pp, capsys):
+        """coverage-gaps Task 9 review finding Q2: this is the single
+        choke point every --headerdeps=cpp / --magic=cpp caller
+        (headerdeps.py, magicflags.py x2) reaches, so converting a
+        malformed --CPP's FlagTokenizeError to a clean SystemExit(1) here
+        covers all three call sites at once -- and, since SystemExit is
+        not an Exception subclass, survives Hunter's broad
+        ``except Exception`` in its source-expansion walk (which would
+        otherwise downgrade this to a per-source warning and let the
+        build continue with missing preprocessor output) and reaches
+        standalone callers with no exception handling of their own
+        (ct-headertree, ct-magicflags, ct-filelist mains) as a clean,
+        traceback-free message instead of a raw exception."""
+        pp = make_pp(cpp='ccache "cpp')
+        with pytest.raises(SystemExit) as excinfo:
+            pp.process("/tmp/foo.cpp", "")
+        assert excinfo.value.code == 1
+        error_output = capsys.readouterr().err
+        assert "CPP" in error_output
+        assert "Traceback" not in error_output

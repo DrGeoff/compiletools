@@ -259,6 +259,65 @@ def test_unbalanced_quote_in_include_renders_a_clean_remedy(capsys):
     assert "Traceback" not in error_output
 
 
+@pytest.mark.usefixtures("parsers_reset")
+def test_single_token_quoted_include_path_with_space_survives_real_parseargs():
+    """coverage-gaps Task 9 review finding Q1: a SINGLE-TOKEN --INCLUDE
+    value containing a space (no manual quoting needed at this layer --
+    e.g. a real shell already consumed the user's own quotes, or this is
+    one argv element from a test driver) must still land as ONE include
+    path after a full parseargs run, not two shredded ``-I`` fragments.
+
+    This is the gap the gather-level positive test
+    (test_build_inputs.py::test_quoted_space_containing_include_path_survives_as_one_path)
+    didn't catch: it calls gather_inputs directly and bypasses
+    _flatten_variables/_strip_quotes entirely. Real parseargs exercises
+    the full pipeline: argparse's nargs="+" gives args.INCLUDE the
+    one-element list ``["/opt/has space/include"]``; _flatten_variables
+    shlex.joins it into the single-token quoted string
+    ``"'/opt/has space/include'"`` (quoting is required because the
+    element contains a space); _strip_quotes must NOT cosmetically peel
+    that quote back off before gather_inputs' own shlex-tokenize ever
+    sees it, or the space becomes a token separator again.
+    """
+    with _temp_repo_with_ct_conf("gcc", "gcc") as (repo_root, conf_d):
+        with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+            fh.write("CC = gcc\nCXX = g++\nLD = g++\n")
+
+        args = _parseargs_for_variant(
+            repo_root,
+            ["--variant=gcc", "--no-git-root", "--INCLUDE=/opt/has space/include"],
+        )
+
+    cpp = get_build_state(args).flags.cpp
+    assert "/opt/has space/include" in cpp, f"path was shredded: {cpp!r}"
+    idx = cpp.index("/opt/has space/include")
+    assert cpp[idx - 1] == "-I", f"expected -I immediately before the path token, got {cpp!r}"
+    assert "/opt/has" not in cpp, f"a shredded fragment leaked into cpp tokens: {cpp!r}"
+
+
+@pytest.mark.usefixtures("parsers_reset")
+def test_double_quoted_include_path_with_space_survives_real_parseargs():
+    """Nested-quote variant of the test above: the literal value carries
+    its OWN double-quote layer (as a conf file's raw text would, e.g.
+    ``INCLUDE = "/opt/has space/include"``) on top of _flatten_variables'
+    protective single-quote layer. _safely_unquote_string's round-trip
+    check must peel exactly the outer (redundant) layer and stop at the
+    inner (load-bearing) one, landing on the bare path with no residual
+    quote characters -- not zero layers peeled (stray literal quotes in
+    the path) and not both layers peeled (reshredded on the space)."""
+    with _temp_repo_with_ct_conf("gcc", "gcc") as (repo_root, conf_d):
+        with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+            fh.write("CC = gcc\nCXX = g++\nLD = g++\n")
+
+        args = _parseargs_for_variant(
+            repo_root,
+            ["--variant=gcc", "--no-git-root", '--INCLUDE="/opt/has space/include"'],
+        )
+
+    cpp = get_build_state(args).flags.cpp
+    assert "/opt/has space/include" in cpp, f"path was shredded or left quoted: {cpp!r}"
+
+
 class TestExtractCommandLineMacrosSz:
     """Test extract_command_line_macros_sz()."""
 
@@ -406,6 +465,50 @@ class TestSafelyUnquoteString:
         passes) preserves the pre-Task-9 best-effort strip."""
         result = _safely_unquote_string("'hello", raise_on_malformed=False)
         assert isinstance(result, str)
+
+    def test_flattened_attr_no_whitespace_still_unquotes(self):
+        """Regression guard (review finding Q1): the round-trip-safety
+        check for _FLATTENED_REPARSED_ATTRS must not become a blanket
+        skip. A single-token quoted value with NO internal whitespace
+        (e.g. a whole-value-quoted "-DFOO") retokenizes to itself either
+        way, so it must still get the ordinary cosmetic strip -- pins
+        test_private_stashes_pass_through_untouched's CPPFLAGS assertion
+        at the unit level."""
+        assert _safely_unquote_string('"-DFOO"', slot="CPPFLAGS") == "-DFOO"
+        assert _safely_unquote_string("'/opt/plain'", slot="INCLUDE") == "/opt/plain"
+
+    def test_flattened_attr_with_whitespace_keeps_its_quoting(self):
+        """Review finding Q1 fix: for a _FLATTENED_REPARSED_ATTRS slot, a
+        single-token quoted value whose UNQUOTED body contains whitespace
+        must be returned with its quoting intact -- stripping it here
+        would let the whitespace re-split into multiple tokens at
+        gather_inputs' own shlex-tokenize a moment later."""
+        quoted = "'/opt/has space/include'"
+        assert _safely_unquote_string(quoted, slot="INCLUDE") == quoted
+
+    def test_non_flattened_attr_with_whitespace_still_unquotes(self):
+        """Control: the round-trip-safety check is scoped to
+        _FLATTENED_REPARSED_ATTRS only. Every other attr (a plain scalar
+        that is never re-tokenized, e.g. projectname) keeps the ordinary
+        cosmetic strip even when the unquoted body has a space --
+        matches test_shadow_note_not_fooled_by_quoted_values' prebuild-
+        script expectation at the unit level."""
+        assert _safely_unquote_string('"My Project"', slot="projectname") == "My Project"
+        assert _safely_unquote_string('"./my hook.sh"', slot="prebuild_script") == "./my hook.sh"
+
+    def test_nested_quote_layers_peel_exactly_to_the_load_bearing_one(self):
+        """A doubly-quoted _FLATTENED_REPARSED_ATTRS value (an outer
+        protective layer _flatten_variables added, wrapping an inner
+        layer the user/conf file supplied) must peel exactly the
+        redundant outer layer and stop at the inner, load-bearing one --
+        not zero layers (stray literal quote characters survive into the
+        path) and not both layers (reshredded on the space)."""
+        nested = "'\"/opt/has space/include\"'"
+        result = _safely_unquote_string(nested, slot="INCLUDE")
+        assert result == '"/opt/has space/include"'
+        # And that remaining single layer is exactly what a real shlex
+        # re-tokenize downstream needs to land on the bare, clean path.
+        assert compiletools.utils.split_command_cached(result) == ["/opt/has space/include"]
 
 
 class TestVerbosePrintArgs:

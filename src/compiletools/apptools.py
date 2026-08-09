@@ -1185,6 +1185,16 @@ def _note_shadowed_bare_values(args, name, dest):
 #: the old silent-degrade fallback instead of raising FlagTokenizeError.
 _UNQUOTE_RAISE_EXEMPT = frozenset({"prebuild_scripts", "postbuild_scripts", "auto_exclude"})
 
+#: The nargs="+" flag-slot attrs _flatten_variables shlex.joins into a
+#: single protectively-quoted string (see that function's docstring).
+_FLATTENED_REPARSED_ATTRS = frozenset({"CPPFLAGS", "CFLAGS", "CXXFLAGS", "INCLUDE"})
+
+#: Of _FLATTENED_REPARSED_ATTRS, the subset where a single space-containing
+#: value is semantically ONE atomic item (a path) rather than several
+#: space-separated items (flags) -- see _safely_unquote_string's docstring
+#: for why the round-trip-safety check is scoped to just this subset.
+_ATOMIC_TOKEN_REPARSED_ATTRS = frozenset({"INCLUDE"})
+
 
 def _strip_quotes(args):
     """Remove shell quotes from arguments while preserving content quotes.
@@ -1217,6 +1227,29 @@ def _strip_quotes(args):
                     logging.debug("Could not unquote arg %s (type %s)", name, type(value).__name__)
 
 
+def _retokenization_would_split(text: str) -> bool:
+    """True only if shlex-splitting *text* (an already-unquoted
+    candidate) produces MORE than one token -- i.e. *text* contains
+    whitespace (or other shlex-special content) that a later shlex pass
+    would treat as a token separator, so unquoting a wrapper around it
+    would change what that later pass sees.
+
+    False both when *text* re-tokenizes to exactly one piece (unquoting
+    is a safe no-op) AND when *text* itself fails to shlex-parse at all
+    (an embedded, unmatched quote character) -- a parse failure is a
+    distinct, pre-existing malformed-value case: returning False here
+    lets the caller proceed with the ordinary unquote, so the malformed
+    content flows through bare and fails at the downstream tokenizer's
+    own raise, exactly as it did before this round-trip-safety check
+    existed. Only "produces strictly more tokens" is grounds to keep the
+    original quoting.
+    """
+    try:
+        return len(split_command_cached(text)) > 1
+    except ValueError:
+        return False
+
+
 def _safely_unquote_string(value, *, slot="quoted value", raise_on_malformed=True):
     """Safely remove shell quotes from a string using proper parsing.
 
@@ -1229,6 +1262,64 @@ def _safely_unquote_string(value, *, slot="quoted value", raise_on_malformed=Tru
     ``raise_on_malformed=False`` (as _strip_quotes does for
     _UNQUOTE_RAISE_EXEMPT attrs, and _note_shadowed_bare_values always
     does for the same reason) to keep the old best-effort fallback instead.
+
+    Round-trip safety for ``_ATOMIC_TOKEN_REPARSED_ATTRS`` (currently just
+    INCLUDE): INCLUDE is unconditionally shlex-re-tokenized downstream
+    (``_include_paths_with_gitroots``, inside ``gather_inputs``), and
+    ``_flatten_variables`` (which runs just before ``_strip_quotes`` in
+    ``parseargs``) may have wrapped a whitespace-containing value in
+    exactly the single-token quoting this function strips, specifically
+    to protect it through that later re-tokenize (e.g.
+    ``--INCLUDE=/opt/has space/include`` becomes the one-element list
+    ``["/opt/has space/include"]``, then ``shlex.join`` quotes it to
+    ``"'/opt/has space/include'"`` since it contains a space -- a SINGLE
+    path, one nargs="+" list element). This function's ordinary "single
+    shlex token means the outer quotes were cosmetic" heuristic can't
+    distinguish that PROTECTIVE quoting from a user's own cosmetic
+    quoting of a plain scalar (``--CXX='g++'``, no internal whitespace)
+    -- stripping the former here would let the whitespace re-split into
+    multiple tokens at gather time, silently reshredding the value
+    despite ``_include_paths_with_gitroots``' own shlex-tokenize fix. So
+    for INCLUDE specifically, a single-token unquote is SKIPPED (the
+    value is returned with its quoting untouched) when the unquoted body
+    would itself re-tokenize into MORE than one piece
+    (``_retokenization_would_split``) -- i.e. only when stripping the
+    quote would NOT be a no-op for the downstream re-tokenize. The raw
+    shlex tokenizer downstream still parses the untouched, still-quoted
+    value correctly and losslessly (that's exactly what it's for), just
+    without this function's separate cosmetic pass getting there first
+    and destroying the protection. A body that fails to shlex-parse at
+    all (an embedded, unmatched quote character -- a malformed value, not
+    a whitespace-protection case) is deliberately NOT covered by this
+    skip: it still gets the ordinary strip, so the malformed content
+    flows through bare and fails at the downstream tokenizer's own raise
+    -- unchanged from the pre-existing behavior INCLUDE had before this
+    round-trip-safety check was added.
+
+    CPPFLAGS/CFLAGS/CXXFLAGS deliberately do NOT get this treatment even
+    though they share ``_flatten_variables``' protective quoting
+    (``_FLATTENED_REPARSED_ATTRS`` is the superset): unlike INCLUDE, one
+    space-containing value for these is overwhelmingly more likely to be
+    SEVERAL flags the user bundled into one conf/CLI assignment (e.g.
+    ``CPPFLAGS="-std=c++20 -I/dir -DFOO"``) than one atomic flag value
+    with a literal embedded space -- the latter case
+    (``-DFOO="bar baz"``) doesn't even reach this function, since it
+    doesn't start with a quote character itself. Applying the INCLUDE
+    treatment here would leave a legitimate multi-flag value stuck
+    behind its protective quote, letting it reach the compiler as one
+    unsplit token instead of separate flags. This asymmetry is
+    intentional, not an oversight -- see the review discussion on the
+    coverage-gaps Task 9 fix-round for the CPPFLAGS regression this
+    would otherwise reintroduce (``test_cppflags_macro_extraction`` et
+    al. in test_headerdeps.py).
+
+    Every attr outside ``_ATOMIC_TOKEN_REPARSED_ATTRS`` (CPPFLAGS/CFLAGS/
+    CXXFLAGS included, plus every non-flag-slot attr like projectname,
+    CXX, prebuild-script, ...) keeps the plain heuristic -- an
+    intentional space still unquotes to content with the space
+    preserved, exactly as before Task 9's Q1 fix, e.g.
+    ``--projectname="My Project"`` or
+    ``prebuild-script = "./my hook.sh"``.
     """
     if not isinstance(value, str):
         return value
@@ -1247,6 +1338,9 @@ def _safely_unquote_string(value, *, slot="quoted value", raise_on_malformed=Tru
         tokens = split_command_cached(value)
         if len(tokens) == 1:
             unquoted = tokens[0]
+
+            if slot in _ATOMIC_TOKEN_REPARSED_ATTRS and _retokenization_would_split(unquoted):
+                return value
 
             # Nested quoting (e.g. conf value '"-DFOO"' quoted once by the
             # conf layer and once by the user) leaves a quote pair per layer;
@@ -1286,8 +1380,15 @@ def _flatten_variables(args):
     (unsplit on the space), and shlex-splitting would then misparse it as
     three tokens. ``compute_build_state`` applies the same ``shlex.join`` rule
     when deriving the slot strings from token tuples.
+
+    The varname set is ``_FLATTENED_REPARSED_ATTRS`` -- ``_safely_unquote_string``
+    (called from ``_strip_quotes``, which runs immediately after this in
+    ``parseargs``) special-cases these same attrs so it cannot
+    cosmetically unquote (and thereby destroy) the protective quoting just
+    applied here; see that function's docstring for the round-trip-safety
+    check.
     """
-    for varname in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "INCLUDE"):
+    for varname in _FLATTENED_REPARSED_ATTRS:
         if isinstance(getattr(args, varname, None), list):
             setattr(args, varname, shlex.join(getattr(args, varname)))
 
