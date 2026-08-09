@@ -30,7 +30,7 @@ def get_compiler_macros(compiler_path: str, verbose: int = 0) -> dict[str, str]:
         # Use -dM to dump macros, -E to preprocess only, - to read from stdin
         # Split compiler_path to handle multi-word commands like "ccache g++"
         result = subprocess.run(
-            compiletools.utils.split_compiler_command(compiler_path) + ["-dM", "-E", "-"],
+            compiletools.utils.split_compiler_command(compiler_path, slot="CXX") + ["-dM", "-E", "-"],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -108,7 +108,7 @@ def query_has_function(compiler_path: str, function_call: str, cppflags: str = "
     snippet = f"#if {function_call}\n1\n#else\n0\n#endif\n"
 
     try:
-        cmd = compiletools.utils.split_compiler_command(compiler_path)
+        cmd = compiletools.utils.split_compiler_command(compiler_path, slot="CXX")
         if cppflags:
             cmd = cmd + compiletools.utils.split_command_cached(cppflags)
         cmd = cmd + ["-E", "-x", "c++", "-"]

@@ -1110,8 +1110,22 @@ class TestFilterPkgConfigCflagsExtended:
         assert "mypkg" in error_output
 
     def test_malformed_output_is_silent_at_verbose_0(self, capsys):
+        """final-review-v2 Minor #4: this test used to discard the return
+        value and assert only silence, so a hypothetical refactor that made
+        filter_pkg_config_cflags silently return "" on malformed input
+        (dropping the degrade-to-whitespace-split half while staying quiet)
+        would keep it green -- the degrade half at verbose 0 was pinned
+        only by the sibling verbose>=1 test above and the build_inputs/
+        magicflags callers. Assert the same degraded-tokens shape that
+        sibling asserts, at verbose 0, so both halves (silence AND degrade)
+        are pinned here too.
+        """
         malformed = '-DFOO="bar -I/opt/x/include'
-        filter_pkg_config_cflags(malformed, verbose=0, package="mypkg")
+        result = filter_pkg_config_cflags(malformed, verbose=0, package="mypkg")
+        # Degraded via whitespace split: the -I flag is still recognised and
+        # rewritten to -isystem by the per-token loop that runs afterwards.
+        assert "-isystem" in result
+        assert "/opt/x/include" in result
         error_output = capsys.readouterr().err
         assert error_output == ""
 
