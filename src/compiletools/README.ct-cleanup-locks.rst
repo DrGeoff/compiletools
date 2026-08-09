@@ -8,7 +8,7 @@ Clean up stale lock directories from file locking
 
 :Author: drgeoffathome@gmail.com
 :Date:   2025-10-16
-:Version: 12.1.1
+:Version: 13.0.0
 :Manual section: 1
 :Manual group: developers
 
