@@ -1248,13 +1248,13 @@ def _strip_quotes(args, cap=None):
         value = getattr(args, name)
         if value is not None:
             raise_on_malformed = name not in _UNQUOTE_RAISE_EXEMPT
-            slot = _cli_spelling_for_dest(name, cap)
+            display_slot = _cli_spelling_for_dest(name, cap)
             # Can't just use the for loop directly because that would
             # try and process every character in a string
             if compiletools.utils.is_non_string_iterable(value):
                 for index, element in enumerate(value):
                     value[index] = _safely_unquote_string(
-                        element, slot=slot, raise_on_malformed=raise_on_malformed, atomic_key=name
+                        element, slot=name, raise_on_malformed=raise_on_malformed, display_slot=display_slot
                     )
             else:
                 try:
@@ -1263,7 +1263,7 @@ def _strip_quotes(args, cap=None):
                         args,
                         name,
                         _safely_unquote_string(
-                            value, slot=slot, raise_on_malformed=raise_on_malformed, atomic_key=name
+                            value, slot=name, raise_on_malformed=raise_on_malformed, display_slot=display_slot
                         ),
                     )
                 except (AttributeError, ValueError, TypeError):
@@ -1293,28 +1293,31 @@ def _retokenization_would_split(text: str) -> bool:
         return False
 
 
-def _safely_unquote_string(value, *, slot="quoted value", raise_on_malformed=True, atomic_key=None):
+def _safely_unquote_string(value, *, slot="quoted value", raise_on_malformed=True, display_slot=None):
     """Safely remove shell quotes from a string using proper parsing.
 
     Only removes quotes that are actual shell quotes, not content quotes.
 
     On a shlex failure (an unbalanced quote), the default is to raise
-    FlagTokenizeError attributed to *slot* -- the caller's attr name, from
-    _strip_quotes' vars() loop, when called from there -- rather than
-    silently stripping a mismatched quote pair. Pass
-    ``raise_on_malformed=False`` (as _strip_quotes does for
+    FlagTokenizeError attributed to *display_slot* (falling back to *slot*
+    when omitted) rather than silently stripping a mismatched quote pair.
+    Pass ``raise_on_malformed=False`` (as _strip_quotes does for
     _UNQUOTE_RAISE_EXEMPT attrs, and _note_shadowed_bare_values always
     does for the same reason) to keep the old best-effort fallback instead.
 
-    *slot* is purely for error attribution -- since quote-followups Task 2
-    it is the CLI spelling (``prepend-INCLUDE``), not the argparse dest
-    (``prepend_include``), so it must not be used to gate behaviour.
-    *atomic_key*, defaulting to *slot* when omitted, is the dest-keyed
-    lookup used for the ``_ATOMIC_TOKEN_REPARSED_ATTRS`` round-trip-safety
-    check below -- callers with a dest/slot split (``_strip_quotes``) pass
-    the dest explicitly; callers without one (recursion, the
-    ``_note_shadowed_bare_values`` bare-value path) fall back to *slot*,
-    matching pre-Task-2 behaviour where the two were the same string.
+    *slot* is the dest-keyed lookup used for the
+    ``_ATOMIC_TOKEN_REPARSED_ATTRS`` round-trip-safety check below --
+    exactly as it was before quote-followups Task 2 -- so it MUST stay the
+    argparse dest (``prepend_include``), never the CLI spelling
+    (``prepend-INCLUDE``): using it to gate behaviour is the reason this
+    parameter cannot be repurposed for display. *display_slot*, defaulting
+    to *slot* when omitted, is display-only: it names the option in the
+    FlagTokenizeError message and is never consulted for gating. This
+    split (rather than a single dual-purpose parameter) means a future
+    caller that forgets *display_slot* degrades to a dest-spelled error
+    message -- a visible, low-stakes miss -- instead of silently
+    disabling the round-trip-safety check the way a slot-defaults-to-cli-
+    spelling design would (see quote-followups Task 2 review).
 
     Round-trip safety for ``_ATOMIC_TOKEN_REPARSED_ATTRS`` (INCLUDE plus its
     prepend_include/append_include list-element siblings): INCLUDE is
@@ -1378,8 +1381,8 @@ def _safely_unquote_string(value, *, slot="quoted value", raise_on_malformed=Tru
     if not isinstance(value, str):
         return value
 
-    if atomic_key is None:
-        atomic_key = slot
+    if display_slot is None:
+        display_slot = slot
 
     # Strip whitespace first
     value = value.strip()
@@ -1396,7 +1399,7 @@ def _safely_unquote_string(value, *, slot="quoted value", raise_on_malformed=Tru
         if len(tokens) == 1:
             unquoted = tokens[0]
 
-            if atomic_key in _ATOMIC_TOKEN_REPARSED_ATTRS and _retokenization_would_split(unquoted):
+            if slot in _ATOMIC_TOKEN_REPARSED_ATTRS and _retokenization_would_split(unquoted):
                 return value
 
             # Nested quoting (e.g. conf value '"-DFOO"' quoted once by the
@@ -1406,7 +1409,7 @@ def _safely_unquote_string(value, *, slot="quoted value", raise_on_malformed=Tru
                 unquoted.startswith("'") and unquoted.endswith("'")
             ):
                 return _safely_unquote_string(
-                    unquoted, slot=slot, raise_on_malformed=raise_on_malformed, atomic_key=atomic_key
+                    unquoted, slot=slot, raise_on_malformed=raise_on_malformed, display_slot=display_slot
                 )
             return unquoted
         return value
@@ -1416,7 +1419,7 @@ def _safely_unquote_string(value, *, slot="quoted value", raise_on_malformed=Tru
             # DRY FlagTokenizeError diagnostic (split_command_cached is
             # @functools.cache'd and does not memoize the exception, so
             # this repeats the same cheap shlex.split call).
-            compiletools.utils.tokenize_flags_or_raise(value, slot=slot)
+            compiletools.utils.tokenize_flags_or_raise(value, slot=display_slot)
         # Malformed quoting that shlex rejects: strip only a matching
         # enclosing quote pair rather than failing the whole parse.
         if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
