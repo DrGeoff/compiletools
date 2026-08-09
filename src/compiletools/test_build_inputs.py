@@ -396,6 +396,42 @@ class TestPkgConfigGathering:
             widened = gather_inputs(_minimal_args(pkg_config=["foo"], LDFLAGS=""), context)
             assert dict(widened.pkg_config_results)["foo"].libs == ("-lfoo",)
 
+    def test_malformed_libs_output_degrades_with_warning_at_verbose_1(self, monkeypatch, capsys):
+        """coverage-gaps Task 10: raw --libs pkg-config subprocess output is
+        never re-quoted by filter_pkg_config_cflags (unlike --cflags), so it
+        used to reach split_command_cached directly with no try/except -- an
+        unbalanced quote in a broken .pc file raised a bare ValueError and
+        killed the build. It must instead degrade to a whitespace split
+        with a verbose>=1 warning naming the package."""
+        calls = []
+        monkeypatch.setattr(
+            compiletools.apptools_pkgconfig,
+            "_batch_pkg_config",
+            self._fake_batch({"foo": "-I/opt/x/include"}, {"foo": '-lfoo "unterminated'}, calls),
+        )
+        with uth.TempDirContext():
+            args = _minimal_args(pkg_config=["foo"], LDFLAGS="", verbose=1)
+            inputs = gather_inputs(args, BuildContext())
+            libs = dict(inputs.pkg_config_results)["foo"].libs
+            assert libs == ("-lfoo", '"unterminated')
+            error_output = capsys.readouterr().err
+            assert "foo" in error_output
+
+    def test_malformed_libs_output_is_silent_at_verbose_0(self, monkeypatch, capsys):
+        calls = []
+        monkeypatch.setattr(
+            compiletools.apptools_pkgconfig,
+            "_batch_pkg_config",
+            self._fake_batch({"foo": "-I/opt/x/include"}, {"foo": '-lfoo "unterminated'}, calls),
+        )
+        with uth.TempDirContext():
+            args = _minimal_args(pkg_config=["foo"], LDFLAGS="", verbose=0)
+            inputs = gather_inputs(args, BuildContext())
+            libs = dict(inputs.pkg_config_results)["foo"].libs
+            assert libs == ("-lfoo", '"unterminated'), "Must still degrade even when silent."
+            error_output = capsys.readouterr().err
+            assert error_output == ""
+
     def test_prepend_and_append_pkg_config_merge_in_declaration_order(self, monkeypatch):
         calls = []
         monkeypatch.setattr(

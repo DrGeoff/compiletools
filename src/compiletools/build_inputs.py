@@ -193,7 +193,6 @@ def _query_pkg_config(packages, pkg_config_path, want_libs, verbose, context):
     import os
 
     import compiletools.apptools_pkgconfig as pkgconf
-    from compiletools.utils import split_command_cached
 
     cache = context.pkg_config_query_cache
     errors_policy = pkgconf.get_pkg_config_errors()
@@ -213,10 +212,18 @@ def _query_pkg_config(packages, pkg_config_path, want_libs, verbose, context):
                 else:
                     os.environ["PKG_CONFIG_PATH"] = original
         for pkg in uncached:
-            filtered = pkgconf.filter_pkg_config_cflags(batch_cflags.get(pkg, ""), verbose)
-            cflags = tuple(split_command_cached(filtered)) if filtered else ()
+            filtered = pkgconf.filter_pkg_config_cflags(batch_cflags.get(pkg, ""), verbose, package=pkg)
+            cflags = (
+                tuple(pkgconf.tokenize_pkg_config_output(filtered, package=pkg, option="--cflags", verbose=verbose))
+                if filtered
+                else ()
+            )
             libs_str = batch_libs.get(pkg, "")
-            libs = tuple(split_command_cached(libs_str)) if libs_str else ()
+            libs = (
+                tuple(pkgconf.tokenize_pkg_config_output(libs_str, package=pkg, option="--libs", verbose=verbose))
+                if libs_str
+                else ()
+            )
             cache[(pkg, pkg_config_path, errors_policy, want_libs)] = PkgConfigResult(cflags=cflags, libs=libs)
 
     return tuple((pkg, cache[(pkg, pkg_config_path, errors_policy, want_libs)]) for pkg in packages)

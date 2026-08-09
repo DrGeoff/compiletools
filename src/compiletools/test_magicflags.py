@@ -477,6 +477,53 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         finally:
             pkgconfig.clear_cache()
 
+    def test_malformed_pkg_config_libs_degrades_with_warning_at_verbose_1(self, capsys, monkeypatch):
+        """coverage-gaps Task 10: magicflags's //#PKG-CONFIG site tokenizes
+        raw --libs pkg-config subprocess output via split_command_cached_sz
+        with no try/except -- a malformed .pc file's unbalanced quote used
+        to raise a bare ValueError and kill the build. It must instead
+        degrade to a whitespace split with a verbose>=1 warning naming the
+        package, matching the other two pkg-config-output tokenize sites
+        (apptools_pkgconfig.filter_pkg_config_cflags,
+        build_inputs._query_pkg_config)."""
+
+        def _fake_cached_pkg_config(pkg, option):
+            if option == "--libs":
+                return '-lfoo "unterminated'
+            return ""
+
+        monkeypatch.setattr(compiletools.apptools, "cached_pkg_config", _fake_cached_pkg_config)
+
+        files = uth.write_sources(
+            {"malformed_pkg_config_libs.cpp": "//#PKG-CONFIG=malformedpkg\nint main() { return 0; }\n"}
+        )
+
+        result = self._parse_with_magic("direct", str(files["malformed_pkg_config_libs.cpp"]), ["-v"])
+        ldflags = " ".join(str(f) for f in result[sz.Str("LDFLAGS")])
+        assert "-lfoo" in ldflags and '"unterminated' in ldflags
+
+        error_output = capsys.readouterr().err
+        assert "malformedpkg" in error_output
+
+    def test_malformed_pkg_config_libs_is_silent_at_verbose_0(self, capsys, monkeypatch):
+        def _fake_cached_pkg_config(pkg, option):
+            if option == "--libs":
+                return '-lfoo "unterminated'
+            return ""
+
+        monkeypatch.setattr(compiletools.apptools, "cached_pkg_config", _fake_cached_pkg_config)
+
+        files = uth.write_sources(
+            {"malformed_pkg_config_libs_quiet.cpp": "//#PKG-CONFIG=malformedpkg\nint main() { return 0; }\n"}
+        )
+
+        result = self._parse_with_magic("direct", str(files["malformed_pkg_config_libs_quiet.cpp"]))
+        ldflags = " ".join(str(f) for f in result[sz.Str("LDFLAGS")])
+        assert "-lfoo" in ldflags and '"unterminated' in ldflags, "Must still degrade even when silent."
+
+        error_output = capsys.readouterr().err
+        assert error_output == ""
+
     @pytest.mark.usefixtures("pkgconfig_env")
     def test_gcc_linux_macro_not_expanded_in_pkg_config_paths(self):
         """GCC predefines #define linux 1.  This must not corrupt

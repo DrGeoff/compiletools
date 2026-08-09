@@ -1032,6 +1032,27 @@ class TestFilterPkgConfigCflagsExtended:
             filter_pkg_config_cflags("-I/usr/include", verbose=6)
         assert "Dropping" in mock_stdout.getvalue()
 
+    def test_malformed_output_degrades_to_whitespace_split_with_warning_at_verbose_1(self, capsys):
+        """coverage-gaps Task 10: pkg-config subprocess output (a third-party
+        .pc file's --cflags text) is not user input -- an unbalanced quote
+        must degrade to a plain whitespace split, never raise, with a
+        verbose>=1 diagnostic naming the offending package so the
+        degradation isn't silent."""
+        malformed = '-DFOO="bar -I/opt/x/include'
+        result = filter_pkg_config_cflags(malformed, verbose=1, package="mypkg")
+        # Degraded via whitespace split: the -I flag is still recognised and
+        # rewritten to -isystem by the per-token loop that runs afterwards.
+        assert "-isystem" in result
+        assert "/opt/x/include" in result
+        error_output = capsys.readouterr().err
+        assert "mypkg" in error_output
+
+    def test_malformed_output_is_silent_at_verbose_0(self, capsys):
+        malformed = '-DFOO="bar -I/opt/x/include'
+        filter_pkg_config_cflags(malformed, verbose=0, package="mypkg")
+        error_output = capsys.readouterr().err
+        assert error_output == ""
+
 
 class TestCachedPkgConfig:
     def test_missing_package(self):

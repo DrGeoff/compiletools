@@ -23,6 +23,12 @@ process-wide ``PKG_CONFIG_PATH`` override state:
   values into individual package specs without splitting version constraints.
 * :func:`filter_pkg_config_cflags` -- rewrite ``-I`` to ``-isystem`` and drop
   default system include paths.
+* :func:`tokenize_pkg_config_output` / :func:`tokenize_pkg_config_output_sz`
+  -- shell-tokenize third-party pkg-config subprocess output (a ``.pc`` file
+  is not user input), degrading to a whitespace split with a ``verbose >= 1``
+  warning instead of raising. Shared by :func:`filter_pkg_config_cflags` and
+  the ``build_inputs``/``magicflags`` call sites that tokenize raw ``--libs``
+  output.
 * :func:`_batch_pkg_config` -- batched multi-package query with per-package
   fallback through :func:`cached_pkg_config`.
 * :func:`_add_flags_from_pkg_config` -- fold pkg-config cflags/libs into
@@ -58,7 +64,7 @@ import warnings
 from typing import Literal
 
 import compiletools.wrappedos
-from compiletools.utils import split_command_cached, tokenize_flags_or_raise
+from compiletools.utils import split_command_cached, split_command_cached_sz, tokenize_flags_or_raise
 
 _PKG_CONFIG_COMPARISON_RE = re.compile(r"^(?:==|>=|<=|!=|=|<|>)(?P<operand>.*)$")
 _PKG_CONFIG_TRAILING_COMPARISON_RE = re.compile(r"^.+?(?:==|>=|<=|!=|=|<|>)$")
@@ -299,12 +305,64 @@ def cached_pkg_config(package, option):
     return _run_pkg_config_query(package, option)
 
 
-def filter_pkg_config_cflags(cflags_str, verbose=0):
+def _warn_pkg_config_tokenize_degraded(package: str, option: str, reason: str, verbose: int) -> None:
+    """Shared ``verbose >= 1`` diagnostic for a degraded pkg-config-output
+    tokenize. Plain ``print`` to stderr, NOT :func:`_warn_pkg_config`: this
+    is deliberately unconditional on ``--pkg-config-errors`` -- a broken
+    ``.pc`` file's unbalanced quote must degrade to a whitespace split and
+    never promote to a hard failure, even under strict mode (which governs
+    *missing packages*, a different failure category)."""
+    if verbose >= 1:
+        print(
+            f"pkg-config {option} output for {package!r} could not be shell-tokenized "
+            f"({reason}); falling back to a plain whitespace split",
+            file=sys.stderr,
+        )
+
+
+def tokenize_pkg_config_output(text: str, *, package: str, option: str, verbose: int = 0) -> list[str]:
+    """Shell-tokenize third-party pkg-config subprocess output (a raw
+    ``--cflags``/``--libs`` query result, or the ``-isystem``-rewritten
+    string :func:`filter_pkg_config_cflags` reconstructs from it).
+
+    Unlike user-entered flag values (:func:`compiletools.utils.
+    tokenize_flags_or_raise`), this text originates from a third-party
+    ``.pc`` file the user does not author -- an unbalanced quote there must
+    not hard-fail the build. Degrades to a plain whitespace split, emitting
+    a ``verbose >= 1`` diagnostic naming *package* and *option* so the
+    degradation is visible without being noisy at the default verbosity.
+    """
+    try:
+        return split_command_cached(text)
+    except ValueError as exc:
+        _warn_pkg_config_tokenize_degraded(package, option, str(exc), verbose)
+        return text.split()
+
+
+def tokenize_pkg_config_output_sz(text_sz, *, package: str, option: str, verbose: int = 0):
+    """StringZilla-aware counterpart of :func:`tokenize_pkg_config_output`,
+    for the magicflags site which already holds the output as ``sz.Str``
+    (post macro-expansion)."""
+    try:
+        return split_command_cached_sz(text_sz)
+    except ValueError as exc:
+        _warn_pkg_config_tokenize_degraded(package, option, str(exc), verbose)
+        import stringzilla as sz
+
+        return [sz.Str(s) for s in str(text_sz).split()]
+
+
+def filter_pkg_config_cflags(cflags_str, verbose=0, package=""):
     """
     Process pkg-config cflags output.
     Converts -I to -isystem, except for default system include paths
     which are dropped to prevent include order issues (e.g. with libc++).
     Uses shlex for robust shell tokenization and quoting.
+
+    *package* attributes the ``verbose >= 1`` degraded-tokenize warning
+    (see :func:`tokenize_pkg_config_output`) to the package the malformed
+    ``--cflags`` output came from; callers that don't have a package name
+    handy (e.g. direct unit tests) may omit it.
     """
     if not cflags_str:
         return ""
@@ -315,12 +373,10 @@ def filter_pkg_config_cflags(cflags_str, verbose=0):
     if prefix:
         system_include_paths.add(compiletools.wrappedos.normpath(os.path.join(prefix, "include")))
 
-    # Use shlex to correctly handle quoted paths in flags
-    try:
-        flags = split_command_cached(cflags_str)
-    except ValueError:
-        # Fallback for malformed strings
-        flags = cflags_str.split()
+    # Use shlex to correctly handle quoted paths in flags, degrading to a
+    # whitespace split (with a verbose>=1 warning) on malformed output
+    # rather than raising -- see tokenize_pkg_config_output.
+    flags = tokenize_pkg_config_output(cflags_str, package=package, option="--cflags", verbose=verbose)
 
     flag_iter = iter(flags)
     processed_flags = []
@@ -645,7 +701,7 @@ def _add_flags_from_pkg_config(args):
 
     for pkg in packages:
         raw_cflags = batch_cflags.get(pkg, "")
-        cflags = filter_pkg_config_cflags(raw_cflags, args.verbose)
+        cflags = filter_pkg_config_cflags(raw_cflags, args.verbose, package=pkg)
 
         if cflags:
             args.CPPFLAGS += f" {cflags}"

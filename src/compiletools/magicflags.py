@@ -366,17 +366,26 @@ class MagicFlagsBase:
             cflags_raw = compiletools.apptools.cached_pkg_config(pkg, "--cflags")
 
             # Use the shared filtering logic from apptools
-            cflags_str = compiletools.apptools.filter_pkg_config_cflags(cflags_raw, self._args.verbose)
+            cflags_str = compiletools.apptools.filter_pkg_config_cflags(cflags_raw, self._args.verbose, package=pkg)
             cflags_sz = sz.Str(cflags_str)
             if cflags_str and expander:
                 cflags_sz = expander._recursive_expand_macros_sz(cflags_sz)
-            cflags_list = compiletools.utils.split_command_cached_sz(cflags_sz)
+            # Post-macro-expansion, so partially user-influenced -- but this
+            # site keeps degrading identically to the other two pkg-config
+            # output sites (never hard-fail on a malformed .pc/expansion
+            # result); Task 9's //#PKG-CONFIG spec-side validation already
+            # catches a malformed *package spec* before any query runs.
+            cflags_list = compiletools.apptools_pkgconfig.tokenize_pkg_config_output_sz(
+                cflags_sz, package=pkg, option="--cflags", verbose=self._args.verbose
+            )
 
             libs_raw = compiletools.apptools.cached_pkg_config(pkg, "--libs")
             libs_sz = sz.Str(libs_raw)
             if libs_raw and expander:
                 libs_sz = expander._recursive_expand_macros_sz(libs_sz)
-            libs_list = compiletools.utils.split_command_cached_sz(libs_sz)
+            libs_list = compiletools.apptools_pkgconfig.tokenize_pkg_config_output_sz(
+                libs_sz, package=pkg, option="--libs", verbose=self._args.verbose
+            )
 
             # Extract first -l from expanded libs — must use the same
             # post-expansion list that feeds LDFLAGS so names match.
