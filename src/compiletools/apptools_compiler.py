@@ -248,13 +248,11 @@ def _compiler_kind_probe(cxx: str) -> str:
         # ``--version`` is the binary on disk; fall through to "gcc" if
         # the probe can't parse a recognised banner.
         #
-        # Pass no slot (default "compiler command"): `compiler_kind`
-        # already validated `cxx` via split_compiler_command under the
-        # caller's real slot before calling this probe, and `resolved`
-        # can only differ from `cxx` when shutil.which resolved it to an
-        # actual on-disk path -- which never contains a space -- so the
-        # split _compiler_major_version performs internally on `resolved`
-        # (only triggered when it contains a space) cannot raise here.
+        # Pass no slot (default "compiler command"): the wrapper
+        # `compiler_kind` already validated `cxx` via split_compiler_command
+        # before the probe runs, and split_command_cached is deterministic
+        # and cached -- so the probe's internal split is a replay of an
+        # already-successful split and cannot newly raise.
         probe = _compiler_major_version(resolved)
         if probe is not None and probe[0] == "clang":
             return "clang"

@@ -257,18 +257,21 @@ def test_compiler_kind_probes_once_for_forced_gcc_ish_basename(monkeypatch):
     import compiletools.apptools_compiler as ac
 
     ac._compiler_kind_probe.cache_clear()
-    calls = []
+    try:
+        calls = []
 
-    def counting_probe(compiler_path, **kwargs):
-        calls.append((compiler_path, kwargs.get("slot")))
-        return ("gcc", 16)
+        def counting_probe(compiler_path, **kwargs):
+            calls.append((compiler_path, kwargs.get("slot")))
+            return ("gcc", 16)
 
-    monkeypatch.setattr(ac, "_compiler_major_version", counting_probe)
+        monkeypatch.setattr(ac, "_compiler_major_version", counting_probe)
 
-    first = ac.compiler_kind("g++", slot="CXX")
-    second = ac.compiler_kind("g++", slot="LD")
-    assert first == second == "gcc"
-    assert len(calls) == 1, f"cache fragmented on slot: --version probed {len(calls)} times for one compiler string"
+        first = ac.compiler_kind("g++", slot="CXX")
+        second = ac.compiler_kind("g++", slot="LD")
+        assert first == second == "gcc"
+        assert len(calls) == 1, f"cache fragmented on slot: --version probed {len(calls)} times for one compiler string"
+    finally:
+        ac._compiler_kind_probe.cache_clear()
 
 
 def test_compiler_kind_probes_once_across_slot_spellings(monkeypatch):
@@ -289,19 +292,22 @@ def test_compiler_kind_probes_once_across_slot_spellings(monkeypatch):
     assert cxx, "Precondition: need a functional compiler to probe."
 
     ac._compiler_kind_probe.cache_clear()
-    calls = []
-    real_probe = ac._compiler_major_version
+    try:
+        calls = []
+        real_probe = ac._compiler_major_version
 
-    def counting_probe(compiler_path, **kwargs):
-        calls.append((compiler_path, kwargs.get("slot")))
-        return real_probe(compiler_path, **kwargs)
+        def counting_probe(compiler_path, **kwargs):
+            calls.append((compiler_path, kwargs.get("slot")))
+            return real_probe(compiler_path, **kwargs)
 
-    monkeypatch.setattr(ac, "_compiler_major_version", counting_probe)
+        monkeypatch.setattr(ac, "_compiler_major_version", counting_probe)
 
-    first = ac.compiler_kind(cxx, slot="CXX")
-    second = ac.compiler_kind(cxx, slot="LD")
-    assert first == second
-    assert len(calls) <= 1, f"cache fragmented on slot: --version probed {len(calls)} times for one compiler string"
+        first = ac.compiler_kind(cxx, slot="CXX")
+        second = ac.compiler_kind(cxx, slot="LD")
+        assert first == second
+        assert len(calls) <= 1, f"cache fragmented on slot: --version probed {len(calls)} times for one compiler string"
+    finally:
+        ac._compiler_kind_probe.cache_clear()
 
 
 class TestFileAnalysisResultModuleFields:
