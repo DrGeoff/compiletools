@@ -182,6 +182,15 @@ class TestRawSlotsAreGatherInput:
             inputs = gather_inputs(args, BuildContext())
             assert inputs.verbose == -2
 
+    def test_latched_namespace_skips_the_quiet_decrement(self):
+        """parseargs folds --quiet into args.verbose exactly once and sets
+        _quiet_applied; a re-gather over that namespace must read the
+        already-decremented args.verbose as-is, not subtract quiet again."""
+        with uth.TempDirContext():
+            args = _minimal_args(verbose=-2, quiet=2, _quiet_applied=True)
+            inputs = gather_inputs(args, BuildContext())
+            assert inputs.verbose == -2
+
 
 @pytest.mark.usefixtures("parsers_reset")
 class TestPkgConfigGathering:
