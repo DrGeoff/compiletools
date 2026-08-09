@@ -619,6 +619,140 @@ def test_bundle_with_workspace_relative_wrapper_reuses_cache(tmp_path):
 
 
 @uth.requires_functional_compiler
+def test_ldflags_change_forks_link_key(tmp_path):
+    """Positive-discrimination guard for the cas-exedir link key: a
+    link-relevant LDFLAGS change must produce a NEW cached executable
+    entry rather than silently reusing the old one.
+
+    Audit context: nothing previously pinned that changing LDFLAGS
+    actually forks the link key — a regression there would silently
+    reuse a stale executable that was linked against the wrong flags.
+    ``--append-LDFLAGS`` flows into ``get_build_state(args).flags.ld``,
+    which ``_create_link_rule`` folds into ``ld_extra`` and then into
+    ``link_key_payload["ld_extra"]`` in ``build_backend.py`` (distinct
+    from ``link_key_payload["merged_ldflags"]``, which only carries
+    per-file ``//#LDFLAGS=`` magic-comment annotations, not CLI/conf
+    LDFLAGS). The negative control — an identical-argv rebuild reusing
+    the cached entry — is already pinned by
+    ``test_link_artefact_reused_across_workspaces`` above; this test is
+    its positive-discrimination complement and does not duplicate it.
+    """
+    sample_src = uth.example_path("factory")
+    assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
+
+    ws = tmp_path / "ws" / "factory"
+    shutil.copytree(sample_src, ws)
+    shared_cas_exedir = tmp_path / "shared-cas-exedir"
+
+    def _build(*extra_args):
+        _assert_build_ok(_run_ct_cake(ws, f"--cas-exedir={shared_cas_exedir}", *extra_args), ws)
+
+    _build()
+    after_first = _cache_stats(shared_cas_exedir, ".exe")
+    assert after_first, f"first build produced no .exe in {shared_cas_exedir}"
+    # Precondition: the factory sample links exactly one executable, so a
+    # single new entry after the LDFLAGS rebuild is the expected signal —
+    # not an artefact of some other target also forking.
+    assert len(after_first) == 1, f"expected exactly one cached executable before the rebuild: {sorted(after_first)}"
+
+    _build("--append-LDFLAGS=-Wl,--build-id=none")
+    after_second = _cache_stats(shared_cas_exedir, ".exe")
+
+    only_second = set(after_second) - set(after_first)
+    assert only_second, (
+        "LDFLAGS change did not fork the link key — cas-exedir entry set is "
+        f"unchanged after --append-LDFLAGS: {sorted(after_second)}"
+    )
+
+    # The original entry must survive untouched: same inode proves the
+    # LDFLAGS rebuild produced a NEW entry rather than overwriting the old
+    # one in place (which would corrupt any peer still relying on the
+    # un-flagged binary's cached bytes).
+    unchanged = set(after_first) & set(after_second)
+    assert unchanged, "original entry vanished entirely after the LDFLAGS rebuild"
+    swapped_inode = {n for n in unchanged if after_second[n][0] != after_first[n][0]}
+    assert not swapped_inode, (
+        f"LDFLAGS rebuild overwrote the original cached executable in place "
+        f"(inode swap proves a fresh temp+rename happened over the old entry): {sorted(swapped_inode)}"
+    )
+
+
+@uth.requires_functional_compiler
+def test_object_set_change_forks_link_key(tmp_path):
+    """Positive-discrimination guard for the cas-exedir link key: adding
+    a second implied source to the build (growing the linked object
+    set) must produce a NEW cached executable entry, not merely an
+    mtime bump on the old one.
+
+    Mirrors ``test_cake.py::test_deeper_include_edit_recompiles``'s
+    mechanism: ``main.cpp`` includes ``extra.hpp``, which is compiled
+    into ``extra.cpp``; a standalone ``deeper.hpp``/``deeper.cpp`` pair
+    sits in the workspace unreferenced by anything. Injecting
+    ``#include "deeper.hpp"`` into ``extra.hpp`` pulls ``deeper.cpp``
+    into the required-source set via the ``foo.h`` -> ``foo.cpp``
+    implied-source discovery, growing ``link_key_payload["objects"]``
+    in ``build_backend.py`` and forking the link key.
+    """
+    ws = tmp_path / "ws" / "objset"
+    ws.mkdir(parents=True)
+    (ws / "main.cpp").write_text(
+        '#include "extra.hpp"\n\nint main(int argc, char* argv[])\n{\n    return extra_func(42);\n}\n'
+    )
+    (ws / "extra.hpp").write_text("int extra_func(const int value);\n")
+    (ws / "extra.cpp").write_text('#include "extra.hpp"\n\nint extra_func(const int value)\n{\n    return 24;\n}\n')
+    (ws / "deeper.hpp").write_text("int deeper_func(const int value);\n")
+    (ws / "deeper.cpp").write_text('#include "deeper.hpp"\n\nint deeper_func(const int value)\n{\n    return 42;\n}\n')
+    shared_cas_exedir = tmp_path / "shared-cas-exedir"
+
+    def _build():
+        _assert_build_ok(_run_ct_cake(ws, f"--cas-exedir={shared_cas_exedir}"), ws)
+
+    _build()
+    after_first = _cache_stats(shared_cas_exedir, ".exe")
+    assert after_first, f"first build produced no .exe in {shared_cas_exedir}"
+    assert len(after_first) == 1, f"expected exactly one cached executable before the edit: {sorted(after_first)}"
+
+    # Precondition proving the observable can move: deeper.cpp exists on
+    # disk but is not yet reachable from any compiled TU, so it must NOT
+    # have been compiled by the first build.
+    objs_before = {p.name for p in (ws / "cas-objdir").rglob("*.o")}
+    assert objs_before, f"first build produced no objects under {ws}/cas-objdir"
+    assert not any(name.startswith("deeper_") for name in objs_before), (
+        f"deeper.cpp was unexpectedly compiled before it was included by anything: {sorted(objs_before)}"
+    )
+
+    extra_hpp = ws / "extra.hpp"
+    extra_hpp.write_text('#include "deeper.hpp"\n' + extra_hpp.read_text())
+
+    _build()
+    after_second = _cache_stats(shared_cas_exedir, ".exe")
+
+    only_second = set(after_second) - set(after_first)
+    assert only_second, (
+        "pulling deeper.cpp into the build via a header edit did not fork the "
+        f"link key — cas-exedir entry set unchanged: {sorted(after_second)}"
+    )
+
+    # deeper.cpp must actually have joined the object set — otherwise the
+    # new .exe entry could be explained by something other than the
+    # object-set growth this test targets.
+    objs_after = {p.name for p in (ws / "cas-objdir").rglob("*.o")}
+    assert any(name.startswith("deeper_") for name in objs_after), (
+        f"deeper.cpp was not compiled after being included via extra.hpp: {sorted(objs_after)}"
+    )
+
+    # Original entry survives untouched — CAS never deletes on a plain
+    # build, and same inode proves it wasn't overwritten in place.
+    unchanged = set(after_first) & set(after_second)
+    assert unchanged, "original entry vanished entirely after the object-set change"
+    swapped_inode = {n for n in unchanged if after_second[n][0] != after_first[n][0]}
+    assert not swapped_inode, (
+        f"object-set rebuild overwrote the original cached executable in place "
+        f"(inode swap proves a fresh temp+rename happened over the old entry): {sorted(swapped_inode)}"
+    )
+
+
+@uth.requires_functional_compiler
 def test_shared_library_reused_across_workspaces(tmp_path):
     """Shared-library cache regression guard: same .so built in ws1 and
     ws2 (sharing one cas-exedir) must reuse the cached library.
