@@ -104,6 +104,7 @@ def _build_in_two_checkouts(
     tmp_root: pathlib.Path,
     backend_name: str,
     main_basename: str,
+    extra_args: tuple[str, ...] = (),
 ) -> tuple[pathlib.Path, pathlib.Path]:
     """Copy *sample_dir* into two distinct per-user workspaces under
     *tmp_root*, build with *backend_name* in each, return both
@@ -116,6 +117,10 @@ def _build_in_two_checkouts(
     cwd). All four CAS layers live inside the per-user workspace so
     inputs / outputs are isolated and the byte-identity assertion
     compares like-for-like.
+
+    *extra_args* are appended to the ``ct-cake`` argv verbatim in BOTH
+    checkouts (e.g. a decoy ``--append-CXXFLAGS=...`` that must not
+    suppress the ``-ffile-prefix-map`` injection).
     """
     workspaces: list[pathlib.Path] = []
     for user in ("alice", "bob"):
@@ -142,6 +147,7 @@ def _build_in_two_checkouts(
             f"--cas-pchdir={workspace}/cas-pchdir",
             f"--cas-pcmdir={workspace}/cas-pcmdir",
             f"--cas-exedir={workspace}/cas-exedir",
+            *extra_args,
             str(workspace / main_basename),
         ]
         # Strip user CXXFLAGS / CFLAGS / LDFLAGS so the host's environment
@@ -216,6 +222,38 @@ def test_two_checkouts_produce_byte_identical_cas_objdir(backend_name, tmp_path)
         tmp_root=pathlib.Path(effective_tmp),
         backend_name=backend_name,
         main_basename="helloworld_cpp.cpp",
+    )
+    _assert_cas_layer_byte_identical(alice, bob, "cas-objdir", suffixes=(".o",))
+
+
+@uth.requires_backend_tool()
+@uth.requires_functional_compiler
+@pytest.mark.parametrize("backend_name", available_backends())
+def test_two_checkouts_with_decoy_flag_still_produce_byte_identical_cas_objdir(backend_name, tmp_path):
+    """A decoy user flag that merely shares the '-f' prefix with the
+    prefix-map family (``-fno-omit-frame-pointer``) must NOT suppress
+    the ``-ffile-prefix-map`` injection (build_state.stage_prefix_map
+    / flag_ops.has_prefix_map_token only recognise the four
+    ``-f{file,debug,macro,canon}-prefix-map=`` stems). Byte-identity of
+    the resulting .o across two distinct workspace paths is the
+    observable here: it is only achievable when the prefix-map token
+    is still injected into CXXFLAGS, so this test doubles as a
+    negative-case regression guard for the injection-suppression bug
+    class re-encoded at unit level in
+    test_build_state_stages.py::TestStagePrefixMap.
+    """
+    _skip_if_backend_bypasses_cas_layer(backend_name, "cas-objdir")
+    sample = pathlib.Path(uth.example_path("simple"))
+    if not sample.is_dir():
+        pytest.skip(f"missing sample dir: {sample}")
+
+    effective_tmp = str(tmp_path)
+    alice, bob = _build_in_two_checkouts(
+        sample_dir=sample,
+        tmp_root=pathlib.Path(effective_tmp),
+        backend_name=backend_name,
+        main_basename="helloworld_cpp.cpp",
+        extra_args=("--append-CXXFLAGS=-fno-omit-frame-pointer",),
     )
     _assert_cas_layer_byte_identical(alice, bob, "cas-objdir", suffixes=(".o",))
 
