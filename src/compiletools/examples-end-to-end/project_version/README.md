@@ -38,6 +38,11 @@ version=1.2.3
 Without the `--project-name` / `--project-version` flags, the macros
 remain undefined and the source falls back to `(unset; ...)` strings.
 
+`build.sh` also runs a second build supplying both `--project-version`
+and `--project-version-cmd` at once, to demonstrate (and assert, via a
+`grep` on the binary's output) that the explicit value wins and the
+`-cmd` variant is not consulted.
+
 ## Why was this deprecated?
 
 Once a `-D` macro is on the command line, every TU that *textually*

@@ -1049,3 +1049,40 @@ class TestCakeStyleSurface:
         helptext = capsys.readouterr().out
         assert "--auto" in helptext
         assert "--style" not in helptext
+
+
+def test_flag_tokenize_error_renders_without_double_prefix(capsys):
+    """final-review-v2 Minor #2: a FlagTokenizeError raised at BUILD time
+    (TESTPREFIX / --build-only-changed / defense-in-depth CC/CXX/LD, past
+    parseargs) reaches main()'s generic exception dispatch
+    (_FATAL_ERROR_RENDERERS). FlagTokenizeError's own str() is already a
+    full ``ct: error: ...`` diagnostic -- the same text
+    apptools.parseargs/resubstitute print verbatim at parse time -- so
+    routing it through the generic tail's ``f"Error: {err}"`` wrapper used
+    to double the prefix to ``Error: ct: error: ...``. cake.py now lists
+    FlagTokenizeError ahead of the generic (Exception) tail in
+    _FATAL_ERROR_RENDERERS, dispatching to _render_flag_tokenize_error,
+    which prints str(err) verbatim.
+
+    Mutation guard: removing the FlagTokenizeError entry from
+    _FATAL_ERROR_RENDERERS (so the error falls through to the generic
+    tail again) makes this test fail on the double "Error: ct: error:"
+    prefix and the extra "ct: error:" occurrence.
+    """
+    try:
+        compiletools.utils.tokenize_flags_or_raise('-DFOO="bar', slot="TESTPREFIX")
+    except compiletools.utils.FlagTokenizeError as err:
+        for exc_type, renderer in compiletools.cake._FATAL_ERROR_RENDERERS:
+            if isinstance(err, exc_type):
+                renderer(err)
+                break
+        else:  # pragma: no cover - defensive; Exception is always last and matches
+            pytest.fail("no renderer matched FlagTokenizeError")
+    else:  # pragma: no cover - defensive; the malformed value always raises
+        pytest.fail("tokenize_flags_or_raise did not raise on an unbalanced quote")
+
+    output = capsys.readouterr().err
+    assert output.count("ct: error:") == 1, f"expected exactly one ct: error: prefix, got: {output!r}"
+    assert "Error: ct: error:" not in output, f"double-prefixed rendering leaked through: {output!r}"
+    assert output.startswith("ct: error:")
+    assert "TESTPREFIX" in output

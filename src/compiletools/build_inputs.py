@@ -73,13 +73,13 @@ def _slot_tokens(args, name):
     re-gather rebuilds from the same base by construction.
     """
     import compiletools.apptools as apptools
-    from compiletools.utils import split_command_cached
+    from compiletools.utils import tokenize_flags_or_raise
 
     unsupplied = None if name in _FALLBACK_SLOTS else ()
     raw = getattr(args, name, None)
     if raw is None or raw in apptools._UNSUPPLIED_SENTINELS:
         return unsupplied
-    return tuple(split_command_cached(raw))
+    return tuple(tokenize_flags_or_raise(raw, slot=name))
 
 
 def _xxpend_tokens(args, attr):
@@ -88,11 +88,13 @@ def _xxpend_tokens(args, attr):
     Each list element may carry several flags (one conf value arrives as
     one element), so each element is tokenized individually.
     """
-    from compiletools.utils import split_command_cached
+    from compiletools.utils import tokenize_flags_or_raise
 
+    xxpend, _, name = attr.partition("_")
+    slot = f"{xxpend}-{name.upper()}"
     tokens = []
     for element in getattr(args, attr, None) or ():
-        tokens.extend(split_command_cached(element))
+        tokens.extend(tokenize_flags_or_raise(element, slot=slot))
     return tuple(tokens)
 
 
@@ -191,7 +193,6 @@ def _query_pkg_config(packages, pkg_config_path, want_libs, verbose, context):
     import os
 
     import compiletools.apptools_pkgconfig as pkgconf
-    from compiletools.utils import split_command_cached
 
     cache = context.pkg_config_query_cache
     errors_policy = pkgconf.get_pkg_config_errors()
@@ -211,27 +212,47 @@ def _query_pkg_config(packages, pkg_config_path, want_libs, verbose, context):
                 else:
                     os.environ["PKG_CONFIG_PATH"] = original
         for pkg in uncached:
-            filtered = pkgconf.filter_pkg_config_cflags(batch_cflags.get(pkg, ""), verbose)
-            cflags = tuple(split_command_cached(filtered)) if filtered else ()
+            filtered = pkgconf.filter_pkg_config_cflags(batch_cflags.get(pkg, ""), verbose, package=pkg)
+            cflags = (
+                tuple(pkgconf.tokenize_pkg_config_output(filtered, package=pkg, option="--cflags", verbose=verbose))
+                if filtered
+                else ()
+            )
             libs_str = batch_libs.get(pkg, "")
-            libs = tuple(split_command_cached(libs_str)) if libs_str else ()
+            libs = (
+                tuple(pkgconf.tokenize_pkg_config_output(libs_str, package=pkg, option="--libs", verbose=verbose))
+                if libs_str
+                else ()
+            )
             cache[(pkg, pkg_config_path, errors_policy, want_libs)] = PkgConfigResult(cflags=cflags, libs=libs)
 
     return tuple((pkg, cache[(pkg, pkg_config_path, errors_policy, want_libs)]) for pkg in packages)
 
 
-def _project_macro_value(args, value_attr, cmd_attr, verbose):
+def _project_macro_value(args, value_attr, cmd_attr, verbose, *, slot):
     """Port of _set_project_version/_set_project_name value acquisition:
     the explicit value wins; otherwise the *cmd output's first word.
-    Returns the escaped literal or None when the user did not opt in."""
+    Returns the escaped literal or None when the user did not opt in.
+
+    *cmd* is shlex-tokenized via tokenize_flags_or_raise (slot=*slot*,
+    e.g. "project-version-cmd") rather than a plain whitespace .split() --
+    an unbalanced quote in the conf/CLI value now raises FlagTokenizeError
+    instead of silently mis-splitting into a garbage argv. The tokenize
+    call sits inside the same try as the subprocess call but is unaffected
+    by the except tuple below (FlagTokenizeError isn't CalledProcessError/
+    OSError), so it propagates to the gather_inputs caller unchanged.
+    """
     import subprocess
     import sys
+
+    from compiletools.utils import tokenize_flags_or_raise
 
     value = getattr(args, value_attr, None)
     cmd = getattr(args, cmd_attr, None)
     if not value and cmd:
         try:
-            value = subprocess.check_output(cmd.split(), universal_newlines=True).strip("\n").split()[0]
+            argv = tokenize_flags_or_raise(cmd, slot=slot)
+            value = subprocess.check_output(argv, universal_newlines=True).strip("\n").split()[0]
         except (subprocess.CalledProcessError, OSError) as err:
             sys.stderr.write(f"Could not use {cmd_attr} = {cmd} to set {value_attr}.\n")
             if verbose <= 2:
@@ -277,14 +298,31 @@ def _include_paths_with_gitroots(args, gitroot):
     gather computes the widened tuple instead of mutating args.INCLUDE.
     An empty gitroot set silently no-ops (unreachable in production
     since find_git_root falls back to the cwd).
+
+    Each contributing string (the bare INCLUDE value, and each
+    --prepend-INCLUDE / --append-INCLUDE element) is shlex-tokenized
+    individually via tokenize_flags_or_raise rather than whitespace-split
+    on the concatenated string: a quoted space-containing path now
+    survives as one token instead of shredding into fragments with
+    literal quote characters, and an unbalanced quote raises
+    FlagTokenizeError (attributed to INCLUDE/prepend-INCLUDE/
+    append-INCLUDE) instead of silently misparsing.
     """
     from compiletools.git_utils import find_git_root
+    from compiletools.utils import tokenize_flags_or_raise
 
     include = getattr(args, "INCLUDE", "") or ""
     prepend = [e for e in (getattr(args, "prepend_include", None) or ()) if e not in include]
     merged = " ".join(prepend + [include]) if prepend else include
     append = [e for e in (getattr(args, "append_include", None) or ()) if e not in merged]
-    paths = " ".join([merged] + append).split()
+
+    paths: list[str] = []
+    for element in prepend:
+        paths.extend(tokenize_flags_or_raise(element, slot="prepend-INCLUDE"))
+    if include:
+        paths.extend(tokenize_flags_or_raise(include, slot="INCLUDE"))
+    for element in append:
+        paths.extend(tokenize_flags_or_raise(element, slot="append-INCLUDE"))
 
     if getattr(args, "git_root", False) and any(hasattr(args, attr) for attr in _TARGET_ATTRS):
         roots = {gitroot} if gitroot else set()
@@ -367,8 +405,10 @@ def gather_inputs(args, context) -> BuildInputs:
     want_libs = "LDFLAGS" in registered
     pkg_config_results = _query_pkg_config(packages, pkg_config_path, want_libs, verbose, context)
 
-    project_version = _project_macro_value(args, "projectversion", "projectversioncmd", verbose)
-    project_name = _project_macro_value(args, "projectname", "projectnamecmd", verbose)
+    project_version = _project_macro_value(
+        args, "projectversion", "projectversioncmd", verbose, slot="project-version-cmd"
+    )
+    project_name = _project_macro_value(args, "projectname", "projectnamecmd", verbose, slot="project-name-cmd")
     # Deprecation warning fires on the raw opt-in, before any
     # suppression logic. Context-level once-latch: gather never mutates args.
     if (project_version is not None or project_name is not None) and not getattr(
@@ -406,7 +446,10 @@ def gather_inputs(args, context) -> BuildInputs:
         prefix_map_target=getattr(args, "ffile_prefix_map_target", "."),
         project_version=project_version,
         project_name=project_name,
-        link_driver_is_clang=compiler_kind(apptools._effective_link_driver(args)) == "clang",
+        link_driver_is_clang=compiler_kind(
+            apptools._effective_link_driver(args), slot=apptools._effective_link_driver_slot(args)
+        )
+        == "clang",
         wild_b_selected=apptools._variant_has_axis(args, "wild-B"),
         variant_raw=getattr(args, "variant", "") or "",
         canonical_order=tuple(canonical_order),

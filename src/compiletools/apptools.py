@@ -968,6 +968,17 @@ def _effective_link_driver(args) -> str | None:
     return getattr(args, "CXX", None)
 
 
+def _effective_link_driver_slot(args) -> str:
+    """Which flag slot ``_effective_link_driver`` picked -- "LD" or "CXX"
+    -- for attributing a FlagTokenizeError raised while tokenizing its
+    return value (e.g. inside ``compiler_kind`` / ``_compiler_major_version``)
+    to the slot the user actually set, not a generic placeholder."""
+    ld = getattr(args, "LD", None)
+    if ld and ld not in (_UNSUPPLIED_USE_CXX, _UNSUPPLIED_USE_CXXFLAGS):
+        return "LD"
+    return "CXX"
+
+
 def _variant_has_axis(args, axis_name: str) -> bool:
     """True if *axis_name* is one of the variant's selected axis tokens.
 
@@ -993,9 +1004,12 @@ def tokenize_compile_flags(
     per-TU scoping mechanism. Other flags (-I, -O, -std, -W, -f...) pass
     through unchanged.
 
-    Each input may be a string (will be shlex-split, with simple-split
-    fallback on ValueError, matching extract_command_line_macros) or a
-    pre-tokenized list of strings.
+    Each input may be a string (shlex-split via
+    :func:`compiletools.utils.tokenize_flags_or_raise`, which raises
+    :class:`compiletools.utils.FlagTokenizeError` -- attributed to the
+    CPPFLAGS/CFLAGS/CXXFLAGS slot -- on an unbalanced quote rather than
+    silently degrading to whitespace-split) or a pre-tokenized list of
+    strings.
 
     Both attached form (-DFOO, -DFOO=bar, -UFOO) and detached form
     (-D FOO, -D FOO=bar, -U FOO) of -D/-U are stripped. Detached form
@@ -1012,21 +1026,18 @@ def tokenize_compile_flags(
         of remaining tokens, in original order.
     """
 
-    def _to_tokens(value):
+    def _to_tokens(value, slot):
         if value is None:
             return []
         if isinstance(value, list):
             return list(value)
         if not value:
             return []
-        try:
-            return split_command_cached(value)
-        except ValueError:
-            return value.split()
+        return compiletools.utils.tokenize_flags_or_raise(value, slot=slot)
 
-    cpp = strip_d_u_tokens(_to_tokens(cppflags))
-    c = strip_d_u_tokens(_to_tokens(cflags))
-    cxx = strip_d_u_tokens(_to_tokens(cxxflags))
+    cpp = strip_d_u_tokens(_to_tokens(cppflags, "CPPFLAGS"))
+    c = strip_d_u_tokens(_to_tokens(cflags, "CFLAGS"))
+    cxx = strip_d_u_tokens(_to_tokens(cxxflags, "CXXFLAGS"))
     if strip_unhashed:
         cpp = filter_hash_irrelevant_tokens(cpp)
         c = filter_hash_irrelevant_tokens(c)
@@ -1151,15 +1162,50 @@ def _note_shadowed_bare_values(args, name, dest):
             file=sys.stderr,
         )
         return
-    final = {_safely_unquote_string(v) for v in (getattr(args, dest, []) or [])}
+    # This note serves only the exempt prebuild-script/postbuild-script/
+    # auto-exclude keys (see the docstring above and _UNQUOTE_RAISE_EXEMPT):
+    # raise_on_malformed=False keeps the comparison a no-op degrade on a
+    # malformed quote, matching _strip_quotes' treatment of the same attrs.
+    final = {_safely_unquote_string(v, raise_on_malformed=False) for v in (getattr(args, dest, []) or [])}
     for value, source_file, lineno, _literal in provenance.get(name, []):
-        if _safely_unquote_string(value) not in final:
+        if _safely_unquote_string(value, raise_on_malformed=False) not in final:
             print(
                 f"ct: note: {name} = {value} (from {source_file}:{lineno}) was discarded "
                 f"by a later or higher-priority {name} setting (bare keys are "
                 f"last-writer-wins; use append-{name.upper()} to accumulate instead)",
                 file=sys.stderr,
             )
+
+
+#: Attribute names _strip_quotes must NOT raise for on an unbalanced quote.
+#: prebuild-script / postbuild-script / auto-exclude values are handed to a
+#: real shell (prebuild/postbuild) or shlex-split by findtargets
+#: (auto-exclude) later, and a malformed one is already reported there with
+#: a nonzero exit -- out of scope per the coverage-gaps plan, so these keep
+#: the old silent-degrade fallback instead of raising FlagTokenizeError.
+_UNQUOTE_RAISE_EXEMPT = frozenset({"prebuild_scripts", "postbuild_scripts", "auto_exclude"})
+
+#: The nargs="+" flag-slot attrs _flatten_variables shlex.joins into a
+#: single protectively-quoted string (see that function's docstring).
+_FLATTENED_REPARSED_ATTRS = frozenset({"CPPFLAGS", "CFLAGS", "CXXFLAGS", "INCLUDE"})
+
+#: Of _FLATTENED_REPARSED_ATTRS, the subset where a single space-containing
+#: value is semantically ONE atomic item (a path) rather than several
+#: space-separated items (flags) -- see _safely_unquote_string's docstring
+#: for why the round-trip-safety check is scoped to just this subset.
+#:
+#: "prepend_include" / "append_include" are the argparse dest names
+#: _add_xxpend_argument derives for --prepend-INCLUDE / --append-INCLUDE
+#: (``f"{xx}_{destname.lower().replace('-', '_')}"`` with destname="include"
+#: -- see apptools_argparse.py). _strip_quotes' list branch passes the attr
+#: name itself as slot for each element (vars(args) iteration), so a
+#: prepend-/append-INCLUDE list element with a quoted space-containing path
+#: reaches _safely_unquote_string with slot="prepend_include" /
+#: "append_include", not "INCLUDE" -- omitting them here left the bare
+#: INCLUDE spelling protected while the other two spellings still shredded
+#: a quoted space-containing path via _include_paths_with_gitroots'
+#: downstream shlex re-tokenize (build_inputs.py).
+_ATOMIC_TOKEN_REPARSED_ATTRS = frozenset({"INCLUDE", "prepend_include", "append_include"})
 
 
 def _strip_quotes(args):
@@ -1179,24 +1225,114 @@ def _strip_quotes(args):
             continue
         value = getattr(args, name)
         if value is not None:
+            raise_on_malformed = name not in _UNQUOTE_RAISE_EXEMPT
             # Can't just use the for loop directly because that would
             # try and process every character in a string
             if compiletools.utils.is_non_string_iterable(value):
                 for index, element in enumerate(value):
-                    value[index] = _safely_unquote_string(element)
+                    value[index] = _safely_unquote_string(element, slot=name, raise_on_malformed=raise_on_malformed)
             else:
                 try:
                     # Otherwise assume its a string
-                    setattr(args, name, _safely_unquote_string(value))
+                    setattr(args, name, _safely_unquote_string(value, slot=name, raise_on_malformed=raise_on_malformed))
                 except (AttributeError, ValueError, TypeError):
                     logging.debug("Could not unquote arg %s (type %s)", name, type(value).__name__)
 
 
-def _safely_unquote_string(value):
+def _retokenization_would_split(text: str) -> bool:
+    """True only if shlex-splitting *text* (an already-unquoted
+    candidate) produces MORE than one token -- i.e. *text* contains
+    whitespace (or other shlex-special content) that a later shlex pass
+    would treat as a token separator, so unquoting a wrapper around it
+    would change what that later pass sees.
+
+    False both when *text* re-tokenizes to exactly one piece (unquoting
+    is a safe no-op) AND when *text* itself fails to shlex-parse at all
+    (an embedded, unmatched quote character) -- a parse failure is a
+    distinct, pre-existing malformed-value case: returning False here
+    lets the caller proceed with the ordinary unquote, so the malformed
+    content flows through bare and fails at the downstream tokenizer's
+    own raise, exactly as it did before this round-trip-safety check
+    existed. Only "produces strictly more tokens" is grounds to keep the
+    original quoting.
+    """
+    try:
+        return len(split_command_cached(text)) > 1
+    except ValueError:
+        return False
+
+
+def _safely_unquote_string(value, *, slot="quoted value", raise_on_malformed=True):
     """Safely remove shell quotes from a string using proper parsing.
 
     Only removes quotes that are actual shell quotes, not content quotes.
-    Falls back to compatibility behavior for edge cases.
+
+    On a shlex failure (an unbalanced quote), the default is to raise
+    FlagTokenizeError attributed to *slot* -- the caller's attr name, from
+    _strip_quotes' vars() loop, when called from there -- rather than
+    silently stripping a mismatched quote pair. Pass
+    ``raise_on_malformed=False`` (as _strip_quotes does for
+    _UNQUOTE_RAISE_EXEMPT attrs, and _note_shadowed_bare_values always
+    does for the same reason) to keep the old best-effort fallback instead.
+
+    Round-trip safety for ``_ATOMIC_TOKEN_REPARSED_ATTRS`` (INCLUDE plus its
+    prepend_include/append_include list-element siblings): INCLUDE is
+    unconditionally shlex-re-tokenized downstream
+    (``_include_paths_with_gitroots``, inside ``gather_inputs``), and
+    ``_flatten_variables`` (which runs just before ``_strip_quotes`` in
+    ``parseargs``) may have wrapped a whitespace-containing value in
+    exactly the single-token quoting this function strips, specifically
+    to protect it through that later re-tokenize (e.g.
+    ``--INCLUDE=/opt/has space/include`` becomes the one-element list
+    ``["/opt/has space/include"]``, then ``shlex.join`` quotes it to
+    ``"'/opt/has space/include'"`` since it contains a space -- a SINGLE
+    path, one nargs="+" list element). This function's ordinary "single
+    shlex token means the outer quotes were cosmetic" heuristic can't
+    distinguish that PROTECTIVE quoting from a user's own cosmetic
+    quoting of a plain scalar (``--CXX='g++'``, no internal whitespace)
+    -- stripping the former here would let the whitespace re-split into
+    multiple tokens at gather time, silently reshredding the value
+    despite ``_include_paths_with_gitroots``' own shlex-tokenize fix. So
+    for INCLUDE specifically, a single-token unquote is SKIPPED (the
+    value is returned with its quoting untouched) when the unquoted body
+    would itself re-tokenize into MORE than one piece
+    (``_retokenization_would_split``) -- i.e. only when stripping the
+    quote would NOT be a no-op for the downstream re-tokenize. The raw
+    shlex tokenizer downstream still parses the untouched, still-quoted
+    value correctly and losslessly (that's exactly what it's for), just
+    without this function's separate cosmetic pass getting there first
+    and destroying the protection. A body that fails to shlex-parse at
+    all (an embedded, unmatched quote character -- a malformed value, not
+    a whitespace-protection case) is deliberately NOT covered by this
+    skip: it still gets the ordinary strip, so the malformed content
+    flows through bare and fails at the downstream tokenizer's own raise
+    -- unchanged from the pre-existing behavior INCLUDE had before this
+    round-trip-safety check was added.
+
+    CPPFLAGS/CFLAGS/CXXFLAGS deliberately do NOT get this treatment even
+    though they share ``_flatten_variables``' protective quoting
+    (``_FLATTENED_REPARSED_ATTRS`` is the superset): unlike INCLUDE, one
+    space-containing value for these is overwhelmingly more likely to be
+    SEVERAL flags the user bundled into one conf/CLI assignment (e.g.
+    ``CPPFLAGS="-std=c++20 -I/dir -DFOO"``) than one atomic flag value
+    with a literal embedded space -- the latter case
+    (``-DFOO="bar baz"``) doesn't even reach this function, since it
+    doesn't start with a quote character itself. Applying the INCLUDE
+    treatment here would leave a legitimate multi-flag value stuck
+    behind its protective quote, letting it reach the compiler as one
+    unsplit token instead of separate flags. This asymmetry is
+    intentional, not an oversight -- see the review discussion on the
+    coverage-gaps Task 9 fix-round for the CPPFLAGS regression this
+    would otherwise reintroduce (``test_cppflags_macro_extraction`` et
+    al. in test_headerdeps.py).
+
+    Every attr outside ``_ATOMIC_TOKEN_REPARSED_ATTRS`` (CPPFLAGS/CFLAGS/
+    CXXFLAGS included, plus every non-flag-slot attr like projectname,
+    CXX, prebuild-script, ...) keeps the plain heuristic -- an
+    intentional space still unquotes to content with the space
+    preserved, exactly as before Task 9's Q1 fix, e.g.
+    ``--projectname="My Project"`` or
+    ``prebuild-script = "./my hook.sh"``.
     """
     if not isinstance(value, str):
         return value
@@ -1216,16 +1352,25 @@ def _safely_unquote_string(value):
         if len(tokens) == 1:
             unquoted = tokens[0]
 
+            if slot in _ATOMIC_TOKEN_REPARSED_ATTRS and _retokenization_would_split(unquoted):
+                return value
+
             # Nested quoting (e.g. conf value '"-DFOO"' quoted once by the
             # conf layer and once by the user) leaves a quote pair per layer;
             # recurse until no enclosing pair remains.
             if (unquoted.startswith('"') and unquoted.endswith('"')) or (
                 unquoted.startswith("'") and unquoted.endswith("'")
             ):
-                return _safely_unquote_string(unquoted)
+                return _safely_unquote_string(unquoted, slot=slot, raise_on_malformed=raise_on_malformed)
             return unquoted
         return value
     except ValueError:
+        if raise_on_malformed:
+            # Re-run through the shared helper to raise the attributed,
+            # DRY FlagTokenizeError diagnostic (split_command_cached is
+            # @functools.cache'd and does not memoize the exception, so
+            # this repeats the same cheap shlex.split call).
+            compiletools.utils.tokenize_flags_or_raise(value, slot=slot)
         # Malformed quoting that shlex rejects: strip only a matching
         # enclosing quote pair rather than failing the whole parse.
         if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
@@ -1248,8 +1393,15 @@ def _flatten_variables(args):
     (unsplit on the space), and shlex-splitting would then misparse it as
     three tokens. ``compute_build_state`` applies the same ``shlex.join`` rule
     when deriving the slot strings from token tuples.
+
+    The varname set is ``_FLATTENED_REPARSED_ATTRS`` -- ``_safely_unquote_string``
+    (called from ``_strip_quotes``, which runs immediately after this in
+    ``parseargs``) special-cases these same attrs so it cannot
+    cosmetically unquote (and thereby destroy) the protective quoting just
+    applied here; see that function's docstring for the round-trip-safety
+    check.
     """
-    for varname in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "INCLUDE"):
+    for varname in _FLATTENED_REPARSED_ATTRS:
         if isinstance(getattr(args, varname, None), list):
             setattr(args, varname, shlex.join(getattr(args, varname)))
 
@@ -1298,6 +1450,11 @@ def resubstitute(args) -> None:
         if args.verbose >= 2:
             raise
         print(compiletools.apptools_pkgconfig.render_pkg_config_error(err), file=sys.stderr)
+        raise SystemExit(1) from None
+    except compiletools.utils.FlagTokenizeError as err:
+        if args.verbose >= 2:
+            raise
+        print(str(err), file=sys.stderr)
         raise SystemExit(1) from None
     state = compute_build_state(inputs)
     apply_effects(state, context)
@@ -1503,7 +1660,18 @@ def parseargs(cap, argv, verbose=None, *, context):
         args = _fix_variable_handling_method(cap, argv, verbose)
         _stash_private_attrs(args, cap, context, argv)
     _flatten_variables(args)
-    _strip_quotes(args)
+    # _strip_quotes runs well before the gather_inputs try/except below, so
+    # a value starting with an unbalanced quote (_safely_unquote_string
+    # raising FlagTokenizeError) needs its own catch-and-render here --
+    # otherwise it would escape parseargs as a raw traceback in every CLI
+    # tool that calls it, not just the ones with their own broad handler.
+    try:
+        _strip_quotes(args)
+    except compiletools.utils.FlagTokenizeError as err:
+        if args.verbose >= 2:
+            raise
+        print(str(err), file=sys.stderr)
+        raise SystemExit(1) from None
 
     if verbose > 8:
         print(f"Parsing commandline arguments has occured. Before build-state core args={args}")
@@ -1601,6 +1769,11 @@ def parseargs(cap, argv, verbose=None, *, context):
             raise
         print(compiletools.apptools_pkgconfig.render_pkg_config_error(err), file=sys.stderr)
         raise SystemExit(1) from None
+    except compiletools.utils.FlagTokenizeError as err:
+        if args.verbose >= 2:
+            raise
+        print(str(err), file=sys.stderr)
+        raise SystemExit(1) from None
     state = compute_build_state(inputs)
     apply_effects(state, context)
     populate_args(args, state)
@@ -1625,9 +1798,22 @@ def parseargs(cap, argv, verbose=None, *, context):
     # populate_args stashes the derived state on args._build_state and
     # never overwrites the slots, so a later resubstitute re-gathers
     # from the same base by construction.
-    _check_resolved_compiler_available(args)
-    _check_wild_linker_usable(args)
-    _check_compiler_supports_requested_standard(args)
+    # _check_resolved_compiler_available tokenizes CC/CXX/LD (e.g. "ccache
+    # g++") to resolve the wrapper's real executable; those values are raw
+    # gather inputs that never pass through gather_inputs' own tokenizing
+    # (CC/CXX/LD are exe-name strings, not flag slots), so this is the
+    # first point in parseargs a malformed one can raise -- outside the
+    # gather_inputs try/except above and reached by every CLI tool that
+    # calls parseargs, so it needs its own catch-and-render here.
+    try:
+        _check_resolved_compiler_available(args)
+        _check_wild_linker_usable(args)
+        _check_compiler_supports_requested_standard(args)
+    except compiletools.utils.FlagTokenizeError as err:
+        if args.verbose >= 2:
+            raise
+        print(str(err), file=sys.stderr)
+        raise SystemExit(1) from None
 
     if verbose > 8:
         print("parseargs has completed.  Returning args")

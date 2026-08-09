@@ -1546,7 +1546,16 @@ class TestAutoDiscoveryReanchor:
                 reanchored = compiletools.apptools.reanchor_config_for_discovered_targets(args)
             assert reanchored is not None
             expected = str(monorepo / "appbeta" / "pkgconfig")
-            assert expected in os.environ.get("PKG_CONFIG_PATH", "").split(os.pathsep)
+            entries = os.environ.get("PKG_CONFIG_PATH", "").split(os.pathsep)
+            assert expected in entries
+            # Idempotency: the reanchor re-parse must not duplicate the
+            # entry (e.g. by re-applying the prepend on top of an already
+            # mutated PKG_CONFIG_PATH without resetting
+            # pkg_config_overrides_applied first).
+            assert entries.count(expected) == 1, (
+                f"expected exactly one occurrence of {expected} after the reanchor "
+                f"re-parse, got {entries.count(expected)}: {entries!r}"
+            )
         finally:
             args._context.restore_pkg_config_path()
 

@@ -11,6 +11,7 @@ import compiletools.apptools as apptools
 import compiletools.apptools_pkgconfig
 import compiletools.hunter
 import compiletools.testhelper as uth
+import compiletools.utils
 from compiletools.apptools_pkgconfig import compute_pkg_config_path
 from compiletools.build_context import BuildContext
 from compiletools.build_inputs import _query_pkg_config, gather_inputs
@@ -182,6 +183,116 @@ class TestRawSlotsAreGatherInput:
             inputs = gather_inputs(args, BuildContext())
             assert inputs.verbose == -2
 
+    def test_latched_namespace_skips_the_quiet_decrement(self):
+        """parseargs folds --quiet into args.verbose exactly once and sets
+        _quiet_applied; a re-gather over that namespace must read the
+        already-decremented args.verbose as-is, not subtract quiet again."""
+        with uth.TempDirContext():
+            args = _minimal_args(verbose=-2, quiet=2, _quiet_applied=True)
+            inputs = gather_inputs(args, BuildContext())
+            assert inputs.verbose == -2
+
+
+@pytest.mark.usefixtures("parsers_reset")
+class TestFlagTokenizeAttribution:
+    """An unbalanced quote in a flag-slot value must surface as an
+    attributed FlagTokenizeError, not a bare shlex ValueError escaping
+    gather_inputs (coverage-gaps Task 1)."""
+
+    @pytest.mark.parametrize("slot", ["CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS"])
+    def test_unbalanced_quote_in_a_slot_is_attributed_to_that_slot(self, slot):
+        with uth.TempDirContext():
+            args = _minimal_args(**{slot: '-DFOO="bar'})
+            with pytest.raises(compiletools.utils.FlagTokenizeError, match=slot):
+                gather_inputs(args, BuildContext())
+
+    def test_error_names_the_offending_value_verbatim(self):
+        with uth.TempDirContext():
+            args = _minimal_args(CXXFLAGS='-DFOO="bar')
+            with pytest.raises(compiletools.utils.FlagTokenizeError) as excinfo:
+                gather_inputs(args, BuildContext())
+            assert '-DFOO="bar' in str(excinfo.value)
+
+    def test_prepend_variant_is_attributed_as_prepend_slot(self):
+        with uth.TempDirContext():
+            args = _minimal_args(prepend_cxxflags=['-DFOO="bar'])
+            with pytest.raises(compiletools.utils.FlagTokenizeError, match="prepend-CXXFLAGS"):
+                gather_inputs(args, BuildContext())
+
+    def test_append_variant_is_attributed_as_append_slot(self):
+        with uth.TempDirContext():
+            args = _minimal_args(append_ldflags=['-Wl,"bad'])
+            with pytest.raises(compiletools.utils.FlagTokenizeError, match="append-LDFLAGS"):
+                gather_inputs(args, BuildContext())
+
+    def test_well_formed_prepend_and_append_values_are_unaffected(self):
+        """Control: the new attribution path must not reject valid input."""
+        with uth.TempDirContext():
+            args = _minimal_args(prepend_cxxflags=["-DOK=1"], append_ldflags=["-lm"])
+            inputs = gather_inputs(args, BuildContext())
+            assert inputs.prepend_cxxflags == ("-DOK=1",)
+            assert inputs.append_ldflags == ("-lm",)
+
+
+@pytest.mark.usefixtures("parsers_reset")
+class TestTask9IncludeAndProjectMacroTokenizeAttribution:
+    """coverage-gaps Task 9: INCLUDE and project-version/name-cmd used to
+    silently degrade a malformed quote (whitespace .split() / str.split())
+    instead of raising. Mutation guard: reverting
+    _include_paths_with_gitroots' tokenize_flags_or_raise calls back to a
+    plain " ".join(...).split() makes every test in this class fail --
+    the malformed-quote tests stop raising, and
+    test_quoted_space_containing_include_path_survives_as_one_path starts
+    failing because the quoted path shreds again.
+    """
+
+    def test_include_with_unbalanced_quote_is_attributed(self):
+        with uth.TempDirContext():
+            args = _minimal_args(INCLUDE='/opt/"unterminated')
+            with pytest.raises(compiletools.utils.FlagTokenizeError, match="INCLUDE"):
+                gather_inputs(args, BuildContext())
+
+    def test_prepend_include_with_unbalanced_quote_is_attributed(self):
+        with uth.TempDirContext():
+            args = _minimal_args(prepend_include=['/opt/"unterminated'])
+            with pytest.raises(compiletools.utils.FlagTokenizeError, match="prepend-INCLUDE"):
+                gather_inputs(args, BuildContext())
+
+    def test_append_include_with_unbalanced_quote_is_attributed(self):
+        with uth.TempDirContext():
+            args = _minimal_args(append_include=['/opt/"unterminated'])
+            with pytest.raises(compiletools.utils.FlagTokenizeError, match="append-INCLUDE"):
+                gather_inputs(args, BuildContext())
+
+    def test_quoted_space_containing_include_path_survives_as_one_path(self):
+        """Behavior improvement: a quoted --INCLUDE path with a space now
+        parses as ONE path instead of shredding into fragments with
+        literal quote characters (the old plain .split() behavior)."""
+        with uth.TempDirContext():
+            args = _minimal_args(INCLUDE='"/opt/has space/include" /opt/plain')
+            inputs = gather_inputs(args, BuildContext())
+            assert "/opt/has space/include" in inputs.include_paths
+            assert "/opt/plain" in inputs.include_paths
+            assert not any('"' in p for p in inputs.include_paths)
+
+    def test_project_version_cmd_with_unbalanced_quote_is_attributed(self):
+        with uth.TempDirContext():
+            args = _minimal_args(projectversioncmd='echo "unterminated')
+            with pytest.raises(compiletools.utils.FlagTokenizeError, match="project-version-cmd"):
+                gather_inputs(args, BuildContext())
+
+    def test_project_name_cmd_with_unbalanced_quote_is_attributed(self):
+        with uth.TempDirContext():
+            args = _minimal_args(projectnamecmd='echo "unterminated')
+            with pytest.raises(compiletools.utils.FlagTokenizeError, match="project-name-cmd"):
+                gather_inputs(args, BuildContext())
+
+    def test_pkg_config_cli_spec_with_unbalanced_quote_is_attributed(self):
+        with uth.TempDirContext():
+            args = _minimal_args(pkg_config=['zlib "unterminated'])
+            with pytest.raises(compiletools.utils.FlagTokenizeError, match="pkg-config"):
+                gather_inputs(args, BuildContext())
+
 
 @pytest.mark.usefixtures("parsers_reset")
 class TestPkgConfigGathering:
@@ -285,6 +396,42 @@ class TestPkgConfigGathering:
             widened = gather_inputs(_minimal_args(pkg_config=["foo"], LDFLAGS=""), context)
             assert dict(widened.pkg_config_results)["foo"].libs == ("-lfoo",)
 
+    def test_malformed_libs_output_degrades_with_warning_at_verbose_1(self, monkeypatch, capsys):
+        """coverage-gaps Task 10: raw --libs pkg-config subprocess output is
+        never re-quoted by filter_pkg_config_cflags (unlike --cflags), so it
+        used to reach split_command_cached directly with no try/except -- an
+        unbalanced quote in a broken .pc file raised a bare ValueError and
+        killed the build. It must instead degrade to a whitespace split
+        with a verbose>=1 warning naming the package."""
+        calls = []
+        monkeypatch.setattr(
+            compiletools.apptools_pkgconfig,
+            "_batch_pkg_config",
+            self._fake_batch({"foo": "-I/opt/x/include"}, {"foo": '-lfoo "unterminated'}, calls),
+        )
+        with uth.TempDirContext():
+            args = _minimal_args(pkg_config=["foo"], LDFLAGS="", verbose=1)
+            inputs = gather_inputs(args, BuildContext())
+            libs = dict(inputs.pkg_config_results)["foo"].libs
+            assert libs == ("-lfoo", '"unterminated')
+            error_output = capsys.readouterr().err
+            assert "foo" in error_output
+
+    def test_malformed_libs_output_is_silent_at_verbose_0(self, monkeypatch, capsys):
+        calls = []
+        monkeypatch.setattr(
+            compiletools.apptools_pkgconfig,
+            "_batch_pkg_config",
+            self._fake_batch({"foo": "-I/opt/x/include"}, {"foo": '-lfoo "unterminated'}, calls),
+        )
+        with uth.TempDirContext():
+            args = _minimal_args(pkg_config=["foo"], LDFLAGS="", verbose=0)
+            inputs = gather_inputs(args, BuildContext())
+            libs = dict(inputs.pkg_config_results)["foo"].libs
+            assert libs == ("-lfoo", '"unterminated'), "Must still degrade even when silent."
+            error_output = capsys.readouterr().err
+            assert error_output == ""
+
     def test_prepend_and_append_pkg_config_merge_in_declaration_order(self, monkeypatch):
         calls = []
         monkeypatch.setattr(
@@ -379,6 +526,37 @@ class TestProjectMacros:
             gather_inputs(_minimal_args(), BuildContext())
             assert "DEPRECATED" not in capsys.readouterr().err
 
+    def test_explicit_value_beats_cmd_for_both_macros(self):
+        """_project_macro_value's `if not value and cmd:` branch: the
+        explicit value must win over the *cmd -- and win without the cmd
+        ever running. Each cmd is a script that both echoes a distinct
+        wrong value AND touches a sentinel file, so a precedence flip is
+        caught two ways: the wrong value would surface, and the sentinel
+        would prove the cmd was invoked at all."""
+        with uth.TempDirContext():
+            version_sentinel = os.path.join(os.getcwd(), "version-cmd-ran")
+            name_sentinel = os.path.join(os.getcwd(), "name-cmd-ran")
+            version_script = os.path.join(os.getcwd(), "version_cmd.sh")
+            name_script = os.path.join(os.getcwd(), "name_cmd.sh")
+            with open(version_script, "w") as f:
+                f.write(f"#!/bin/sh\ntouch {version_sentinel}\necho 9.9.9\n")
+            with open(name_script, "w") as f:
+                f.write(f"#!/bin/sh\ntouch {name_sentinel}\necho otherapp\n")
+            os.chmod(version_script, 0o755)
+            os.chmod(name_script, 0o755)
+
+            args = _minimal_args(
+                projectversion="1.2.3",
+                projectversioncmd=f"sh {version_script}",
+                projectname="myapp",
+                projectnamecmd=f"sh {name_script}",
+            )
+            inputs = gather_inputs(args, BuildContext())
+            assert inputs.project_version == "1.2.3"
+            assert inputs.project_name == "myapp"
+            assert not os.path.exists(version_sentinel), "projectversioncmd must not run when projectversion is set"
+            assert not os.path.exists(name_sentinel), "projectnamecmd must not run when projectname is set"
+
 
 class TestIncludePathsGathering:
     """include_paths must model the two old-pipeline INCLUDE-widening
@@ -455,6 +633,18 @@ class TestComputePkgConfigPath:
         """prepend_paths arrive [low conf, ..., high conf, CLI]; the merge
         reverses so the highest-priority source lands leftmost."""
         result = compute_pkg_config_path("", ["/low", "/high", "/cli"], None, [], [])
+        assert result == os.pathsep.join(["/cli", "/high", "/low"])
+
+    def test_higher_priority_source_wins_within_append_group(self):
+        """append_paths arrive in the same [low conf, ..., high conf, CLI]
+        order as prepend_paths, and the documented reversal in
+        _merged_pkg_config_path_entries is symmetric for append: the
+        highest-priority source still lands leftmost, this time within the
+        appended tail. Only single-element append lists were previously
+        exercised (test_append_forces_existing_entry_to_end), so the
+        within-group ordering for a multi-entry append list had zero
+        coverage."""
+        result = compute_pkg_config_path("", None, ["/low", "/high", "/cli"], [], [])
         assert result == os.pathsep.join(["/cli", "/high", "/low"])
 
     def test_duplicate_candidate_entries_are_deduplicated(self):

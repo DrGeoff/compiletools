@@ -596,3 +596,149 @@ class TestMergeLdflagsTopoSort:
         remaining = {"a", "b"}
         with pytest.raises(RuntimeError, match="no cycle detected"):
             utils._find_cycle(graph, remaining)
+
+
+class TestTokenizeFlagsOrRaise:
+    """utils.tokenize_flags_or_raise / tokenize_flags_sz_or_raise: shlex
+    tokenization that raises a meaningful, attributed FlagTokenizeError on
+    an unbalanced quote instead of letting shlex's bare ValueError escape
+    (coverage-gaps Task 1). The error must say WHERE (slot, and source file
+    when known), WHAT (the offending value verbatim), and HOW (a concrete
+    fix)."""
+
+    def test_well_formed_value_tokenizes_normally(self):
+        assert utils.tokenize_flags_or_raise("-DFOO=bar -O2", slot="CXXFLAGS") == ["-DFOO=bar", "-O2"]
+
+    def test_unbalanced_double_quote_raises_flag_tokenize_error(self):
+        with pytest.raises(utils.FlagTokenizeError):
+            utils.tokenize_flags_or_raise('-DFOO="bar', slot="CXXFLAGS")
+
+    def test_unbalanced_single_quote_also_raises(self):
+        """Both quote characters shlex treats specially must be covered, not
+        just the double-quote case the brief's example happens to use."""
+        with pytest.raises(utils.FlagTokenizeError):
+            utils.tokenize_flags_or_raise("-DFOO='bar", slot="CXXFLAGS")
+
+    def test_error_names_the_slot(self):
+        with pytest.raises(utils.FlagTokenizeError, match="CXXFLAGS"):
+            utils.tokenize_flags_or_raise('-DFOO="bar', slot="CXXFLAGS")
+
+    def test_error_uses_the_slot_it_is_given(self):
+        """Different slots must produce differently-attributed messages --
+        pins that the slot argument actually flows into the text rather
+        than a hardcoded label."""
+        with pytest.raises(utils.FlagTokenizeError, match="LDFLAGS") as excinfo:
+            utils.tokenize_flags_or_raise('-Wl,"bad', slot="LDFLAGS")
+        assert "CXXFLAGS" not in str(excinfo.value)
+
+    def test_error_quotes_the_offending_value_verbatim(self):
+        with pytest.raises(utils.FlagTokenizeError) as excinfo:
+            utils.tokenize_flags_or_raise('-DFOO="bar', slot="CXXFLAGS")
+        assert '-DFOO="bar' in str(excinfo.value)
+
+    def test_error_suggests_the_shell_quoted_fix(self):
+        """The likely intended form for the common macro-define case: wrap
+        the quoted run in single quotes so shlex preserves the inner double
+        quotes literally for the compiler -- the exact example the Task 1
+        brief specifies."""
+        with pytest.raises(utils.FlagTokenizeError) as excinfo:
+            utils.tokenize_flags_or_raise('-DFOO="bar', slot="CXXFLAGS")
+        assert "-DFOO='\"bar\"'" in str(excinfo.value)
+
+    def test_error_states_the_shlex_reason(self):
+        with pytest.raises(utils.FlagTokenizeError, match="No closing quotation"):
+            utils.tokenize_flags_or_raise('-DFOO="bar', slot="CXXFLAGS")
+
+    def test_error_attributes_a_source_file_when_given(self):
+        with pytest.raises(utils.FlagTokenizeError, match=r"foo\.cpp"):
+            utils.tokenize_flags_or_raise('-DFOO="bar', slot="//#CXXFLAGS", source="foo.cpp")
+
+    def test_error_without_source_names_no_file(self):
+        with pytest.raises(utils.FlagTokenizeError) as excinfo:
+            utils.tokenize_flags_or_raise('-DFOO="bar', slot="CXXFLAGS")
+        assert "from" not in str(excinfo.value)
+
+    def test_sz_variant_raises_the_same_error_type_with_attribution(self):
+        with pytest.raises(utils.FlagTokenizeError, match="LDFLAGS") as excinfo:
+            utils.tokenize_flags_sz_or_raise(sz.Str('-Wl,"unterminated'), slot="LDFLAGS")
+        assert '-Wl,"unterminated' in str(excinfo.value)
+
+    def test_sz_variant_tokenizes_normally(self):
+        result = utils.tokenize_flags_sz_or_raise(sz.Str("-lm -lz"), slot="LDFLAGS")
+        assert [str(token) for token in result] == ["-lm", "-lz"]
+
+
+class TestSplitCompilerCommand:
+    """utils.split_compiler_command: thin wrapper over
+    tokenize_flags_or_raise shared by every CC/CXX/LD/CPP split call site
+    (coverage-gaps Task 9 DRY conversion)."""
+
+    def test_well_formed_wrapper_splits_normally(self):
+        assert utils.split_compiler_command("ccache g++", slot="CXX") == ["ccache", "g++"]
+
+    def test_unbalanced_quote_raises_attributed_flag_tokenize_error(self):
+        with pytest.raises(utils.FlagTokenizeError, match="CXX"):
+            utils.split_compiler_command('ccache "g++', slot="CXX")
+
+    def test_default_slot_is_generic(self):
+        """Library helpers that probe an arbitrary compiler path without
+        knowing its role (e.g. _compiler_major_version's default) fall
+        back to a generic slot label rather than a hardcoded CXX/CC/LD."""
+        with pytest.raises(utils.FlagTokenizeError, match="compiler command"):
+            utils.split_compiler_command('ccache "g++')
+
+
+class TestProcessFlagSourceAndCombine:
+    """utils._process_flag_source / combine_and_deduplicate_compiler_flags:
+    reached from compilation_database with magic-derived tokens
+    (coverage-gaps Task 9). Re-splitting a compound string element now
+    raises FlagTokenizeError instead of the bare split_command_cached call
+    it used to make."""
+
+    def test_well_formed_string_source_tokenizes_normally(self):
+        assert utils._process_flag_source("-DFOO=1 -O2") == ["-DFOO=1", "-O2"]
+
+    def test_unbalanced_quote_in_string_source_raises(self):
+        with pytest.raises(utils.FlagTokenizeError, match="compile flags"):
+            utils._process_flag_source('-DFOO="bar')
+
+    def test_unbalanced_quote_in_list_element_raises(self):
+        """The list-of-strings branch only re-splits an element that
+        contains a space and doesn't start with '/' -- pin that this path
+        raises too, not just the plain-string branch."""
+        with pytest.raises(utils.FlagTokenizeError, match="compile flags"):
+            utils._process_flag_source(['-DFOO="bar baz'])
+
+    def test_custom_slot_is_attributed(self):
+        with pytest.raises(utils.FlagTokenizeError, match="CPPFLAGS"):
+            utils._process_flag_source('-DFOO="bar', slot="CPPFLAGS")
+
+    def test_combine_and_deduplicate_propagates_the_raise(self):
+        with pytest.raises(utils.FlagTokenizeError, match="compile flags"):
+            utils.combine_and_deduplicate_compiler_flags(["-O2"], '-DFOO="bar')
+
+    def test_combine_and_deduplicate_well_formed_sources_unaffected(self):
+        result = utils.combine_and_deduplicate_compiler_flags(["-O2"], "-DFOO=1 -Wall")
+        assert "-O2" in result
+        assert "-DFOO=1" in result
+        assert "-Wall" in result
+
+
+class TestSplitCompoundArgs:
+    """backend_command_args.split_compound_args: reached via extract_copts
+    for any compound space-separated compile-command token. Inputs are
+    normally state-validated by the time they reach here, but magic-
+    derived tokens can still carry an unbalanced quote (coverage-gaps
+    Task 9) -- the old silent ``arg.split()`` fallback on a shlex
+    ValueError is gone."""
+
+    def test_well_formed_tokens_pass_through(self):
+        from compiletools.backend_command_args import split_compound_args
+
+        assert split_compound_args(["-DFOO=1 -O2", "-c"]) == ["-DFOO=1", "-O2", "-c"]
+
+    def test_unbalanced_quote_raises_attributed_flag_tokenize_error(self):
+        from compiletools.backend_command_args import split_compound_args
+
+        with pytest.raises(utils.FlagTokenizeError, match="compile flags"):
+            split_compound_args(['-DFOO="bar baz', "-c"])

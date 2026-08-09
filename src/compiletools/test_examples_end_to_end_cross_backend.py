@@ -735,20 +735,23 @@ def test_every_example_has_a_plan():
 )
 @pytest.mark.parametrize(
     ("driver", "variant"),
-    [("clang++", "clang,wild"), ("g++", "gcc,wild")],
+    [("clang++", "clang,wild"), ("g++", "gcc,wild"), ("g++", "gcc,wild-B")],
 )
 def test_terminal_games_links_with_wild(driver, variant, tmp_path):
     """terminal_games (the canonical multi-module example) links and builds
-    with the wild linker, from its root, on both compilers.
+    with the wild linker, from its root, on both compilers, and via the
+    -B fallback axis on gcc.
 
-    Skipped entirely when wild isn't installed. The gcc leg additionally
-    skips on gcc < 16.1 (can't drive -fuse-ld=wild — that's the wild-B
-    axis's job, exercised by the apptools unit tests). The clang leg skips
-    when clang isn't installed.
+    Skipped entirely when wild isn't installed. The ``gcc,wild`` leg
+    additionally skips on gcc < 16.1 (can't drive -fuse-ld=wild — that's
+    the wild-B axis's job). The ``gcc,wild-B`` leg has no version gate —
+    working on any gcc is the whole point of the -B fallback, so it only
+    needs the driver-on-PATH check every leg has. The clang leg skips when
+    clang isn't installed.
     """
     if shutil.which(driver) is None:
         pytest.skip(f"{driver} not on PATH")
-    if variant.startswith("gcc"):
+    if variant == "gcc,wild":
         identity = compiletools.apptools._compiler_major_version(driver)
         if not identity or identity[0] != "gcc" or identity[1] < 16:
             pytest.skip("gcc < 16.1 cannot drive -fuse-ld=wild; covered by wild-B unit tests")

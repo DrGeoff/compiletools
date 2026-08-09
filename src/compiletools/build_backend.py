@@ -434,7 +434,7 @@ class BuildBackend(abc.ABC):
         cmd: list[str] = []
         testprefix = getattr(self.args, "TESTPREFIX", "")
         if testprefix:
-            cmd.extend(testprefix.split())
+            cmd.extend(compiletools.utils.tokenize_flags_or_raise(testprefix, slot="TESTPREFIX"))
         cmd.append(exe_path)
 
         if not getattr(self.args, "test_xml_dir", None):
@@ -1031,7 +1031,7 @@ class BuildBackend(abc.ABC):
                 pch_source_for_cmd = pch_header
                 rule_cwd = None
             pch_cmd = (
-                compiletools.utils.split_command_cached(self.args.CXX)
+                compiletools.utils.split_compiler_command(self.args.CXX, slot="CXX")
                 + list(self._build_state.flags.cxx)
                 + [str(f) for f in magic_cpp_flags]
                 + [str(f) for f in magic_cxx_flags]
@@ -1089,7 +1089,7 @@ class BuildBackend(abc.ABC):
         # bytes, so identical configurations share a cache entry across
         # rebuilds. Without the cache, .pcm files land in a flat
         # per-build dir under cas-objdir.
-        compiler_kind = compiletools.apptools.compiler_kind(self.args.CXX)
+        compiler_kind = compiletools.apptools.compiler_kind(self.args.CXX, slot="CXX")
         self._module_compiler_kind = compiler_kind
         # cas-pcmdir is meaningful for both compilers now: clang stores
         # its own ``.pcm`` files there; gcc stores its ``.gcm`` files
@@ -1891,7 +1891,7 @@ class BuildBackend(abc.ABC):
         """
         build_only_changed = getattr(self.args, "build_only_changed", None)
         if isinstance(build_only_changed, str):
-            changed = set(build_only_changed.split())
+            changed = set(compiletools.utils.tokenize_flags_or_raise(build_only_changed, slot="build-only-changed"))
             graph = graph.filter_to_changed(changed, verbose=self.args.verbose)
         self._graph = graph
         return graph
@@ -2685,7 +2685,7 @@ class BuildBackend(abc.ABC):
         bare = _header_unit_arg(token)
 
         common_cmd = (
-            compiletools.utils.split_command_cached(self.args.CXX)
+            compiletools.utils.split_compiler_command(self.args.CXX, slot="CXX")
             + list(self._build_state.flags.cxx)
             + list(getattr(self, "_header_unit_extra_system_includes", ()))
         )
@@ -3026,7 +3026,7 @@ class BuildBackend(abc.ABC):
         pcm_dir = os.path.dirname(pcm_path)
 
         common_cmd = (
-            compiletools.utils.split_command_cached(self.args.CXX)
+            compiletools.utils.split_compiler_command(self.args.CXX, slot="CXX")
             + list(self._build_state.flags.cxx)
             + [str(flag) for flag in magic_cpp_flags]
             + [str(flag) for flag in magic_cxx_flags]
@@ -3137,7 +3137,7 @@ class BuildBackend(abc.ABC):
         if compiletools.utils.is_c_source(filename):
             magic_c_flags = magicflags.get(sz.Str("CFLAGS"), [])
             compile_cmd = (
-                compiletools.utils.split_command_cached(self.args.CC)
+                compiletools.utils.split_compiler_command(self.args.CC, slot="CC")
                 + list(self._build_state.flags.c)
                 + pch_include_flags
                 + [str(flag) for flag in magic_cpp_flags]
@@ -3146,7 +3146,7 @@ class BuildBackend(abc.ABC):
         else:
             magic_cxx_flags = magicflags.get(sz.Str("CXXFLAGS"), [])
             compile_cmd = (
-                compiletools.utils.split_command_cached(self.args.CXX)
+                compiletools.utils.split_compiler_command(self.args.CXX, slot="CXX")
                 + list(self._build_state.flags.cxx)
                 + pch_include_flags
                 + [str(flag) for flag in magic_cpp_flags]
@@ -3268,7 +3268,7 @@ class BuildBackend(abc.ABC):
             return []
         if "-stdlib=libc++" in ld_extra or "-stdlib=libc++" in merged_ldflags:
             return []
-        if compiletools.apptools.compiler_kind(self.args.LD) != "clang":
+        if compiletools.apptools.compiler_kind(self.args.LD, slot="LD") != "clang":
             return []
         return ["-stdlib=libc++"]
 
@@ -3470,7 +3470,7 @@ class BuildBackend(abc.ABC):
         object_names = compiletools.utils.ordered_unique([self._object_pathname_for_source(s) for s in completesources])
 
         merged_ldflags = self._merge_ldflags_for_sources(completesources)
-        ld_argv = compiletools.utils.split_command_cached(self.args.LD)
+        ld_argv = compiletools.utils.split_compiler_command(self.args.LD, slot="LD")
 
         extra_link_argv: list[str] = []
         link_inputs_for_graph = list(object_names)
@@ -3702,7 +3702,7 @@ class BuildBackend(abc.ABC):
         lib_path = self.namer.dynamiclibrary_pathname(sourcefilename)
 
         merged_ldflags = self._merge_ldflags_for_sources(all_source_files)
-        ld_argv = compiletools.utils.split_command_cached(self.args.LD)
+        ld_argv = compiletools.utils.split_compiler_command(self.args.LD, slot="LD")
         ld_extra = (
             list(self._build_state.flags.ld) if (self._build_state.ldflags and self._build_state.flags.ld) else []
         )

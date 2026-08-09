@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 from typing import Any, Optional
 
 import stringzilla as sz
@@ -72,16 +73,15 @@ class CompilationDatabaseCreator:
         """Generate compiler command arguments for a source file with StringZilla optimization"""
 
         # Determine compiler based on file extension
-        if compiletools.utils.is_cpp_source(source_file):
-            compiler = self.args.CXX
-        else:
-            compiler = self.args.CC
+        is_cpp = compiletools.utils.is_cpp_source(source_file)
+        compiler_slot = "CXX" if is_cpp else "CC"
+        compiler = self.args.CXX if is_cpp else self.args.CC
 
         # Build arguments list - properly split compiler command if it contains multiple tokens
         args = []
         if compiler:
             # Split compiler command (e.g., "ccache g++" -> ["ccache", "g++"])
-            compiler_parts = compiletools.utils.split_command_cached(compiler)
+            compiler_parts = compiletools.utils.split_compiler_command(compiler, slot=compiler_slot)
             args.extend(compiler_parts)
         else:
             # If no compiler is set, we can't generate a valid command
@@ -172,7 +172,7 @@ class CompilationDatabaseCreator:
             result.module_exports or result.module_implements or result.module_imports or result.module_header_imports
         ):
             return []
-        kind = compiletools.apptools.compiler_kind(self.args.CXX)
+        kind = compiletools.apptools.compiler_kind(self.args.CXX, slot="CXX")
         if kind == "gcc":
             return ["-fmodules-ts"]
         if kind == "clang":
@@ -440,6 +440,18 @@ def main(argv=None):
 
     # Create and run the compilation database creator
     creator = CompilationDatabaseCreator(args, context=context)
-    creator.write_compilation_database()
+    # _get_compiler_command tokenizes args.CC/CXX per source file (outside
+    # the parseargs/resubstitute gather boundary, which only ever sees
+    # those as raw exe-name strings) -- catch-and-render here so a
+    # malformed CC/CXX reaches the user as a clean diagnostic, not a raw
+    # traceback, when this tool is invoked standalone (not via ct-cake,
+    # which has its own top-level catch).
+    try:
+        creator.write_compilation_database()
+    except compiletools.utils.FlagTokenizeError as err:
+        if args.verbose >= 2:
+            raise
+        print(str(err), file=sys.stderr)
+        return 1
 
     return 0

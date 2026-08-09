@@ -7,8 +7,8 @@ include paths / linkopts, per-object ``ObjInfo`` maps, CAS order-only
 demotion, link signatures, and the named-module rule toposort.
 
 This module is a deliberately thin lower layer: it imports only stdlib
-plus genuinely-leaf compiletools modules (``wrappedos`` and the
-``build_graph`` data types, both already below ``build_backend``) so that
+plus genuinely-leaf compiletools modules (``wrappedos``, ``utils``, and the
+``build_graph`` data types, all already below ``build_backend``) so that
 ``build_backend`` can re-export these names without creating an import
 cycle. ``build_backend`` binds them back into its own namespace,
 preserving object identity for both call sites inside ``BuildBackend``
@@ -20,12 +20,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shlex
 from collections import deque
 from typing import NamedTuple
 
 import compiletools.wrappedos
 from compiletools.build_graph import BuildGraph, BuildRule, RuleType
+from compiletools.utils import tokenize_flags_or_raise
 
 
 class ObjInfo(NamedTuple):
@@ -161,15 +161,18 @@ def _write_link_sig(output: str, sig: str) -> None:
 def split_compound_args(args: list[str]) -> list[str]:
     """Split compound space-separated arguments (e.g. CXXFLAGS as one string).
 
-    Uses shlex to correctly handle quoted values like -DFOO='bar baz'.
+    Uses shlex (via ``tokenize_flags_or_raise``) to correctly handle quoted
+    values like ``-DFOO='bar baz'``. Inputs are normally state-validated
+    tokens by the time they reach here, but magic-derived tokens (a
+    ``//#CXXFLAGS=`` annotation folded into a compile command) can still
+    carry an unbalanced quote, so an unbalanced value raises
+    ``FlagTokenizeError`` instead of silently falling back to a plain
+    whitespace split.
     """
     result = []
     for arg in args:
         if " " in arg:
-            try:
-                result.extend(shlex.split(arg))
-            except ValueError:
-                result.extend(arg.split())
+            result.extend(tokenize_flags_or_raise(arg, slot="compile flags"))
         else:
             result.append(arg)
     return result

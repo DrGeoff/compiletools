@@ -22,6 +22,7 @@ import compiletools.compilation_database as cdb
 import compiletools.configutils as cu
 import compiletools.hunter
 import compiletools.testhelper as uth
+import compiletools.utils
 from compiletools.apptools import (
     _AccumulatingConfigFileParser,
     _add_xxpend_argument,
@@ -50,6 +51,7 @@ from compiletools.apptools import (
     filter_pkg_config_cflags,
     find_system_header,
     terminalcolumns,
+    tokenize_compile_flags,
     unsupplied_replacement,
     verbose_print_args,
     verboseprintconfig,
@@ -162,6 +164,222 @@ def test_strict_pkg_config_parseargs_renders_a_clean_remedy(capsys):
     assert "--pkg-config-errors=warn" in error_output
 
 
+@pytest.mark.usefixtures("parsers_reset")
+def test_unbalanced_quote_in_a_cli_flag_renders_a_clean_remedy(capsys):
+    """CLI-level mirror of the pkg-config carve-out above, for the other
+    named error this same try/except block now catches (coverage-gaps
+    Task 1): a real parseargs run over a --CXXFLAGS value with an
+    unbalanced quote must print an attributed, traceback-free message and
+    exit(1) rather than let shlex's bare ValueError escape."""
+    with _temp_repo_with_ct_conf("gcc", "gcc") as (repo_root, conf_d):
+        with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+            fh.write("CC = gcc\nCXX = g++\nLD = g++\n")
+
+        with pytest.raises(SystemExit) as excinfo:
+            _parseargs_for_variant(
+                repo_root,
+                ["--variant=gcc", "--no-git-root", '--CXXFLAGS=-DFOO="bar'],
+            )
+
+    assert excinfo.value.code == 1
+    error_output = capsys.readouterr().err
+    assert "CXXFLAGS" in error_output
+    assert '-DFOO="bar' in error_output
+    assert "Traceback" not in error_output
+
+
+@pytest.mark.usefixtures("parsers_reset")
+def test_unbalanced_quote_in_a_cli_flag_reraises_at_high_verbosity():
+    """-vv (verbose >= 2) must surface the real FlagTokenizeError with its
+    traceback, mirroring the PkgConfigError carve-out's verbosity gate --
+    the debugging mode must not be the one case that hides the failure."""
+    with _temp_repo_with_ct_conf("gcc", "gcc") as (repo_root, conf_d):
+        with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+            fh.write("CC = gcc\nCXX = g++\nLD = g++\n")
+
+        with pytest.raises(compiletools.utils.FlagTokenizeError):
+            _parseargs_for_variant(
+                repo_root,
+                ["--variant=gcc", "--no-git-root", '--CXXFLAGS=-DFOO="bar', "-vv"],
+            )
+
+
+@pytest.mark.usefixtures("parsers_reset")
+def test_unbalanced_quote_in_cxx_renders_a_clean_remedy(capsys):
+    """coverage-gaps Task 9: _check_resolved_compiler_available tokenizes
+    a wrapper-form CC/CXX/LD value (e.g. "ccache g++") OUTSIDE the
+    gather_inputs try/except -- it is the first point in parseargs a
+    malformed CXX/CC/LD can raise (CC/CXX/LD are exe-name strings, never
+    routed through gather_inputs' own flag-slot tokenizing), and every
+    CLI tool that calls parseargs reaches it. A real parseargs run over a
+    wrapper-form CXX with an unbalanced quote must print an attributed,
+    traceback-free message naming CXX and exit(1), not let shlex's bare
+    ValueError (or an un-caught FlagTokenizeError) escape.
+
+    add_link=True (registering LD) is load-bearing here: without it,
+    args.LD is absent, _effective_link_driver falls back to the
+    malformed CXX, and gather_inputs' own compiler_kind() probe (a
+    different, earlier, more general call site) raises first with the
+    generic "compiler command" slot instead of "CXX" -- still a clean
+    SystemExit(1) (gather_inputs' try/except already covers it), just
+    not the apptools_validate boundary this test targets.
+    """
+    with _temp_repo_with_ct_conf("gcc", "gcc") as (repo_root, conf_d):
+        with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+            fh.write('CC = gcc\nCXX = ccache "g++\nLD = g++\n')
+
+        with pytest.raises(SystemExit) as excinfo:
+            _parseargs_for_variant(repo_root, ["--variant=gcc", "--no-git-root"], add_link=True)
+
+    assert excinfo.value.code == 1
+    error_output = capsys.readouterr().err
+    assert "CXX" in error_output
+    assert "Traceback" not in error_output
+
+
+@pytest.mark.usefixtures("parsers_reset")
+def test_unbalanced_quote_in_include_renders_a_clean_remedy(capsys):
+    """coverage-gaps Task 9: a real parseargs run over a --INCLUDE value
+    with an unbalanced quote must print an attributed, traceback-free
+    message naming INCLUDE and exit(1) (reached through gather_inputs'
+    existing try/except, unlike the CXX case above)."""
+    with _temp_repo_with_ct_conf("gcc", "gcc") as (repo_root, conf_d):
+        with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+            fh.write("CC = gcc\nCXX = g++\nLD = g++\n")
+
+        with pytest.raises(SystemExit) as excinfo:
+            _parseargs_for_variant(
+                repo_root,
+                ["--variant=gcc", "--no-git-root", '--INCLUDE=/opt/"unterminated'],
+            )
+
+    assert excinfo.value.code == 1
+    error_output = capsys.readouterr().err
+    assert "INCLUDE" in error_output
+    assert "Traceback" not in error_output
+
+
+@pytest.mark.usefixtures("parsers_reset")
+def test_single_token_quoted_include_path_with_space_survives_real_parseargs():
+    """coverage-gaps Task 9 review finding Q1: a SINGLE-TOKEN --INCLUDE
+    value containing a space (no manual quoting needed at this layer --
+    e.g. a real shell already consumed the user's own quotes, or this is
+    one argv element from a test driver) must still land as ONE include
+    path after a full parseargs run, not two shredded ``-I`` fragments.
+
+    This is the gap the gather-level positive test
+    (test_build_inputs.py::test_quoted_space_containing_include_path_survives_as_one_path)
+    didn't catch: it calls gather_inputs directly and bypasses
+    _flatten_variables/_strip_quotes entirely. Real parseargs exercises
+    the full pipeline: argparse's nargs="+" gives args.INCLUDE the
+    one-element list ``["/opt/has space/include"]``; _flatten_variables
+    shlex.joins it into the single-token quoted string
+    ``"'/opt/has space/include'"`` (quoting is required because the
+    element contains a space); _strip_quotes must NOT cosmetically peel
+    that quote back off before gather_inputs' own shlex-tokenize ever
+    sees it, or the space becomes a token separator again.
+    """
+    with _temp_repo_with_ct_conf("gcc", "gcc") as (repo_root, conf_d):
+        with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+            fh.write("CC = gcc\nCXX = g++\nLD = g++\n")
+
+        args = _parseargs_for_variant(
+            repo_root,
+            ["--variant=gcc", "--no-git-root", "--INCLUDE=/opt/has space/include"],
+        )
+
+    cpp = get_build_state(args).flags.cpp
+    assert "/opt/has space/include" in cpp, f"path was shredded: {cpp!r}"
+    idx = cpp.index("/opt/has space/include")
+    assert cpp[idx - 1] == "-I", f"expected -I immediately before the path token, got {cpp!r}"
+    assert "/opt/has" not in cpp, f"a shredded fragment leaked into cpp tokens: {cpp!r}"
+
+
+@pytest.mark.usefixtures("parsers_reset")
+def test_double_quoted_include_path_with_space_survives_real_parseargs():
+    """Nested-quote variant of the test above: the literal value carries
+    its OWN double-quote layer (as a conf file's raw text would, e.g.
+    ``INCLUDE = "/opt/has space/include"``) on top of _flatten_variables'
+    protective single-quote layer. _safely_unquote_string's round-trip
+    check must peel exactly the outer (redundant) layer and stop at the
+    inner (load-bearing) one, landing on the bare path with no residual
+    quote characters -- not zero layers peeled (stray literal quotes in
+    the path) and not both layers peeled (reshredded on the space)."""
+    with _temp_repo_with_ct_conf("gcc", "gcc") as (repo_root, conf_d):
+        with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+            fh.write("CC = gcc\nCXX = g++\nLD = g++\n")
+
+        args = _parseargs_for_variant(
+            repo_root,
+            ["--variant=gcc", "--no-git-root", '--INCLUDE="/opt/has space/include"'],
+        )
+
+    cpp = get_build_state(args).flags.cpp
+    assert "/opt/has space/include" in cpp, f"path was shredded or left quoted: {cpp!r}"
+
+
+@pytest.mark.usefixtures("parsers_reset")
+def test_prepend_include_path_with_space_survives_real_parseargs():
+    """coverage-gaps final-review-v2 Important #1: the bare-INCLUDE fix
+    above (test_double_quoted_include_path_with_space_survives_real_parseargs)
+    did not cover --prepend-INCLUDE / --append-INCLUDE -- their argparse
+    dest names ("prepend_include" / "append_include") were missing from
+    _ATOMIC_TOKEN_REPARSED_ATTRS, so _strip_quotes' list branch cosmetically
+    peeled the value's own quote layer (prepend_include isn't one of
+    _FLATTENED_REPARSED_ATTRS, so there's no _flatten_variables protective
+    re-quote to restore it), and the bare space then re-split into two
+    shredded -I fragments at _include_paths_with_gitroots' downstream shlex
+    re-tokenize.
+
+    Uses an embedded quote layer (as a conf value ``prepend-INCLUDE =
+    "/opt/has space/include"`` would carry, or the CLI equivalent) --
+    mirrors the double-quoted bare-INCLUDE test above, since a bare
+    unquoted CLI list element never reaches _safely_unquote_string's
+    quote-stripping branch at all.
+
+    Mutation guard: remove "prepend_include" from _ATOMIC_TOKEN_REPARSED_ATTRS
+    and this test fails (two include paths instead of one).
+    """
+    with _temp_repo_with_ct_conf("gcc", "gcc") as (repo_root, conf_d):
+        with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+            fh.write("CC = gcc\nCXX = g++\nLD = g++\n")
+
+        args = _parseargs_for_variant(
+            repo_root,
+            ["--variant=gcc", "--no-git-root", '--prepend-INCLUDE="/opt/has space/include"'],
+        )
+
+    cpp = get_build_state(args).flags.cpp
+    assert "/opt/has space/include" in cpp, f"path was shredded: {cpp!r}"
+    idx = cpp.index("/opt/has space/include")
+    assert cpp[idx - 1] == "-I", f"expected -I immediately before the path token, got {cpp!r}"
+    assert "/opt/has" not in cpp, f"a shredded fragment leaked into cpp tokens: {cpp!r}"
+
+
+@pytest.mark.usefixtures("parsers_reset")
+def test_append_include_path_with_space_survives_real_parseargs():
+    """coverage-gaps final-review-v2 Important #1: --append-INCLUDE sibling
+    of the prepend test above -- same gate, same shredding bug, same fix.
+
+    Mutation guard: remove "append_include" from _ATOMIC_TOKEN_REPARSED_ATTRS
+    and this test fails (two include paths instead of one).
+    """
+    with _temp_repo_with_ct_conf("gcc", "gcc") as (repo_root, conf_d):
+        with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+            fh.write("CC = gcc\nCXX = g++\nLD = g++\n")
+
+        args = _parseargs_for_variant(
+            repo_root,
+            ["--variant=gcc", "--no-git-root", '--append-INCLUDE="/opt/has space/include"'],
+        )
+
+    cpp = get_build_state(args).flags.cpp
+    assert "/opt/has space/include" in cpp, f"path was shredded: {cpp!r}"
+    idx = cpp.index("/opt/has space/include")
+    assert cpp[idx - 1] == "-I", f"expected -I immediately before the path token, got {cpp!r}"
+    assert "/opt/has" not in cpp, f"a shredded fragment leaked into cpp tokens: {cpp!r}"
+
+
 class TestExtractCommandLineMacrosSz:
     """Test extract_command_line_macros_sz()."""
 
@@ -196,6 +414,47 @@ class TestExtractCommandLineMacrosSz:
         result = extract_command_line_macros_sz(args, [sz.Str("CPPFLAGS"), sz.Str("CXXFLAGS")])
         assert result[sz.Str("A")] == sz.Str("1")
         assert result[sz.Str("B")] == sz.Str("2")
+
+
+class TestTokenizeCompileFlagsQuoteErrors:
+    """tokenize_compile_flags used to silently degrade an unbalanced-quote
+    string to str.split() on ValueError, disagreeing with build_inputs'
+    (bare-crash, pre-fix) path. It must now raise the same attributed
+    FlagTokenizeError build_inputs._slot_tokens raises (coverage-gaps
+    Task 1) -- consistent behavior across both consumers of the raw slot
+    strings, no silent fallback."""
+
+    def test_well_formed_strings_still_tokenize(self):
+        cpp, c, cxx = tokenize_compile_flags("-DA=1 -I/x", "-Wall", "-O2 -std=c++20")
+        assert cpp == ["-I/x"]  # -D stripped
+        assert c == ["-Wall"]
+        assert cxx == ["-O2", "-std=c++20"]
+
+    def test_pretokenized_lists_pass_through_unaffected(self):
+        """A pre-tokenized list input must not go anywhere near shlex, so a
+        literal embedded quote character in one element is not an error."""
+        cpp, _c, _cxx = tokenize_compile_flags(['-DFOO="bar"'], [], [])
+        assert cpp == []  # -D stripped, no crash
+
+    def test_unbalanced_quote_in_cppflags_raises_attributed_to_cppflags(self):
+        with pytest.raises(compiletools.utils.FlagTokenizeError, match="CPPFLAGS"):
+            tokenize_compile_flags('-DFOO="bar', "", "")
+
+    def test_unbalanced_quote_in_cflags_raises_attributed_to_cflags(self):
+        with pytest.raises(compiletools.utils.FlagTokenizeError, match="CFLAGS"):
+            tokenize_compile_flags("", '-DFOO="bar', "")
+
+    def test_unbalanced_quote_in_cxxflags_raises_attributed_to_cxxflags(self):
+        with pytest.raises(compiletools.utils.FlagTokenizeError, match="CXXFLAGS"):
+            tokenize_compile_flags("", "", '-DFOO="bar')
+
+    def test_it_no_longer_silently_falls_back_to_str_split(self):
+        """Regression pin for the removed fallback: str.split() on the
+        malformed value would have produced ['-DFOO=\"bar'] (one token,
+        quotes intact) without ever raising -- assert the raise happens
+        instead of that silent degrade."""
+        with pytest.raises(compiletools.utils.FlagTokenizeError):
+            tokenize_compile_flags('-DFOO="bar', "", "")
 
 
 class TestFindSystemHeader:
@@ -256,8 +515,62 @@ class TestSafelyUnquoteString:
         assert _safely_unquote_string(42) == 42
 
     def test_malformed_quotes_fallback(self):
-        result = _safely_unquote_string("'hello")
+        """An unbalanced quote now raises FlagTokenizeError by default
+        (Task 9: DRY unbalanced-quote handling), instead of silently
+        stripping a mismatched quote pair."""
+        with pytest.raises(compiletools.utils.FlagTokenizeError):
+            _safely_unquote_string("'hello")
+
+    def test_malformed_quotes_raise_on_malformed_false_keeps_old_fallback(self):
+        """raise_on_malformed=False (as _strip_quotes passes for
+        _UNQUOTE_RAISE_EXEMPT attrs, and _note_shadowed_bare_values always
+        passes) preserves the pre-Task-9 best-effort strip."""
+        result = _safely_unquote_string("'hello", raise_on_malformed=False)
         assert isinstance(result, str)
+
+    def test_flattened_attr_no_whitespace_still_unquotes(self):
+        """Regression guard (review finding Q1): the round-trip-safety
+        check for _FLATTENED_REPARSED_ATTRS must not become a blanket
+        skip. A single-token quoted value with NO internal whitespace
+        (e.g. a whole-value-quoted "-DFOO") retokenizes to itself either
+        way, so it must still get the ordinary cosmetic strip -- pins
+        test_private_stashes_pass_through_untouched's CPPFLAGS assertion
+        at the unit level."""
+        assert _safely_unquote_string('"-DFOO"', slot="CPPFLAGS") == "-DFOO"
+        assert _safely_unquote_string("'/opt/plain'", slot="INCLUDE") == "/opt/plain"
+
+    def test_flattened_attr_with_whitespace_keeps_its_quoting(self):
+        """Review finding Q1 fix: for a _FLATTENED_REPARSED_ATTRS slot, a
+        single-token quoted value whose UNQUOTED body contains whitespace
+        must be returned with its quoting intact -- stripping it here
+        would let the whitespace re-split into multiple tokens at
+        gather_inputs' own shlex-tokenize a moment later."""
+        quoted = "'/opt/has space/include'"
+        assert _safely_unquote_string(quoted, slot="INCLUDE") == quoted
+
+    def test_non_flattened_attr_with_whitespace_still_unquotes(self):
+        """Control: the round-trip-safety check is scoped to
+        _FLATTENED_REPARSED_ATTRS only. Every other attr (a plain scalar
+        that is never re-tokenized, e.g. projectname) keeps the ordinary
+        cosmetic strip even when the unquoted body has a space --
+        matches test_shadow_note_not_fooled_by_quoted_values' prebuild-
+        script expectation at the unit level."""
+        assert _safely_unquote_string('"My Project"', slot="projectname") == "My Project"
+        assert _safely_unquote_string('"./my hook.sh"', slot="prebuild_script") == "./my hook.sh"
+
+    def test_nested_quote_layers_peel_exactly_to_the_load_bearing_one(self):
+        """A doubly-quoted _FLATTENED_REPARSED_ATTRS value (an outer
+        protective layer _flatten_variables added, wrapping an inner
+        layer the user/conf file supplied) must peel exactly the
+        redundant outer layer and stop at the inner, load-bearing one --
+        not zero layers (stray literal quote characters survive into the
+        path) and not both layers (reshredded on the space)."""
+        nested = "'\"/opt/has space/include\"'"
+        result = _safely_unquote_string(nested, slot="INCLUDE")
+        assert result == '"/opt/has space/include"'
+        # And that remaining single layer is exactly what a real shlex
+        # re-tokenize downstream needs to land on the bare, clean path.
+        assert compiletools.utils.split_command_cached(result) == ["/opt/has space/include"]
 
 
 class TestVerbosePrintArgs:
@@ -781,6 +1094,41 @@ class TestFilterPkgConfigCflagsExtended:
             filter_pkg_config_cflags("-I/usr/include", verbose=6)
         assert "Dropping" in mock_stdout.getvalue()
 
+    def test_malformed_output_degrades_to_whitespace_split_with_warning_at_verbose_1(self, capsys):
+        """coverage-gaps Task 10: pkg-config subprocess output (a third-party
+        .pc file's --cflags text) is not user input -- an unbalanced quote
+        must degrade to a plain whitespace split, never raise, with a
+        verbose>=1 diagnostic naming the offending package so the
+        degradation isn't silent."""
+        malformed = '-DFOO="bar -I/opt/x/include'
+        result = filter_pkg_config_cflags(malformed, verbose=1, package="mypkg")
+        # Degraded via whitespace split: the -I flag is still recognised and
+        # rewritten to -isystem by the per-token loop that runs afterwards.
+        assert "-isystem" in result
+        assert "/opt/x/include" in result
+        error_output = capsys.readouterr().err
+        assert "mypkg" in error_output
+
+    def test_malformed_output_is_silent_at_verbose_0(self, capsys):
+        """final-review-v2 Minor #4: this test used to discard the return
+        value and assert only silence, so a hypothetical refactor that made
+        filter_pkg_config_cflags silently return "" on malformed input
+        (dropping the degrade-to-whitespace-split half while staying quiet)
+        would keep it green -- the degrade half at verbose 0 was pinned
+        only by the sibling verbose>=1 test above and the build_inputs/
+        magicflags callers. Assert the same degraded-tokens shape that
+        sibling asserts, at verbose 0, so both halves (silence AND degrade)
+        are pinned here too.
+        """
+        malformed = '-DFOO="bar -I/opt/x/include'
+        result = filter_pkg_config_cflags(malformed, verbose=0, package="mypkg")
+        # Degraded via whitespace split: the -I flag is still recognised and
+        # rewritten to -isystem by the per-token loop that runs afterwards.
+        assert "-isystem" in result
+        assert "/opt/x/include" in result
+        error_output = capsys.readouterr().err
+        assert error_output == ""
+
 
 class TestCachedPkgConfig:
     def test_missing_package(self):
@@ -1095,6 +1443,135 @@ class TestSetupPkgConfigOverrides:
             f"Axis-conf prepend must land leftmost (winning) over project "
             f"ct.conf prepend; got axis@{axis_idx}, base@{base_idx}, "
             f"PKG_CONFIG_PATH={dirs!r}"
+        )
+
+    def test_two_layered_conf_files_axis_wins_append_through_parseargs(self, monkeypatch, tmp_path, capsys):
+        """Append-group mirror of test_two_layered_conf_files_axis_wins_through_parseargs:
+        project ``ct.conf`` and a higher-priority axis conf each set
+        ``append-PKG-CONFIG-PATH``. After running through the real
+        ``parseargs`` pipeline, the axis-conf directory must land leftmost
+        *within the appended tail* of ``PKG_CONFIG_PATH`` — the documented
+        reversal in ``_merged_pkg_config_path_entries`` (highest-priority
+        source ends up leftmost in its group) applies symmetrically to
+        append, not just prepend. Before this test, only single-element
+        append lists were ever exercised end-to-end, so this within-append-
+        group ordering had zero real-``parseargs`` coverage.
+        """
+        conf_dir = tmp_path / "ct.conf.d"
+        conf_dir.mkdir(parents=True)
+        # Project ct.conf is lower-priority than the axis conf inside
+        # the variant composition; its append should land second (rightmost)
+        # within the appended tail.
+        base_pkgconfig = conf_dir / "pkgconfig-base"
+        base_pkgconfig.mkdir()
+        (tmp_path / "ct.conf").write_text(
+            "variant = axisY\nappend-PKG-CONFIG-PATH = ${CONF_DIR}/ct.conf.d/pkgconfig-base\n"
+        )
+        # Axis conf is higher priority — its append must win within the group.
+        axis_conf = conf_dir / "axisY.conf"
+        axis_pkgconfig = conf_dir / "pkgconfig-axisY"
+        axis_pkgconfig.mkdir()
+        axis_conf.write_text("append-PKG-CONFIG-PATH = ${CONF_DIR}/pkgconfig-axisY\n")
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+        monkeypatch.setattr(
+            "compiletools.git_utils.find_git_root",
+            lambda filename=None: str(tmp_path),
+        )
+
+        # --no-git-root keeps the test focused on the layered conf
+        # appends — without it, ct.conf.d/pkgconfig (auto-discovered)
+        # would also land in PKG_CONFIG_PATH, muddying the assertion.
+        argv = ["--variant=axisY", "--no-git-root"]
+        with uth.DirectoryContext(str(tmp_path)):
+            cap = apptools.create_parser("layered conf append test", argv=argv)
+            apptools.add_common_arguments(cap, argv=argv)
+            with uth.ParserContext():
+                ctx = BuildContext()
+                args = apptools.parseargs(cap, argv, context=ctx)
+
+        # The accumulator carries both appends, in conf-hierarchy
+        # order (project ct.conf first, axis conf second).
+        appends = [os.path.normpath(p) for p in (args.append_pkg_config_path or [])]
+        assert str(base_pkgconfig) in appends, f"project ct.conf's append didn't reach args: {appends!r}"
+        assert str(axis_pkgconfig) in appends, f"axis conf's append didn't reach args: {appends!r}"
+
+        dirs = os.environ["PKG_CONFIG_PATH"].split(os.pathsep)
+        axis_idx = dirs.index(str(axis_pkgconfig))
+        base_idx = dirs.index(str(base_pkgconfig))
+        assert axis_idx < base_idx, (
+            f"Axis-conf append must land leftmost (winning) within the "
+            f"appended tail over project ct.conf append; got "
+            f"axis@{axis_idx}, base@{base_idx}, PKG_CONFIG_PATH={dirs!r}"
+        )
+
+    def test_gitroot_pkgconfig_dir_auto_discovered_through_real_parseargs(self, monkeypatch, tmp_path, pkgconfig_dir):
+        """{gitroot}/ct.conf.d/pkgconfig on disk lands in
+        ``os.environ["PKG_CONFIG_PATH"]`` after a REAL ``parseargs`` run —
+        i.e. the gather-side auto-discovery in
+        ``build_inputs._compute_pkg_config_path`` (exercised via
+        ``apply_effects``' ``SetEnv``), not the legacy
+        ``_setup_pkg_config_overrides`` writer the other tests in this
+        class exercise directly. ``cwd`` is a subdirectory distinct from
+        gitroot with no ``pkgconfig`` dir of its own, isolating the
+        gitroot-candidate discovery specifically (as opposed to the
+        cwd-candidate one)."""
+        (tmp_path / "ct.conf").write_text("variant = myaxis\n")
+        (tmp_path / "ct.conf.d" / "myaxis.conf").write_text("# empty axis, no CC/CXX needed\n")
+
+        subdir = tmp_path / "subdir"
+        subdir.mkdir()
+
+        monkeypatch.chdir(subdir)
+        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+        monkeypatch.setattr(
+            "compiletools.git_utils.find_git_root",
+            lambda filename=None: str(tmp_path),
+        )
+
+        argv = ["--variant=myaxis"]
+        with uth.DirectoryContext(str(subdir)):
+            cap = apptools.create_parser("gitroot auto-discovery test", argv=argv)
+            apptools.add_common_arguments(cap, argv=argv)
+            with uth.ParserContext():
+                ctx = BuildContext()
+                apptools.parseargs(cap, argv, context=ctx)
+
+        entries = os.environ.get("PKG_CONFIG_PATH", "").split(os.pathsep)
+        assert str(pkgconfig_dir) in entries, (
+            f"gitroot ct.conf.d/pkgconfig was not auto-discovered into PKG_CONFIG_PATH: {entries!r}"
+        )
+
+    def test_gitroot_pkgconfig_dir_deduplicated_when_cwd_equals_gitroot(self, monkeypatch, tmp_path, pkgconfig_dir):
+        """When ``cwd`` IS the gitroot, the on-disk ``ct.conf.d/pkgconfig``
+        dir is independently discovered by both the cwd-candidate and the
+        gitroot-candidate probes in
+        ``build_inputs._compute_pkg_config_path``; the
+        ``repo_pkgconfig not in cwd_candidates`` guard must keep it out of
+        the final ``PKG_CONFIG_PATH`` twice."""
+        (tmp_path / "ct.conf").write_text("variant = myaxis\n")
+        (tmp_path / "ct.conf.d" / "myaxis.conf").write_text("# empty axis, no CC/CXX needed\n")
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+        monkeypatch.setattr(
+            "compiletools.git_utils.find_git_root",
+            lambda filename=None: str(tmp_path),
+        )
+
+        argv = ["--variant=myaxis"]
+        with uth.DirectoryContext(str(tmp_path)):
+            cap = apptools.create_parser("cwd==gitroot dedup test", argv=argv)
+            apptools.add_common_arguments(cap, argv=argv)
+            with uth.ParserContext():
+                ctx = BuildContext()
+                apptools.parseargs(cap, argv, context=ctx)
+
+        entries = os.environ.get("PKG_CONFIG_PATH", "").split(os.pathsep)
+        assert entries.count(str(pkgconfig_dir)) == 1, (
+            f"cwd==gitroot pkgconfig dir must appear exactly once in PKG_CONFIG_PATH, "
+            f"got {entries.count(str(pkgconfig_dir))}: {entries!r}"
         )
 
 
@@ -2259,6 +2736,25 @@ class TestResolvedCompilerAvailable:
         assert "not on PATH" in msg
         assert "ccache-gcc.debug" in msg
 
+    def test_wrapper_with_unbalanced_quote_raises_flag_tokenize_error(self):
+        """coverage-gaps Task 9: an unbalanced quote in a wrapper-form
+        CC/CXX/LD value raises the shared, attributed FlagTokenizeError
+        (not a bare shlex ValueError) naming the offending slot. Only CXX
+        is malformed here (CC/LD use the unsupplied sentinel, skipped)
+        so the raise is unambiguously attributed to CXX -- the loop in
+        _check_resolved_compiler_available checks CC before CXX, so a
+        shared malformed value across all three (as
+        _resolved_compiler_args gives) would raise on CC first instead.
+        """
+        args = SimpleNamespace(
+            variant="ccache-gcc.debug",
+            CC=apptools._UNSUPPLIED_USE_CXX,
+            CXX='ccache "g++',
+            LD=apptools._UNSUPPLIED_USE_CXX,
+        )
+        with pytest.raises(compiletools.utils.FlagTokenizeError, match="CXX"):
+            apptools._check_resolved_compiler_available(args)
+
 
 def _std_check_args(*, variant="x", cc="g++", cxx="g++", cflags="-O0", cxxflags=""):
     """Finalized namespace for _check_compiler_supports_requested_standard.
@@ -2274,7 +2770,7 @@ class TestCompilerSupportsRequestedStandard:
     with no pointer at the variant chain."""
 
     def test_too_old_for_requested_std_raises(self, monkeypatch):
-        monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda path: ("gcc", 11))
+        monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda path, **_kw: ("gcc", 11))
         args = _std_check_args(variant="gcc.cxx26.debug", cxxflags="-std=c++26 -O0")
         with pytest.raises(RuntimeError) as excinfo:
             apptools._check_compiler_supports_requested_standard(args)
@@ -2283,19 +2779,19 @@ class TestCompilerSupportsRequestedStandard:
         assert "gcc >= 14" in msg
 
     def test_recent_compiler_passes(self, monkeypatch):
-        monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda path: ("gcc", 14))
+        monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda path, **_kw: ("gcc", 14))
         args = _std_check_args(variant="gcc.cxx26.debug", cxxflags="-std=c++26 -O0")
         # 14 >= 14 — passes.
         apptools._check_compiler_supports_requested_standard(args)
 
     def test_unknown_driver_skips_silently(self, monkeypatch):
-        monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda path: None)
+        monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda path, **_kw: None)
         args = _std_check_args(cc="some-cross-compiler", cxx="some-cross-compiler", cflags="", cxxflags="-std=c++26")
         # Unknown driver → skip silently rather than false-positive.
         apptools._check_compiler_supports_requested_standard(args)
 
     def test_no_std_flag_skips_silently(self, monkeypatch):
-        monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda path: ("gcc", 4))
+        monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda path, **_kw: ("gcc", 4))
         # No -std= in flags → nothing to check.
         args = _std_check_args(variant="blank.debug", cc="gcc", cxxflags="-O0")
         apptools._check_compiler_supports_requested_standard(args)
@@ -2303,7 +2799,7 @@ class TestCompilerSupportsRequestedStandard:
     def test_alt_spelling_cxx2c_normalised_to_cxx26(self, monkeypatch):
         # gcc <14 / clang <18 spelled C++26 as -std=c++2c. The check should
         # normalise that to c++26 for the version lookup.
-        monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda path: ("gcc", 11))
+        monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda path, **_kw: ("gcc", 11))
         args = _std_check_args(cflags="", cxxflags="-std=c++2c -O0")
         with pytest.raises(RuntimeError, match=r"does not support -std=c\+\+2c"):
             apptools._check_compiler_supports_requested_standard(args)
@@ -2464,9 +2960,18 @@ class TestConfFileEncodingTolerance:
         assert args.variant == "gcc.debug"
 
 
-def _wild_args(cxx, ldflags, variant="gcc.wild.release"):
-    """Minimal namespace for unit-testing the wild normalization helpers."""
+def _wild_args(cxx, ldflags, variant="gcc.wild.release", ld=None):
+    """Minimal namespace for unit-testing the wild normalization helpers.
+
+    ``ld`` mirrors the ``--LD`` override. Left at the default ``None`` the
+    namespace gets no ``LD`` attribute at all (the shape every pre-existing
+    test in this module exercises: LD simply never supplied). Pass an
+    explicit driver name, or one of the ``_UNSUPPLIED_USE_CXX*`` sentinels,
+    to exercise ``_effective_link_driver``'s LD-vs-CXX precedence.
+    """
     args = SimpleNamespace(CXX=cxx, LDFLAGS=ldflags, variant=variant, verbose=0)
+    if ld is not None:
+        args.LD = ld
     uth.finalize_flag_state(args)
     return args
 
@@ -2481,7 +2986,7 @@ def test_check_wild_b_with_bazel_backend_raises(monkeypatch):
 
 def test_check_wild_b_with_make_backend_ok(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
-    monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda c: ("gcc", 11))
+    monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda c, **_kw: ("gcc", 11))
     args = _wild_args("g++", "", "gcc.wild-B.release")
     args.backend = "make"
     apptools._check_wild_linker_usable(args)  # no raise
@@ -2496,7 +3001,7 @@ def test_check_wild_usable_missing_wild_raises(monkeypatch):
 
 def test_check_wild_usable_old_gcc_raises(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
-    monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda c: ("gcc", 15))
+    monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda c, **_kw: ("gcc", 15))
     args = _wild_args("g++", "-fuse-ld=wild", "gcc.wild.release")
     with pytest.raises(RuntimeError, match="gcc >= 16"):
         apptools._check_wild_linker_usable(args)
@@ -2504,14 +3009,14 @@ def test_check_wild_usable_old_gcc_raises(monkeypatch):
 
 def test_check_wild_usable_gcc16_ok(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
-    monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda c: ("gcc", 16))
+    monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda c, **_kw: ("gcc", 16))
     args = _wild_args("g++", "-fuse-ld=wild", "gcc.wild.release")
     apptools._check_wild_linker_usable(args)  # no raise
 
 
 def test_check_wild_usable_clang_ok(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
-    monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda c: ("clang", 22))
+    monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda c, **_kw: ("clang", 22))
     # post-rewrite form on clang
     args = _wild_args("clang++", "--ld-path=wild", "clang.wild.release")
     apptools._check_wild_linker_usable(args)  # no raise
@@ -2519,10 +3024,62 @@ def test_check_wild_usable_clang_ok(monkeypatch):
 
 def test_check_wild_b_old_gcc_ok(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
-    monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda c: ("gcc", 11))
+    monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda c, **_kw: ("gcc", 11))
     # wild-B has no version gate — that's its whole purpose.
     args = _wild_args("g++", "", "gcc.wild-B.release")
     apptools._check_wild_linker_usable(args)  # no raise
+
+
+def test_check_wild_usable_ld_wins_clang_over_cxx_gcc(monkeypatch):
+    """LD=clang++ with CXX=g++: the effective link driver is LD (clang), so
+    the gcc<16 version gate must not fire even though CXX names a gcc
+    binary. Asserting on the probed compiler name (not just "no raise")
+    pins that ``_effective_link_driver`` actually consulted LD, not CXX --
+    a version-gate bug that silently fell back to CXX would still pass a
+    bare no-raise check whenever the CXX-derived family also happened to
+    dodge the gate.
+    """
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
+
+    def _fake_version(compiler, **_kw):
+        assert compiler == "clang++", f"expected the LD override to be probed, got {compiler!r}"
+        return ("clang", 22)
+
+    monkeypatch.setattr(apptools_validate, "_compiler_major_version", _fake_version)
+    args = _wild_args("g++", "-fuse-ld=wild", "gcc.wild.release", ld="clang++")
+    apptools._check_wild_linker_usable(args)  # no raise: LD (clang) wins over CXX (gcc)
+
+
+def test_check_wild_usable_ld_wins_gcc_over_cxx_clang(monkeypatch):
+    """LD=g++ with CXX=clang++: the effective link driver is LD (gcc), so
+    an old-gcc raise fires even though CXX names clang -- the mirror image
+    of the clang-wins case above, again pinning which argument actually
+    gets probed.
+    """
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
+
+    def _fake_version(compiler, **_kw):
+        assert compiler == "g++", f"expected the LD override to be probed, got {compiler!r}"
+        return ("gcc", 15)
+
+    monkeypatch.setattr(apptools_validate, "_compiler_major_version", _fake_version)
+    args = _wild_args("clang++", "-fuse-ld=wild", "gcc.wild.release", ld="g++")
+    with pytest.raises(RuntimeError, match="gcc >= 16"):
+        apptools._check_wild_linker_usable(args)
+
+
+def test_check_wild_usable_ld_sentinel_falls_back_to_cxx(monkeypatch):
+    """LD explicitly left at the ``_UNSUPPLIED_USE_CXX`` sentinel (as the
+    real --LD argparse default is, not just an absent attribute) must still
+    fall back to CXX for the version gate. Every other test in this module
+    exercises the "LD attribute never set" shape; this pins the actual
+    production sentinel value that ``_effective_link_driver`` checks for.
+    """
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
+    monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda c, **_kw: ("gcc", 15))
+    args = _wild_args("g++", "-fuse-ld=wild", "gcc.wild.release", ld=apptools._UNSUPPLIED_USE_CXX)
+    with pytest.raises(RuntimeError, match="gcc >= 16"):
+        apptools._check_wild_linker_usable(args)
 
 
 def test_check_wild_usable_not_selected_noop(monkeypatch):

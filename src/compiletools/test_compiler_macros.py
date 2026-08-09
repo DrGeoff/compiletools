@@ -61,6 +61,22 @@ class TestCompilerMacros:
             macros = cm.get_compiler_macros("gcc", verbose=0)
             assert macros["__VERSION__"] == "gcc version 11.2.0"
 
+    def test_unbalanced_quote_in_compiler_path_is_attributed_to_cxx(self):
+        """final-review-v2 Minor #3: get_compiler_macros' only production
+        caller (apptools.py / magicflags.py) always passes args.CXX, so its
+        split_compiler_command() call should attribute a malformed value
+        to "CXX" -- not the library-default generic "compiler command"
+        slot, which would leave the user unable to tell which flag to fix.
+
+        Mutation guard: dropping the ``slot="CXX"`` argument from
+        compiler_macros.py's split_compiler_command call makes this fail
+        with match="compiler command" instead.
+        """
+        import compiletools.utils
+
+        with pytest.raises(compiletools.utils.FlagTokenizeError, match="CXX"):
+            cm.get_compiler_macros('ccache "g++', verbose=0)
+
     def test_get_compiler_macros_failure_nonzero_return(self):
         """Test handling of non-zero return code."""
         with patch("subprocess.run", return_value=_mock_subprocess_result(returncode=1)):
@@ -266,3 +282,19 @@ class TestQueryHasFunction:
             cm.query_has_function("gcc", "__has_include(<foo.h>)", cppflags="-I/usr/local/include")
             args_used = mock_run.call_args[0][0]
             assert "-I/usr/local/include" in args_used
+
+    def test_unbalanced_quote_in_compiler_path_is_attributed_to_cxx(self):
+        """final-review-v2 Minor #3: query_has_function's only production
+        caller (simple_preprocessor.py, via headerdeps/magicflags/
+        preprocessing_cache) always threads through args.CXX, so its
+        split_compiler_command() call should attribute a malformed value
+        to "CXX", matching get_compiler_macros' sibling fix.
+
+        Mutation guard: dropping the ``slot="CXX"`` argument from
+        compiler_macros.py's split_compiler_command call makes this fail
+        with match="compiler command" instead.
+        """
+        import compiletools.utils
+
+        with pytest.raises(compiletools.utils.FlagTokenizeError, match="CXX"):
+            cm.query_has_function('ccache "g++', "__has_include(<iostream>)")

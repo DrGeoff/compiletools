@@ -207,7 +207,7 @@ class TestCompilerKindClassification:
         # and clear the lru_cache so prior real-host calls don't bleed in.
         import compiletools.apptools as _ap
 
-        monkeypatch.setattr(_ap, "_compiler_major_version", lambda _c: None)
+        monkeypatch.setattr(_ap, "_compiler_major_version", lambda _c, **_kw: None)
         _ap.compiler_kind.cache_clear()
 
     def test_bare_gpp(self):

@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import compiletools.testhelper as uth
+import compiletools.utils
 from compiletools.build_backend import extract_copts, extract_linkopts, get_backend_class
 from compiletools.build_graph import BuildGraph, BuildRule
 from compiletools.cmake_backend import CMakeBackend, _cmake_quote, _filter_x_lang_copts, _separate_include_dirs
@@ -754,6 +755,18 @@ class TestCMakeExecute:
         assert not any("ccache g++" in a for a in cmd), (
             f"CMake compiler argument still contains the literal wrapped string: {cmd}"
         )
+
+    def test_cxx_unbalanced_quote_raises_flag_tokenize_error(self, tmp_path):
+        """coverage-gaps Task 9: the CXX/CC split here used to be a bare
+        split_command_cached (bare shlex ValueError leak). It now raises
+        the shared, attributed FlagTokenizeError naming CXX."""
+        with pytest.raises(compiletools.utils.FlagTokenizeError, match="CXX"):
+            self._capture_configure(CXX='ccache "g++', CC="gcc", tmp_path=tmp_path)
+
+    def test_cc_unbalanced_quote_raises_flag_tokenize_error(self, tmp_path):
+        """Same as above but for CC."""
+        with pytest.raises(compiletools.utils.FlagTokenizeError, match="CC"):
+            self._capture_configure(CXX="g++", CC='ccache "gcc', tmp_path=tmp_path)
 
 
 class TestCMakeAllOutputsCurrent:

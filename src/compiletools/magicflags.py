@@ -327,11 +327,13 @@ class MagicFlagsBase:
             print(f"Added -I {flag} to CPPFLAGS, CFLAGS, and CXXFLAGS")
         return flagsforfilename
 
-    def _handle_pkg_config(self, flag, expander=None):
+    def _handle_pkg_config(self, flag, filename, expander=None):
         """Expand a ``//#PKG-CONFIG=pkg1 pkg2 ...`` annotation.
 
         Args:
             flag: The (already-expanded) value of the magic flag.
+            filename: Path of the file the annotation came from, used as
+                the ``FlagTokenizeError`` source attribution below.
             expander: Optional ``SimplePreprocessor`` used to expand macros
                 inside the pkg-config output (e.g. ``$LIB_SUFFIX``). Passed
                 explicitly rather than read from ``self._expander`` so this
@@ -343,10 +345,19 @@ class MagicFlagsBase:
         agree on what counts as one package. A version-constrained spec
         (``zlib >= 1.2``) is one element, not three, and is passed to
         pkg-config intact so the version floor is enforced.
+
+        This tokenize call is the FIRST thing this method does, before any
+        pkg-config subprocess runs -- load-bearing ordering. It used to
+        silently degrade a malformed spec into an invented package name
+        that got queried before the generic ``//#`` tokenizer at the
+        bottom of ``_process_magic_flag`` could raise its diagnostic;
+        tokenizing eagerly here (and letting the caller's
+        ``FlagTokenizeError`` handler render it) means the good
+        diagnostic wins and no subprocess ever runs for the bad value.
         """
         flagsforfilename = defaultdict(list)
 
-        packages = compiletools.apptools.tokenize_pkg_config_specs([str(flag)])
+        packages = compiletools.apptools.tokenize_pkg_config_specs([str(flag)], slot="//#PKG-CONFIG", source=filename)
 
         first_l_per_pkg = []  # Track first -l per package for hard orderings
 
@@ -355,17 +366,26 @@ class MagicFlagsBase:
             cflags_raw = compiletools.apptools.cached_pkg_config(pkg, "--cflags")
 
             # Use the shared filtering logic from apptools
-            cflags_str = compiletools.apptools.filter_pkg_config_cflags(cflags_raw, self._args.verbose)
+            cflags_str = compiletools.apptools.filter_pkg_config_cflags(cflags_raw, self._args.verbose, package=pkg)
             cflags_sz = sz.Str(cflags_str)
             if cflags_str and expander:
                 cflags_sz = expander._recursive_expand_macros_sz(cflags_sz)
-            cflags_list = compiletools.utils.split_command_cached_sz(cflags_sz)
+            # Post-macro-expansion, so partially user-influenced -- but this
+            # site keeps degrading identically to the other two pkg-config
+            # output sites (never hard-fail on a malformed .pc/expansion
+            # result); Task 9's //#PKG-CONFIG spec-side validation already
+            # catches a malformed *package spec* before any query runs.
+            cflags_list = compiletools.apptools_pkgconfig.tokenize_pkg_config_output_sz(
+                cflags_sz, package=pkg, option="--cflags", verbose=self._args.verbose
+            )
 
             libs_raw = compiletools.apptools.cached_pkg_config(pkg, "--libs")
             libs_sz = sz.Str(libs_raw)
             if libs_raw and expander:
                 libs_sz = expander._recursive_expand_macros_sz(libs_sz)
-            libs_list = compiletools.utils.split_command_cached_sz(libs_sz)
+            libs_list = compiletools.apptools_pkgconfig.tokenize_pkg_config_output_sz(
+                libs_sz, package=pkg, option="--libs", verbose=self._args.verbose
+            )
 
             # Extract first -l from expanded libs — must use the same
             # post-expansion list that feeds LDFLAGS so names match.
@@ -671,7 +691,9 @@ class MagicFlagsBase:
         # If the magic was PKG-CONFIG then call pkg-config
         if magic == sz.Str("PKG-CONFIG"):
             try:
-                self._extend_flags_from_dict(flagsforfilename, self._handle_pkg_config(flag, expander=expander))
+                self._extend_flags_from_dict(
+                    flagsforfilename, self._handle_pkg_config(flag, filename, expander=expander)
+                )
             except compiletools.apptools_pkgconfig.PkgConfigError as exc:
                 # Verbosity must not invert the policy. SystemExit is the
                 # termination that survives the deliberately broad
@@ -683,10 +705,27 @@ class MagicFlagsBase:
                 )
                 print(message, file=sys.stderr)
                 raise SystemExit(1) from None
+            except compiletools.utils.FlagTokenizeError as exc:
+                # Same carve-out as the PkgConfigError case just above: a
+                # malformed //#PKG-CONFIG= spec (caught inside
+                # _handle_pkg_config, before any pkg-config subprocess
+                # runs) must not be downgraded to a warning by Hunter's
+                # broad except Exception.
+                print(str(exc), file=sys.stderr)
+                raise SystemExit(1) from None
             # PKG-CONFIG generates flags for other keys AND adds itself to PKG-CONFIG key
 
         # Split flag string into individual flags - all magic flags can contain multiple values
-        individual_flags = compiletools.utils.split_command_cached_sz(flag)
+        try:
+            individual_flags = compiletools.utils.tokenize_flags_sz_or_raise(flag, slot=f"//#{magic}", source=filename)
+        except compiletools.utils.FlagTokenizeError as exc:
+            # Verbosity must not invert this, matching the PKG-CONFIG carve-out
+            # just above: SystemExit is the termination that survives the
+            # deliberately broad ``except Exception`` in Hunter's source
+            # expansion (hunter.py), which would otherwise catch this
+            # RuntimeError subclass and downgrade the failure to a warning.
+            print(str(exc), file=sys.stderr)
+            raise SystemExit(1) from None
         flagsforfilename[magic].extend(individual_flags)
         if self._args.verbose >= 5:
             print(f"Using magic flag {magic}={flag} extracted from {filename}")

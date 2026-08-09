@@ -68,6 +68,16 @@ class TestStageXxpend:
         ts = stage_xxpend(inputs, TokenState(cxx=("-O2",)))
         assert ts.cxx == ("-O2",)
 
+    def test_append_keeps_already_present_token_in_place(self):
+        inputs = _inputs(append_cxxflags=("-O2",))
+        ts = stage_xxpend(inputs, TokenState(cxx=("-O2", "-Wall", "-g")))
+        assert ts.cxx == ("-O2", "-Wall", "-g")
+
+    def test_prepend_keeps_already_present_token_in_place(self):
+        inputs = _inputs(prepend_cxxflags=("-Wall",))
+        ts = stage_xxpend(inputs, TokenState(cxx=("-O2", "-Wall", "-g")))
+        assert ts.cxx == ("-O2", "-Wall", "-g")
+
     def test_other_slots_untouched(self):
         inputs = _inputs(prepend_cxxflags=("-P",))
         ts = stage_xxpend(inputs, TokenState(cpp=("-DX",), cxx=()))
@@ -175,6 +185,47 @@ class TestStagePrefixMap:
         inputs = _inputs(gitroot="/repo")
         ts = stage_prefix_map(inputs, TokenState(cxx=("-fdebug-prefix-map=/a=b",), c=()))
         assert ts.cxx == ("-fdebug-prefix-map=/a=b",)
+        assert ts.c == ("-ffile-prefix-map=/repo=.",)
+
+    def test_user_ffile_prefix_map_skips_that_slot_only(self):
+        """Per-alias positive coverage: -ffile-prefix-map= itself."""
+        inputs = _inputs(gitroot="/repo")
+        ts = stage_prefix_map(inputs, TokenState(cxx=("-ffile-prefix-map=/a=b",), c=()))
+        assert ts.cxx == ("-ffile-prefix-map=/a=b",)
+        assert ts.c == ("-ffile-prefix-map=/repo=.",)
+
+    def test_user_fmacro_prefix_map_skips_that_slot_only(self):
+        """Per-alias positive coverage: -fmacro-prefix-map=."""
+        inputs = _inputs(gitroot="/repo")
+        ts = stage_prefix_map(inputs, TokenState(cxx=("-fmacro-prefix-map=/a=b",), c=()))
+        assert ts.cxx == ("-fmacro-prefix-map=/a=b",)
+        assert ts.c == ("-ffile-prefix-map=/repo=.",)
+
+    def test_user_fcanon_prefix_map_skips_that_slot_only(self):
+        """Per-alias positive coverage: -fcanon-prefix-map=."""
+        inputs = _inputs(gitroot="/repo")
+        ts = stage_prefix_map(inputs, TokenState(cxx=("-fcanon-prefix-map=/a=b",), c=()))
+        assert ts.cxx == ("-fcanon-prefix-map=/a=b",)
+        assert ts.c == ("-ffile-prefix-map=/repo=.",)
+
+    def test_decoy_fno_omit_frame_pointer_does_not_suppress_injection(self):
+        """-fno-omit-frame-pointer shares the '-f' prefix with the
+        prefix-map family but is not one of the four stems; a substring
+        or startswith-without-'=' match on has_prefix_map_token would
+        wrongly treat it as a user-supplied prefix-map and skip
+        injection (the v12->v13 regression this guards)."""
+        inputs = _inputs(gitroot="/repo")
+        ts = stage_prefix_map(inputs, TokenState(cxx=("-fno-omit-frame-pointer",), c=()))
+        assert ts.cxx == ("-fno-omit-frame-pointer", "-ffile-prefix-map=/repo=.")
+        assert ts.c == ("-ffile-prefix-map=/repo=.",)
+
+    def test_bare_ffile_prefix_map_without_equals_does_not_suppress_injection(self):
+        """A bare '-ffile-prefix-map' token (no '=', e.g. a malformed or
+        partial user flag) must not match has_prefix_map_token's stem
+        check, which requires the trailing '='; injection still lands."""
+        inputs = _inputs(gitroot="/repo")
+        ts = stage_prefix_map(inputs, TokenState(cxx=("-ffile-prefix-map",), c=()))
+        assert ts.cxx == ("-ffile-prefix-map", "-ffile-prefix-map=/repo=.")
         assert ts.c == ("-ffile-prefix-map=/repo=.",)
 
 

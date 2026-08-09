@@ -21,6 +21,7 @@ import compiletools.hunter
 import compiletools.testhelper as uth
 from compiletools.build_apply import get_build_state
 from compiletools.build_context import BuildContext
+from compiletools.build_inputs import gather_inputs
 
 
 @pytest.fixture
@@ -155,6 +156,25 @@ class TestResubstitute:
             apptools.resubstitute(args)
             assert get_build_state(args).flags == first_flags, (
                 "resubstitute must converge to the same flags when nothing input-affecting changed."
+            )
+
+    def test_rerun_does_not_redecrement_verbose(self):
+        """parseargs folds --quiet into args.verbose exactly once and
+        latches _quiet_applied; the re-gather a resubstitute performs
+        must honour the latch rather than subtracting quiet again. The
+        historical regression was cake's --auto second stage running
+        with a doubly-decremented verbosity."""
+        with uth.TempDirContext():
+            args = _parseargs_in_temp_repo(extra_argv=["--quiet", "--quiet"])
+            settled = args.verbose
+            assert args.quiet == 2, "Precondition failed: --quiet --quiet must count to 2 or the latch is untested."
+
+            apptools.resubstitute(args)
+
+            assert args.verbose == settled, "resubstitute must not mutate the already-latched verbosity."
+            inputs = gather_inputs(args, args._context)
+            assert inputs.verbose == settled, (
+                f"Re-gather subtracted quiet a second time: expected verbose {settled}, got {inputs.verbose}."
             )
 
 

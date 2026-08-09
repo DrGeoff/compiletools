@@ -408,7 +408,7 @@ class Hunter:
         cached = getattr(self, "_system_modules_cached", None)
         if cached is not None:
             return cached
-        kind = compiletools.apptools.compiler_kind(self.args.CXX)
+        kind = compiletools.apptools.compiler_kind(self.args.CXX, slot="CXX")
         std_path = compiletools.apptools.find_system_std_module_source(self.args.CXX, kind)
         result = {"std": std_path} if std_path else {}
         self._system_modules_cached = result

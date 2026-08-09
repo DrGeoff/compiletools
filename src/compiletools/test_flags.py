@@ -75,6 +75,12 @@ def test_flags_hash_relevant(cxx_flags, expected):
         pytest.param(("-I/a", "-O2"), {"/a"}, id="attached"),
         pytest.param(("-I", "/a", "-O2"), {"/a"}, id="detached"),
         pytest.param(("-isystem", "/a"), set(), id="ignore-isystem"),
+        pytest.param(("-I/a", "-I", "/b", "-I/c"), {"/a", "/b", "/c"}, id="mixed-attached-detached"),
+        # A -D value that happens to look like a path must not be
+        # mistaken for an -I entry.
+        pytest.param(("-DFOO=/usr/include",), set(), id="define-value-not-include-path"),
+        pytest.param(("-O2", "-I"), set(), id="dangling-trailing-i-no-crash"),
+        pytest.param((), set(), id="empty-tokens"),
     ],
 )
 def test_flags_existing_include_paths(cpp_flags, expected):
@@ -101,6 +107,17 @@ def test_flags_append_include_skips_when_present_returns_self(cpp_flags):
     flags = Flags(cpp=cpp_flags)
     updated = flags.append_include("/existing", slots=("cpp",))
     assert updated is flags
+
+
+def test_flags_append_include_isystem_present_still_appends_i():
+    """A path reachable only via -isystem is a different flag family from
+    -I; append_include must still add the detached -I pair rather than
+    treating the -isystem entry as already present -- the
+    isystem-fooled-dedup regression the v12 suite guarded."""
+    flags = Flags(cpp=("-isystem", "/a"))
+    updated = flags.append_include("/a")
+    assert updated is not flags
+    assert updated.cpp == ("-isystem", "/a", "-I", "/a")
 
 
 def test_flags_append_include_default_slots_all_three():

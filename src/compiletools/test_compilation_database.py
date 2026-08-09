@@ -1531,7 +1531,7 @@ class TestCompilationDatabaseModuleFlags:
         # compiler_kind introspects --version on gcc-ish basenames; pin
         # the probe so "g++" classifies as gcc on hosts (e.g. Termux)
         # where g++ is actually a clang symlink.
-        monkeypatch.setattr(compiletools.apptools, "_compiler_major_version", lambda _c: ("gcc", 16))
+        monkeypatch.setattr(compiletools.apptools, "_compiler_major_version", lambda _c, **_kw: ("gcc", 16))
         compiletools.apptools.compiler_kind.cache_clear()
         creator = self._make_creator(cxx="g++", module_imports=("math",))
         flags = creator._module_kind_flags("/src/main.cpp")
@@ -1654,6 +1654,39 @@ class TestCompilationDatabaseDefensivePaths:
         )
 
         assert creator._get_compiler_command("/src/main.cpp") == []
+
+    def test_unbalanced_quote_in_cxx_raises_attributed_flag_tokenize_error(self):
+        """coverage-gaps Task 9: _get_compiler_command used to call
+        split_command_cached (bare shlex, bare ValueError leak) on
+        args.CXX/CC directly. It now raises the shared, attributed
+        FlagTokenizeError naming CXX for a C++ source."""
+        creator = _bare_creator(
+            CXX='ccache "g++',
+            CC="gcc",
+            CPPFLAGS="",
+            CXXFLAGS="",
+            CFLAGS="",
+            compilation_database_relative=False,
+            verbose=0,
+        )
+
+        with pytest.raises(compiletools.utils.FlagTokenizeError, match="CXX"):
+            creator._get_compiler_command("/src/main.cpp")
+
+    def test_unbalanced_quote_in_cc_raises_attributed_flag_tokenize_error(self):
+        """Same as above but for a C source, attributed to CC."""
+        creator = _bare_creator(
+            CXX="g++",
+            CC='ccache "gcc',
+            CPPFLAGS="",
+            CXXFLAGS="",
+            CFLAGS="",
+            compilation_database_relative=False,
+            verbose=0,
+        )
+
+        with pytest.raises(compiletools.utils.FlagTokenizeError, match="CC"):
+            creator._get_compiler_command("/src/main.c")
 
     def test_create_command_object_skips_empty_arguments(self):
         """When _get_compiler_command returns [] (e.g. missing CXX),
@@ -1779,6 +1812,36 @@ class TestCompilationDatabaseDefensivePaths:
         with pytest.raises(SystemExit) as excinfo:
             creator.create_compilation_database()
         assert excinfo.value.code == 1
+
+
+class TestMainFlagTokenizeErrorBoundary:
+    """coverage-gaps Task 9: ct-compilation-database's ``main()`` is a CLI
+    entry point that (unlike ct-cake) had no broad exception handler at
+    all, so a FlagTokenizeError escaping write_compilation_database() --
+    reached via _get_compiler_command's per-file CC/CXX tokenizing --
+    would have surfaced as a raw traceback. main() now catches it and
+    renders a clean, traceback-free message with a non-zero return."""
+
+    @uth.requires_functional_compiler
+    def test_flag_tokenize_error_from_write_returns_1_without_traceback(self, monkeypatch, capsys):
+        def _raise_flag_tokenize_error(self):
+            raise compiletools.utils.FlagTokenizeError("ct: error: unbalanced quote in CXX: boom")
+
+        monkeypatch.setattr(
+            compiletools.compilation_database.CompilationDatabaseCreator,
+            "write_compilation_database",
+            _raise_flag_tokenize_error,
+        )
+
+        with _temp_dir_with_config() as temp_config_name:
+            realpaths = [uth.example_file("simple/helloworld_cpp.cpp")]
+            with uth.ParserContext():
+                result = compiletools.compilation_database.main(["--config=" + temp_config_name] + realpaths)
+
+        assert result == 1
+        error_output = capsys.readouterr().err
+        assert "unbalanced quote in CXX" in error_output
+        assert "Traceback" not in error_output
 
 
 class TestStrictPkgConfigCarveOuts:

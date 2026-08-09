@@ -134,13 +134,13 @@ class Cake:
             return False
 
         # Build the new include-dir list from the just-fetched externals.
-        # NOTE: args.INCLUDE is a whitespace-separated string by long-standing
-        # convention, so this split/join cannot represent an externals path that
-        # itself contains a space. That is a pre-existing INCLUDE limitation (the
-        # scan layer supports spaces via raw-string extra_include_dirs, but the
-        # INCLUDE round-trip here does not). Externals-dir paths with spaces are
-        # unsupported; use --externals-dir to point at a space-free location.
-        existing = set(self.args.INCLUDE.split())
+        # args.INCLUDE is a shlex-tokenized string (see
+        # build_inputs._include_paths_with_gitroots): read the existing
+        # entries through the same helper rather than a bare .split(), and
+        # write the new entries back with shlex.join so an externals-dir
+        # path containing a space round-trips as one token instead of
+        # shredding on the next parse.
+        existing = set(compiletools.utils.tokenize_flags_or_raise(self.args.INCLUDE or "", slot="INCLUDE"))
         new_dirs = []
 
         def _add(directory):
@@ -161,7 +161,7 @@ class Cake:
         if not new_dirs:
             return False
 
-        self.args.INCLUDE = (self.args.INCLUDE + " " + " ".join(new_dirs)).strip()
+        self.args.INCLUDE = ((self.args.INCLUDE or "") + " " + shlex.join(new_dirs)).strip()
         if self.args.verbose > 4:
             print("Cake registered //#GIT= external include dirs: " + " ".join(new_dirs))
         return True
@@ -1129,17 +1129,35 @@ def _render_generic_error(err: BaseException) -> None:
     print(f"Error: {err}", file=sys.stderr)
 
 
+def _render_flag_tokenize_error(err: compiletools.utils.FlagTokenizeError) -> None:
+    """FlagTokenizeError's own str() is already the full WHERE/WHAT/HOW
+    diagnostic, prefixed with ``ct: error: ...`` (see
+    ``utils._render_flag_tokenize_error`` / ``tokenize_flags_or_raise``) --
+    the same rendering parseargs-time boundaries
+    (``apptools.parseargs``/``apptools.resubstitute``) print verbatim, with
+    no added prefix. A build-time raise (TESTPREFIX, --build-only-changed,
+    defense-in-depth CC/CXX/LD) that reaches this generic renderer must
+    match that framing rather than wrapping it in the generic tail's own
+    ``Error: `` prefix, which would double it to
+    ``Error: ct: error: ...``.
+    """
+    print(str(err), file=sys.stderr)
+
+
 # Fatal-error rendering for main(): first matching entry wins, so order is
 # semantic. LDFLAGSCycleError must be listed before the generic tail (it is
 # a ValueError) so ONLY the cycle error is rendered through the Rich
 # cycle-error formatter — unrelated ValueErrors would confuse the user with
-# a panel that doesn't apply. FetchError needs no entry of its own: its
-# messages already name the offending external and its URL, so the generic
-# stderr print is the right rendering.
+# a panel that doesn't apply. FlagTokenizeError must also precede the
+# generic tail for the same reason (see _render_flag_tokenize_error).
+# FetchError needs no entry of its own: its messages already name the
+# offending external and its URL, so the generic stderr print is the right
+# rendering.
 _FATAL_ERROR_RENDERERS: list = [
     (subprocess.CalledProcessError, _render_called_process_error),
     (OSError, _render_os_error),
     (compiletools.utils.LDFLAGSCycleError, _print_rich_error),
+    (compiletools.utils.FlagTokenizeError, _render_flag_tokenize_error),
     (Exception, _render_generic_error),
 ]
 

@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import compiletools.utils
 from compiletools.bazel_backend import BazelBackend
 from compiletools.build_backend import (
     compute_link_signature,
@@ -357,6 +358,18 @@ class TestCoptsExtraction:
         cmd = ["g++", "-Wall", "-Wextra", "-I/usr/include", "-c", "x.cpp", "-o", "x.o"]
         assert extract_copts(cmd, strip_includes=True) == ["-Wall", "-Wextra"]
 
+    def test_unbalanced_quote_in_a_compound_token_raises_flag_tokenize_error(self):
+        """coverage-gaps Task 9: split_compound_args (reached via
+        extract_copts for any compound space-separated token) used to
+        silently fall back to a plain .split() on a shlex ValueError --
+        inputs are normally state-validated tokens by the time they reach
+        here, but magic-derived tokens can still carry an unbalanced
+        quote. It now raises the shared, attributed FlagTokenizeError
+        instead."""
+        cmd = ["g++", '-DFOO="bar baz', "-c", "x.cpp", "-o", "x.o"]
+        with pytest.raises(compiletools.utils.FlagTokenizeError, match="compile flags"):
+            extract_copts(cmd, strip_includes=True)
+
 
 class TestIncludePathsExtraction:
     def test_attached_dash_I(self):
@@ -564,6 +577,17 @@ class TestBazelRunsTestsInBuildPhase:
 
         cmd = mock_run.call_args[0][0]
         assert "--run_under=valgrind --error-exitcode=1" in cmd, cmd
+
+    def test_run_under_unbalanced_quote_raises_flag_tokenize_error(self):
+        """coverage-gaps Task 9: bazel passes TESTPREFIX whole to
+        --run_under (bazel's own shell splits it), so for a USER-FACING
+        error consistent with every other backend, the value is validated
+        with the shared helper here too -- discarding the tokens, still
+        passing the original string through to --run_under on success."""
+        backend = self._backend_with_test_graph(testprefix='valgrind "unterminated')
+        with _patched_bazel_execute(backend) as (_mock_run, _mock_publish):
+            with pytest.raises(compiletools.utils.FlagTokenizeError, match="TESTPREFIX"):
+                backend.execute("build")
 
     def test_serialise_tests_adds_local_test_jobs_flag(self):
         """--serialise-tests passes ``--local_test_jobs=1`` to bazel so only

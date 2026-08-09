@@ -1,6 +1,13 @@
 import compiletools.apptools_canonicalize
 import compiletools.flag_ops
-from compiletools.flag_ops import dedup_tokens, extract_d_macros, strip_d_u_tokens, system_include_paths_from_tokens
+from compiletools.flag_ops import (
+    dedup_include_paths_to_append,
+    dedup_tokens,
+    extract_d_macros,
+    extract_include_paths_from_tokens,
+    strip_d_u_tokens,
+    system_include_paths_from_tokens,
+)
 
 
 def test_prefix_map_stems_match_apptools_canonicalize_prefixes():
@@ -78,3 +85,65 @@ class TestSystemIncludePathsFromTokens:
 
     def test_dangling_flag_ignored(self):
         assert system_include_paths_from_tokens(("-Wall", "-I")) == []
+
+
+class TestExtractIncludePathsFromTokens:
+    def test_attached_and_detached_i(self):
+        assert extract_include_paths_from_tokens(("-I/a", "-I", "/b")) == {"/a", "/b"}
+
+    def test_isystem_attached_not_recognized(self):
+        # -isystem is a different flag family (system include search path,
+        # not project -I) and must not be treated as a -I entry.
+        assert extract_include_paths_from_tokens(("-isystem/opt/inc",)) == set()
+
+    def test_isystem_detached_not_recognized(self):
+        assert extract_include_paths_from_tokens(("-isystem", "/opt/inc")) == set()
+
+    def test_l_attached_not_recognized(self):
+        assert extract_include_paths_from_tokens(("-L/opt/lib",)) == set()
+
+    def test_l_detached_not_recognized(self):
+        assert extract_include_paths_from_tokens(("-L", "/opt/lib")) == set()
+
+    def test_non_include_tokens_ignored(self):
+        assert extract_include_paths_from_tokens(("-Wall", "-DFOO")) == set()
+
+    def test_dangling_i_ignored(self):
+        assert extract_include_paths_from_tokens(("-Wall", "-I")) == set()
+
+
+class TestDedupIncludePathsToAppend:
+    """Regression guard: a path reachable only via a different flag family
+    (-isystem, -L) must not be mistaken for an already-present -I entry --
+    otherwise a caller that wants the path on the project -I search list
+    would silently lose the append."""
+
+    def test_isystem_attached_does_not_suppress_append(self):
+        existing = ("-isystem/opt/inc",)
+        assert dedup_include_paths_to_append(existing, ["/opt/inc"]) == ["-I", "/opt/inc"]
+
+    def test_isystem_detached_does_not_suppress_append(self):
+        existing = ("-isystem", "/opt/inc")
+        assert dedup_include_paths_to_append(existing, ["/opt/inc"]) == ["-I", "/opt/inc"]
+
+    def test_l_attached_does_not_suppress_append(self):
+        existing = ("-L/opt/lib",)
+        assert dedup_include_paths_to_append(existing, ["/opt/lib"]) == ["-I", "/opt/lib"]
+
+    def test_l_detached_does_not_suppress_append(self):
+        existing = ("-L", "/opt/lib")
+        assert dedup_include_paths_to_append(existing, ["/opt/lib"]) == ["-I", "/opt/lib"]
+
+    def test_attached_i_is_deduped(self):
+        existing = ("-I/opt/inc",)
+        assert dedup_include_paths_to_append(existing, ["/opt/inc"]) == []
+
+    def test_detached_i_is_deduped(self):
+        existing = ("-I", "/opt/inc")
+        assert dedup_include_paths_to_append(existing, ["/opt/inc"]) == []
+
+    def test_multiple_paths_appended_with_duplicate_input_self_deduped(self):
+        # The loop accumulates its own seen-set as it appends, so a path
+        # repeated within new_paths must only be appended once.
+        result = dedup_include_paths_to_append((), ["/a", "/b", "/a"])
+        assert result == ["-I", "/a", "-I", "/b"]

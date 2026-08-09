@@ -38,7 +38,6 @@ identity.
 import functools
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import tempfile
@@ -46,7 +45,7 @@ import textwrap
 
 import compiletools.wrappedos
 from compiletools.apptools_canonicalize import canonicalize_path_for_cache_key
-from compiletools.utils import split_command_cached
+from compiletools.utils import split_compiler_command
 
 
 @functools.lru_cache(maxsize=64)
@@ -182,7 +181,7 @@ def find_system_std_module_source(cxx: str | None, kind: str) -> str | None:
 
 
 @functools.lru_cache(maxsize=64)
-def compiler_kind(cxx: str | None) -> str:
+def compiler_kind(cxx: str | None, *, slot: str = "compiler command") -> str:
     """Classify a C++ compiler binary as ``"gcc"`` / ``"clang"`` / ``"unknown"``.
 
     Used to pick compiler-specific code paths (e.g., the C++20 modules
@@ -206,6 +205,13 @@ def compiler_kind(cxx: str | None) -> str:
     Returns ``"unknown"`` for ``None`` / empty input or when the basename
     matches neither toolchain. Callers must handle the unknown case
     rather than guessing.
+
+    *slot* attributes a raised FlagTokenizeError (from the ``--version``
+    probe's tokenizing of a malformed wrapper string) to the caller's
+    flag slot when known (``"CXX"``, ``"LD"``); left at the generic
+    default for callers (e.g. ``build_inputs.gather_inputs``, which may
+    be probing either CXX or LD depending on ``_effective_link_driver``)
+    that don't know a single fixed role for the string.
     """
     if not cxx:
         return "unknown"
@@ -221,7 +227,7 @@ def compiler_kind(cxx: str | None) -> str:
         # flags at it and the compile fails. Use the resolved path so
         # ``--version`` is the binary on disk; fall through to "gcc" if
         # the probe can't parse a recognised banner.
-        probe = _compiler_major_version(resolved)
+        probe = _compiler_major_version(resolved, slot=slot)
         if probe is not None and probe[0] == "clang":
             return "clang"
         return "gcc"
@@ -264,7 +270,7 @@ def compiler_default_cxx_std(cxx: str | None) -> str | None:
     """
     if not cxx or not isinstance(cxx, str):
         return None
-    cmd = shlex.split(cxx) + ["-dM", "-E", "-x", "c++", os.devnull]
+    cmd = split_compiler_command(cxx, slot="CXX") + ["-dM", "-E", "-x", "c++", os.devnull]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=False)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
@@ -417,7 +423,7 @@ def _test_compiler_functionality(compiler_name):
         # Test 1: Basic version check
         # Split compiler_name to handle multi-word commands like "ccache g++"
         result = subprocess.run(
-            split_command_cached(compiler_name) + ["--version"], capture_output=True, timeout=5, text=True
+            split_compiler_command(compiler_name, slot="CXX") + ["--version"], capture_output=True, timeout=5, text=True
         )
         if result.returncode != 0:
             return False
@@ -449,7 +455,7 @@ def _test_compiler_functionality(compiler_name):
                 obj_path = obj_file.name
 
             result = subprocess.run(
-                split_command_cached(compiler_name) + ["-std=c++20", "-c", test_cpp, "-o", obj_path],
+                split_compiler_command(compiler_name, slot="CXX") + ["-std=c++20", "-c", test_cpp, "-o", obj_path],
                 capture_output=True,
                 timeout=10,
                 text=True,
@@ -493,7 +499,7 @@ def tool_version(tool: str, default: tuple[int, int] = (0, 0)) -> tuple[int, int
     return (int(m.group(1)), int(m.group(2)))
 
 
-def _compiler_major_version(compiler_path: str) -> tuple[str, int] | None:
+def _compiler_major_version(compiler_path: str, *, slot: str = "compiler command") -> tuple[str, int] | None:
     """Probe a compiler binary for its (family, major version).
 
     Runs ``<compiler> --version`` (one shot, ~10 ms) and parses gcc/clang
@@ -502,6 +508,11 @@ def _compiler_major_version(compiler_path: str) -> tuple[str, int] | None:
     (coverage/sccache shims) that forward to a real gcc/clang typically
     pass-through ``--version`` and parse just like the real binary, so
     this is intentionally permissive.
+
+    *slot* attributes a raised FlagTokenizeError (see split_compiler_command)
+    to the caller's flag slot when known (``"CXX"``, ``"LD"``); left at the
+    generic default for callers that genuinely don't know the role of the
+    string they're probing.
     """
     import re as _re
     import subprocess
@@ -509,7 +520,7 @@ def _compiler_major_version(compiler_path: str) -> tuple[str, int] | None:
     # Tokenize so wrapper invocations like "ccache g++" forward --version
     # to the real compiler. Feeding the compound string as argv0 raises
     # OSError and silently degrades the check to "unknown driver, skip".
-    argv = split_command_cached(compiler_path) if " " in compiler_path else [compiler_path]
+    argv = split_compiler_command(compiler_path, slot=slot) if " " in compiler_path else [compiler_path]
     try:
         proc = subprocess.run(
             argv + ["--version"],

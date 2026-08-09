@@ -23,11 +23,29 @@ class PreProcessor:
         # literal-quote argv garbage -- so the two raw strings go through
         # shlex splitting.
         state = compiletools.build_apply.get_build_state(self.args)
-        cmd = (
-            compiletools.utils.split_command_cached(self.args.CPP)
-            + list(state.flags.cpp)
-            + compiletools.utils.split_command_cached(extraargs)
-        )
+        try:
+            cmd = (
+                compiletools.utils.split_compiler_command(self.args.CPP, slot="CPP")
+                + list(state.flags.cpp)
+                + compiletools.utils.split_command_cached(extraargs)
+            )
+        except compiletools.utils.FlagTokenizeError as exc:
+            # This is the single choke point every --headerdeps=cpp /
+            # --magic=cpp caller (headerdeps.py, magicflags.py x2) reaches,
+            # so converting here covers all three call sites at once, the
+            # same way magicflags._process_magic_flag's carve-outs convert
+            # once for every //# magic key. Unconditional SystemExit(1),
+            # not gated on verbosity: this runs inside Hunter's source-
+            # expansion walk, which has a deliberately broad
+            # ``except Exception`` (hunter.py) that would otherwise catch
+            # this RuntimeError subclass and downgrade a malformed --CPP
+            # to a per-source warning instead of stopping the build --
+            # and it also means standalone callers with no exception
+            # handling of their own (ct-headertree, ct-magicflags,
+            # ct-filelist mains) get a clean, traceback-free message
+            # instead of a raw exception escaping to the top level.
+            print(str(exc), file=sys.stderr)
+            raise SystemExit(1) from None
         if compiletools.utils.is_header(realpath):
             # Use /dev/null as the dummy source file.
             cmd.extend(["-include", realpath, "-x", "c++", "/dev/null"])
