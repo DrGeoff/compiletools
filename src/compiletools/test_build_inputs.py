@@ -430,6 +430,37 @@ class TestProjectMacros:
             gather_inputs(_minimal_args(), BuildContext())
             assert "DEPRECATED" not in capsys.readouterr().err
 
+    def test_explicit_value_beats_cmd_for_both_macros(self):
+        """_project_macro_value's `if not value and cmd:` branch: the
+        explicit value must win over the *cmd -- and win without the cmd
+        ever running. Each cmd is a script that both echoes a distinct
+        wrong value AND touches a sentinel file, so a precedence flip is
+        caught two ways: the wrong value would surface, and the sentinel
+        would prove the cmd was invoked at all."""
+        with uth.TempDirContext():
+            version_sentinel = os.path.join(os.getcwd(), "version-cmd-ran")
+            name_sentinel = os.path.join(os.getcwd(), "name-cmd-ran")
+            version_script = os.path.join(os.getcwd(), "version_cmd.sh")
+            name_script = os.path.join(os.getcwd(), "name_cmd.sh")
+            with open(version_script, "w") as f:
+                f.write(f"#!/bin/sh\ntouch {version_sentinel}\necho 9.9.9\n")
+            with open(name_script, "w") as f:
+                f.write(f"#!/bin/sh\ntouch {name_sentinel}\necho otherapp\n")
+            os.chmod(version_script, 0o755)
+            os.chmod(name_script, 0o755)
+
+            args = _minimal_args(
+                projectversion="1.2.3",
+                projectversioncmd=f"sh {version_script}",
+                projectname="myapp",
+                projectnamecmd=f"sh {name_script}",
+            )
+            inputs = gather_inputs(args, BuildContext())
+            assert inputs.project_version == "1.2.3"
+            assert inputs.project_name == "myapp"
+            assert not os.path.exists(version_sentinel), "projectversioncmd must not run when projectversion is set"
+            assert not os.path.exists(name_sentinel), "projectnamecmd must not run when projectname is set"
+
 
 class TestIncludePathsGathering:
     """include_paths must model the two old-pipeline INCLUDE-widening
