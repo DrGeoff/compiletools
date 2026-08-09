@@ -59,6 +59,7 @@ __all__ = [
     "ordered_unique",
     "remove_mount",
     "split_command_cached",
+    "split_compiler_command",
     "to_bool",
     "tokenize_flags_or_raise",
     "tokenize_flags_sz_or_raise",
@@ -229,6 +230,25 @@ def tokenize_flags_sz_or_raise(value_sz, *, slot: str, source: str | None = None
         return split_command_cached_sz(value_sz)
     except ValueError as exc:
         raise FlagTokenizeError(_render_flag_tokenize_error(str(value_sz), slot, source, str(exc))) from exc
+
+
+def split_compiler_command(value: str, *, slot: str = "compiler command") -> list[str]:
+    """Shlex-tokenize a compiler/linker invocation string (``CC``, ``CXX``,
+    ``LD``, ``CPP``, or a wrapped multi-word form like ``"ccache g++"``),
+    raising :class:`FlagTokenizeError` instead of a bare ``ValueError`` on
+    an unbalanced quote.
+
+    Thin wrapper over :func:`tokenize_flags_or_raise` so the dozen CC/CXX/
+    LD/CPP split call sites spread across ``build_backend``,
+    ``cmake_backend``, ``apptools_compiler``, ``apptools_validate``,
+    ``compiler_macros``, ``compilation_database`` and ``preprocessor``
+    stay one-liners with a single shared error type and message format.
+    Pass the specific slot name (``"CXX"``, ``"CC"``, ``"LD"``, ``"CPP"``)
+    when the caller knows which flag the value came from; the default is
+    for library helpers that probe an arbitrary compiler path without
+    knowing its role.
+    """
+    return tokenize_flags_or_raise(value, slot=slot)
 
 
 @functools.cache
@@ -953,13 +973,23 @@ def merge_ldflags_with_topo_sort(
     return deduped_non_l + [f"-l{name}" for name in sorted_libs]
 
 
-def _process_flag_source(source: Union[str, list[str], tuple[str, ...], None]) -> list[str]:
-    """Process a single flag source into a list of individual flags."""
+def _process_flag_source(
+    source: Union[str, list[str], tuple[str, ...], None], *, slot: str = "compile flags"
+) -> list[str]:
+    """Process a single flag source into a list of individual flags.
+
+    Re-splitting is routed through :func:`tokenize_flags_or_raise` (raising
+    :class:`FlagTokenizeError` on an unbalanced quote) rather than a bare
+    ``split_command_cached`` call: this is reached from
+    ``compilation_database`` with magic-derived tokens, so a malformed
+    ``//#`` annotation value that slipped past its own tokenizing gets the
+    same attributed diagnostic here instead of a bare ``ValueError``.
+    """
     if not source:
         return []
 
     if isinstance(source, str):
-        return split_command_cached(source)
+        return tokenize_flags_or_raise(source, slot=slot)
 
     if isinstance(source, (list, tuple)):
         flags = []
@@ -967,7 +997,7 @@ def _process_flag_source(source: Union[str, list[str], tuple[str, ...], None]) -
             if isinstance(item, str):
                 # Check if item might be a multi-flag string
                 if " " in item and not item.startswith("/"):
-                    flags.extend(split_command_cached(item))
+                    flags.extend(tokenize_flags_or_raise(item, slot=slot))
                 else:
                     flags.append(item)
             else:
@@ -979,6 +1009,7 @@ def _process_flag_source(source: Union[str, list[str], tuple[str, ...], None]) -
 
 def combine_and_deduplicate_compiler_flags(
     *flag_sources: Union[str, list[str], tuple[str, ...], None],
+    slot: str = "compile flags",
 ) -> list[str]:
     """Combine multiple sources of compiler flags and deduplicate intelligently.
 
@@ -989,13 +1020,19 @@ def combine_and_deduplicate_compiler_flags(
 
     Args:
         *flag_sources: Multiple sources of flags - can be lists of strings or single strings
+        slot: Attribution used in the FlagTokenizeError diagnostic if any
+            source string fails to shlex-tokenize. Sources here are
+            typically several slots merged together (cpp+cxx, magic
+            CPPFLAGS+CXXFLAGS, ...), so the default is the generic
+            "compile flags" label; pass a more specific slot when every
+            source shares one real slot name.
 
     Returns:
         Combined and deduplicated list of flags
     """
     combined_flags = []
     for source in flag_sources:
-        combined_flags.extend(_process_flag_source(source))
+        combined_flags.extend(_process_flag_source(source, slot=slot))
 
     return deduplicate_compiler_flags(combined_flags)
 
