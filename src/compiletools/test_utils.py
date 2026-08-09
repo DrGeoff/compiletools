@@ -596,3 +596,73 @@ class TestMergeLdflagsTopoSort:
         remaining = {"a", "b"}
         with pytest.raises(RuntimeError, match="no cycle detected"):
             utils._find_cycle(graph, remaining)
+
+
+class TestTokenizeFlagsOrRaise:
+    """utils.tokenize_flags_or_raise / tokenize_flags_sz_or_raise: shlex
+    tokenization that raises a meaningful, attributed FlagTokenizeError on
+    an unbalanced quote instead of letting shlex's bare ValueError escape
+    (coverage-gaps Task 1). The error must say WHERE (slot, and source file
+    when known), WHAT (the offending value verbatim), and HOW (a concrete
+    fix)."""
+
+    def test_well_formed_value_tokenizes_normally(self):
+        assert utils.tokenize_flags_or_raise("-DFOO=bar -O2", slot="CXXFLAGS") == ["-DFOO=bar", "-O2"]
+
+    def test_unbalanced_double_quote_raises_flag_tokenize_error(self):
+        with pytest.raises(utils.FlagTokenizeError):
+            utils.tokenize_flags_or_raise('-DFOO="bar', slot="CXXFLAGS")
+
+    def test_unbalanced_single_quote_also_raises(self):
+        """Both quote characters shlex treats specially must be covered, not
+        just the double-quote case the brief's example happens to use."""
+        with pytest.raises(utils.FlagTokenizeError):
+            utils.tokenize_flags_or_raise("-DFOO='bar", slot="CXXFLAGS")
+
+    def test_error_names_the_slot(self):
+        with pytest.raises(utils.FlagTokenizeError, match="CXXFLAGS"):
+            utils.tokenize_flags_or_raise('-DFOO="bar', slot="CXXFLAGS")
+
+    def test_error_uses_the_slot_it_is_given(self):
+        """Different slots must produce differently-attributed messages --
+        pins that the slot argument actually flows into the text rather
+        than a hardcoded label."""
+        with pytest.raises(utils.FlagTokenizeError, match="LDFLAGS") as excinfo:
+            utils.tokenize_flags_or_raise('-Wl,"bad', slot="LDFLAGS")
+        assert "CXXFLAGS" not in str(excinfo.value)
+
+    def test_error_quotes_the_offending_value_verbatim(self):
+        with pytest.raises(utils.FlagTokenizeError) as excinfo:
+            utils.tokenize_flags_or_raise('-DFOO="bar', slot="CXXFLAGS")
+        assert '-DFOO="bar' in str(excinfo.value)
+
+    def test_error_suggests_the_shell_quoted_fix(self):
+        """The likely intended form for the common macro-define case: wrap
+        the quoted run in single quotes so shlex preserves the inner double
+        quotes literally for the compiler -- the exact example the Task 1
+        brief specifies."""
+        with pytest.raises(utils.FlagTokenizeError) as excinfo:
+            utils.tokenize_flags_or_raise('-DFOO="bar', slot="CXXFLAGS")
+        assert "-DFOO='\"bar\"'" in str(excinfo.value)
+
+    def test_error_states_the_shlex_reason(self):
+        with pytest.raises(utils.FlagTokenizeError, match="No closing quotation"):
+            utils.tokenize_flags_or_raise('-DFOO="bar', slot="CXXFLAGS")
+
+    def test_error_attributes_a_source_file_when_given(self):
+        with pytest.raises(utils.FlagTokenizeError, match=r"foo\.cpp"):
+            utils.tokenize_flags_or_raise('-DFOO="bar', slot="//#CXXFLAGS", source="foo.cpp")
+
+    def test_error_without_source_names_no_file(self):
+        with pytest.raises(utils.FlagTokenizeError) as excinfo:
+            utils.tokenize_flags_or_raise('-DFOO="bar', slot="CXXFLAGS")
+        assert "from" not in str(excinfo.value)
+
+    def test_sz_variant_raises_the_same_error_type_with_attribution(self):
+        with pytest.raises(utils.FlagTokenizeError, match="LDFLAGS") as excinfo:
+            utils.tokenize_flags_sz_or_raise(sz.Str('-Wl,"unterminated'), slot="LDFLAGS")
+        assert '-Wl,"unterminated' in str(excinfo.value)
+
+    def test_sz_variant_tokenizes_normally(self):
+        result = utils.tokenize_flags_sz_or_raise(sz.Str("-lm -lz"), slot="LDFLAGS")
+        assert [str(token) for token in result] == ["-lm", "-lz"]

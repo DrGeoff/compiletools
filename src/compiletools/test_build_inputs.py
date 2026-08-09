@@ -11,6 +11,7 @@ import compiletools.apptools as apptools
 import compiletools.apptools_pkgconfig
 import compiletools.hunter
 import compiletools.testhelper as uth
+import compiletools.utils
 from compiletools.apptools_pkgconfig import compute_pkg_config_path
 from compiletools.build_context import BuildContext
 from compiletools.build_inputs import _query_pkg_config, gather_inputs
@@ -190,6 +191,47 @@ class TestRawSlotsAreGatherInput:
             args = _minimal_args(verbose=-2, quiet=2, _quiet_applied=True)
             inputs = gather_inputs(args, BuildContext())
             assert inputs.verbose == -2
+
+
+@pytest.mark.usefixtures("parsers_reset")
+class TestFlagTokenizeAttribution:
+    """An unbalanced quote in a flag-slot value must surface as an
+    attributed FlagTokenizeError, not a bare shlex ValueError escaping
+    gather_inputs (coverage-gaps Task 1)."""
+
+    @pytest.mark.parametrize("slot", ["CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS"])
+    def test_unbalanced_quote_in_a_slot_is_attributed_to_that_slot(self, slot):
+        with uth.TempDirContext():
+            args = _minimal_args(**{slot: '-DFOO="bar'})
+            with pytest.raises(compiletools.utils.FlagTokenizeError, match=slot):
+                gather_inputs(args, BuildContext())
+
+    def test_error_names_the_offending_value_verbatim(self):
+        with uth.TempDirContext():
+            args = _minimal_args(CXXFLAGS='-DFOO="bar')
+            with pytest.raises(compiletools.utils.FlagTokenizeError) as excinfo:
+                gather_inputs(args, BuildContext())
+            assert '-DFOO="bar' in str(excinfo.value)
+
+    def test_prepend_variant_is_attributed_as_prepend_slot(self):
+        with uth.TempDirContext():
+            args = _minimal_args(prepend_cxxflags=['-DFOO="bar'])
+            with pytest.raises(compiletools.utils.FlagTokenizeError, match="prepend-CXXFLAGS"):
+                gather_inputs(args, BuildContext())
+
+    def test_append_variant_is_attributed_as_append_slot(self):
+        with uth.TempDirContext():
+            args = _minimal_args(append_ldflags=['-Wl,"bad'])
+            with pytest.raises(compiletools.utils.FlagTokenizeError, match="append-LDFLAGS"):
+                gather_inputs(args, BuildContext())
+
+    def test_well_formed_prepend_and_append_values_are_unaffected(self):
+        """Control: the new attribution path must not reject valid input."""
+        with uth.TempDirContext():
+            args = _minimal_args(prepend_cxxflags=["-DOK=1"], append_ldflags=["-lm"])
+            inputs = gather_inputs(args, BuildContext())
+            assert inputs.prepend_cxxflags == ("-DOK=1",)
+            assert inputs.append_ldflags == ("-lm",)
 
 
 @pytest.mark.usefixtures("parsers_reset")

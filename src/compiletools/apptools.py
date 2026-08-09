@@ -993,9 +993,12 @@ def tokenize_compile_flags(
     per-TU scoping mechanism. Other flags (-I, -O, -std, -W, -f...) pass
     through unchanged.
 
-    Each input may be a string (will be shlex-split, with simple-split
-    fallback on ValueError, matching extract_command_line_macros) or a
-    pre-tokenized list of strings.
+    Each input may be a string (shlex-split via
+    :func:`compiletools.utils.tokenize_flags_or_raise`, which raises
+    :class:`compiletools.utils.FlagTokenizeError` -- attributed to the
+    CPPFLAGS/CFLAGS/CXXFLAGS slot -- on an unbalanced quote rather than
+    silently degrading to whitespace-split) or a pre-tokenized list of
+    strings.
 
     Both attached form (-DFOO, -DFOO=bar, -UFOO) and detached form
     (-D FOO, -D FOO=bar, -U FOO) of -D/-U are stripped. Detached form
@@ -1012,21 +1015,18 @@ def tokenize_compile_flags(
         of remaining tokens, in original order.
     """
 
-    def _to_tokens(value):
+    def _to_tokens(value, slot):
         if value is None:
             return []
         if isinstance(value, list):
             return list(value)
         if not value:
             return []
-        try:
-            return split_command_cached(value)
-        except ValueError:
-            return value.split()
+        return compiletools.utils.tokenize_flags_or_raise(value, slot=slot)
 
-    cpp = strip_d_u_tokens(_to_tokens(cppflags))
-    c = strip_d_u_tokens(_to_tokens(cflags))
-    cxx = strip_d_u_tokens(_to_tokens(cxxflags))
+    cpp = strip_d_u_tokens(_to_tokens(cppflags, "CPPFLAGS"))
+    c = strip_d_u_tokens(_to_tokens(cflags, "CFLAGS"))
+    cxx = strip_d_u_tokens(_to_tokens(cxxflags, "CXXFLAGS"))
     if strip_unhashed:
         cpp = filter_hash_irrelevant_tokens(cpp)
         c = filter_hash_irrelevant_tokens(c)
@@ -1298,6 +1298,11 @@ def resubstitute(args) -> None:
         if args.verbose >= 2:
             raise
         print(compiletools.apptools_pkgconfig.render_pkg_config_error(err), file=sys.stderr)
+        raise SystemExit(1) from None
+    except compiletools.utils.FlagTokenizeError as err:
+        if args.verbose >= 2:
+            raise
+        print(str(err), file=sys.stderr)
         raise SystemExit(1) from None
     state = compute_build_state(inputs)
     apply_effects(state, context)
@@ -1600,6 +1605,11 @@ def parseargs(cap, argv, verbose=None, *, context):
         if args.verbose >= 2:
             raise
         print(compiletools.apptools_pkgconfig.render_pkg_config_error(err), file=sys.stderr)
+        raise SystemExit(1) from None
+    except compiletools.utils.FlagTokenizeError as err:
+        if args.verbose >= 2:
+            raise
+        print(str(err), file=sys.stderr)
         raise SystemExit(1) from None
     state = compute_build_state(inputs)
     apply_effects(state, context)

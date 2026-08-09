@@ -38,6 +38,7 @@ __all__ = [
     "ENV_VAR_DISABLED",
     "FLAG_ENV_VAR_NAMES",
     "HEADER_EXTS",
+    "FlagTokenizeError",
     "add_boolean_argument",
     "add_flag_argument",
     "clear_cache",
@@ -59,6 +60,8 @@ __all__ = [
     "remove_mount",
     "split_command_cached",
     "to_bool",
+    "tokenize_flags_or_raise",
+    "tokenize_flags_sz_or_raise",
 ]
 
 # The five flag slots that parseargs re-routes from env into APPEND_* form
@@ -138,6 +141,94 @@ def split_command_cached_sz(command_line_sz) -> list:
 
     str_results = shlex.split(command_line_sz.decode("utf-8"))
     return [sz.Str(s) for s in str_results]
+
+
+class FlagTokenizeError(RuntimeError):
+    """A flag-slot value could not be shell-tokenized (an unbalanced or
+    unclosed quote, per ``shlex``). Carries slot/source attribution so the
+    diagnostic tells the user WHERE the bad value came from, WHAT is wrong,
+    and HOW to fix it -- raised instead of letting shlex's bare
+    ``ValueError`` escape to the caller as an unattributed traceback.
+
+    Named on the same pattern as
+    :class:`compiletools.apptools_pkgconfig.PkgConfigError`: callers at the
+    CLI boundary (``apptools.parseargs`` / ``apptools.resubstitute``,
+    ``magicflags._process_magic_flag``) catch this type, print ``str(err)``
+    without a traceback below ``-vv`` (``verbose >= 2``), and re-raise at
+    ``-vv`` and above for debugging.
+    """
+
+
+def _suggest_flag_quote_fix(value: str) -> str | None:
+    """Best-effort corrected form for a flag value ``shlex`` rejected due to
+    an unbalanced quote.
+
+    The common case is a compiler macro define that needs literal quotes to
+    reach the compiler, e.g. ``-DFOO="bar"``: writing that directly as one
+    CPPFLAGS/CXXFLAGS token is exactly the malformed input this function is
+    built to repair, because the ``"`` characters are shlex quoting, not
+    part of the value. The fix is to wrap the quoted run in the *other*
+    quote character so shlex treats it as one literal token and the inner
+    quotes survive to the compiler: ``-DFOO='"bar"'``.
+
+    Returns ``None`` when neither quote character has an odd count -- a
+    shlex failure this heuristic doesn't model (e.g. a trailing backslash
+    escape), where a generic "close or escape it" hint is all that can be
+    offered.
+    """
+    dq_unbalanced = value.count('"') % 2 == 1
+    sq_unbalanced = value.count("'") % 2 == 1
+    if dq_unbalanced:
+        offending, other = '"', "'"
+    elif sq_unbalanced:
+        offending, other = "'", '"'
+    else:
+        return None
+    idx = value.index(offending)
+    return value[:idx] + other + value[idx:] + offending + other
+
+
+def _render_flag_tokenize_error(value: str, slot: str, source: str | None, reason: str) -> str:
+    """Render the WHERE/WHAT/HOW diagnostic body shared by
+    :func:`tokenize_flags_or_raise` and :func:`tokenize_flags_sz_or_raise`."""
+    where = f"{slot} (from {source})" if source else slot
+    lines = [
+        f"ct: error: unbalanced quote in {where}: {reason}",
+        f"  offending value: {value!r}",
+    ]
+    suggestion = _suggest_flag_quote_fix(value)
+    if suggestion is not None:
+        # Not repr()'d: the point is to show the corrected value exactly as
+        # the user should type it (e.g. -DFOO='"bar"'), and repr's escaping
+        # would obscure that.
+        lines.append(f"  fix: close or escape the quote, e.g. write it as: {suggestion}")
+    else:
+        lines.append("  fix: close or escape the unbalanced quote in this value")
+    return "\n".join(lines)
+
+
+def tokenize_flags_or_raise(value: str, *, slot: str, source: str | None = None) -> list[str]:
+    """Shlex-tokenize *value* like :func:`split_command_cached`, but raise
+    :class:`FlagTokenizeError` -- attributed to *slot* and, when the value
+    came from a source file (a ``//#`` magic-flag annotation), *source* --
+    instead of letting shlex's bare ``ValueError`` escape.
+
+    ``slot`` names the flag slot the value came from, e.g. ``CPPFLAGS``,
+    ``prepend-CXXFLAGS``, or a magic-flag key such as ``//#CXXFLAGS``.
+    """
+    try:
+        return split_command_cached(value)
+    except ValueError as exc:
+        raise FlagTokenizeError(_render_flag_tokenize_error(value, slot, source, str(exc))) from exc
+
+
+def tokenize_flags_sz_or_raise(value_sz, *, slot: str, source: str | None = None) -> list:
+    """StringZilla-aware counterpart of :func:`tokenize_flags_or_raise`,
+    wrapping :func:`split_command_cached_sz` with the same attribution."""
+    try:
+        return split_command_cached_sz(value_sz)
+    except ValueError as exc:
+        raise FlagTokenizeError(_render_flag_tokenize_error(str(value_sz), slot, source, str(exc))) from exc
 
 
 @functools.cache

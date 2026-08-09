@@ -22,6 +22,7 @@ import compiletools.compilation_database as cdb
 import compiletools.configutils as cu
 import compiletools.hunter
 import compiletools.testhelper as uth
+import compiletools.utils
 from compiletools.apptools import (
     _AccumulatingConfigFileParser,
     _add_xxpend_argument,
@@ -50,6 +51,7 @@ from compiletools.apptools import (
     filter_pkg_config_cflags,
     find_system_header,
     terminalcolumns,
+    tokenize_compile_flags,
     unsupplied_replacement,
     verbose_print_args,
     verboseprintconfig,
@@ -162,6 +164,46 @@ def test_strict_pkg_config_parseargs_renders_a_clean_remedy(capsys):
     assert "--pkg-config-errors=warn" in error_output
 
 
+@pytest.mark.usefixtures("parsers_reset")
+def test_unbalanced_quote_in_a_cli_flag_renders_a_clean_remedy(capsys):
+    """CLI-level mirror of the pkg-config carve-out above, for the other
+    named error this same try/except block now catches (coverage-gaps
+    Task 1): a real parseargs run over a --CXXFLAGS value with an
+    unbalanced quote must print an attributed, traceback-free message and
+    exit(1) rather than let shlex's bare ValueError escape."""
+    with _temp_repo_with_ct_conf("gcc", "gcc") as (repo_root, conf_d):
+        with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+            fh.write("CC = gcc\nCXX = g++\nLD = g++\n")
+
+        with pytest.raises(SystemExit) as excinfo:
+            _parseargs_for_variant(
+                repo_root,
+                ["--variant=gcc", "--no-git-root", '--CXXFLAGS=-DFOO="bar'],
+            )
+
+    assert excinfo.value.code == 1
+    error_output = capsys.readouterr().err
+    assert "CXXFLAGS" in error_output
+    assert '-DFOO="bar' in error_output
+    assert "Traceback" not in error_output
+
+
+@pytest.mark.usefixtures("parsers_reset")
+def test_unbalanced_quote_in_a_cli_flag_reraises_at_high_verbosity():
+    """-vv (verbose >= 2) must surface the real FlagTokenizeError with its
+    traceback, mirroring the PkgConfigError carve-out's verbosity gate --
+    the debugging mode must not be the one case that hides the failure."""
+    with _temp_repo_with_ct_conf("gcc", "gcc") as (repo_root, conf_d):
+        with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+            fh.write("CC = gcc\nCXX = g++\nLD = g++\n")
+
+        with pytest.raises(compiletools.utils.FlagTokenizeError):
+            _parseargs_for_variant(
+                repo_root,
+                ["--variant=gcc", "--no-git-root", '--CXXFLAGS=-DFOO="bar', "-vv"],
+            )
+
+
 class TestExtractCommandLineMacrosSz:
     """Test extract_command_line_macros_sz()."""
 
@@ -196,6 +238,47 @@ class TestExtractCommandLineMacrosSz:
         result = extract_command_line_macros_sz(args, [sz.Str("CPPFLAGS"), sz.Str("CXXFLAGS")])
         assert result[sz.Str("A")] == sz.Str("1")
         assert result[sz.Str("B")] == sz.Str("2")
+
+
+class TestTokenizeCompileFlagsQuoteErrors:
+    """tokenize_compile_flags used to silently degrade an unbalanced-quote
+    string to str.split() on ValueError, disagreeing with build_inputs'
+    (bare-crash, pre-fix) path. It must now raise the same attributed
+    FlagTokenizeError build_inputs._slot_tokens raises (coverage-gaps
+    Task 1) -- consistent behavior across both consumers of the raw slot
+    strings, no silent fallback."""
+
+    def test_well_formed_strings_still_tokenize(self):
+        cpp, c, cxx = tokenize_compile_flags("-DA=1 -I/x", "-Wall", "-O2 -std=c++20")
+        assert cpp == ["-I/x"]  # -D stripped
+        assert c == ["-Wall"]
+        assert cxx == ["-O2", "-std=c++20"]
+
+    def test_pretokenized_lists_pass_through_unaffected(self):
+        """A pre-tokenized list input must not go anywhere near shlex, so a
+        literal embedded quote character in one element is not an error."""
+        cpp, _c, _cxx = tokenize_compile_flags(['-DFOO="bar"'], [], [])
+        assert cpp == []  # -D stripped, no crash
+
+    def test_unbalanced_quote_in_cppflags_raises_attributed_to_cppflags(self):
+        with pytest.raises(compiletools.utils.FlagTokenizeError, match="CPPFLAGS"):
+            tokenize_compile_flags('-DFOO="bar', "", "")
+
+    def test_unbalanced_quote_in_cflags_raises_attributed_to_cflags(self):
+        with pytest.raises(compiletools.utils.FlagTokenizeError, match="CFLAGS"):
+            tokenize_compile_flags("", '-DFOO="bar', "")
+
+    def test_unbalanced_quote_in_cxxflags_raises_attributed_to_cxxflags(self):
+        with pytest.raises(compiletools.utils.FlagTokenizeError, match="CXXFLAGS"):
+            tokenize_compile_flags("", "", '-DFOO="bar')
+
+    def test_it_no_longer_silently_falls_back_to_str_split(self):
+        """Regression pin for the removed fallback: str.split() on the
+        malformed value would have produced ['-DFOO=\"bar'] (one token,
+        quotes intact) without ever raising -- assert the raise happens
+        instead of that silent degrade."""
+        with pytest.raises(compiletools.utils.FlagTokenizeError):
+            tokenize_compile_flags('-DFOO="bar', "", "")
 
 
 class TestFindSystemHeader:

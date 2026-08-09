@@ -373,6 +373,39 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
             "a malformed specification must not contribute link flags"
         )
 
+    def test_unbalanced_quote_in_a_magic_flag_names_the_source_file(self, capsys):
+        """coverage-gaps Task 1: a //#CXXFLAGS= magic annotation with an
+        unbalanced quote must attribute the failure to the source file it
+        came from, matching the PKG-CONFIG carve-out's traceback-free
+        SystemExit(1) pattern just below -- both are RuntimeError
+        subclasses that must survive Hunter's broad ``except Exception``
+        (see the comment on the raise site in magicflags.py)."""
+        files = uth.write_sources({"bad_magic_cxxflags.cpp": '//#CXXFLAGS=-DFOO="bar\nint main() {}\n'})
+
+        with pytest.raises(SystemExit) as excinfo:
+            self._parse_with_magic("direct", str(files["bad_magic_cxxflags.cpp"]))
+
+        assert excinfo.value.code == 1
+        error_output = capsys.readouterr().err
+        assert str(files["bad_magic_cxxflags.cpp"]) in error_output
+        assert "CXXFLAGS" in error_output
+        assert '-DFOO="bar' in error_output
+        assert "Traceback" not in error_output
+
+    def test_unbalanced_quote_in_a_magic_flag_is_equally_fatal_at_high_verbosity(self, capsys):
+        """Mirrors test_pkg_config_error_mode_is_equally_fatal_at_high_verbosity:
+        verbosity must not invert this enforcement either -- re-raising the
+        RuntimeError at -vv would hand it back to Hunter's broad
+        ``except Exception`` and downgrade the whole failure to a warning."""
+        files = uth.write_sources({"bad_magic_cxxflags_vv.cpp": '//#CXXFLAGS=-DFOO="bar\nint main() {}\n'})
+
+        with pytest.raises(SystemExit) as excinfo:
+            self._parse_with_magic("direct", str(files["bad_magic_cxxflags_vv.cpp"]), ["-v", "-v"])
+
+        assert excinfo.value.code == 1
+        error_output = capsys.readouterr().err
+        assert str(files["bad_magic_cxxflags_vv.cpp"]) in error_output
+
     def test_pkg_config_error_mode_renders_magic_annotation_failures_cleanly(self, capsys):
         files = uth.write_sources(
             {"strict_magic_pkg_config.cpp": "//#PKG-CONFIG=compiletools-definitely-missing-pkg\nint main() {}\n"}

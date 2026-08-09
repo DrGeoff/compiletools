@@ -686,7 +686,16 @@ class MagicFlagsBase:
             # PKG-CONFIG generates flags for other keys AND adds itself to PKG-CONFIG key
 
         # Split flag string into individual flags - all magic flags can contain multiple values
-        individual_flags = compiletools.utils.split_command_cached_sz(flag)
+        try:
+            individual_flags = compiletools.utils.tokenize_flags_sz_or_raise(flag, slot=f"//#{magic}", source=filename)
+        except compiletools.utils.FlagTokenizeError as exc:
+            # Verbosity must not invert this, matching the PKG-CONFIG carve-out
+            # just above: SystemExit is the termination that survives the
+            # deliberately broad ``except Exception`` in Hunter's source
+            # expansion (hunter.py), which would otherwise catch this
+            # RuntimeError subclass and downgrade the failure to a warning.
+            print(str(exc), file=sys.stderr)
+            raise SystemExit(1) from None
         flagsforfilename[magic].extend(individual_flags)
         if self._args.verbose >= 5:
             print(f"Using magic flag {magic}={flag} extracted from {filename}")

@@ -73,13 +73,13 @@ def _slot_tokens(args, name):
     re-gather rebuilds from the same base by construction.
     """
     import compiletools.apptools as apptools
-    from compiletools.utils import split_command_cached
+    from compiletools.utils import tokenize_flags_or_raise
 
     unsupplied = None if name in _FALLBACK_SLOTS else ()
     raw = getattr(args, name, None)
     if raw is None or raw in apptools._UNSUPPLIED_SENTINELS:
         return unsupplied
-    return tuple(split_command_cached(raw))
+    return tuple(tokenize_flags_or_raise(raw, slot=name))
 
 
 def _xxpend_tokens(args, attr):
@@ -88,11 +88,13 @@ def _xxpend_tokens(args, attr):
     Each list element may carry several flags (one conf value arrives as
     one element), so each element is tokenized individually.
     """
-    from compiletools.utils import split_command_cached
+    from compiletools.utils import tokenize_flags_or_raise
 
+    xxpend, _, name = attr.partition("_")
+    slot = f"{xxpend}-{name.upper()}"
     tokens = []
     for element in getattr(args, attr, None) or ():
-        tokens.extend(split_command_cached(element))
+        tokens.extend(tokenize_flags_or_raise(element, slot=slot))
     return tuple(tokens)
 
 
