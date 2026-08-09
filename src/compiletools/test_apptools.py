@@ -318,6 +318,68 @@ def test_double_quoted_include_path_with_space_survives_real_parseargs():
     assert "/opt/has space/include" in cpp, f"path was shredded or left quoted: {cpp!r}"
 
 
+@pytest.mark.usefixtures("parsers_reset")
+def test_prepend_include_path_with_space_survives_real_parseargs():
+    """coverage-gaps final-review-v2 Important #1: the bare-INCLUDE fix
+    above (test_double_quoted_include_path_with_space_survives_real_parseargs)
+    did not cover --prepend-INCLUDE / --append-INCLUDE -- their argparse
+    dest names ("prepend_include" / "append_include") were missing from
+    _ATOMIC_TOKEN_REPARSED_ATTRS, so _strip_quotes' list branch cosmetically
+    peeled the value's own quote layer (prepend_include isn't one of
+    _FLATTENED_REPARSED_ATTRS, so there's no _flatten_variables protective
+    re-quote to restore it), and the bare space then re-split into two
+    shredded -I fragments at _include_paths_with_gitroots' downstream shlex
+    re-tokenize.
+
+    Uses an embedded quote layer (as a conf value ``prepend-INCLUDE =
+    "/opt/has space/include"`` would carry, or the CLI equivalent) --
+    mirrors the double-quoted bare-INCLUDE test above, since a bare
+    unquoted CLI list element never reaches _safely_unquote_string's
+    quote-stripping branch at all.
+
+    Mutation guard: remove "prepend_include" from _ATOMIC_TOKEN_REPARSED_ATTRS
+    and this test fails (two include paths instead of one).
+    """
+    with _temp_repo_with_ct_conf("gcc", "gcc") as (repo_root, conf_d):
+        with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+            fh.write("CC = gcc\nCXX = g++\nLD = g++\n")
+
+        args = _parseargs_for_variant(
+            repo_root,
+            ["--variant=gcc", "--no-git-root", '--prepend-INCLUDE="/opt/has space/include"'],
+        )
+
+    cpp = get_build_state(args).flags.cpp
+    assert "/opt/has space/include" in cpp, f"path was shredded: {cpp!r}"
+    idx = cpp.index("/opt/has space/include")
+    assert cpp[idx - 1] == "-I", f"expected -I immediately before the path token, got {cpp!r}"
+    assert "/opt/has" not in cpp, f"a shredded fragment leaked into cpp tokens: {cpp!r}"
+
+
+@pytest.mark.usefixtures("parsers_reset")
+def test_append_include_path_with_space_survives_real_parseargs():
+    """coverage-gaps final-review-v2 Important #1: --append-INCLUDE sibling
+    of the prepend test above -- same gate, same shredding bug, same fix.
+
+    Mutation guard: remove "append_include" from _ATOMIC_TOKEN_REPARSED_ATTRS
+    and this test fails (two include paths instead of one).
+    """
+    with _temp_repo_with_ct_conf("gcc", "gcc") as (repo_root, conf_d):
+        with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+            fh.write("CC = gcc\nCXX = g++\nLD = g++\n")
+
+        args = _parseargs_for_variant(
+            repo_root,
+            ["--variant=gcc", "--no-git-root", '--append-INCLUDE="/opt/has space/include"'],
+        )
+
+    cpp = get_build_state(args).flags.cpp
+    assert "/opt/has space/include" in cpp, f"path was shredded: {cpp!r}"
+    idx = cpp.index("/opt/has space/include")
+    assert cpp[idx - 1] == "-I", f"expected -I immediately before the path token, got {cpp!r}"
+    assert "/opt/has" not in cpp, f"a shredded fragment leaked into cpp tokens: {cpp!r}"
+
+
 class TestExtractCommandLineMacrosSz:
     """Test extract_command_line_macros_sz()."""
 

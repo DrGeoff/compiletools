@@ -1193,7 +1193,19 @@ _FLATTENED_REPARSED_ATTRS = frozenset({"CPPFLAGS", "CFLAGS", "CXXFLAGS", "INCLUD
 #: value is semantically ONE atomic item (a path) rather than several
 #: space-separated items (flags) -- see _safely_unquote_string's docstring
 #: for why the round-trip-safety check is scoped to just this subset.
-_ATOMIC_TOKEN_REPARSED_ATTRS = frozenset({"INCLUDE"})
+#:
+#: "prepend_include" / "append_include" are the argparse dest names
+#: _add_xxpend_argument derives for --prepend-INCLUDE / --append-INCLUDE
+#: (``f"{xx}_{destname.lower().replace('-', '_')}"`` with destname="include"
+#: -- see apptools_argparse.py). _strip_quotes' list branch passes the attr
+#: name itself as slot for each element (vars(args) iteration), so a
+#: prepend-/append-INCLUDE list element with a quoted space-containing path
+#: reaches _safely_unquote_string with slot="prepend_include" /
+#: "append_include", not "INCLUDE" -- omitting them here left the bare
+#: INCLUDE spelling protected while the other two spellings still shredded
+#: a quoted space-containing path via _include_paths_with_gitroots'
+#: downstream shlex re-tokenize (build_inputs.py).
+_ATOMIC_TOKEN_REPARSED_ATTRS = frozenset({"INCLUDE", "prepend_include", "append_include"})
 
 
 def _strip_quotes(args):
@@ -1263,8 +1275,9 @@ def _safely_unquote_string(value, *, slot="quoted value", raise_on_malformed=Tru
     _UNQUOTE_RAISE_EXEMPT attrs, and _note_shadowed_bare_values always
     does for the same reason) to keep the old best-effort fallback instead.
 
-    Round-trip safety for ``_ATOMIC_TOKEN_REPARSED_ATTRS`` (currently just
-    INCLUDE): INCLUDE is unconditionally shlex-re-tokenized downstream
+    Round-trip safety for ``_ATOMIC_TOKEN_REPARSED_ATTRS`` (INCLUDE plus its
+    prepend_include/append_include list-element siblings): INCLUDE is
+    unconditionally shlex-re-tokenized downstream
     (``_include_paths_with_gitroots``, inside ``gather_inputs``), and
     ``_flatten_variables`` (which runs just before ``_strip_quotes`` in
     ``parseargs``) may have wrapped a whitespace-containing value in
