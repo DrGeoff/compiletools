@@ -2547,9 +2547,18 @@ class TestConfFileEncodingTolerance:
         assert args.variant == "gcc.debug"
 
 
-def _wild_args(cxx, ldflags, variant="gcc.wild.release"):
-    """Minimal namespace for unit-testing the wild normalization helpers."""
+def _wild_args(cxx, ldflags, variant="gcc.wild.release", ld=None):
+    """Minimal namespace for unit-testing the wild normalization helpers.
+
+    ``ld`` mirrors the ``--LD`` override. Left at the default ``None`` the
+    namespace gets no ``LD`` attribute at all (the shape every pre-existing
+    test in this module exercises: LD simply never supplied). Pass an
+    explicit driver name, or one of the ``_UNSUPPLIED_USE_CXX*`` sentinels,
+    to exercise ``_effective_link_driver``'s LD-vs-CXX precedence.
+    """
     args = SimpleNamespace(CXX=cxx, LDFLAGS=ldflags, variant=variant, verbose=0)
+    if ld is not None:
+        args.LD = ld
     uth.finalize_flag_state(args)
     return args
 
@@ -2606,6 +2615,58 @@ def test_check_wild_b_old_gcc_ok(monkeypatch):
     # wild-B has no version gate — that's its whole purpose.
     args = _wild_args("g++", "", "gcc.wild-B.release")
     apptools._check_wild_linker_usable(args)  # no raise
+
+
+def test_check_wild_usable_ld_wins_clang_over_cxx_gcc(monkeypatch):
+    """LD=clang++ with CXX=g++: the effective link driver is LD (clang), so
+    the gcc<16 version gate must not fire even though CXX names a gcc
+    binary. Asserting on the probed compiler name (not just "no raise")
+    pins that ``_effective_link_driver`` actually consulted LD, not CXX --
+    a version-gate bug that silently fell back to CXX would still pass a
+    bare no-raise check whenever the CXX-derived family also happened to
+    dodge the gate.
+    """
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
+
+    def _fake_version(compiler):
+        assert compiler == "clang++", f"expected the LD override to be probed, got {compiler!r}"
+        return ("clang", 22)
+
+    monkeypatch.setattr(apptools_validate, "_compiler_major_version", _fake_version)
+    args = _wild_args("g++", "-fuse-ld=wild", "gcc.wild.release", ld="clang++")
+    apptools._check_wild_linker_usable(args)  # no raise: LD (clang) wins over CXX (gcc)
+
+
+def test_check_wild_usable_ld_wins_gcc_over_cxx_clang(monkeypatch):
+    """LD=g++ with CXX=clang++: the effective link driver is LD (gcc), so
+    an old-gcc raise fires even though CXX names clang -- the mirror image
+    of the clang-wins case above, again pinning which argument actually
+    gets probed.
+    """
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
+
+    def _fake_version(compiler):
+        assert compiler == "g++", f"expected the LD override to be probed, got {compiler!r}"
+        return ("gcc", 15)
+
+    monkeypatch.setattr(apptools_validate, "_compiler_major_version", _fake_version)
+    args = _wild_args("clang++", "-fuse-ld=wild", "gcc.wild.release", ld="g++")
+    with pytest.raises(RuntimeError, match="gcc >= 16"):
+        apptools._check_wild_linker_usable(args)
+
+
+def test_check_wild_usable_ld_sentinel_falls_back_to_cxx(monkeypatch):
+    """LD explicitly left at the ``_UNSUPPLIED_USE_CXX`` sentinel (as the
+    real --LD argparse default is, not just an absent attribute) must still
+    fall back to CXX for the version gate. Every other test in this module
+    exercises the "LD attribute never set" shape; this pins the actual
+    production sentinel value that ``_effective_link_driver`` checks for.
+    """
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
+    monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda c: ("gcc", 15))
+    args = _wild_args("g++", "-fuse-ld=wild", "gcc.wild.release", ld=apptools._UNSUPPLIED_USE_CXX)
+    with pytest.raises(RuntimeError, match="gcc >= 16"):
+        apptools._check_wild_linker_usable(args)
 
 
 def test_check_wild_usable_not_selected_noop(monkeypatch):
