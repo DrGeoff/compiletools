@@ -15,6 +15,7 @@ import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.magicflags
 import compiletools.testhelper as uth
+import compiletools.utils
 from compiletools.bazel_backend import BazelBackend
 from compiletools.build_backend import (
     _PCHDIR_WARNED,
@@ -843,6 +844,37 @@ class TestBuildGraphPopulation:
         assert "valgrind" in _cmd(test_rules[0])
         assert "--leak-check=full" in _cmd(test_rules[0])
 
+    def test_testprefix_unbalanced_quote_raises_flag_tokenize_error(self, tmp_path):
+        """coverage-gaps Task 9: TESTPREFIX used to be split with a bare
+        ``str.split()``; an unbalanced quote now raises the shared,
+        attributed FlagTokenizeError instead of shredding into argv
+        garbage with a literal quote character."""
+        args = make_backend_args(tmp_path, filename=[], tests=["/src/test_foo.cpp"])
+        args.TESTPREFIX = 'valgrind "unterminated'
+        hunter = make_mock_hunter(sources=["/src/test_foo.cpp"])
+        backend = self._make_backend(tmp_path, args=args, hunter=hunter)
+
+        with pytest.raises(compiletools.utils.FlagTokenizeError, match="TESTPREFIX"):
+            backend.build_graph()
+
+    def test_build_only_changed_unbalanced_quote_raises_flag_tokenize_error(self, tmp_path):
+        """coverage-gaps Task 9: --build-only-changed used to be split with
+        a bare ``str.split()``; an unbalanced quote now raises the shared,
+        attributed FlagTokenizeError so a filename with a quoted space can
+        eventually be supported rather than silently mis-splitting.
+
+        Mutation guard: reverting build_backend._apply_build_only_changed's
+        tokenize_flags_or_raise call back to ``build_only_changed.split()``
+        makes this test fail (no raise) and would let a malformed value
+        silently filter on garbage tokens instead.
+        """
+        args = make_backend_args(tmp_path, filename=["/src/main.cpp"])
+        args.build_only_changed = 'main.cpp "unterminated'
+        backend = self._make_backend(tmp_path, args=args)
+
+        with pytest.raises(compiletools.utils.FlagTokenizeError, match="build-only-changed"):
+            backend._apply_build_only_changed(BuildGraph())
+
     def test_runtests_not_created_when_no_tests(self, tmp_path):
         """build_graph() should NOT create 'runtests' phony when no tests."""
         args = make_backend_args(tmp_path, filename=["/src/main.cpp"], tests=[])
@@ -1313,6 +1345,22 @@ class TestCompilerWrapperSplit:
         compile_rules = [r for r in graph.rules if r.rule_type == "compile" and r.output.endswith("main.o")]
         assert len(compile_rules) == 1
         assert _cmd(compile_rules[0])[0] == "g++"
+
+    def test_cxx_unbalanced_quote_raises_flag_tokenize_error(self, tmp_path):
+        """coverage-gaps Task 9: every CC/CXX/LD split site in build_backend
+        (compile, PCH, link, shared-lib rule construction) now raises the
+        shared, attributed FlagTokenizeError on an unbalanced quote instead
+        of a bare shlex ValueError. Exercised here at the compile-rule
+        construction site (build_graph -> _create_compile_rule)."""
+        backend = self._build(tmp_path, CXX='ccache "g++')
+        with pytest.raises(compiletools.utils.FlagTokenizeError, match="CXX"):
+            backend.build_graph()
+
+    def test_ld_unbalanced_quote_raises_flag_tokenize_error(self, tmp_path):
+        """Same as above but for the link-rule construction site."""
+        backend = self._build(tmp_path, LD='ccache "g++')
+        with pytest.raises(compiletools.utils.FlagTokenizeError, match="LD"):
+            backend.build_graph()
 
 
 class TestWildBDashBToken:

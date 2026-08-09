@@ -24,7 +24,7 @@ class PreProcessor:
         # shlex splitting.
         state = compiletools.build_apply.get_build_state(self.args)
         cmd = (
-            compiletools.utils.split_command_cached(self.args.CPP)
+            compiletools.utils.split_compiler_command(self.args.CPP, slot="CPP")
             + list(state.flags.cpp)
             + compiletools.utils.split_command_cached(extraargs)
         )

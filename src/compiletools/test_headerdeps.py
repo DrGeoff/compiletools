@@ -571,11 +571,19 @@ class TestHeaderDepsUnitTests(tb.BaseCompileToolsTestCase):
         assert base._extract_isystem_paths_from_flags(None) == []
 
     def test_extract_isystem_shlex_fallback(self):
-        """Test _extract_isystem_paths_from_flags falls back on shlex ValueError."""
+        """_extract_isystem_paths_from_flags raises FlagTokenizeError on an
+        unbalanced quote instead of silently degrading to a plain split
+        (Task 9: DRY unbalanced-quote handling across every user-entered
+        flag string, including this one -- consistent with every other
+        flag-slot site even though production input, the state's
+        shlex-joined cppflags, cannot itself be malformed)."""
         base = self._make_base()
         # Unclosed quote causes shlex ValueError
-        result = base._extract_isystem_paths_from_flags("-isystem /usr/include 'unclosed")
-        assert "/usr/include" in result
+        try:
+            base._extract_isystem_paths_from_flags("-isystem /usr/include 'unclosed")
+            assert False, "Should have raised FlagTokenizeError"
+        except compiletools.utils.FlagTokenizeError as exc:
+            assert "CPPFLAGS" in str(exc)
 
     def test_extract_isystem_dangling(self):
         """Test -isystem at end of string with no following path."""
@@ -603,10 +611,15 @@ class TestHeaderDepsUnitTests(tb.BaseCompileToolsTestCase):
         assert "local" in result
 
     def test_extract_include_shlex_fallback(self):
-        """Test _extract_include_paths_from_flags falls back on shlex ValueError."""
+        """_extract_include_paths_from_flags raises FlagTokenizeError on an
+        unbalanced quote instead of silently degrading to a plain split
+        (Task 9 DRY conversion; see test_extract_isystem_shlex_fallback)."""
         base = self._make_base()
-        result = base._extract_include_paths_from_flags("-I /usr/include 'unclosed")
-        assert "/usr/include" in result
+        try:
+            base._extract_include_paths_from_flags("-I /usr/include 'unclosed")
+            assert False, "Should have raised FlagTokenizeError"
+        except compiletools.utils.FlagTokenizeError as exc:
+            assert "CPPFLAGS" in str(exc)
 
     def test_extract_include_dangling_I(self):
         """Test -I at end of string with no following path."""

@@ -55,7 +55,7 @@ def _detect_stage(cxx: str | None, source_path: str) -> str:
     a future caller needs a header-unit dump, add a ``--stage`` flag
     rather than auto-detecting from filename heuristics.
     """
-    kind = compiletools.apptools.compiler_kind(cxx) or "gcc"
+    kind = compiletools.apptools.compiler_kind(cxx, slot="CXX") or "gcc"
     if kind == "clang":
         return "clang_module_interface"
     return "gcc_module_interface"

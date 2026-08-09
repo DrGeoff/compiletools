@@ -968,6 +968,17 @@ def _effective_link_driver(args) -> str | None:
     return getattr(args, "CXX", None)
 
 
+def _effective_link_driver_slot(args) -> str:
+    """Which flag slot ``_effective_link_driver`` picked -- "LD" or "CXX"
+    -- for attributing a FlagTokenizeError raised while tokenizing its
+    return value (e.g. inside ``compiler_kind`` / ``_compiler_major_version``)
+    to the slot the user actually set, not a generic placeholder."""
+    ld = getattr(args, "LD", None)
+    if ld and ld not in (_UNSUPPLIED_USE_CXX, _UNSUPPLIED_USE_CXXFLAGS):
+        return "LD"
+    return "CXX"
+
+
 def _variant_has_axis(args, axis_name: str) -> bool:
     """True if *axis_name* is one of the variant's selected axis tokens.
 
@@ -1151,15 +1162,28 @@ def _note_shadowed_bare_values(args, name, dest):
             file=sys.stderr,
         )
         return
-    final = {_safely_unquote_string(v) for v in (getattr(args, dest, []) or [])}
+    # This note serves only the exempt prebuild-script/postbuild-script/
+    # auto-exclude keys (see the docstring above and _UNQUOTE_RAISE_EXEMPT):
+    # raise_on_malformed=False keeps the comparison a no-op degrade on a
+    # malformed quote, matching _strip_quotes' treatment of the same attrs.
+    final = {_safely_unquote_string(v, raise_on_malformed=False) for v in (getattr(args, dest, []) or [])}
     for value, source_file, lineno, _literal in provenance.get(name, []):
-        if _safely_unquote_string(value) not in final:
+        if _safely_unquote_string(value, raise_on_malformed=False) not in final:
             print(
                 f"ct: note: {name} = {value} (from {source_file}:{lineno}) was discarded "
                 f"by a later or higher-priority {name} setting (bare keys are "
                 f"last-writer-wins; use append-{name.upper()} to accumulate instead)",
                 file=sys.stderr,
             )
+
+
+#: Attribute names _strip_quotes must NOT raise for on an unbalanced quote.
+#: prebuild-script / postbuild-script / auto-exclude values are handed to a
+#: real shell (prebuild/postbuild) or shlex-split by findtargets
+#: (auto-exclude) later, and a malformed one is already reported there with
+#: a nonzero exit -- out of scope per the coverage-gaps plan, so these keep
+#: the old silent-degrade fallback instead of raising FlagTokenizeError.
+_UNQUOTE_RAISE_EXEMPT = frozenset({"prebuild_scripts", "postbuild_scripts", "auto_exclude"})
 
 
 def _strip_quotes(args):
@@ -1179,24 +1203,32 @@ def _strip_quotes(args):
             continue
         value = getattr(args, name)
         if value is not None:
+            raise_on_malformed = name not in _UNQUOTE_RAISE_EXEMPT
             # Can't just use the for loop directly because that would
             # try and process every character in a string
             if compiletools.utils.is_non_string_iterable(value):
                 for index, element in enumerate(value):
-                    value[index] = _safely_unquote_string(element)
+                    value[index] = _safely_unquote_string(element, slot=name, raise_on_malformed=raise_on_malformed)
             else:
                 try:
                     # Otherwise assume its a string
-                    setattr(args, name, _safely_unquote_string(value))
+                    setattr(args, name, _safely_unquote_string(value, slot=name, raise_on_malformed=raise_on_malformed))
                 except (AttributeError, ValueError, TypeError):
                     logging.debug("Could not unquote arg %s (type %s)", name, type(value).__name__)
 
 
-def _safely_unquote_string(value):
+def _safely_unquote_string(value, *, slot="quoted value", raise_on_malformed=True):
     """Safely remove shell quotes from a string using proper parsing.
 
     Only removes quotes that are actual shell quotes, not content quotes.
-    Falls back to compatibility behavior for edge cases.
+
+    On a shlex failure (an unbalanced quote), the default is to raise
+    FlagTokenizeError attributed to *slot* -- the caller's attr name, from
+    _strip_quotes' vars() loop, when called from there -- rather than
+    silently stripping a mismatched quote pair. Pass
+    ``raise_on_malformed=False`` (as _strip_quotes does for
+    _UNQUOTE_RAISE_EXEMPT attrs, and _note_shadowed_bare_values always
+    does for the same reason) to keep the old best-effort fallback instead.
     """
     if not isinstance(value, str):
         return value
@@ -1222,10 +1254,16 @@ def _safely_unquote_string(value):
             if (unquoted.startswith('"') and unquoted.endswith('"')) or (
                 unquoted.startswith("'") and unquoted.endswith("'")
             ):
-                return _safely_unquote_string(unquoted)
+                return _safely_unquote_string(unquoted, slot=slot, raise_on_malformed=raise_on_malformed)
             return unquoted
         return value
     except ValueError:
+        if raise_on_malformed:
+            # Re-run through the shared helper to raise the attributed,
+            # DRY FlagTokenizeError diagnostic (split_command_cached is
+            # @functools.cache'd and does not memoize the exception, so
+            # this repeats the same cheap shlex.split call).
+            compiletools.utils.tokenize_flags_or_raise(value, slot=slot)
         # Malformed quoting that shlex rejects: strip only a matching
         # enclosing quote pair rather than failing the whole parse.
         if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
@@ -1508,7 +1546,18 @@ def parseargs(cap, argv, verbose=None, *, context):
         args = _fix_variable_handling_method(cap, argv, verbose)
         _stash_private_attrs(args, cap, context, argv)
     _flatten_variables(args)
-    _strip_quotes(args)
+    # _strip_quotes runs well before the gather_inputs try/except below, so
+    # a value starting with an unbalanced quote (_safely_unquote_string
+    # raising FlagTokenizeError) needs its own catch-and-render here --
+    # otherwise it would escape parseargs as a raw traceback in every CLI
+    # tool that calls it, not just the ones with their own broad handler.
+    try:
+        _strip_quotes(args)
+    except compiletools.utils.FlagTokenizeError as err:
+        if args.verbose >= 2:
+            raise
+        print(str(err), file=sys.stderr)
+        raise SystemExit(1) from None
 
     if verbose > 8:
         print(f"Parsing commandline arguments has occured. Before build-state core args={args}")
@@ -1635,9 +1684,22 @@ def parseargs(cap, argv, verbose=None, *, context):
     # populate_args stashes the derived state on args._build_state and
     # never overwrites the slots, so a later resubstitute re-gathers
     # from the same base by construction.
-    _check_resolved_compiler_available(args)
-    _check_wild_linker_usable(args)
-    _check_compiler_supports_requested_standard(args)
+    # _check_resolved_compiler_available tokenizes CC/CXX/LD (e.g. "ccache
+    # g++") to resolve the wrapper's real executable; those values are raw
+    # gather inputs that never pass through gather_inputs' own tokenizing
+    # (CC/CXX/LD are exe-name strings, not flag slots), so this is the
+    # first point in parseargs a malformed one can raise -- outside the
+    # gather_inputs try/except above and reached by every CLI tool that
+    # calls parseargs, so it needs its own catch-and-render here.
+    try:
+        _check_resolved_compiler_available(args)
+        _check_wild_linker_usable(args)
+        _check_compiler_supports_requested_standard(args)
+    except compiletools.utils.FlagTokenizeError as err:
+        if args.verbose >= 2:
+            raise
+        print(str(err), file=sys.stderr)
+        raise SystemExit(1) from None
 
     if verbose > 8:
         print("parseargs has completed.  Returning args")

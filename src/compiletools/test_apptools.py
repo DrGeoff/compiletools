@@ -204,6 +204,61 @@ def test_unbalanced_quote_in_a_cli_flag_reraises_at_high_verbosity():
             )
 
 
+@pytest.mark.usefixtures("parsers_reset")
+def test_unbalanced_quote_in_cxx_renders_a_clean_remedy(capsys):
+    """coverage-gaps Task 9: _check_resolved_compiler_available tokenizes
+    a wrapper-form CC/CXX/LD value (e.g. "ccache g++") OUTSIDE the
+    gather_inputs try/except -- it is the first point in parseargs a
+    malformed CXX/CC/LD can raise (CC/CXX/LD are exe-name strings, never
+    routed through gather_inputs' own flag-slot tokenizing), and every
+    CLI tool that calls parseargs reaches it. A real parseargs run over a
+    wrapper-form CXX with an unbalanced quote must print an attributed,
+    traceback-free message naming CXX and exit(1), not let shlex's bare
+    ValueError (or an un-caught FlagTokenizeError) escape.
+
+    add_link=True (registering LD) is load-bearing here: without it,
+    args.LD is absent, _effective_link_driver falls back to the
+    malformed CXX, and gather_inputs' own compiler_kind() probe (a
+    different, earlier, more general call site) raises first with the
+    generic "compiler command" slot instead of "CXX" -- still a clean
+    SystemExit(1) (gather_inputs' try/except already covers it), just
+    not the apptools_validate boundary this test targets.
+    """
+    with _temp_repo_with_ct_conf("gcc", "gcc") as (repo_root, conf_d):
+        with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+            fh.write('CC = gcc\nCXX = ccache "g++\nLD = g++\n')
+
+        with pytest.raises(SystemExit) as excinfo:
+            _parseargs_for_variant(repo_root, ["--variant=gcc", "--no-git-root"], add_link=True)
+
+    assert excinfo.value.code == 1
+    error_output = capsys.readouterr().err
+    assert "CXX" in error_output
+    assert "Traceback" not in error_output
+
+
+@pytest.mark.usefixtures("parsers_reset")
+def test_unbalanced_quote_in_include_renders_a_clean_remedy(capsys):
+    """coverage-gaps Task 9: a real parseargs run over a --INCLUDE value
+    with an unbalanced quote must print an attributed, traceback-free
+    message naming INCLUDE and exit(1) (reached through gather_inputs'
+    existing try/except, unlike the CXX case above)."""
+    with _temp_repo_with_ct_conf("gcc", "gcc") as (repo_root, conf_d):
+        with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+            fh.write("CC = gcc\nCXX = g++\nLD = g++\n")
+
+        with pytest.raises(SystemExit) as excinfo:
+            _parseargs_for_variant(
+                repo_root,
+                ["--variant=gcc", "--no-git-root", '--INCLUDE=/opt/"unterminated'],
+            )
+
+    assert excinfo.value.code == 1
+    error_output = capsys.readouterr().err
+    assert "INCLUDE" in error_output
+    assert "Traceback" not in error_output
+
+
 class TestExtractCommandLineMacrosSz:
     """Test extract_command_line_macros_sz()."""
 
@@ -339,7 +394,17 @@ class TestSafelyUnquoteString:
         assert _safely_unquote_string(42) == 42
 
     def test_malformed_quotes_fallback(self):
-        result = _safely_unquote_string("'hello")
+        """An unbalanced quote now raises FlagTokenizeError by default
+        (Task 9: DRY unbalanced-quote handling), instead of silently
+        stripping a mismatched quote pair."""
+        with pytest.raises(compiletools.utils.FlagTokenizeError):
+            _safely_unquote_string("'hello")
+
+    def test_malformed_quotes_raise_on_malformed_false_keeps_old_fallback(self):
+        """raise_on_malformed=False (as _strip_quotes passes for
+        _UNQUOTE_RAISE_EXEMPT attrs, and _note_shadowed_bare_values always
+        passes) preserves the pre-Task-9 best-effort strip."""
+        result = _safely_unquote_string("'hello", raise_on_malformed=False)
         assert isinstance(result, str)
 
 
@@ -2471,6 +2536,25 @@ class TestResolvedCompilerAvailable:
         assert "not on PATH" in msg
         assert "ccache-gcc.debug" in msg
 
+    def test_wrapper_with_unbalanced_quote_raises_flag_tokenize_error(self):
+        """coverage-gaps Task 9: an unbalanced quote in a wrapper-form
+        CC/CXX/LD value raises the shared, attributed FlagTokenizeError
+        (not a bare shlex ValueError) naming the offending slot. Only CXX
+        is malformed here (CC/LD use the unsupplied sentinel, skipped)
+        so the raise is unambiguously attributed to CXX -- the loop in
+        _check_resolved_compiler_available checks CC before CXX, so a
+        shared malformed value across all three (as
+        _resolved_compiler_args gives) would raise on CC first instead.
+        """
+        args = SimpleNamespace(
+            variant="ccache-gcc.debug",
+            CC=apptools._UNSUPPLIED_USE_CXX,
+            CXX='ccache "g++',
+            LD=apptools._UNSUPPLIED_USE_CXX,
+        )
+        with pytest.raises(compiletools.utils.FlagTokenizeError, match="CXX"):
+            apptools._check_resolved_compiler_available(args)
+
 
 def _std_check_args(*, variant="x", cc="g++", cxx="g++", cflags="-O0", cxxflags=""):
     """Finalized namespace for _check_compiler_supports_requested_standard.
@@ -2486,7 +2570,7 @@ class TestCompilerSupportsRequestedStandard:
     with no pointer at the variant chain."""
 
     def test_too_old_for_requested_std_raises(self, monkeypatch):
-        monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda path: ("gcc", 11))
+        monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda path, **_kw: ("gcc", 11))
         args = _std_check_args(variant="gcc.cxx26.debug", cxxflags="-std=c++26 -O0")
         with pytest.raises(RuntimeError) as excinfo:
             apptools._check_compiler_supports_requested_standard(args)
@@ -2495,19 +2579,19 @@ class TestCompilerSupportsRequestedStandard:
         assert "gcc >= 14" in msg
 
     def test_recent_compiler_passes(self, monkeypatch):
-        monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda path: ("gcc", 14))
+        monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda path, **_kw: ("gcc", 14))
         args = _std_check_args(variant="gcc.cxx26.debug", cxxflags="-std=c++26 -O0")
         # 14 >= 14 — passes.
         apptools._check_compiler_supports_requested_standard(args)
 
     def test_unknown_driver_skips_silently(self, monkeypatch):
-        monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda path: None)
+        monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda path, **_kw: None)
         args = _std_check_args(cc="some-cross-compiler", cxx="some-cross-compiler", cflags="", cxxflags="-std=c++26")
         # Unknown driver → skip silently rather than false-positive.
         apptools._check_compiler_supports_requested_standard(args)
 
     def test_no_std_flag_skips_silently(self, monkeypatch):
-        monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda path: ("gcc", 4))
+        monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda path, **_kw: ("gcc", 4))
         # No -std= in flags → nothing to check.
         args = _std_check_args(variant="blank.debug", cc="gcc", cxxflags="-O0")
         apptools._check_compiler_supports_requested_standard(args)
@@ -2515,7 +2599,7 @@ class TestCompilerSupportsRequestedStandard:
     def test_alt_spelling_cxx2c_normalised_to_cxx26(self, monkeypatch):
         # gcc <14 / clang <18 spelled C++26 as -std=c++2c. The check should
         # normalise that to c++26 for the version lookup.
-        monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda path: ("gcc", 11))
+        monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda path, **_kw: ("gcc", 11))
         args = _std_check_args(cflags="", cxxflags="-std=c++2c -O0")
         with pytest.raises(RuntimeError, match=r"does not support -std=c\+\+2c"):
             apptools._check_compiler_supports_requested_standard(args)
@@ -2702,7 +2786,7 @@ def test_check_wild_b_with_bazel_backend_raises(monkeypatch):
 
 def test_check_wild_b_with_make_backend_ok(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
-    monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda c: ("gcc", 11))
+    monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda c, **_kw: ("gcc", 11))
     args = _wild_args("g++", "", "gcc.wild-B.release")
     args.backend = "make"
     apptools._check_wild_linker_usable(args)  # no raise
@@ -2717,7 +2801,7 @@ def test_check_wild_usable_missing_wild_raises(monkeypatch):
 
 def test_check_wild_usable_old_gcc_raises(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
-    monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda c: ("gcc", 15))
+    monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda c, **_kw: ("gcc", 15))
     args = _wild_args("g++", "-fuse-ld=wild", "gcc.wild.release")
     with pytest.raises(RuntimeError, match="gcc >= 16"):
         apptools._check_wild_linker_usable(args)
@@ -2725,14 +2809,14 @@ def test_check_wild_usable_old_gcc_raises(monkeypatch):
 
 def test_check_wild_usable_gcc16_ok(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
-    monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda c: ("gcc", 16))
+    monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda c, **_kw: ("gcc", 16))
     args = _wild_args("g++", "-fuse-ld=wild", "gcc.wild.release")
     apptools._check_wild_linker_usable(args)  # no raise
 
 
 def test_check_wild_usable_clang_ok(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
-    monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda c: ("clang", 22))
+    monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda c, **_kw: ("clang", 22))
     # post-rewrite form on clang
     args = _wild_args("clang++", "--ld-path=wild", "clang.wild.release")
     apptools._check_wild_linker_usable(args)  # no raise
@@ -2740,7 +2824,7 @@ def test_check_wild_usable_clang_ok(monkeypatch):
 
 def test_check_wild_b_old_gcc_ok(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
-    monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda c: ("gcc", 11))
+    monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda c, **_kw: ("gcc", 11))
     # wild-B has no version gate — that's its whole purpose.
     args = _wild_args("g++", "", "gcc.wild-B.release")
     apptools._check_wild_linker_usable(args)  # no raise
@@ -2757,7 +2841,7 @@ def test_check_wild_usable_ld_wins_clang_over_cxx_gcc(monkeypatch):
     """
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
 
-    def _fake_version(compiler):
+    def _fake_version(compiler, **_kw):
         assert compiler == "clang++", f"expected the LD override to be probed, got {compiler!r}"
         return ("clang", 22)
 
@@ -2774,7 +2858,7 @@ def test_check_wild_usable_ld_wins_gcc_over_cxx_clang(monkeypatch):
     """
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
 
-    def _fake_version(compiler):
+    def _fake_version(compiler, **_kw):
         assert compiler == "g++", f"expected the LD override to be probed, got {compiler!r}"
         return ("gcc", 15)
 
@@ -2792,7 +2876,7 @@ def test_check_wild_usable_ld_sentinel_falls_back_to_cxx(monkeypatch):
     production sentinel value that ``_effective_link_driver`` checks for.
     """
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/wild")
-    monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda c: ("gcc", 15))
+    monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda c, **_kw: ("gcc", 15))
     args = _wild_args("g++", "-fuse-ld=wild", "gcc.wild.release", ld=apptools._UNSUPPLIED_USE_CXX)
     with pytest.raises(RuntimeError, match="gcc >= 16"):
         apptools._check_wild_linker_usable(args)

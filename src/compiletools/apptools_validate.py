@@ -19,7 +19,7 @@ Plus the constants/regexes consumed only by these checks:
 ``_STD_MIN_COMPILER_VERSION``, ``_LEGACY_CAS_KEY_RE``, ``_LEGACY_VARIANT_KEY_RE``.
 
 Import-time leaf discipline: at module scope this imports only stdlib,
-the leaf flag helper :func:`compiletools.utils.split_command_cached`, and the
+the leaf flag helper :func:`compiletools.utils.split_compiler_command`, and the
 compiler-probe leaf
 :func:`compiletools.apptools_compiler._compiler_major_version`. It MUST NOT
 import :mod:`compiletools.apptools` at module scope -- ``apptools`` imports
@@ -49,7 +49,7 @@ existing ``apptools.<name>`` call sites, ``from compiletools.apptools import
 import re
 
 from compiletools.apptools_compiler import _compiler_major_version
-from compiletools.utils import split_command_cached
+from compiletools.utils import split_compiler_command
 
 _LEGACY_CAS_KEY_RE = re.compile(r"^\s*(objdir|pchdir)\s*=", re.MULTILINE)
 _LEGACY_VARIANT_KEY_RE = re.compile(r"^\s*variantaliases\s*=", re.MULTILINE)
@@ -147,7 +147,7 @@ def _check_resolved_compiler_available(args) -> None:
         # Tokenize so wrapper invocations like "ccache g++" resolve their
         # first token (the actual executable to invoke). Feeding the full
         # compound string to shutil.which would always return None.
-        tokens = split_command_cached(value) if " " in value else (value,)
+        tokens = split_compiler_command(value, slot=slot) if " " in value else (value,)
         exe = tokens[0] if tokens else value
         # shutil.which handles both bare names (PATH lookup) and absolute
         # / workspace-relative paths (existence + executability check).
@@ -223,7 +223,7 @@ def _check_wild_linker_usable(args) -> None:
         cxx = _apptools._effective_link_driver(args)
         # None when no link driver resolved (no LD and no CXX) or the driver
         # isn't a recognised gcc/clang — the version gate is skipped in that case.
-        identity = _compiler_major_version(cxx) if cxx else None
+        identity = _compiler_major_version(cxx, slot=_apptools._effective_link_driver_slot(args)) if cxx else None
         if identity is not None:
             family, major = identity
             if family == "gcc" and major < 16:
@@ -271,7 +271,7 @@ def _check_compiler_supports_requested_standard(args) -> None:
         std_norm = {"c++2c": "c++26", "c++2b": "c++23", "c++2a": "c++20", "c++1z": "c++17"}.get(std, std)
         if std_norm not in _STD_MIN_COMPILER_VERSION:
             continue
-        identity = _compiler_major_version(compiler)
+        identity = _compiler_major_version(compiler, slot=compiler_slot)
         if identity is None:
             continue  # unknown driver; skip silently
         family, major = identity

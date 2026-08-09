@@ -16,6 +16,7 @@ from xml.etree import ElementTree
 
 import compiletools.apptools
 import compiletools.filesystem_utils
+import compiletools.utils
 import compiletools.wrappedos
 from compiletools.build_backend import (
     BuildBackend,
@@ -1097,6 +1098,14 @@ class BazelBackend(BuildBackend):
         if run_tests:
             testprefix = getattr(self.args, "TESTPREFIX", "")
             if testprefix:
+                # bazel's --run_under is handed the whole string and lets
+                # its own shell split it -- but validate with the shared
+                # helper here too (discarding the tokens, passing
+                # testprefix through unchanged) so an unbalanced quote
+                # produces the same attributed FlagTokenizeError diagnostic
+                # every other backend gives, instead of an opaque bazel
+                # shell-parse failure.
+                compiletools.utils.tokenize_flags_or_raise(testprefix, slot="TESTPREFIX")
                 cmd.append(f"--run_under={testprefix}")
             # Surface a failing test's own output instead of just "FAILED".
             cmd.append("--test_output=errors")

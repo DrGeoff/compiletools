@@ -24,7 +24,7 @@ from compiletools.preprocessing_cache import (
     get_or_compute_preprocessing,
     is_permanently_invariant,
 )
-from compiletools.utils import instance_cache, split_command_cached
+from compiletools.utils import instance_cache, tokenize_flags_or_raise
 
 
 def _include_dirs_from_env() -> list[str]:
@@ -175,6 +175,16 @@ class HeaderDepsBase:
           * ``["-I", "/path"]``  (list from configargparse multi-value)
 
         Uses shell parsing so quoted paths with spaces are preserved.
+
+        The production input is the stashed BuildState's shlex-joined
+        ``cppflags`` string (``self._cpp_flag_string()``), which is always
+        valid shlex syntax by construction (built from already-tokenized
+        flags via ``shlex.join``). Tokenizing via ``tokenize_flags_or_raise``
+        rather than silently falling back to a bare ``.split()`` on
+        ``ValueError`` is therefore consistent with every other user-facing
+        flag-slot site: a genuinely malformed value (e.g. a hand-built test
+        namespace, or a future direct caller) raises the same attributed
+        ``FlagTokenizeError`` instead of degrading into shredded paths.
         """
         if not flag_value:
             return []
@@ -182,10 +192,7 @@ class HeaderDepsBase:
         if isinstance(flag_value, list):
             flag_value = " ".join(flag_value)
 
-        try:
-            tokens = split_command_cached(flag_value)
-        except ValueError:
-            tokens = flag_value.split()
+        tokens = tokenize_flags_or_raise(flag_value, slot="CPPFLAGS")
 
         prefix_len = len(prefix)
         paths = []
