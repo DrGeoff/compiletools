@@ -1356,6 +1356,60 @@ class TestWildBDashBToken:
         )
 
 
+class TestIsystemDoesNotFoolIncludeDedup:
+    """Regression guard: a directory reachable only via ``-isystem`` must
+    not be mistaken for an already-present ``-I`` entry.
+    ``build_state.stage_include_paths`` folds ``--append-INCLUDE`` dirs
+    into the compile slots via ``flag_ops.dedup_include_paths_to_append``,
+    which recognises only ``-I`` (attached or detached) as "already
+    present" -- a directory that only reaches the compile line via
+    ``--append-CXXFLAGS=-isystem <dir>`` must still get its own ``-I``
+    token when it is also named on ``--append-INCLUDE``."""
+
+    def _compile_cmd(self, tmp_path, extra_argv):
+        main_src = tmp_path / "main.cpp"
+        main_src.write_text("int main() { return 0; }\n")
+        _backend, graph = uth.build_real_backend(MakefileBackend, tmp_path, [main_src], extra_argv=extra_argv)
+        compile_rules = [r for r in graph.rules if r.rule_type == "compile"]
+        assert len(compile_rules) == 1, f"expected exactly one compile rule, got {compile_rules}"
+        return _cmd(compile_rules[0])
+
+    def test_isystem_and_i_both_land_for_the_same_dir(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        extra_dir = tmp_path / "extra_isystem_dir"
+        extra_dir.mkdir()
+
+        cmd = self._compile_cmd(
+            tmp_path,
+            [f"--append-CXXFLAGS=-isystem {extra_dir}", f"--append-INCLUDE={extra_dir}"],
+        )
+
+        isystem_idx = [i for i, tok in enumerate(cmd) if tok == "-isystem"]
+        assert isystem_idx and cmd[isystem_idx[0] + 1] == str(extra_dir), (
+            f"expected an -isystem {extra_dir} pair in the compile command, got {cmd}"
+        )
+        i_pair_present = any(cmd[i] == "-I" and cmd[i + 1] == str(extra_dir) for i in range(len(cmd) - 1))
+        assert i_pair_present, (
+            f"expected a -I {extra_dir} entry in the compile command -- it must not be "
+            f"suppressed by the -isystem entry for the same dir, got {cmd}"
+        )
+
+    def test_control_isystem_alone_does_not_add_i(self, tmp_path, monkeypatch):
+        """Non-vacuity control: without --append-INCLUDE, the same
+        --append-CXXFLAGS=-isystem <dir> must NOT itself produce a -I
+        <dir> entry -- confirming the -I pair asserted above comes from
+        the INCLUDE append actually taking effect, not from some other
+        path that would make the main assertion trivially true."""
+        monkeypatch.chdir(tmp_path)
+        extra_dir = tmp_path / "extra_isystem_dir"
+        extra_dir.mkdir()
+
+        cmd = self._compile_cmd(tmp_path, [f"--append-CXXFLAGS=-isystem {extra_dir}"])
+
+        i_pair_present = any(cmd[i] == "-I" and cmd[i + 1] == str(extra_dir) for i in range(len(cmd) - 1))
+        assert not i_pair_present, f"did not expect a -I {extra_dir} entry without --append-INCLUDE, got {cmd}"
+
+
 class TestGccCppmExtensionRecognition:
     """gcc < 14 does NOT recognize the ``.cppm`` extension as C++ source.
     Without an explicit ``-x c++`` coercion the driver treats ``math.cppm``
