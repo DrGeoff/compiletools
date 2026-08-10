@@ -36,6 +36,24 @@ class PreprocessorExpressionError(Exception):
     """
 
 
+class UnsafeExpressionError(ValueError):
+    """The tokenizer's deliberate "this is not an arithmetic expression" signal.
+
+    Raised only by ``_tokenize_c_expression``, for a byte that is neither part
+    of a number, an operator, nor a ``[A-Za-z_][A-Za-z0-9_]*`` identifier. The
+    ``#if``/``#elif`` handlers turn it into an unevaluable-condition report and
+    assume false.
+
+    It is a distinct type because a bare ``ValueError`` cannot carry that
+    meaning: Python raises ``ValueError`` from ordinary integer arithmetic too
+    (a negative shift count), and while ``_safe_eval`` had a single
+    ``except ValueError`` those two channels were indistinguishable -- a
+    well-formed ``#if (1 >> (~0))`` was filed as dangerous input and its branch
+    dropped. Kept a ``ValueError`` subclass so callers written against the
+    older contract still catch it.
+    """
+
+
 # Precompiled regex patterns for _safe_eval
 _RE_BACKSLASH_WHITESPACE = re.compile(r"\\\s*")
 _RE_MALFORMED_NUMBERS = re.compile(r"(\d+)\s*\(\s*(\d+)\s*\)")
@@ -164,6 +182,13 @@ def _replace_identifiers_sz(body_sz: sz.Str, replacements: dict[sz.Str, sz.Str])
     return concat_sz(*result_parts) if result_parts else sz.Str("")
 
 
+# Width of the type C evaluates ``#if`` arithmetic in (``intmax_t``). The
+# evaluator otherwise works in Python bignums -- a documented divergence from
+# C's wraparound -- so this is used only where a bound is needed to keep an
+# operation total: the left-shift count clamp in ``_CExpressionParser._c_shift``.
+_INTMAX_PRECISION = 64
+
+
 class _CExpressionParser:
     """Evaluate the integer subset used by C preprocessor expressions."""
 
@@ -223,9 +248,9 @@ class _CExpressionParser:
 
     # Short-circuit mechanism (A6/A7): every recursive method takes an
     # ``evaluate`` flag. When False the subtree is still fully *parsed* (so the
-    # token stream stays aligned), but the dead arithmetic that could raise —
-    # ``/`` and ``%`` (ZeroDivisionError) and ``<<``/``>>`` (negative shift
-    # count) — is skipped and a placeholder 0 is returned. The result of a
+    # token stream stays aligned), but the dead arithmetic that could raise
+    # (``/`` and ``%``, ZeroDivisionError) or cost real work (``<<``/``>>`` with
+    # a large count) is skipped and a placeholder 0 is returned. The result of a
     # non-evaluated subtree is discarded, so any placeholder is sound.
     # ``||`` clears it for the RHS when the LHS is already true; ``&&`` when the
     # LHS is already false; ``?:`` for the untaken branch.
@@ -327,14 +352,46 @@ class _CExpressionParser:
         while op := self._match("<<", ">>"):
             rhs = self._parse_additive(evaluate)
             if not evaluate:
-                # Dead subtree (A6/A7): skip the shift so a dead negative count
-                # never raises ``ValueError``. The returned value is discarded.
+                # Dead subtree (A6/A7): skip the shift entirely. The returned
+                # value is discarded, so there is nothing to compute. (A live
+                # oversized shift is bounded too, by ``_c_shift``'s clamp.)
                 value = 0
-            elif op == "<<":
-                value <<= rhs
             else:
-                value >>= rhs
+                value = self._c_shift(value, op, rhs)
         return value
+
+    @classmethod
+    def _c_shift(cls, value: int, op: str, count: int) -> int:
+        """Apply ``<<``/``>>`` the way libcpp's ``num_binary_op`` does.
+
+        Two rules, both measured against ``g++ -E -P -Wall -Wextra -pedantic``.
+
+        A NEGATIVE count is undefined in C99 6.5.7p3, and Python's shift
+        operators raise ``ValueError`` on one. libcpp instead reverses the
+        direction and negates the count, so ``1 >> -1`` is ``1 << 1`` and the
+        ``#if`` branch is kept. clang treats the same expressions as an
+        overflow yielding 0, so the shapes stay out of the differential test's
+        generator -- following gcc here is a choice between two compilers, not
+        between right and wrong.
+
+        A LEFT shift by ``intmax_t``'s precision or more yields 0, matching
+        libcpp's ``num_lshift``: once the count reaches the width, every bit is
+        shifted out. The clamp applies to a count that arrived positive as much
+        as to one the flip produced -- ``#if (1 << 64)`` is a block gcc drops,
+        and evaluating it in Python bignums kept it. Right shifts need no clamp:
+        Python's arithmetic shift already sign-fills to 0 or -1 as libcpp does.
+
+        The clamp is also what keeps the operation total. A live
+        ``1 << 10000000000`` would otherwise materialise a gigabyte-wide bignum
+        before being tested for truth, and a count past ``PY_SSIZE_T_MAX``
+        raises out of the arithmetic entirely.
+        """
+        if count < 0:
+            op = ">>" if op == "<<" else "<<"
+            count = -count
+        if op == "<<" and count >= _INTMAX_PRECISION:
+            return 0
+        return value << count if op == "<<" else value >> count
 
     def _parse_additive(self, evaluate: bool) -> int:
         value = self._parse_multiplicative(evaluate)
@@ -1409,17 +1466,27 @@ class SimplePreprocessor:
         # Normalize C-style numeric literals to Python ints (hex, bin, octal)
         expr = self._normalize_numeric_literals(expr)
 
+        # Tokenizing and parsing are separate try blocks so the two failure
+        # channels stay separate. The tokenizer's UnsafeExpressionError means
+        # "this is not an arithmetic expression"; anything the PARSER raises is
+        # a statement about a well-formed expression, and must not be read as
+        # the unsafe signal. A single ``except ValueError`` around both spoke
+        # for the tokenizer and silently swallowed the parser's arithmetic
+        # ValueError (negative shift count) under the same label.
+        #
+        # UnsafeExpressionError propagates to the #if/#elif caller, which turns
+        # it into the unevaluable-condition report.
+        tokens = self._tokenize_c_expression(expr)
+
         try:
-            tokens = self._tokenize_c_expression(expr)
             return _CExpressionParser(tokens).parse()
-        except ValueError:
-            # ValueError from _tokenize_c_expression signals an unsafe
-            # expression (unrecognized identifier or non-arithmetic character).
-            # The legacy contract surfaces it to the #if/#elif caller so the
-            # verbose-8 log identifies which directive failed; genuinely
-            # malformed expressions (SyntaxError, ZeroDivisionError) degrade to
-            # 0 silently below.
-            raise
+        except ValueError as e:
+            # The parser reached an operation it cannot represent on a
+            # well-formed expression. That is an evaluator failure, never a
+            # false branch -- surface it the way an over-deep expression is
+            # surfaced. Defence in depth: the shift operators handle a negative
+            # count themselves (C semantics), so no live path reaches here.
+            raise PreprocessorExpressionError(f"cannot evaluate '{expr}': {e}") from e
         except (SyntaxError, ZeroDivisionError) as e:
             # A genuinely malformed / garbage user expression: degrade to 0
             # (documented behaviour). This is DELIBERATELY narrow -- it must not
@@ -1492,7 +1559,7 @@ class SimplePreprocessor:
             # ``[A-Za-z_][A-Za-z0-9_]*`` identifier (e.g. ``@``, ``$``, a
             # backtick, or a quote) is genuine garbage — reject it so the
             # #if/#elif caller assumes false.
-            raise ValueError(f"Unsafe expression: {expr}")
+            raise UnsafeExpressionError(f"Unsafe expression: {expr}")
 
         tokens.append("EOF")
         return tokens

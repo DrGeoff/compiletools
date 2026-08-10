@@ -1,5 +1,6 @@
 import os
 import re
+import subprocess
 import sys
 from textwrap import dedent
 from unittest.mock import patch
@@ -13,7 +14,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from compiletools.build_context import BuildContext
 from compiletools.file_analyzer import FileAnalysisResult, PreprocessorDirective
 from compiletools.preprocessing_cache import MacroState, get_or_compute_preprocessing
-from compiletools.simple_preprocessor import _RE_INTEGER_SUFFIXES, SimplePreprocessor
+from compiletools.simple_preprocessor import (
+    _RE_INTEGER_SUFFIXES,
+    PreprocessorExpressionError,
+    SimplePreprocessor,
+    UnsafeExpressionError,
+)
 from compiletools.stringzilla_utils import is_alnum_or_underscore_sz
 
 
@@ -1518,20 +1524,142 @@ class TestSimplePreprocessorEdgeCases:
         assert self.processor._evaluate_expression_sz(sz.Str("0 || 1 / 0")) == 0
 
     def test_short_circuit_dead_negative_shift_skipped_sz(self):
-        """A6 follow-up: a dead-branch negative shift must not surface either.
-        Python's ``<<``/``>>`` raise on a negative RHS and ``_safe_eval``
-        re-raises ValueError, so the short-circuit must cover shift too."""
+        """A6 follow-up: a dead-branch shift is skipped, not evaluated. Since R5
+        a negative count no longer raises, so this pins the short-circuit itself
+        (the LHS decides the result) rather than exception suppression."""
         assert self.processor._evaluate_expression_sz(sz.Str("1 || (1 << -1)")) == 1
         assert self.processor._evaluate_expression_sz(sz.Str("0 && (1 << -2)")) == 0
         # Dead shift in the untaken ternary branch as well.
         assert self.processor._evaluate_expression_sz(sz.Str("1 ? 1 : (1 >> -1)")) == 1
 
-    def test_live_negative_shift_behavior_unchanged_sz(self):
-        """A6 follow-up: only DEAD shifts are skipped. A LIVE negative shift is
-        untouched -- it raises ValueError out of the parser exactly as before
-        (``_safe_eval`` re-raises ValueError as the unsafe-expression signal)."""
-        with pytest.raises(ValueError):
-            self.processor._evaluate_expression_sz(sz.Str("1 << -1"))
+    def test_live_negative_shift_flips_direction_sz(self):
+        """R5: a LIVE negative shift count evaluates instead of raising.
+
+        C99 6.5.7p3 leaves a negative shift count undefined; gcc's libcpp
+        (``num_binary_op``) reverses the direction and negates the count. Both
+        directions are pinned deliberately: the right shift is the case whose
+        branch used to be dropped, and the left shift is the case whose wrong
+        answer coincided with the correct one and masked it.
+        """
+        # Right shift by a negative count becomes a left shift (dropped pre-R5).
+        assert self.processor._evaluate_expression_sz(sz.Str("1 >> -1")) == 2
+        assert self.processor._evaluate_expression_sz(sz.Str("1 >> (~0)")) == 2
+        assert self.processor._evaluate_expression_sz(sz.Str("4 >> (0 - 2)")) == 16
+        # Left shift by a negative count becomes a right shift (the masking case).
+        assert self.processor._evaluate_expression_sz(sz.Str("1 << -1")) == 0
+        assert self.processor._evaluate_expression_sz(sz.Str("8 << (0 - 2)")) == 2
+        # A flipped right shift sign-fills, exactly as an arithmetic shift does.
+        assert self.processor._evaluate_expression_sz(sz.Str("(0 - 8) >> (0 - 1)")) == -16
+        assert self.processor._evaluate_expression_sz(sz.Str("(0 - 1) << (0 - 70)")) == -1
+
+    def test_flipped_left_shift_clamps_at_intmax_precision_sz(self):
+        """R5: libcpp's ``num_lshift`` shifts every bit out once the count
+        reaches ``intmax_t``'s precision, so the flipped left shift saturates at
+        0 rather than growing a Python bignum (which would also make a hostile
+        ``1 >> (0 - 10000000000)`` allocate gigabytes)."""
+        assert self.processor._evaluate_expression_sz(sz.Str("1 >> (0 - 63)")) == 1 << 63
+        assert self.processor._evaluate_expression_sz(sz.Str("1 >> (0 - 64)")) == 0
+        assert self.processor._evaluate_expression_sz(sz.Str("1 >> (0 - 70)")) == 0
+
+    def test_a_count_that_arrived_positive_clamps_the_same_way_sz(self):
+        """R10: the clamp is a property of the left shift, not of the flip.
+
+        ``1 << 64`` shifts every bit out of an ``intmax_t`` and both gcc and
+        clang drop the block; evaluating it in Python bignums kept it. The
+        boundary partner ``1 << 63`` still has a bit to keep and pins that the
+        clamp did not become blanket suppression. The oracle half lives in
+        ``test_preprocessor_differential.py``.
+        """
+        assert self.processor._evaluate_expression_sz(sz.Str("1 << 63")) == 1 << 63
+        assert self.processor._evaluate_expression_sz(sz.Str("1 << 64")) == 0
+        assert self.processor._evaluate_expression_sz(sz.Str("1 << 200")) == 0
+        assert self.processor._evaluate_expression_sz(sz.Str("(0 - 1) << 70")) == 0
+
+    def test_a_shift_count_too_large_to_evaluate_answers_instead_of_raising(self, capsys):
+        """R10: an oversized count must reach a defined 0, not the fallback path.
+
+        A count past Python's digit limit raised ``OverflowError`` out of the
+        arithmetic, which ``_handle_if_structured`` catches as "malformed user
+        expression" -- so the block was dropped, matching gcc by accident, and
+        the user was told compiletools ``cannot evaluate`` a condition it is
+        perfectly able to evaluate. The answer alone cannot distinguish the two
+        eras (false either way); the diagnostic is what moves, so it is what is
+        asserted.
+        """
+        assert self.processor._evaluate_expression_sz(sz.Str("1 << 1000000000000000000000000000000")) == 0
+        text = dedent("""
+            #if (1 << 1000000000000000000000000000000)
+            dropped
+            #endif
+        """).strip()
+        processor = SimplePreprocessor(dict(self.macros), verbose=1)
+        active = processor.process_structured(_make_file_analysis_result(text), self.ctx)
+        assert 1 not in active, "the block must stay dropped (both compilers drop it)"
+        assert "SimplePreprocessor warning" not in capsys.readouterr().err
+
+    def test_an_oversized_shift_allocates_nothing(self):
+        """R10's other half: the clamp bounds the work, not just the answer.
+
+        ``1 << 10000000000`` is small enough to succeed and large enough to cost
+        1.25 GB of bignum before being tested for truth -- a hostile ``#if`` in
+        any header the dep walk reaches. Run under a 512 MiB address-space cap
+        in a child process, so a regression fails here in bounded memory rather
+        than by exhausting whichever machine runs the suite.
+        """
+        child = dedent("""
+            import resource, sys
+            resource.setrlimit(resource.RLIMIT_AS, (512 * 1024**2, 512 * 1024**2))
+            sys.path.insert(0, sys.argv[1])
+            from compiletools.simple_preprocessor import SimplePreprocessor
+            print(SimplePreprocessor({}, verbose=0)._safe_eval("1 << 10000000000"))
+        """)
+        src_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        proc = subprocess.run([sys.executable, "-c", child, src_root], capture_output=True, text=True, timeout=120)
+        assert proc.returncode == 0, f"the child died evaluating a bounded shift:\n{proc.stderr}"
+        assert proc.stdout.strip() == "0", proc.stdout
+
+    def test_the_unsafe_expression_signal_has_its_own_type_sz(self):
+        """R5: the tokenizer's deliberate unsafe-expression signal must be
+        distinguishable from an arithmetic ``ValueError`` raised while
+        evaluating a well-formed expression -- conflating the two is what made
+        ``_safe_eval`` file a valid shift as dangerous input. Kept a ValueError
+        subclass so the legacy contract for outside callers is unchanged."""
+        assert issubclass(UnsafeExpressionError, ValueError)
+        for garbage in ("1 @ 2", "1 $ 2", "1 ` 2", "'a'"):
+            with pytest.raises(UnsafeExpressionError):
+                self.processor._evaluate_expression_sz(sz.Str(garbage))
+
+    def test_an_arithmetic_valueerror_from_the_parser_is_loud_sz(self, monkeypatch):
+        """R5: a ``ValueError`` escaping the *parser* is an evaluator failure,
+        not unsafe input, and must never be degraded to a false branch. The
+        negative-shift flip removes the only known source, so this pins the
+        defence-in-depth arm that catches the next one."""
+        monkeypatch.setattr(
+            "compiletools.simple_preprocessor._CExpressionParser.parse",
+            lambda _self: (_ for _ in ()).throw(ValueError("negative shift count")),
+        )
+        with pytest.raises(PreprocessorExpressionError):
+            self.processor._evaluate_expression_sz(sz.Str("1 + 1"))
+
+    def test_a_valid_negative_shift_branch_is_kept_and_silent(self, capsys):
+        """R5 end to end: the ``#if`` keeps its branch and reports nothing.
+
+        Pre-R5 this printed ``cannot evaluate '#if (1 >> (~0))' (negative shift
+        count)`` and dropped the line. The left-shift mirror must stay false and
+        equally silent -- it is a valid expression too, just a false one."""
+        text = dedent("""
+            #if (1 >> (~0))
+            kept_right
+            #endif
+            #if (1 << (~0))
+            dropped_left
+            #endif
+        """).strip()
+        processor = SimplePreprocessor(dict(self.macros), verbose=1)
+        active = processor.process_structured(_make_file_analysis_result(text), self.ctx)
+        assert 1 in active, "the right-shift branch must be kept (gcc keeps it)"
+        assert 4 not in active, "the left-shift branch must stay false"
+        assert "SimplePreprocessor warning" not in capsys.readouterr().err
 
     def test_ternary_conditional_operator_sz(self):
         """A7: ``?:`` is valid in a constant-expression; evaluate the taken
