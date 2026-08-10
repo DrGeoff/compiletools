@@ -27,7 +27,7 @@ import compiletools.testhelper as uth
 from compiletools.build_context import BuildContext
 from compiletools.file_analyzer import analyze_file, set_analyzer_args
 from compiletools.global_hash_registry import get_file_hash
-from compiletools.simple_preprocessor import SimplePreprocessor, converging
+from compiletools.simple_preprocessor import SimplePreprocessor, converging, flush_pending_warnings
 
 # The gate every arm shares: function-like, so it is unevaluable until
 # READMACROS or an include has supplied its definition.
@@ -156,7 +156,7 @@ class TestASupersededPassIsRetractedBySkipping:
 
 
 class TestADeadOccurrenceDoesNotSilenceALiveOne:
-    """One condition text, two occurrences, only one of them reachable.
+    """One condition text spelled twice in a file, in every liveness combination.
 
     The retraction has to name the occurrence it belongs to. Keyed on
     ``(filepath, directive_type, condition)`` alone it does not: both
@@ -197,6 +197,55 @@ class TestADeadOccurrenceDoesNotSilenceALiveOne:
             SimplePreprocessor({}, verbose=1).process_structured(file_result, context)
         stderr = capsys.readouterr().err
         assert stderr.count("cannot evaluate") == expected_reports, stderr
+
+    def test_two_live_occurrences_hold_two_slots_and_still_report_one_line(self, tmp_path, capsys):
+        """The once-per-condition-per-file contract now rests on the flush dedupe.
+
+        Keying the pending store by occurrence is what fixes the collision, and
+        it is also what puts this contract at risk: two live unevaluable
+        occurrences of one condition occupy two slots where they used to share
+        one, so nothing but the dedupe in ``flush_pending_warnings`` keeps the
+        output at a single line.  Both halves are asserted, because they fail
+        independently — removing the dedupe leaves every other test in this file
+        green.
+
+        Raised by ``evalchannel``'s re-probe as the case the occurrence key could
+        break, the mirror of the case it fixes.
+        """
+        file_result, context = _analyze(self._LIVE + self._LIVE, str(tmp_path))
+        with converging(context):
+            SimplePreprocessor({}, verbose=1).process_structured(file_result, context)
+            assert len(context.pending_preprocessor_warnings) == 2, context.pending_preprocessor_warnings
+        stderr = capsys.readouterr().err
+        assert stderr.count("cannot evaluate") == 1, stderr
+        assert ":1: cannot evaluate" in stderr, stderr
+
+    def test_the_flush_collapses_occurrences_without_help_from_the_context_memo(self):
+        """The flush dedupes on its own, not only by leaning on the memo set.
+
+        The case above cannot see this. ``BuildContext`` always carries
+        ``warned_preprocessor_conditions``, and that memo incidentally collapses
+        the second occurrence too, so deleting the flush's own dedupe leaves
+        every context-driven test in this file green — measured, not assumed.
+        ``flush_pending_warnings`` reads the memo with ``getattr(..., None)`` and
+        owes the once-per-condition contract when it is absent.
+
+        The memo-carrying context is the control: both paths must print one
+        line, so the assertion is about the flush's own collapse rather than
+        about which store happened to do the work.
+        """
+        entries = {
+            ("f.cpp", "#if", _GATE, 1): "warn f.cpp:1",
+            ("f.cpp", "#if", _GATE, 5): "warn f.cpp:5",
+        }
+        memoless = SimpleNamespace(pending_preprocessor_warnings=dict(entries))
+        assert flush_pending_warnings(memoless) == 1
+
+        with_memo = SimpleNamespace(
+            pending_preprocessor_warnings=dict(entries),
+            warned_preprocessor_conditions=set(),
+        )
+        assert flush_pending_warnings(with_memo) == 1
 
     @pytest.mark.parametrize("live_first", [True, False], ids=["live_then_dead", "dead_then_live"])
     def test_the_live_occurrence_is_the_one_named(self, live_first, tmp_path, capsys):
