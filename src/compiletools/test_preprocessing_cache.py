@@ -16,6 +16,7 @@ from compiletools.preprocessing_cache import (
     INCLUDE_PATH_ENV_VARS,
     MacroState,
     clear_cache,
+    decode_macro_cache_key,
     get_cache_stats,
     get_or_compute_preprocessing,
 )
@@ -1033,3 +1034,84 @@ class TestIncludePathEnvInBuildContextHash:
         hash_bob = self._hash_with_anchor("/workspace/bob/proj")
 
         assert hash_alice == hash_bob
+
+
+class TestDecodeMacroCacheKey:
+    """``decode_macro_cache_key`` is the inverse of ``get_cache_key``.
+
+    The encoder namespaces each function-like macro's parameter list under a
+    synthetic ``#params:<NAME>`` entry so the key keeps its (name, value) shape.
+    Any caller rebuilding a MacroState from a key must undo that; a flat
+    ``dict(key)`` seeds the synthetic names as object-like macros and leaves
+    every real function-like macro without its arity, which is how
+    ``DirectHeaderDeps.process`` used to read a seeded ``#if F(2, 0)`` as a
+    reference to an object-like ``F``.
+    """
+
+    def _function_like_state(self) -> MacroState:
+        return MacroState(
+            {},
+            {
+                sz.Str("EXTLIB_AT_LEAST"): sz.Str("((major) <= 2)"),
+                sz.Str("EXTLIB_MAJOR"): sz.Str("2"),
+            },
+            function_params={sz.Str("EXTLIB_AT_LEAST"): (sz.Str("major"), sz.Str("minor"))},
+            anchor_root="",
+        )
+
+    def test_the_parameter_list_comes_back_out(self):
+        variable, params = decode_macro_cache_key(self._function_like_state().get_cache_key())
+        assert params == {sz.Str("EXTLIB_AT_LEAST"): (sz.Str("major"), sz.Str("minor"))}
+        assert variable[sz.Str("EXTLIB_AT_LEAST")] == sz.Str("((major) <= 2)")
+
+    def test_no_synthetic_name_leaks_into_the_variable_dict(self):
+        """The defect the decoder exists to stop, stated as its own assertion."""
+        variable, _ = decode_macro_cache_key(self._function_like_state().get_cache_key())
+        assert all("#params:" not in str(name) for name in variable), sorted(str(n) for n in variable)
+        assert sorted(str(n) for n in variable) == ["EXTLIB_AT_LEAST", "EXTLIB_MAJOR"]
+
+    def test_a_flat_dict_of_the_same_key_does_not(self):
+        """The control: without the decoder the synthetic name IS in the dict.
+
+        Pins that the key really does carry the synthetic entries, so
+        ``test_no_synthetic_name_leaks_into_the_variable_dict`` cannot pass
+        vacuously on a key that never had one.
+        """
+        flat = dict(self._function_like_state().get_cache_key())
+        assert any("#params:" in str(name) for name in flat), sorted(str(n) for n in flat)
+
+    def test_encode_decode_re_encode_is_a_fixed_point(self):
+        """Round-tripping a key must not move it, or every cache keyed on it goes cold."""
+        original = self._function_like_state()
+        key = original.get_cache_key()
+        variable, params = decode_macro_cache_key(key)
+        rebuilt = MacroState({}, variable, function_params=params, anchor_root="")
+        assert rebuilt.get_cache_key() == key
+        assert rebuilt.get_hash() == original.get_hash()
+
+    def test_an_object_only_key_decodes_to_no_parameters(self):
+        """The no-regression half: a key with no function-like macros is untouched."""
+        variable_in = {sz.Str("WIDTH"): sz.Str("4"), sz.Str("HEIGHT"): sz.Str("3")}
+        key = MacroState({}, dict(variable_in), anchor_root="").get_cache_key()
+        variable, params = decode_macro_cache_key(key)
+        assert variable == variable_in
+        assert params == {}
+
+    def test_an_empty_key_decodes_to_two_empty_dicts(self):
+        assert decode_macro_cache_key(frozenset()) == ({}, {})
+
+    def test_a_zero_arity_macro_stays_distinct_from_an_object_like_one(self):
+        """``#define F() 1`` has an empty parameter list, not an absent one."""
+        zero_arity = MacroState(
+            {},
+            {sz.Str("F"): sz.Str("1")},
+            function_params={sz.Str("F"): ()},
+            anchor_root="",
+        )
+        object_like = MacroState({}, {sz.Str("F"): sz.Str("1")}, anchor_root="")
+        assert zero_arity.get_cache_key() != object_like.get_cache_key()
+
+        variable, params = decode_macro_cache_key(zero_arity.get_cache_key())
+        assert params == {sz.Str("F"): ()}
+        rebuilt = MacroState({}, variable, function_params=params, anchor_root="")
+        assert rebuilt.get_cache_key() == zero_arity.get_cache_key()

@@ -23,11 +23,16 @@ if TYPE_CHECKING:
     from compiletools.build_inputs import PkgConfigResult
     from compiletools.build_timer import BuildTimer
     from compiletools.file_analyzer import FileAnalysisResult
-    from compiletools.preprocessing_cache import MacroCacheKey, MacroDict, ProcessingResult
+    from compiletools.preprocessing_cache import FunctionParamsDict, MacroCacheKey, MacroDict, ProcessingResult
 
 # Type alias for headerdeps cache values:
-# (include_list, file_defines, file_undefs)
-IncludeCacheValue = tuple[list[sz.Str], "MacroDict", frozenset]
+# (include_list, file_defines, file_undefs, file_function_params)
+#
+# The fourth slot carries the parameter lists of the function-like macros among
+# file_defines.  Without it a replay restores a macro's body but not its arity,
+# ``#if F(2, 0)`` downstream reads F as object-like, and the include graph takes
+# the other branch on every warm traversal.
+IncludeCacheValue = tuple[list[sz.Str], "MacroDict", frozenset, "FunctionParamsDict"]
 
 
 class BuildContext:
@@ -72,11 +77,18 @@ class BuildContext:
         self.warned_preprocessor_conditions: set[tuple[str, str, str]] = set()
 
         # Unevaluable conditions recorded during a magicflags convergence,
-        # keyed the same way and holding the message to print. A later pass that
-        # evaluates the same condition deletes its entry, so only conditions
-        # still unevaluable once the macro state settles are ever reported.
-        # Insertion-ordered, so the flush prints in discovery order.
-        self.pending_preprocessor_warnings: dict[tuple[str, str, str], str] = {}
+        # holding the message to print. A later pass that evaluates the same
+        # condition deletes its entry, so only conditions still unevaluable once
+        # the macro state settles are ever reported. Insertion-ordered, so the
+        # flush prints in discovery order.
+        #
+        # Keyed by (filepath, directive_type, condition, line_num) — one entry
+        # per OCCURRENCE, unlike the two sets either side of it. Reachability is
+        # position-dependent: the same condition text can appear twice in a file
+        # with one occurrence live and the other under a dead branch, and a
+        # position-free key lets the dead one's retraction delete the live one's
+        # report. The flush collapses back to one line per condition.
+        self.pending_preprocessor_warnings: dict[tuple[str, str, str, int], str] = {}
 
         # Conditions some pass of the current convergence evaluated successfully.
         # Retracting on success is not enough on its own: passes interleave, and
