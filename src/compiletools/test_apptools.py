@@ -492,7 +492,11 @@ class TestFindHeaderInPaths:
         """A relative header_name containing '..' must resolve against the
         symlink's TARGET, matching plain os.path.join semantics -- not
         against its lexical parent, which is what os.path.abspath /
-        os.path.normpath would collapse it to instead."""
+        os.path.normpath would collapse it to instead.
+
+        A decoy file also sits at the lexical (wrong) location so a
+        regression discriminates "picked the wrong file" from "found
+        nothing" rather than just failing to resolve."""
         real_dir = tmp_path / "real" / "deep"
         real_dir.mkdir(parents=True)
         (tmp_path / "real" / "wanted.h").write_text("// real\n")
@@ -500,6 +504,7 @@ class TestFindHeaderInPaths:
         link_dir.mkdir()
         link = link_dir / "link"
         link.symlink_to(real_dir)
+        (tmp_path / "x" / "wanted.h").write_text("// lexical decoy\n")
 
         result = apptools.find_header_in_paths("../wanted.h", [str(link)])
 
