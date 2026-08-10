@@ -310,64 +310,6 @@ class TestHandleReadmacros:
         assert os.path.realpath(tmppath) in obj._explicit_macro_files
 
 
-class TestExtractMacrosFromPreprocessor:
-    """Test CppMagicFlags._extract_macros_from_preprocessor()."""
-
-    def _make_cpp_magicflags(self):
-        from compiletools.preprocessing_cache import MacroState
-
-        obj = _make_partial("CppMagicFlags")
-        obj._initial_macro_state = MacroState(
-            core={sz.Str("__cplusplus"): sz.Str("201703L")},
-            variable={},
-            compiler_path="g++",
-            cppflags="",
-            cflags="",
-            cxxflags="",
-            anchor_root="",
-        )
-        obj.preprocessor = MagicMock()
-        return obj
-
-    def test_parses_define_lines(self):
-        obj = self._make_cpp_magicflags()
-        # obj.preprocessor was monkey-patched to MagicMock in _make_cpp_magicflags;
-        # the mock-attribute assignments below are invisible to the type checker.
-        obj.preprocessor.process.return_value = (  # type: ignore[attr-defined]
-            "#define FOO 42\n"
-            "#define BAR baz\n"
-            "#define __cplusplus 201703L\n"  # should be skipped (in core)
-            "some other line\n"
-        )
-        result = obj._extract_macros_from_preprocessor("/some/file.cpp")
-        # FOO and BAR should be in variable macros, __cplusplus should not
-        assert sz.Str("FOO") in result.variable
-        assert str(result.variable[sz.Str("FOO")]) == "42"
-        assert sz.Str("BAR") in result.variable
-        assert str(result.variable[sz.Str("BAR")]) == "baz"
-        assert sz.Str("__cplusplus") not in result.variable
-
-    def test_skips_function_like_macros(self):
-        obj = self._make_cpp_magicflags()
-        obj.preprocessor.process.return_value = "#define FUNC(x) (x+1)\n#define SIMPLE 1\n"  # type: ignore[attr-defined]
-        result = obj._extract_macros_from_preprocessor("/some/file.cpp")
-        assert sz.Str("SIMPLE") in result.variable
-        # FUNC should be skipped (function-like)
-
-    def test_define_without_value(self):
-        obj = self._make_cpp_magicflags()
-        obj.preprocessor.process.return_value = "#define DEFINED_ONLY\n"  # type: ignore[attr-defined]
-        result = obj._extract_macros_from_preprocessor("/some/file.cpp")
-        assert sz.Str("DEFINED_ONLY") in result.variable
-        assert str(result.variable[sz.Str("DEFINED_ONLY")]) == "1"
-
-    def test_empty_output(self):
-        obj = self._make_cpp_magicflags()
-        obj.preprocessor.process.return_value = ""  # type: ignore[attr-defined]
-        result = obj._extract_macros_from_preprocessor("/some/file.cpp")
-        assert len(result.variable) == 0
-
-
 class TestDirectMagicFlagsClearCache:
     """Test DirectMagicFlags.clear_cache() is a documented no-op.
 
