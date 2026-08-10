@@ -97,6 +97,25 @@ class Hunter:
             print("Hunter::_extractSOURCE. realpath=", realpath, " SOURCE flag:", ess)
         return ess
 
+    def _walk_macro_state_key(self, realpath, inherited_key):
+        """Return the macro state key to walk ``realpath`` under.
+
+        A source file is its own translation unit, so its conditionals must be
+        evaluated under its own converged macro state -- the one magicflags
+        reaches by iterating over the file and its headers. A header has no
+        translation unit of its own; it inherits the key of the TU that reached
+        it, because that is the state the compiler sees at its inclusion point.
+
+        Without this split the walk threads the root TU's key through the whole
+        closure, so an implied source's guard is evaluated against macros its
+        own headers define but the root's never saw, and the assume-false
+        fallback picks the branch the compiler did not take.
+        """
+        if not compiletools.utils.is_source(realpath):
+            return inherited_key
+        self.magicflags(realpath)
+        return self.macro_state_key(realpath)
+
     @instance_cache
     def _get_immediate_deps(self, realpath, macro_state_key):
         """Get immediate dependencies for a single file (cached by realpath + macro_state_key).
@@ -117,8 +136,10 @@ class Hunter:
         # Check for implied source (e.g., .cpp for .h)
         implied = compiletools.utils.implied_source(realpath)
         if implied:
-            # Pass macro_state_key for implied source too
-            implied_headers = tuple(self.headerdeps.process(implied, macro_state_key))
+            # The implied source is its own TU, so it is walked under its own
+            # converged key rather than the one this header was reached with.
+            implied_key = self._walk_macro_state_key(implied, macro_state_key)
+            implied_headers = tuple(self.headerdeps.process(implied, implied_key))
             headers = headers + (implied,) + implied_headers
 
         # C++20 modules: every `import M;` in this TU pulls the file that
@@ -442,7 +463,7 @@ class Hunter:
 
         for dep in headers + sources:
             if dep not in processed:
-                self._expand_deps_recursive(dep, macro_state_key, processed)
+                self._expand_deps_recursive(dep, self._walk_macro_state_key(dep, macro_state_key), processed)
 
     @instance_cache
     def _required_files_impl(self, realpath, macro_state_key):
