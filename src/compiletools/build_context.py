@@ -90,12 +90,16 @@ class BuildContext:
         # report. The flush collapses back to one line per condition.
         self.pending_preprocessor_warnings: dict[tuple[str, str, str, int], str] = {}
 
-        # Conditions some pass of the current convergence evaluated successfully.
+        # Occurrences some pass of the current convergence evaluated successfully.
         # Retracting on success is not enough on its own: passes interleave, and
         # a pass that fails AFTER the one that succeeded would otherwise re-record
-        # a condition already shown to be evaluable. Both stores are emptied when
-        # the convergence flushes.
-        self.resolved_preprocessor_conditions: set[tuple[str, str, str]] = set()
+        # an occurrence already shown to be evaluable. Keyed per occurrence like
+        # the pending store: evaluability depends on the macro state, and the
+        # state can change between two textually identical occurrences (#undef
+        # plus a different-arity redefinition), so one spelling's success must
+        # not vouch for another's. Both stores are emptied when the convergence
+        # flushes.
+        self.resolved_preprocessor_conditions: set[tuple[str, str, str, int]] = set()
 
         # Depth of the enclosing magicflags convergence. Zero means no pass will
         # follow, so a diagnostic is printed immediately and nothing is deferred;

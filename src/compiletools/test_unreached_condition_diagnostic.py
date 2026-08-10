@@ -140,7 +140,7 @@ class TestASupersededPassIsRetractedBySkipping:
         """
         context = self._two_passes(self._IF_DEAD_PARENT, tmp_path, {sz.Str("USE_NEW"): sz.Str("1")})
         assert context.pending_preprocessor_warnings == {}
-        assert all(_GATE not in condition for _, _, condition in context.resolved_preprocessor_conditions)
+        assert all(_GATE not in condition for _, _, condition, _ in context.resolved_preprocessor_conditions)
 
     def test_a_skip_outside_a_convergence_stays_silent(self, tmp_path, capsys):
         """ct-headertree and ct-filelist never defer, so the skip has nothing to do.
@@ -263,6 +263,60 @@ class TestADeadOccurrenceDoesNotSilenceALiveOne:
             SimplePreprocessor({}, verbose=1).process_structured(file_result, context)
         stderr = capsys.readouterr().err
         assert f":{live_line}: cannot evaluate" in stderr, stderr
+
+
+class TestARedefinitionDoesNotLetOneOccurrenceVouchForAnother:
+    """One condition text spelled twice, with the macro state changed between.
+
+    The liveness class above holds the macro state constant and varies only
+    reachability, so it cannot see the resolved-store collision: a condition
+    evaluable at one occurrence marked the TEXT resolved, and a later
+    occurrence made genuinely unevaluable by an ``#undef`` plus a
+    different-arity redefinition was silently discarded — the wrong branch
+    shipped with empty stderr, the exact failure class the deferral exists to
+    surface. Both orders are checked so the assertion is about which
+    occurrence is unevaluable, not which comes first.
+    """
+
+    _TWO_ARG = "#define FOO(a,b) (a > b)\n#if FOO(2,1)\nMARKER_A;\n#endif\n"
+    _ONE_ARG = "#define FOO(a) (a)\n#if FOO(2,1)\nMARKER_B;\n#endif\n"
+    _REDEF = "#undef FOO\n"
+
+    @pytest.mark.parametrize(
+        "source, warn_line",
+        [
+            (_TWO_ARG + _REDEF + _ONE_ARG, 7),
+            (_ONE_ARG + _REDEF + _TWO_ARG, 2),
+        ],
+        ids=["resolvable_then_unevaluable", "unevaluable_then_resolvable"],
+    )
+    def test_the_arity_mismatched_occurrence_is_reported(self, source, warn_line, tmp_path, capsys):
+        """The unevaluable occurrence warns and names its own line.
+
+        The line number is asserted, not just the count: a text-keyed resolved
+        store fails the first order outright (zero reports), and a fix that
+        recorded the report against the wrong occurrence would pass a bare
+        count while sending the user to the branch that evaluated fine.
+        """
+        file_result, context = _analyze(source, str(tmp_path))
+        with converging(context):
+            SimplePreprocessor({}, verbose=1).process_structured(file_result, context)
+        stderr = capsys.readouterr().err
+        assert stderr.count("cannot evaluate") == 1, stderr
+        assert f":{warn_line}: cannot evaluate '#if FOO(2,1)'" in stderr, stderr
+
+    def test_a_redefinition_leaving_both_evaluable_stays_silent(self, tmp_path, capsys):
+        """The must-not-move control: occurrence-keying must not invent reports.
+
+        Same shape — ``#undef`` plus redefinition between two spellings of one
+        condition — but the new definition keeps the arity, so both
+        occurrences evaluate and neither may warn.
+        """
+        source = self._TWO_ARG + self._REDEF + "#define FOO(a,b) (a < b)\n#if FOO(2,1)\nMARKER_C;\n#endif\n"
+        file_result, context = _analyze(source, str(tmp_path))
+        with converging(context):
+            SimplePreprocessor({}, verbose=1).process_structured(file_result, context)
+        assert capsys.readouterr().err == ""
 
 
 class TestTheFourArmsEndToEnd(tb.BaseCompileToolsTestCase):

@@ -500,7 +500,7 @@ class SimplePreprocessor:
         # when the context reports an enclosing convergence; otherwise a
         # diagnostic is printed the moment it is found.
         self._pending_warnings: dict[tuple[str, str, str, int], str] = {}
-        self._resolved_conditions: set[tuple[str, str, str]] = set()
+        self._resolved_conditions: set[tuple[str, str, str, int]] = set()
         self._defer_warnings: bool = False
         self._current_filepath: str = "<unknown>"
         # Per-call channel from process_structured to _handle_define_structured:
@@ -1431,34 +1431,35 @@ class SimplePreprocessor:
             # same condition twice with only one of them reachable, and a
             # position-free key would let either one's fate decide the other's.
             # The flush collapses these back to one line per condition.
-            if seen_key not in self._resolved_conditions:
-                self._pending_warnings.setdefault(seen_key + (directive.line_num,), message)
+            occurrence_key = seen_key + (directive.line_num,)
+            if occurrence_key not in self._resolved_conditions:
+                self._pending_warnings.setdefault(occurrence_key, message)
             return
 
         self._warned_conditions.add(seen_key)
         print(message, file=sys.stderr)
 
     def _note_condition_resolved(self, directive: "PreprocessorDirective") -> None:
-        """Record that this condition is evaluable, and drop any pending report.
+        """Record that this occurrence is evaluable, and drop its pending report.
 
         Marking is what makes the retraction stick. Passes are not ordered
         best-last: a convergence can evaluate a file correctly and then process
         it again from a state that cannot (a cache replay that strands a
         function-like macro's parameter list, say), and that later pass would
-        re-record a condition already shown to be evaluable.
+        re-record an occurrence already shown to be evaluable.
 
-        Retracts across every occurrence of the condition, deliberately:
-        evaluability is a property of the macro state, so a condition this pass
-        could evaluate is one the evaluator can represent wherever else the file
-        spells it. That is the opposite of ``_note_condition_unreached``, which
-        retracts only its own occurrence because reachability IS positional.
+        Retracts only THIS occurrence, like ``_note_condition_unreached``.
+        Evaluability is a property of the macro state, and the state is
+        positional too: an ``#undef`` plus a different-arity redefinition
+        between two textually identical occurrences makes one evaluable and
+        the other not, so a text-wide retraction would let the evaluable one
+        silence the report the other still owes.
         """
         if not self._defer_warnings:
             return
-        key = (self._current_filepath, directive.directive_type, str(directive.condition))
+        key = (self._current_filepath, directive.directive_type, str(directive.condition), directive.line_num)
         self._resolved_conditions.add(key)
-        for pending_key in [k for k in self._pending_warnings if k[:3] == key]:
-            del self._pending_warnings[pending_key]
+        self._pending_warnings.pop(key, None)
 
     def _note_condition_unreached(self, directive: "PreprocessorDirective") -> None:
         """Record that this pass never reached the condition, and drop any report.
@@ -1481,8 +1482,8 @@ class SimplePreprocessor:
         by line. Reachability is positional: a file can spell one condition
         twice with one occurrence live and unevaluable and the other under a
         dead branch, and a position-free retraction would delete the live one's
-        report. ``_note_condition_resolved`` retracts across occurrences for the
-        opposite reason.
+        report. ``_note_condition_resolved`` is occurrence-keyed for the same
+        reason, with the macro state playing the role of reachability.
         """
         if not self._defer_warnings:
             return
