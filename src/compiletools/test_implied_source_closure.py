@@ -6,7 +6,7 @@ defined in a header the implied source itself includes resolves the way the
 compiler resolves it. Walked under the root TU's state instead, the guard falls
 to the assume-false fallback and the closure names the branch the compiler did
 not take. The shipped ``implied_source_version_guard`` example and its closure
-test live in ``test_function_like_macros.py``; this module covers the four
+test live in ``test_function_like_macros.py``; this module covers the five
 things that one test cannot cover on its own:
 
 * **The object-like guard form.** ``#if PUMPLIB_VERSION_MAJOR >= 2`` is wrong
@@ -27,6 +27,10 @@ things that one test cannot cover on its own:
   source's converged state is threaded into the descent as well as into the
   source's own header scan. Applied at one of those two sites and not the
   other, the closure unions both branches instead of choosing one.
+* **A header read at two macro states.** ``TestHeaderSeenAtTwoMacroStates``
+  pins the other side of the same change: once each source carries its own
+  state, a file already in the closure can arrive again under a second one.
+  The closure has to union the two readings and still terminate.
 * **Boundary rows.** Eight shipped examples whose closures already agree with
   ``g++ -MM``. They must not move. Every one of them asserts an *absence* --
   the header on the branch the compiler did not take -- because the failure
@@ -34,8 +38,10 @@ things that one test cannot cover on its own:
 """
 
 import os
+import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import configargparse
@@ -77,11 +83,13 @@ def _reset_parser_state():
     uth.reset()
 
 
-def closure(include_dir, entry):
-    """Basenames of the dependency closure hunter reports for ``entry``.
+@contextmanager
+def hunter_over(include_dir):
+    """A Hunter and the args it resolved, on the same call path as ``ct-filelist``.
 
-    Same call path as ``ct-filelist``: a Hunter over a headerdeps/magicflags
-    pair built from a throwaway config, run in its own BuildContext.
+    A headerdeps/magicflags pair built from a throwaway config, in its own
+    BuildContext. ``args`` is yielded alongside so a test can check which
+    compiler the walk resolved against the one an oracle shells out to.
     """
     with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
         cap = configargparse.ArgumentParser(
@@ -94,7 +102,12 @@ def closure(include_dir, entry):
         args = compiletools.apptools.parseargs(cap, ["-c", temp_config, "--include", str(include_dir)], context=context)
         headerdeps = compiletools.headerdeps.create(args, context=context)
         magicparser = compiletools.magicflags.create(args, headerdeps, context=context)
-        hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=context)
+        yield compiletools.hunter.Hunter(args, headerdeps, magicparser, context=context), args
+
+
+def closure(include_dir, entry):
+    """Basenames of the dependency closure hunter reports for ``entry``."""
+    with hunter_over(include_dir) as (hunter, _args):
         files = hunter.required_files(os.path.join(str(include_dir), entry))
     return {os.path.basename(str(path)) for path in files}
 
@@ -354,6 +367,35 @@ class TestGuardBelowTheImpliedSource:
         assert closure(workspace, "main.cpp") == expected
 
     @pytest.mark.parametrize("shape", sorted(_GIZMO_TREES))
+    @uth.requires_functional_compiler
+    def test_the_wrong_branch_is_the_one_that_gets_added(self, tmp_path, shape):
+        """Names the failure signature a half-applied fix produces.
+
+        The equality assertion above already rejects it, but only by set
+        difference; this says what the difference looks like. Thread the
+        source's converged state into one of the two walk sites and not the
+        other and the closure keeps ``impl_yes.h`` and gains ``impl_no.h`` --
+        a union of both branches rather than a swap between them.
+        """
+        workspace = _write_tree(tmp_path / shape, _GIZMO_TREES[shape])
+        found = closure(workspace, "main.cpp")
+        assert "impl_yes.h" in found
+        assert "impl_no.h" not in found, f"both branches present: {sorted(found)}"
+
+    @uth.requires_functional_compiler
+    def test_the_oracle_and_the_walk_resolve_the_same_compiler(self, tmp_path):
+        """Otherwise the comparison above is between two different toolchains.
+
+        These trees compile under any C++ dialect, so a mismatch would not
+        announce itself as an error -- it would silently compare hunter's
+        preprocessing against a different compiler's ``-MM``.
+        """
+        workspace = _write_tree(tmp_path / "compiler_agreement", _GIZMO_TREES["in_the_source"])
+        with hunter_over(workspace) as (_hunter, args):
+            walk_cxx = args.CXX
+        assert shutil.which(walk_cxx) == shutil.which(_functional_cxx())
+
+    @pytest.mark.parametrize("shape", sorted(_GIZMO_TREES))
     def test_the_walk_says_nothing_about_the_guard(self, tmp_path, shape):
         """``GIZMO_IMPL`` is object-like, so getting it wrong is silent.
 
@@ -365,6 +407,69 @@ class TestGuardBelowTheImpliedSource:
         proc = run_filelist(workspace, "-v", "main.cpp")
         assert proc.returncode == 0, proc.stderr
         assert _unevaluable_lines(proc) == []
+
+
+_TWO_STATE_TREE = {
+    "main.cpp": '#include "w.h"\nint main() { return w_value(); }\n',
+    # Included from both TUs and preprocessed differently by each: main.cpp
+    # has never defined W_IMPL, w.cpp defines it before including this.
+    "w.h": ('#ifndef W_H\n#define W_H\n#ifdef W_IMPL\n#include "w_impl_detail.h"\n#endif\nint w_value();\n#endif\n'),
+    "w.cpp": (
+        "#define W_IMPL 1\n"
+        '#include "w.h"\n'
+        '#include "wcfg.h"\n'
+        "#if W_LEVEL >= 2\n"
+        '#include "w_hi.h"\n'
+        "#else\n"
+        '#include "w_lo.h"\n'
+        "#endif\n"
+        "int w_value() { return w_extra() + w_detail(); }\n"
+    ),
+    "wcfg.h": "#ifndef WCFG_H\n#define WCFG_H\n#define W_LEVEL 2\n#endif\n",
+    "w_hi.h": "#ifndef W_HI_H\n#define W_HI_H\ninline int w_extra() { return 2; }\n#endif\n",
+    "w_lo.h": "#ifndef W_LO_H\n#define W_LO_H\ninline int w_extra() { return 1; }\n#endif\n",
+    "w_impl_detail.h": (
+        "#ifndef W_IMPL_DETAIL_H\n#define W_IMPL_DETAIL_H\ninline int w_detail() { return 10; }\n#endif\n"
+    ),
+}
+
+
+class TestHeaderSeenAtTwoMacroStates:
+    """A header both TUs include, at states that disagree about its content.
+
+    ``w.h`` is the root TU's own include and the implied source's, and only the
+    implied source has defined ``W_IMPL``, so the two readings of ``w.h``
+    differ. Giving each source its own converged state means a file already in
+    the closure can be reached again under a second state; re-keying and
+    re-descending on that second arrival is the non-terminating shape, which is
+    why the key is computed inside the already-processed guard rather than
+    ahead of it. The closure must therefore be the union over both readings --
+    ``w_impl_detail.h`` is in it because ``w.cpp`` sees it -- while still
+    choosing one side of ``w.cpp``'s own ``W_LEVEL`` guard.
+
+    Corpus contributed by the fix's author; the oracle is re-derived here from
+    the probed compiler rather than carried over with it.
+    """
+
+    @uth.requires_functional_compiler
+    def test_the_closure_is_the_union_over_both_readings(self, tmp_path):
+        workspace = _write_tree(tmp_path / "two_state", _TWO_STATE_TREE)
+        cxx = _functional_cxx()
+        expected = _mm_headers(cxx, workspace, "main.cpp", "w.cpp") | {"main.cpp", "w.cpp"}
+        assert {"w_impl_detail.h", "w_hi.h"} <= expected and "w_lo.h" not in expected, expected
+        assert closure(workspace, "main.cpp") == expected
+
+    @uth.requires_functional_compiler
+    def test_the_walk_terminates(self, tmp_path):
+        """Run out of process so a non-terminating walk fails rather than hangs.
+
+        ``run_filelist`` carries a timeout; an in-process call would take the
+        whole pytest worker down with it.
+        """
+        workspace = _write_tree(tmp_path / "two_state_cli", _TWO_STATE_TREE)
+        proc = run_filelist(workspace, "main.cpp")
+        assert proc.returncode == 0, proc.stderr
+        assert "w.h" in _stdout_basenames(proc)
 
 
 # Closures that already agree with the compiler. Each was checked against
