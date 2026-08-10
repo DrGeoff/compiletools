@@ -1259,6 +1259,7 @@ class SimplePreprocessor:
             # of _evaluate_expression_sz). Still push an inactive frame so
             # nesting depth and bookkeeping stay correct. This is the exact frame
             # the old code pushed when result was AND-ed with a False parent.
+            self._note_condition_unreached(directive)
             condition_stack.append((False, False, False))
         elif directive.condition:
             try:
@@ -1297,6 +1298,7 @@ class SimplePreprocessor:
             # eval to avoid spurious __has_include / __has_* compiler probes.
             # Behavior-preserving: new_active = bool(result) and parent_active is
             # necessarily False, hence new_any_condition_met == any_condition_met.
+            self._note_condition_unreached(directive)
             condition_stack.append((False, False, any_condition_met))
         elif not seen_else and not any_condition_met and directive.condition:
             try:
@@ -1317,7 +1319,9 @@ class SimplePreprocessor:
                 self._warn_unevaluable_condition(directive, e)
                 condition_stack.append((False, False, any_condition_met))
         else:
-            # Either we already found a true condition or seen_else is True
+            # Either we already found a true condition or seen_else is True, so
+            # this #elif is short-circuited and its condition is never consulted.
+            self._note_condition_unreached(directive)
             condition_stack.append((False, seen_else, any_condition_met))
 
     def _warn_unevaluable_condition(self, directive: "PreprocessorDirective", error: Exception) -> None:
@@ -1386,6 +1390,28 @@ class SimplePreprocessor:
             return
         key = (self._current_filepath, directive.directive_type, str(directive.condition))
         self._resolved_conditions.add(key)
+        self._pending_warnings.pop(key, None)
+
+    def _note_condition_unreached(self, directive: "PreprocessorDirective") -> None:
+        """Record that this pass never reached the condition, and drop any report.
+
+        A dead enclosing branch means the directive is not part of the build,
+        so an "assuming false" attributed to it is telling the user about a
+        line that was never compiled either way. The skip is silent in a
+        non-deferring run because nothing evaluates and nothing warns; inside a
+        convergence an EARLIER pass may already have recorded the condition
+        pending, from a state where the parent was still live.
+
+        Deliberately does NOT mark the condition resolved. The two stores are
+        asymmetric because the failure they guard against is opposite:
+        re-recording is a bug for a condition already shown evaluable and is
+        the requirement for one merely unreached, since a later pass that
+        reaches it and still cannot evaluate it must warn. Making this sticky
+        would silence exactly the liveparent arm the fix has to preserve.
+        """
+        if not self._defer_warnings:
+            return
+        key = (self._current_filepath, directive.directive_type, str(directive.condition))
         self._pending_warnings.pop(key, None)
 
     def _safe_eval(self, expr: str) -> int:
