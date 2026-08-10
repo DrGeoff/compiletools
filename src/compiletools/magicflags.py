@@ -553,7 +553,9 @@ class MagicFlagsBase:
                 str(flag), self._args, verbose=self._args.verbose
             )
             if not resolved_flag_str:
-                resolved_flag_str = self._find_in_include_paths(str(flag), extra_include_paths or [])
+                resolved_flag_str = compiletools.apptools.find_header_in_paths(
+                    str(flag), extra_include_paths or [], verbose=self._args.verbose, label="READMACROS"
+                )
 
             if resolved_flag_str:
                 resolved_flag = sz.Str(resolved_flag_str)
@@ -571,18 +573,6 @@ class MagicFlagsBase:
             )
 
         return str(resolved_flag)
-
-    def _find_in_include_paths(self, header_name: str, include_paths: list[str]) -> Optional[str]:
-        """First existing ``<include_path>/<header_name>``, or None."""
-        for include_path in include_paths:
-            candidate = compiletools.wrappedos.join(include_path, header_name)
-            if compiletools.wrappedos.isfile(candidate):
-                return compiletools.wrappedos.realpath(candidate)
-
-        if self._args.verbose >= 9 and include_paths:
-            print(f"READMACROS '{header_name}' not found in file-declared include paths: {include_paths}")
-
-        return None
 
     def _collect_explicit_macro_files(self, source_files: list[str]) -> set:
         """Scan files for READMACROS flags and return set of explicit macro files.

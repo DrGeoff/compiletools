@@ -794,6 +794,35 @@ def extract_system_include_paths(args, flag_sources=None, verbose=0):
     return include_paths
 
 
+def find_header_in_paths(header_name, include_paths, verbose=0, label="header"):
+    """First existing ``<include_path>/<header_name>`` across include_paths, or None.
+
+    Resolves each candidate to an absolute path with ``os.path.abspath``
+    before the ``wrappedos`` lookup: ``wrappedos``'s fs-query cache keys on
+    the input string, so an ``include_path`` entry that is itself relative
+    would lock the candidate's resolution in against whatever cwd was live
+    on the first call, and go stale under any later chdir.
+
+    Args:
+        header_name: Name of header to find (e.g., "stdio.h", "mylib/header.h")
+        include_paths: Directories to search, in search order
+        verbose: Verbosity level for debugging
+        label: What to call the header in the verbose-9 not-found message
+
+    Returns:
+        Absolute path to header if found, None otherwise
+    """
+    for include_path in include_paths:
+        candidate = os.path.abspath(os.path.join(include_path, header_name))
+        if compiletools.wrappedos.isfile(candidate):
+            return compiletools.wrappedos.realpath(candidate)
+
+    if verbose >= 9 and include_paths:
+        print(f"{label} '{header_name}' not found in include paths: {include_paths}")
+
+    return None
+
+
 def find_system_header(header_name, args, verbose=0):
     """Find a system header in the -I/-isystem include paths.
 
@@ -806,16 +835,7 @@ def find_system_header(header_name, args, verbose=0):
         Absolute path to header if found, None otherwise
     """
     include_paths = extract_system_include_paths(args, verbose=verbose)
-
-    for include_path in include_paths:
-        candidate = os.path.join(include_path, header_name)
-        if compiletools.wrappedos.isfile(candidate):
-            return compiletools.wrappedos.realpath(candidate)
-
-    if verbose >= 9:
-        print(f"System header '{header_name}' not found in include paths: {include_paths}")
-
-    return None
+    return find_header_in_paths(header_name, include_paths, verbose=verbose, label="System header")
 
 
 def extract_command_line_macros(args, flag_sources=None, include_compiler_macros=True, verbose=0):
