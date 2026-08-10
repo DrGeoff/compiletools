@@ -411,9 +411,9 @@ class DirectHeaderDeps(HeaderDepsBase):
         if is_permanently_invariant(analysis_result):
             # Invariant file - use content_hash only as cache key
             if content_hash in inv_inc_cache:
-                cached_includes, cached_file_defines, cached_file_undefs = inv_inc_cache[content_hash]
+                cached_includes, cached_file_defines, cached_file_undefs, cached_params = inv_inc_cache[content_hash]
                 if cached_file_defines:
-                    self.defined_macros = self.defined_macros.with_updates(cached_file_defines)
+                    self.defined_macros = self.defined_macros.with_updates(cached_file_defines, cached_params)
                 if cached_file_undefs:
                     self.defined_macros = self.defined_macros.without_keys(cached_file_undefs)
                 return cached_includes
@@ -426,7 +426,12 @@ class DirectHeaderDeps(HeaderDepsBase):
             ]
 
             self.defined_macros = result.updated_macros
-            inv_inc_cache[content_hash] = (include_list, result.file_defines, result.file_undefs)
+            inv_inc_cache[content_hash] = (
+                include_list,
+                result.file_defines,
+                result.file_undefs,
+                result.file_function_params,
+            )
             return include_list
 
         # Variant file - use file-specific macro key (only macros that affect this file)
@@ -434,9 +439,9 @@ class DirectHeaderDeps(HeaderDepsBase):
         cache_key = (content_hash, macro_key)
 
         if cache_key in var_inc_cache:
-            cached_includes, cached_file_defines, cached_file_undefs = var_inc_cache[cache_key]
+            cached_includes, cached_file_defines, cached_file_undefs, cached_params = var_inc_cache[cache_key]
             if cached_file_defines:
-                self.defined_macros = self.defined_macros.with_updates(cached_file_defines)
+                self.defined_macros = self.defined_macros.with_updates(cached_file_defines, cached_params)
             if cached_file_undefs:
                 self.defined_macros = self.defined_macros.without_keys(cached_file_undefs)
             return cached_includes
@@ -453,7 +458,12 @@ class DirectHeaderDeps(HeaderDepsBase):
         include_list = [sz.Str(inc["filename"]) for inc in result.active_includes if not inc.get("is_commented", False)]
 
         self.defined_macros = result.updated_macros
-        var_inc_cache[cache_key] = (include_list, result.file_defines, result.file_undefs)
+        var_inc_cache[cache_key] = (
+            include_list,
+            result.file_defines,
+            result.file_undefs,
+            result.file_function_params,
+        )
 
         return include_list
 

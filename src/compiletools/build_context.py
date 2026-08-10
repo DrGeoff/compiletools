@@ -23,11 +23,16 @@ if TYPE_CHECKING:
     from compiletools.build_inputs import PkgConfigResult
     from compiletools.build_timer import BuildTimer
     from compiletools.file_analyzer import FileAnalysisResult
-    from compiletools.preprocessing_cache import MacroCacheKey, MacroDict, ProcessingResult
+    from compiletools.preprocessing_cache import FunctionParamsDict, MacroCacheKey, MacroDict, ProcessingResult
 
 # Type alias for headerdeps cache values:
-# (include_list, file_defines, file_undefs)
-IncludeCacheValue = tuple[list[sz.Str], "MacroDict", frozenset]
+# (include_list, file_defines, file_undefs, file_function_params)
+#
+# The fourth slot carries the parameter lists of the function-like macros among
+# file_defines.  Without it a replay restores a macro's body but not its arity,
+# ``#if F(2, 0)`` downstream reads F as object-like, and the include graph takes
+# the other branch on every warm traversal.
+IncludeCacheValue = tuple[list[sz.Str], "MacroDict", frozenset, "FunctionParamsDict"]
 
 
 class BuildContext:
