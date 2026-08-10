@@ -89,6 +89,7 @@ class TestFindTargetsModule:
             "has_include/main.cpp",
             "header_guard_bug/main.cpp",
             "hunter_macro_propagation/app.cpp",
+            "implied_source_version_guard/main.cpp",
             "isystem_include_bug/main.cpp",
             "ldflags/conditional_ldflags_test.cpp",
             "ldflags/macro_expanded_ldflags.cpp",

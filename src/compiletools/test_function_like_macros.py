@@ -15,10 +15,13 @@ import subprocess
 import tempfile
 from types import SimpleNamespace
 
+import configargparse
 import pytest
 import stringzilla as sz
 
+import compiletools.apptools
 import compiletools.headerdeps
+import compiletools.hunter
 import compiletools.magicflags
 import compiletools.test_base as tb
 import compiletools.testhelper as uth
@@ -818,6 +821,59 @@ MARKER_TAKEN;
         with converging(SimpleNamespace()):
             pass
         assert capsys.readouterr().err == ""
+
+
+class TestImpliedSourceVersionGuard:
+    """The guard reached through an implied source, from the shipped example.
+
+    ``hunter.huntsource`` walks the sibling ``pump.cpp`` with an unconverged
+    macro state and outside ``converging()``, so ``PUMPLIB_AT_LEAST(1, 2, 0)``
+    resolves by the assume-false fallback and the dependency closure names the
+    header the compiler did not include.
+    """
+
+    _EXAMPLE = "implied_source_version_guard"
+
+    def _closure(self) -> set:
+        example = uth.example_path(self._EXAMPLE)
+        with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
+            cap = configargparse.ArgumentParser(
+                conflict_handler="resolve",
+                args_for_setting_config_path=["-c", "--config"],
+                ignore_unknown_config_file_keys=True,
+            )
+            compiletools.hunter.add_arguments(cap)
+            context = BuildContext()
+            args = compiletools.apptools.parseargs(cap, ["-c", temp_config, "--include", example], context=context)
+            headerdeps = compiletools.headerdeps.create(args, context=context)
+            magicparser = compiletools.magicflags.create(args, headerdeps, context=context)
+            hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=context)
+            files = hunter.required_files(os.path.join(example, "main.cpp"))
+        return {os.path.basename(str(path)) for path in files}
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="the implied-source walk resolves the guard by the assume-false fallback",
+    )
+    def test_the_closure_names_the_branch_the_compiler_takes(self):
+        closure = self._closure()
+        assert "modern_pump.h" in closure
+        assert "legacy_pump.h" not in closure
+
+    @requires_functional_compiler
+    def test_the_compiler_takes_the_modern_branch(self):
+        """Pins the expectation above against cpp, so it is not an invention."""
+        cxx = _functional_cxx()
+        example = uth.example_path(self._EXAMPLE)
+        proc = subprocess.run(
+            [cxx, "-E", "-P", "-I", example, os.path.join(example, "pump.cpp")],
+            capture_output=True,
+            text=True,
+            timeout=_SUBPROCESS_TIMEOUT,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert '"modern"' in proc.stdout
+        assert '"legacy"' not in proc.stdout
 
 
 class TestReadmacrosSuppliedFunctionLikeGate(tb.BaseCompileToolsTestCase):

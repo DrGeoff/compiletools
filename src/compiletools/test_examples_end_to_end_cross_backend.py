@@ -197,6 +197,12 @@ _EXAMPLE_PLANS: dict[str, ExamplePlan] = {
     "ffile_prefix_map": _VANILLA,
     "has_include": _VANILLA,
     "hunter_macro_propagation": _VANILLA,
+    # The dependency list this example produces is wrong (see its README):
+    # the implied-source walk resolves a version guard by the assume-false
+    # fallback. The build is unaffected because the compiler evaluates the
+    # guard itself, so the matrix cell asserts only that every backend still
+    # links and runs it.
+    "implied_source_version_guard": _VANILLA,
     "macro_state_dependency": _VANILLA,
     "magicsourceinheader": _VANILLA,
     "movingheaders": _VANILLA,

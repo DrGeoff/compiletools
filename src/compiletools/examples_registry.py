@@ -50,6 +50,7 @@ EXAMPLES_E2E: frozenset[str] = frozenset(
         "ffile_prefix_map",
         "has_include",
         "hunter_macro_propagation",
+        "implied_source_version_guard",
         "macro_state_dependency",
         "magicinclude",
         "magicsourceinheader",
