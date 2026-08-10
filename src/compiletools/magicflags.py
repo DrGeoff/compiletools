@@ -554,7 +554,12 @@ class MagicFlagsBase:
             )
             if not resolved_flag_str:
                 resolved_flag_str = compiletools.apptools.find_header_in_paths(
-                    str(flag), extra_include_paths or [], verbose=self._args.verbose, label="READMACROS"
+                    str(flag),
+                    extra_include_paths or [],
+                    verbose=self._args.verbose,
+                    label="READMACROS",
+                    paths_label="file-declared include paths",
+                    warn_on_empty=False,
                 )
 
             if resolved_flag_str:

@@ -794,38 +794,52 @@ def extract_system_include_paths(args, flag_sources=None, verbose=0):
     return include_paths
 
 
-def find_header_in_paths(header_name, include_paths, verbose=0, label="header"):
+def find_header_in_paths(
+    header_name, include_paths, verbose=0, label="header", paths_label="include paths", warn_on_empty=True
+):
     """First existing ``<include_path>/<header_name>`` across include_paths, or None.
 
-    Resolves each candidate to an absolute path with ``os.path.abspath``
-    before the ``wrappedos`` lookup: ``wrappedos``'s fs-query cache keys on
-    the input string, so an ``include_path`` entry that is itself relative
-    would lock the candidate's resolution in against whatever cwd was live
-    on the first call, and go stale under any later chdir.
+    Prepends the cwd to the joined candidate only when that candidate is
+    still relative: ``wrappedos``'s fs-query cache keys on the input string,
+    so a relative candidate would lock its resolution in against whatever
+    cwd was live on the first call, and go stale under any later chdir.
 
-    ``abspath`` is deliberately cwd-anchored, not gitroot-anchored: a
-    relative ``include_path`` here is a literal search-path entry (like a
-    compiler's relative ``-I``), which the compiler itself resolves against
-    its invocation cwd, not the gitroot. Gitroot-anchoring is a distinct
+    Deliberately cwd-anchored, not gitroot-anchored: a relative
+    ``include_path`` here is a literal search-path entry (like a compiler's
+    relative ``-I``), which the compiler itself resolves against its
+    invocation cwd, not the gitroot. Gitroot-anchoring is a distinct
     contract used elsewhere (cache-key canonicalisation); do not conflate
     the two when touching this helper.
+
+    The cwd is prepended with a plain join, never ``os.path.abspath`` /
+    ``os.path.normpath``: normpath collapses a ``..`` in ``header_name``
+    lexically, before the filesystem sees it, which resolves to a different
+    file than the OS would give a plain join when an ``include_path`` entry
+    is itself a symlink (the OS resolves ``..`` against the symlink's
+    target, not its lexical parent).
 
     Args:
         header_name: Name of header to find (e.g., "stdio.h", "mylib/header.h")
         include_paths: Directories to search, in search order
         verbose: Verbosity level for debugging
         label: What to call the header in the verbose-9 not-found message
+        paths_label: What to call the searched path list in the verbose-9
+            not-found message (e.g. "file-declared include paths")
+        warn_on_empty: Whether to still print the verbose-9 not-found
+            message when include_paths is empty
 
     Returns:
         Absolute path to header if found, None otherwise
     """
     for include_path in include_paths:
-        candidate = os.path.abspath(os.path.join(include_path, header_name))
+        candidate = os.path.join(include_path, header_name)
+        if not os.path.isabs(candidate):
+            candidate = os.path.join(os.getcwd(), candidate)
         if compiletools.wrappedos.isfile(candidate):
             return compiletools.wrappedos.realpath(candidate)
 
-    if verbose >= 9 and include_paths:
-        print(f"{label} '{header_name}' not found in include paths: {include_paths}")
+    if verbose >= 9 and (warn_on_empty or include_paths):
+        print(f"{label} '{header_name}' not found in {paths_label}: {include_paths}")
 
     return None
 

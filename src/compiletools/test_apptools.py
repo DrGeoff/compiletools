@@ -484,6 +484,52 @@ class TestTokenizeCompileFlagsQuoteErrors:
             tokenize_compile_flags('-DFOO="bar', "", "")
 
 
+class TestFindHeaderInPaths:
+    """Test find_header_in_paths(), the shared helper behind find_system_header
+    and the READMACROS resolution path."""
+
+    def test_resolves_through_a_symlinked_include_path(self, tmp_path):
+        """A relative header_name containing '..' must resolve against the
+        symlink's TARGET, matching plain os.path.join semantics -- not
+        against its lexical parent, which is what os.path.abspath /
+        os.path.normpath would collapse it to instead."""
+        real_dir = tmp_path / "real" / "deep"
+        real_dir.mkdir(parents=True)
+        (tmp_path / "real" / "wanted.h").write_text("// real\n")
+        link_dir = tmp_path / "x"
+        link_dir.mkdir()
+        link = link_dir / "link"
+        link.symlink_to(real_dir)
+
+        result = apptools.find_header_in_paths("../wanted.h", [str(link)])
+
+        assert result == os.path.realpath(str(tmp_path / "real" / "wanted.h"))
+
+    def test_system_header_wording_warns_even_on_empty_include_paths(self, capsys):
+        apptools.find_header_in_paths("h", [], verbose=9, label="System header")
+        captured = capsys.readouterr()
+        assert captured.out.strip() == "System header 'h' not found in include paths: []"
+
+    def test_readmacros_wording_is_silent_on_empty_include_paths(self, capsys):
+        apptools.find_header_in_paths(
+            "h", [], verbose=9, label="READMACROS", paths_label="file-declared include paths", warn_on_empty=False
+        )
+        captured = capsys.readouterr()
+        assert captured.out == ""
+
+    def test_readmacros_wording_names_file_declared_paths(self, capsys):
+        apptools.find_header_in_paths(
+            "h",
+            ["/no/such"],
+            verbose=9,
+            label="READMACROS",
+            paths_label="file-declared include paths",
+            warn_on_empty=False,
+        )
+        captured = capsys.readouterr()
+        assert captured.out.strip() == "READMACROS 'h' not found in file-declared include paths: ['/no/such']"
+
+
 class TestFindSystemHeader:
     """Test find_system_header()."""
 
