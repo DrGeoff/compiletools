@@ -43,8 +43,11 @@ Deliberate generator exclusions (documented, not accidental)
 ------------------------------------------------------------
 * ``__has_include`` / ``__has_*`` builtins -- they shell out to the compiler as
   an observable side effect; not part of the pure conditional-eval contract.
-* FUNCTION-LIKE macros used inside ``#if`` -- known-unsupported by
-  SimplePreprocessor (it only tracks object-like macros).
+* FUNCTION-LIKE macros used inside ``#if`` -- supported since the parameter
+  list started riding on the directive, but the shapes SimplePreprocessor
+  declines (``#``, ``##``, ``__VA_ARGS__``) would dominate a random stream and
+  are diagnosed rather than evaluated. Directed oracle coverage of the
+  supported subset lives in ``test_function_like_macros.py``.
 * Integer suffixes (``U`` / ``L`` / ``UL`` ...) -- SimplePreprocessor strips
   them, losing signedness; see the KNOWN-DIVERGENCE xfail list below.
 * Leading-zero (octal) literals -- kept out of the generator so the ``08``

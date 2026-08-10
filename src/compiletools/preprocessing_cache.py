@@ -24,6 +24,14 @@ import stringzilla as sz
 # Type aliases for macro dictionaries and cache keys
 MacroDict = dict[sz.Str, sz.Str]
 MacroCacheKey = frozenset[tuple[sz.Str, sz.Str]]
+# Parameter lists of function-like macros, keyed by the same bare macro name
+# used in MacroDict. A name absent here is object-like.
+FunctionParamsDict = dict[sz.Str, tuple[sz.Str, ...]]
+# Cache-key namespace for the parameter-list contribution. '#' cannot appear in
+# a C identifier, so a synthesized entry can never collide with a real macro's
+# (name, value) pair. A NUL prefix would also be collision-free but renders as
+# an empty sz.Str in every -v dump of a cache key.
+_FUNCTION_PARAMS_KEY_PREFIX = "#params:"
 
 # Include-path env vars the compiler's preprocessor reads (gcc: CPATH acts
 # like -I, the per-language *_INCLUDE_PATH vars like -isystem). Folded into
@@ -62,6 +70,8 @@ class ProcessingResult:
         active_defines: List of active #define directives with metadata
         updated_macros: Macro state after processing (input + defines - undefs)
         file_defines: Macros defined BY this file only (for cache reconstruction)
+        file_function_params: Parameter lists of the function-like macros among
+            file_defines (for cache reconstruction)
     """
 
     active_lines: list[int]
@@ -71,6 +81,7 @@ class ProcessingResult:
     updated_macros: "MacroState"  # Forward reference
     file_defines: MacroDict = field(default_factory=dict)
     file_undefs: frozenset = field(default_factory=frozenset)
+    file_function_params: "FunctionParamsDict" = field(default_factory=dict)
 
 
 @dataclass
@@ -142,6 +153,7 @@ class MacroState:
 
     core: MacroDict  # Static: compiler + cmdline macros
     variable: MacroDict  # Dynamic: file #defines
+    function_params: FunctionParamsDict  # Parameter lists of the function-like variable macros
     compiler_path: str  # Build context: compiler executable for __has_* queries
     cppflags: str  # Build context: raw flags (-I paths etc.) for __has_* queries
     cflags: str  # Build context: C compiler flags for object naming
@@ -170,6 +182,7 @@ class MacroState:
         cflags_tokens: Optional[list] = None,
         cxxflags_tokens: Optional[list] = None,
         compiler_identity: str = "",
+        function_params: Optional[FunctionParamsDict] = None,
         *,
         anchor_root: str,  # required: gitroot for canonicalisation; pass "" only in tests
     ):
@@ -192,6 +205,12 @@ class MacroState:
                 (realpath|size|mtime_ns) from ``apptools.compiler_identity``.
                 Folded into the include_core hash so an in-place toolchain
                 swap invalidates objects. Default ``""`` when not applicable.
+            function_params: Parameter lists of the function-like macros among
+                `variable`, keyed by the same bare name. Needed because a
+                function-like macro's expansion depends on its parameter list,
+                and `variable` alone carries only the body. Default empty
+                contributes nothing to any cache key or hash, so a file with
+                no function-like macros keys exactly as before.
             anchor_root: Gitroot prefix used by ``canonicalize_path_for_cache_key``
                 to make flag-token hashes workspace-independent. Pass ``""``
                 only in tests or when the gitroot cannot be resolved (graceful
@@ -200,6 +219,7 @@ class MacroState:
         """
         self.core = core
         self.variable = variable if variable is not None else {}
+        self.function_params = function_params if function_params is not None else {}
         self.compiler_path = compiler_path
         self.cppflags = cppflags
         self.cflags = cflags
@@ -225,11 +245,18 @@ class MacroState:
         result.update(self.variable)
         return result
 
-    def with_updates(self, new_macros: MacroDict) -> "MacroState":
+    def with_updates(
+        self, new_macros: MacroDict, new_function_params: Optional[FunctionParamsDict] = None
+    ) -> "MacroState":
         """Create new MacroState with additional macros merged into variable.
 
         Args:
             new_macros: Macros to merge (typically from file #defines)
+            new_function_params: Parameter lists for whichever of `new_macros`
+                are function-like. A name in `new_macros` but absent here is
+                object-like, so any parameter list it carried before is
+                dropped — a redefinition can turn a function-like macro
+                object-like.
 
         Returns:
             New MacroState with same core but updated variable macros.
@@ -243,7 +270,14 @@ class MacroState:
         # Only apply updates that actually change the value or add a new key
         actual_updates = {k: v for k, v in new_macros.items() if k not in self.variable or self.variable[k] != v}
 
-        if not actual_updates:
+        updated_params = {k: v for k, v in self.function_params.items() if k not in new_macros}
+        if new_function_params:
+            updated_params.update({k: v for k, v in new_function_params.items() if k in new_macros})
+        params_changed = updated_params != self.function_params
+
+        # A redefinition can leave the body identical and change only the
+        # parameter list, so an empty actual_updates is not by itself a no-op.
+        if not actual_updates and not params_changed:
             return self
 
         updated_variable = self.variable.copy()
@@ -260,6 +294,7 @@ class MacroState:
             cflags_tokens=self.cflags_tokens,
             cxxflags_tokens=self.cxxflags_tokens,
             compiler_identity=self.compiler_identity,
+            function_params=updated_params,
             anchor_root=self.anchor_root,
         )
 
@@ -267,7 +302,9 @@ class MacroState:
         # Only for pure additions (no key overwrites) since frozenset union
         # doesn't replace - it adds. Macro definitions are typically additive
         # (include guards, feature flags), so pure additions are the common case.
-        if self._cache_key is not None:
+        # A changed parameter-list contribution rules the shortcut out: those
+        # entries are namespaced, so a union cannot replace a stale one either.
+        if self._cache_key is not None and not params_changed:
             overwrites = any(k in self.variable for k in actual_updates)
             if not overwrites:
                 # Pure addition - O(k) frozenset union instead of O(n) rebuild
@@ -276,11 +313,17 @@ class MacroState:
         return new_state
 
     def without_keys(self, keys) -> "MacroState":
-        """Create new MacroState with specified keys removed from variable."""
+        """Create new MacroState with specified keys removed from variable.
+
+        A removed macro loses its parameter list with its body: #undef takes
+        the whole definition, so no orphan entry may survive to be consulted
+        by a later redefinition.
+        """
         removed = {k for k in keys if k in self.variable}
         if not removed:
             return self
         updated_variable = {k: v for k, v in self.variable.items() if k not in removed}
+        updated_params = {k: v for k, v in self.function_params.items() if k not in removed}
         return MacroState(
             self.core,
             updated_variable,
@@ -293,6 +336,7 @@ class MacroState:
             cflags_tokens=self.cflags_tokens,
             cxxflags_tokens=self.cxxflags_tokens,
             compiler_identity=self.compiler_identity,
+            function_params=updated_params,
             anchor_root=self.anchor_root,
         )
 
@@ -316,9 +360,31 @@ class MacroState:
             return _EMPTY_FROZENSET
 
         if self._cache_key is None:
-            self._cache_key = frozenset(self.variable.items())
+            self._cache_key = frozenset(self.variable.items()) | self._function_params_key_items()
 
         return self._cache_key
+
+    def _function_params_key_items(self, names: Optional[frozenset[sz.Str]] = None) -> MacroCacheKey:
+        """Cache-key contribution of the function-like macros' parameter lists.
+
+        Two definitions can share a body and differ only in their parameter
+        names (``#define F(a) a`` vs ``#define F(b) a``), so the parameter list
+        has to key alongside the body. The entries are namespaced under a
+        synthetic name that keeps the (name, value) shape every key consumer
+        expects while being unable to collide with a real macro.
+
+        Returns the empty frozenset when there are no function-like macros, so
+        a state without them keys byte-for-byte as it did before the feature.
+        """
+        if not self.function_params:
+            return _EMPTY_FROZENSET
+        items = self.function_params.items()
+        if names is not None:
+            items = [(n, self.function_params[n]) for n in names if n in self.function_params]
+        return frozenset(
+            (sz.Str(_FUNCTION_PARAMS_KEY_PREFIX + str(name)), sz.Str(",".join(str(p) for p in params)))
+            for name, params in items
+        )
 
     def get_relevant_key(self, relevant_macros: frozenset[sz.Str]) -> MacroCacheKey:
         """Get cache key filtered to only macros that affect the target file.
@@ -338,7 +404,10 @@ class MacroState:
 
         # Build filtered key - only include variable macros that matter
         relevant_items = tuple((m, self.variable[m]) for m in relevant_macros if m in self.variable)
-        return frozenset(relevant_items) if relevant_items else _EMPTY_FROZENSET
+        relevant_params = self._function_params_key_items(relevant_macros)
+        if not relevant_items:
+            return relevant_params
+        return frozenset(relevant_items) | relevant_params
 
     def get_hash(
         self,
@@ -404,6 +473,7 @@ class MacroState:
         else:
             filtered_core = [(n, v) for n, v in self.core.items() if n not in self.cmdline_origin or n in scope_filter]
             items_to_hash = frozenset(filtered_core + list(self.variable.items()))
+        items_to_hash = items_to_hash | self._function_params_key_items()
         for name, value in items_to_hash:
             combined ^= sz.hash(bytes(name))
             combined ^= sz.hash(bytes(value))
@@ -601,7 +671,9 @@ def get_or_compute_preprocessing(
             # to prevent stale macro pollution from first caller's context
             reconstructed_macros = input_macros
             if cached.file_defines:
-                reconstructed_macros = reconstructed_macros.with_updates(cached.file_defines)
+                reconstructed_macros = reconstructed_macros.with_updates(
+                    cached.file_defines, cached.file_function_params
+                )
             if cached.file_undefs:
                 reconstructed_macros = reconstructed_macros.without_keys(cached.file_undefs)
             return ProcessingResult(
@@ -611,6 +683,7 @@ def get_or_compute_preprocessing(
                 active_defines=cached.active_defines,
                 updated_macros=reconstructed_macros,
                 file_defines=cached.file_defines,
+                file_function_params=cached.file_function_params,
                 file_undefs=cached.file_undefs,
             )
 
@@ -628,7 +701,9 @@ def get_or_compute_preprocessing(
             cached = var_cache[cache_key]
             reconstructed_macros = input_macros
             if cached.file_defines:
-                reconstructed_macros = reconstructed_macros.with_updates(cached.file_defines)
+                reconstructed_macros = reconstructed_macros.with_updates(
+                    cached.file_defines, cached.file_function_params
+                )
             if cached.file_undefs:
                 reconstructed_macros = reconstructed_macros.without_keys(cached.file_undefs)
             return ProcessingResult(
@@ -638,6 +713,7 @@ def get_or_compute_preprocessing(
                 active_defines=cached.active_defines,
                 updated_macros=reconstructed_macros,
                 file_defines=cached.file_defines,
+                file_function_params=cached.file_function_params,
                 file_undefs=cached.file_undefs,
             )
 
@@ -647,7 +723,11 @@ def get_or_compute_preprocessing(
     # Compute result - pass all macros to preprocessor
     all_macros = input_macros.all_macros()
     preprocessor = SimplePreprocessor(
-        all_macros, verbose=verbose, compiler_path=input_macros.compiler_path, cppflags=input_macros.cppflags
+        all_macros,
+        verbose=verbose,
+        compiler_path=input_macros.compiler_path,
+        cppflags=input_macros.cppflags,
+        function_params=input_macros.function_params,
     )
     active_lines = preprocessor.process_structured(file_result, context)
     active_line_set = set(active_lines)
@@ -688,6 +768,13 @@ def get_or_compute_preprocessing(
         if k not in input_macros.variable:
             file_defines[k] = v
 
+    # Parameter lists travel with the bodies they belong to, through both the
+    # updated state and the cache-reconstruction path.
+    new_function_params: FunctionParamsDict = {
+        k: v for k, v in preprocessor.function_params.items() if k in new_variable_macros
+    }
+    file_function_params: FunctionParamsDict = {k: v for k, v in new_function_params.items() if k in file_defines}
+
     # Active undef targets: macro names from #undef directives on active lines.
     # Input-independent: safe to cache for both invariant and variant entries.
     # without_keys() handles the intersection with the caller's variable macros.
@@ -711,6 +798,7 @@ def get_or_compute_preprocessing(
         cflags_tokens=input_macros.cflags_tokens,
         cxxflags_tokens=input_macros.cxxflags_tokens,
         compiler_identity=input_macros.compiler_identity,
+        function_params=new_function_params,
         anchor_root=input_macros.anchor_root,
     )
 
@@ -723,6 +811,7 @@ def get_or_compute_preprocessing(
         updated_macros=updated_macro_state,
         file_defines=file_defines,
         file_undefs=file_undefs,
+        file_function_params=file_function_params,
     )
 
     # Store in appropriate cache

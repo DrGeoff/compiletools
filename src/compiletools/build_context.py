@@ -65,6 +65,12 @@ class BuildContext:
             "variant_misses": 0,
         }
 
+        # -- simple_preprocessor diagnostics --
+        # (filepath, directive_type, condition) already reported as unevaluable.
+        # Shared across preprocessor instances because magicflags builds a fresh
+        # one per pass over the same file.
+        self.warned_preprocessor_conditions: set[tuple[str, str, str]] = set()
+
         # -- headerdeps module-level caches --
         self.include_list_cache: dict[tuple[str, MacroCacheKey], IncludeCacheValue] = {}
         self.invariant_include_cache: dict[str, IncludeCacheValue] = {}

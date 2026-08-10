@@ -626,6 +626,11 @@ def parse_directive_struct(
             if paren_pos == name_end:  # function-like: value follows the ')'
                 params_end = content_slice.find(")", paren_pos + 1)
                 value_start = content_slice.find_first_not_of(" \t", params_end + 1) if params_end != -1 else -1
+                if params_end != -1:
+                    params_slice = strip_sz(content_slice[paren_pos + 1 : params_end])
+                    directive.macro_params = (
+                        [strip_sz(p) for p in params_slice.split(",")] if len(params_slice) > 0 else []
+                    )
             else:  # object-like: value follows the whitespace
                 value_start = content_slice.find_first_not_of(" \t", name_end)
 
@@ -714,6 +719,8 @@ def _detach_file_analysis_result(result: "FileAnalysisResult") -> None:
             directive.macro_name = _detach_str(directive.macro_name)
         if directive.macro_value is not None:
             directive.macro_value = _detach_str(directive.macro_value)
+        if directive.macro_params is not None:
+            directive.macro_params = [_detach_str(p) for p in directive.macro_params]
 
 
 def _determine_file_reading_strategy(context: "BuildContext") -> str:
@@ -1742,6 +1749,10 @@ class PreprocessorDirective:
     condition: Optional["stringzilla.Str"] = None  # The condition expression (for if/ifdef/ifndef/elif)
     macro_name: Optional["stringzilla.Str"] = None  # Macro name (for define/undef/ifdef/ifndef)
     macro_value: Optional["stringzilla.Str"] = None  # Macro value (for define)
+    # Parameter names of a function-like #define. None for an object-like macro,
+    # [] for a zero-parameter function-like macro (``#define F() 1``) -- the
+    # distinction is what lets SimplePreprocessor tell ``F`` from ``F()``.
+    macro_params: Optional[list["stringzilla.Str"]] = None
 
 
 def _extract_conditional_macros(directives: list[PreprocessorDirective]) -> frozenset["stringzilla.Str"]:
