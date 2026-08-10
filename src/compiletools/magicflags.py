@@ -479,11 +479,11 @@ class MagicFlagsBase:
             elif key == "INCLUDE":
                 include_paths.append(value)
             elif key == "PKG-CONFIG":
-                include_paths.extend(self._pkg_config_include_paths(value, analysis_result))
+                include_paths.extend(self._pkg_config_include_paths(value))
 
         return list(dict.fromkeys(include_paths))
 
-    def _pkg_config_include_paths(self, flag_value: str, analysis_result: FileAnalysisResult) -> list[str]:
+    def _pkg_config_include_paths(self, flag_value: str) -> list[str]:
         """Include directories the packages of one ``//#PKG-CONFIG=`` contribute.
 
         Best-effort by design: every failure mode here already has an
@@ -494,8 +494,6 @@ class MagicFlagsBase:
         promotes a missing package to -- is swallowed so the later
         ``SystemExit(1)`` with the install hint is still what the user sees.
         """
-        del analysis_result
-
         try:
             packages = compiletools.apptools.tokenize_pkg_config_specs([flag_value])
         except (compiletools.utils.FlagTokenizeError, ValueError):
