@@ -1219,6 +1219,12 @@ def extract_git_externals(filepath: str, args, context) -> list[GitExternal]:
         than a per-branch selection. Put per-configuration externals in separate
         files, or pin one ref, to avoid the conflict.
 
+        The set of files handed to this function is blind in the same way, via
+        :meth:`~compiletools.headerdeps.DirectHeaderDeps.process_conditional_blind`
+        (see :func:`_reachable_sources`). The two must agree: reading
+        declarations blind while selecting the files by evaluating conditionals
+        silently lost every ``//#GIT=`` behind an unevaluable guard.
+
     Args:
         filepath: Path to the source file to scan.
         args:     The parsed args namespace (file-analyzer attributes such as
@@ -1326,33 +1332,109 @@ def _augmented_headerdeps(args, context, *, externals_dir: str, resolved_roots: 
     instead of copying args.
     """
     import compiletools.headerdeps
+
+    return compiletools.headerdeps.create(
+        args,
+        context=context,
+        extra_include_dirs=_external_include_dirs(externals_dir, resolved_roots),
+    )
+
+
+def _external_include_dirs(externals_dir: str, resolved_roots: list[str]) -> list[str]:
+    """The extra ``-I`` dirs that widen a header walk into fetched externals.
+
+    Roots first, *externals_dir* LAST: a directory living INSIDE a resolved
+    external (or its include/ subdir) that collides in name with a sibling under
+    externals_dir must win, so the broad siblings-parent dir is searched only
+    after every specific root. (extra_include_dirs are appended AFTER the
+    project's own includes in both headerdeps flavours, so the project's own
+    headers already outrank all of these.)
+    """
     import compiletools.wrappedos
 
-    # Roots first, externals_dir LAST: a directory living INSIDE a resolved
-    # external (or its include/ subdir) that collides in name with a sibling
-    # under externals_dir must win, so the broad siblings-parent dir is searched
-    # only after every specific root. (extra_include_dirs are appended AFTER the
-    # project's own includes in both headerdeps flavours, so the project's own
-    # headers already outrank all of these.)
     include_dirs: list[str] = []
     for root in resolved_roots:
         include_dirs.append(root)
         include_dirs.append(compiletools.wrappedos.join(root, "include"))
     include_dirs.append(externals_dir)
+    return include_dirs
 
-    return compiletools.headerdeps.create(args, context=context, extra_include_dirs=include_dirs)
+
+def _blind_scanner(args, context, headerdeps, *, externals_dir: str, resolved_roots: list[str]):
+    """A :class:`~compiletools.headerdeps.DirectHeaderDeps` for the blind walk.
+
+    ``process_conditional_blind`` lives on DirectHeaderDeps because that class
+    owns include resolution (``_find_include``: including-file's dir first, then
+    the project include paths, then the caller-supplied external dirs).
+    ``CppHeaderDeps`` resolves nothing itself — it shells out to ``cpp -MM``,
+    which evaluates conditionals by definition and so can never answer the
+    every-branch question. When *headerdeps* is already a DirectHeaderDeps it is
+    reused as-is; under ``--headerdeps=cpp`` a Direct instance is built solely
+    for this scan, leaving the caller's choice of walker for the actual build
+    untouched.
+    """
+    import compiletools.headerdeps
+
+    if isinstance(headerdeps, compiletools.headerdeps.DirectHeaderDeps):
+        return headerdeps
+    return compiletools.headerdeps.DirectHeaderDeps(
+        args,
+        context=context,
+        extra_include_dirs=_external_include_dirs(externals_dir, resolved_roots),
+    )
 
 
-def _reachable_sources(target_files: list[str], headerdeps, args) -> list[str]:
-    """Enumerate the reachable on-disk source set for *target_files*.
+def _reachable_sources(
+    target_files: list[str], headerdeps, args, blind_headerdeps=None, blind_reported: set[str] | None = None
+) -> tuple[list[str], set[str]]:
+    """Enumerate the on-disk source set to scan for ``//#GIT=`` declarations.
 
-    For each target, collect the file itself plus every header headerdeps can
-    resolve from it.  ``headerdeps.process`` tolerates includes that do not
-    resolve on disk (external headers that have not been fetched yet), so a
-    not-yet-present include simply contributes nothing this round.  A target
-    that cannot be processed at all is skipped with a high-verbosity warning.
+    For each target, collect the file itself, every header headerdeps can
+    resolve from it, and — via *blind_headerdeps* — every header reachable
+    ignoring ``#if`` state entirely. ``headerdeps.process`` tolerates includes
+    that do not resolve on disk (external headers that have not been fetched
+    yet), so a not-yet-present include simply contributes nothing this round.  A
+    target that cannot be processed at all is skipped with a high-verbosity
+    warning.
 
-    Returns a de-duplicated list in stable discovery order.
+    The blind pass is what makes this scan self-consistent. Declarations are
+    read from a file's RAW magic flags (:func:`extract_git_externals` is
+    conditional-blind by design), so choosing WHICH files to open by evaluating
+    conditionals meant a ``//#GIT=`` in a header included behind an unevaluable
+    guard was never seen: the external was never cloned and the build failed on
+    the missing header, silently, at every verbosity. Evaluating the guard
+    correctly is not available here — that is the chicken-and-egg that made
+    declaration reading blind in the first place, since the headers needed to
+    converge can live inside the very external that has not been fetched. So the
+    reachability half adopts the same blindness rather than a second, better
+    evaluation.
+
+    The union is deliberate, not a replacement, and the two phases are strictly
+    ordered: EVERY conditional-evaluated file (across all targets) comes first,
+    then the blind-only remainder. The caller relies on that boundary — see the
+    second return value.
+
+    Returns ``(ordered, blind_only)``: the de-duplicated file list in stable
+    discovery order, and the subset of it reachable ONLY through a conditional
+    this scan could not evaluate.
+
+    Why the caller needs the boundary: declarations are additive, conflicts are
+    not. A ``//#GIT=`` conflict (same external, differing url/ref) is a hard
+    :class:`FetchError` in :func:`fetch_externals`, so widening the scanned set
+    could turn a working build into a failing one — concretely, the layout
+    README.ct-fetch.rst recommends for conditional selection (per-configuration
+    externals in separate headers picked by ``#if``) would start hard-failing,
+    because both branches' headers are now read. Marking the blind-only files
+    lets the caller keep them purely additive: they may introduce an external
+    nothing else declared, but they never win, and never lose, a conflict.
+    Passing *blind_headerdeps* as None restores the old evaluate-only behaviour
+    and an empty *blind_only*.
+
+    *blind_reported* is the caller's across-rounds set of files already named by
+    the ``verbose >= 2`` note. The fixpoint driver re-scans every round, so
+    without it each blind-only file is announced once per round — noise that
+    reads like repeated discovery of the same thing. The driver owns the set so
+    one run reports each file exactly once; None disables the suppression.
     """
     seen: set[str] = set()
     ordered: list[str] = []
@@ -1370,10 +1452,40 @@ def _reachable_sources(target_files: list[str], headerdeps, args) -> list[str]:
         except Exception as exc:
             if verbose >= 2:
                 print(f"ct-fetch: warning: header scan of '{target}' failed: {exc}", file=sys.stderr)
-            continue
+            headers = []
         for header in headers:
             _add(header)
-    return ordered
+
+    if blind_headerdeps is None:
+        return ordered, set()
+
+    # Second phase, after EVERY target's evaluated walk: whatever is still
+    # unseen here is reachable only through a branch this scan cannot evaluate.
+    blind_only: set[str] = set()
+    for target in target_files:
+        try:
+            blind_headers = blind_headerdeps.process_conditional_blind(target)
+        except Exception as exc:
+            if verbose >= 2:
+                print(
+                    f"ct-fetch: warning: every-branch header scan of '{target}' failed: {exc}",
+                    file=sys.stderr,
+                )
+            continue
+        for header in blind_headers:
+            if header in seen:
+                continue
+            if verbose >= 2 and (blind_reported is None or header not in blind_reported):
+                print(
+                    f"ct-fetch: scanning '{header}' for //#GIT= declarations: "
+                    "reached only through a conditional branch this scan cannot evaluate",
+                    file=sys.stderr,
+                )
+                if blind_reported is not None:
+                    blind_reported.add(header)
+            blind_only.add(header)
+            _add(header)
+    return ordered, blind_only
 
 
 def _fixpoint_scan(
@@ -1422,16 +1534,27 @@ def _fixpoint_scan(
     ``context.analyzer_args`` after the scan sees whatever it held before.
     """
     prior_analyzer_args = context.analyzer_args
+    # Across-rounds suppression for the blind-scan note: the loop re-scans every
+    # round, so an un-deduped note announces each file once per round.
+    blind_reported: set[str] = set()
     try:
         for _round in range(_MAX_FIXPOINT_ROUNDS):
+            resolved_roots = root_selector()
             headerdeps = _augmented_headerdeps(
                 args,
                 context,
                 externals_dir=externals_dir,
-                resolved_roots=root_selector(),
+                resolved_roots=resolved_roots,
             )
-            reachable = _reachable_sources(target_files, headerdeps, args)
-            if not scan_round(reachable):
+            blind_headerdeps = _blind_scanner(
+                args,
+                context,
+                headerdeps,
+                externals_dir=externals_dir,
+                resolved_roots=resolved_roots,
+            )
+            reachable, blind_only = _reachable_sources(target_files, headerdeps, args, blind_headerdeps, blind_reported)
+            if not scan_round(reachable, blind_only):
                 break
 
             # Fetching (or merely declaring a possibly-present external) can
@@ -1498,6 +1621,10 @@ def fetch_externals(
     declared: dict[str, GitExternal] = {}
     declared_files: dict[str, str] = {}  # name -> first declaring file (best-effort diagnostics)
     declared_lower: dict[str, str] = {}  # lowercased name -> first-declared original-cased name (N3)
+    # (name, declaring file) pairs already warned about as dropped blind-only
+    # declarations. The driver re-scans every round and `declared` persists,
+    # so the same conflict is re-detected on each one.
+    dropped_reported: set[tuple[str, str]] = set()
     # Union of every //#GIT_ALLOW_PROTOCOL= list declared by a reachable source.
     # A project widens the permitted transport set (e.g. to add `ext`) by
     # declaring it; the union is the explicit opt-in. Empty => the safe default.
@@ -1642,7 +1769,7 @@ def fetch_externals(
         for ext in new_names:
             resolved[ext.name] = computed[ext.name]
 
-    def _scan_round(reachable: list[str]) -> bool:
+    def _scan_round(reachable: list[str], blind_only: set[str]) -> bool:
         new_names: list[GitExternal] = []
         for source_file in reachable:
             # Protocol widening is only honored from first-party sources (never
@@ -1673,6 +1800,28 @@ def fetch_externals(
                     # First time this name is declared, so it cannot already be
                     # in `resolved` (which only holds previously-declared names).
                     new_names.append(ext)
+                    continue
+                # A declaration read from a blind-only file is ADDITIVE ONLY: it
+                # may introduce an external nobody else declared (the whole point
+                # of the every-branch pass), but it must never escalate to the
+                # hard conflict errors below. Those files are reachable only
+                # through a branch this scan could not evaluate, so at most one of
+                # the conflicting declarations is live in any real configuration
+                # — and the evaluated-reachable one, recorded first, is the one
+                # with evidence behind it. Raising here would break the layout
+                # README.ct-fetch.rst recommends for conditional selection
+                # (per-configuration externals in separate headers picked by
+                # `#if`), which resolved cleanly before the every-branch pass
+                # existed. Warn so the ambiguity is visible, then keep `prior`.
+                if source_file in blind_only and (prior.url != ext.url or prior.ref != ext.ref):
+                    if (ext.name, source_file) not in dropped_reported:
+                        dropped_reported.add((ext.name, source_file))
+                        _warn(
+                            f"ignoring a conflicting //#GIT= declaration for '{ext.name}' in "
+                            f"'{source_file}' ({ext.url}@{ext.ref}): that file is reachable only "
+                            f"through a conditional this scan cannot evaluate, so "
+                            f"'{prior.url}@{prior.ref}' (in {declared_files.get(ext.name, '?')}) is kept."
+                        )
                     continue
                 # Same name seen before — must agree on URL.
                 if prior.url != ext.url:
@@ -1841,6 +1990,7 @@ def gather_external_status(
     declared: dict[str, GitExternal] = {}
     declared_files: dict[str, str] = {}  # name -> first declaring file (best-effort diagnostics)
     ordered_names: list[str] = []
+    dropped_reported: set[tuple[str, str]] = set()  # see fetch_externals' copy
     # status is report-only and never mutates the filesystem, so an external's
     # on-disk state cannot change mid-run. Compute each ExternalStatus at most
     # once and reuse it across rounds (root selection) and in the final pass,
@@ -1871,7 +2021,7 @@ def gather_external_status(
                 roots.append(st.path)
         return roots
 
-    def _scan_round(reachable: list[str]) -> bool:
+    def _scan_round(reachable: list[str], blind_only: set[str]) -> bool:
         new_found = False
         for source_file in reachable:
             for ext in extract_git_externals(source_file, args, context):
@@ -1881,6 +2031,22 @@ def gather_external_status(
                     declared_files[ext.name] = source_file
                     ordered_names.append(ext.name)
                     new_found = True
+                    continue
+                # A blind-only file's declaration is additive only, exactly as in
+                # fetch_externals: it may introduce an external nobody else
+                # declared, but it does not contest one. Reporting a "conflict"
+                # here that the build deliberately resolves would make --status
+                # disagree with what a build actually does.
+                if source_file in blind_only and (prior.url != ext.url or prior.ref != ext.ref):
+                    if (ext.name, source_file) in dropped_reported:
+                        continue
+                    dropped_reported.add((ext.name, source_file))
+                    _warn(
+                        f"ignoring a conflicting //#GIT= declaration for '{ext.name}' in "
+                        f"'{source_file}' ({ext.url}@{ext.ref}): that file is reachable only "
+                        f"through a conditional this scan cannot evaluate, so "
+                        f"'{prior.url}@{prior.ref}' (in {declared_files.get(ext.name, '?')}) is kept."
+                    )
                     continue
                 # Same name seen before. In report mode we never raise on a
                 # conflict (mirrors fetch_externals' wording, but tolerant):

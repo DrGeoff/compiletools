@@ -399,6 +399,65 @@ class DirectHeaderDeps(HeaderDepsBase):
 
         return self._process_impl(realpath, initial_macro_key)
 
+    def process_conditional_blind(self, filename: str) -> list[str]:
+        """Transitive include closure of *filename* ignoring all ``#if`` state.
+
+        Follows EVERY ``#include`` in every file it reaches, from every branch
+        of every conditional, rather than the branch the preprocessor selects.
+        Returns the reachable on-disk files (excluding *filename* itself) in
+        depth-first discovery order.
+
+        This is the declaration-harvesting counterpart to :meth:`process`, and
+        exists for ``fetch``'s ``//#GIT=`` scan. That scan reads declarations
+        from a file's RAW magic flags (``fetch.extract_git_externals`` is
+        conditional-blind by design, because evaluating a conditional correctly
+        can require headers living inside the very external that has not been
+        fetched yet). Selecting the *files* to scan with the preprocessor while
+        reading declarations OUT of them blind is the asymmetry this closes: a
+        ``//#GIT=`` inside a header included behind a guard the scan cannot
+        evaluate was never seen, so the external was never cloned and the build
+        failed on the missing header with no diagnostic.
+
+        Over-reaching is the deliberate trade: a header reached only from a
+        dead branch is scanned, matching the existing policy that a declaration
+        inside a dead branch of a reached file is still honoured. It is NOT
+        suitable for build dependency tracking, where the selected branch is
+        the whole point -- use :meth:`process` for that.
+
+        Macro state is untouched: no preprocessing runs, so ``defined_macros``
+        is exactly what it was on entry and a later :meth:`process` call is
+        unaffected. Unresolvable includes (system headers, or headers inside a
+        not-yet-fetched external) contribute nothing, the same tolerance
+        :meth:`process` has.
+        """
+        realpath = compiletools.wrappedos.realpath(filename)
+        ordered: list[str] = []
+        visited: set[str] = {realpath}
+        self._blind_recurse(realpath, ordered, visited)
+        return ordered
+
+    def _blind_recurse(self, realpath: str, ordered: list[str], visited: set[str]) -> None:
+        """Internal use. Depth-first every-branch include walk for
+        :meth:`process_conditional_blind`. *visited* carries *realpath* already,
+        which is what terminates include cycles (the guards that would normally
+        break them are conditionals, and this walk ignores conditionals)."""
+        try:
+            analysis_result = analyze_file(get_file_hash(realpath, self.context), self.context)
+        except OSError:
+            # A file that vanished or cannot be read contributes nothing, the
+            # same tolerance the conditional-evaluating walk has.
+            return
+
+        cwd = compiletools.wrappedos.dirname(realpath)
+        for inc in analysis_result.includes:
+            if inc.get("is_commented", False):
+                continue
+            trialpath = self._find_include(sz.Str(inc["filename"]), cwd)
+            if trialpath and trialpath not in visited:
+                visited.add(trialpath)
+                ordered.append(trialpath)
+                self._blind_recurse(trialpath, ordered, visited)
+
     def _create_include_list(self, realpath):
         """Internal use. Create the list of includes for the given file
 

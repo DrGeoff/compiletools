@@ -750,3 +750,126 @@ class TestIncludePathEnvVars(tb.BaseCompileToolsTestCase):
         args = self._make_args(cppflags="-I/flags/one")
         deps = compiletools.headerdeps.DirectHeaderDeps(args, context=BuildContext())
         assert deps.includes == ["/flags/one"]
+
+
+class TestConditionalBlindWalk(tb.BaseCompileToolsTestCase):
+    """DirectHeaderDeps.process_conditional_blind: every branch, no evaluation.
+
+    The declaration-harvesting walk fetch's ``//#GIT=`` scan uses. Its whole
+    point is to disagree with ``process`` on conditionals, so every test here
+    contrasts the two.
+    """
+
+    def _make_args(self, tmpdir, verbose=0):
+        cap = configargparse.ArgumentParser(
+            conflict_handler="resolve",
+            description="conditional-blind walk parser",
+            args_for_setting_config_path=["-c", "--config"],
+            ignore_unknown_config_file_keys=True,
+        )
+        compiletools.headerdeps.add_arguments(cap)
+        argv = ["-q", f"--CPPFLAGS=-I{tmpdir}"]
+        args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
+        if verbose:
+            args.verbose = verbose
+        return args
+
+    def _make_deps(self, tmpdir):
+        return compiletools.headerdeps.DirectHeaderDeps(self._make_args(tmpdir), context=BuildContext())
+
+    @staticmethod
+    def _write(tmpdir, name, text):
+        path = os.path.join(tmpdir, name)
+        with open(path, "w") as fh:
+            fh.write(text)
+        return compiletools.wrappedos.realpath(path)
+
+    def test_both_branches_of_an_if_else_are_walked(self):
+        """The discriminating shape: process takes one branch, the blind walk
+        takes both. An `in` assertion on either alone would pass on the
+        evaluating walk, so this asserts on the taken AND the untaken side."""
+        with uth.TempDirContextNoChange() as tmpdir:
+            taken = self._write(tmpdir, "taken.h", "#pragma once\n")
+            untaken = self._write(tmpdir, "untaken.h", "#pragma once\n")
+            main = self._write(
+                tmpdir,
+                "main.cpp",
+                '#if 1\n#include "taken.h"\n#else\n#include "untaken.h"\n#endif\nint main() { return 0; }\n',
+            )
+
+            deps = self._make_deps(tmpdir)
+            evaluated = set(deps.process(main, frozenset()))
+            blind = set(deps.process_conditional_blind(main))
+
+            assert taken in evaluated and untaken not in evaluated, "precondition: process picks one branch"
+            assert taken in blind and untaken in blind, "the blind walk must take every branch"
+
+    def test_a_header_reachable_only_through_a_dead_branch_is_walked(self):
+        """`#if 0` is the extreme case: process reaches nothing, the blind walk
+        reaches the header and everything it transitively includes."""
+        with uth.TempDirContextNoChange() as tmpdir:
+            deep = self._write(tmpdir, "deep.h", "#pragma once\n")
+            dead = self._write(tmpdir, "dead.h", '#pragma once\n#include "deep.h"\n')
+            main = self._write(tmpdir, "main.cpp", '#if 0\n#include "dead.h"\n#endif\nint main() { return 0; }\n')
+
+            deps = self._make_deps(tmpdir)
+            assert deps.process(main, frozenset()) == [], "precondition: the dead branch is not followed"
+
+            blind = set(deps.process_conditional_blind(main))
+            assert dead in blind
+            assert deep in blind, "the walk must recurse through the dead branch, not just enter it"
+
+    def test_an_include_cycle_terminates(self):
+        """Include guards are conditionals, and this walk ignores conditionals —
+        so the visited set is the only thing preventing infinite recursion."""
+        with uth.TempDirContextNoChange() as tmpdir:
+            a = self._write(tmpdir, "a.h", '#ifndef A_H\n#define A_H\n#include "b.h"\n#endif\n')
+            b = self._write(tmpdir, "b.h", '#ifndef B_H\n#define B_H\n#include "a.h"\n#endif\n')
+            main = self._write(tmpdir, "main.cpp", '#include "a.h"\nint main() { return 0; }\n')
+
+            blind = self._make_deps(tmpdir).process_conditional_blind(main)
+
+            assert set(blind) == {a, b}
+            assert len(blind) == 2, f"each file must appear once, got {blind}"
+
+    def test_the_walk_excludes_the_starting_file_and_unresolvable_includes(self):
+        """Contract parity with process: the target itself is not in its own
+        closure, and an include that resolves nowhere (a system header, or one
+        inside a not-yet-fetched external) contributes nothing instead of
+        raising."""
+        with uth.TempDirContextNoChange() as tmpdir:
+            real = self._write(tmpdir, "real.h", "#pragma once\n")
+            main = self._write(
+                tmpdir,
+                "main.cpp",
+                '#include "real.h"\n#include "not_fetched_yet.h"\n#include <cstdio>\nint main() { return 0; }\n',
+            )
+
+            blind = self._make_deps(tmpdir).process_conditional_blind(main)
+
+            assert blind == [real]
+            assert main not in blind
+
+    def test_the_blind_walk_leaves_macro_state_untouched(self):
+        """It runs no preprocessing, so a process() call after a blind walk must
+        answer exactly as it would have without one. If the blind walk leaked
+        #defines into defined_macros, the guarded branch selection would move."""
+        with uth.TempDirContextNoChange() as tmpdir:
+            self._write(tmpdir, "on.h", "#pragma once\n")
+            self._write(tmpdir, "off.h", "#pragma once\n")
+            # switch.h only #defines FEATURE inside a branch the blind walk also
+            # enters; a leak would flip main.cpp's selection below.
+            self._write(tmpdir, "switch.h", "#pragma once\n#if 0\n#define FEATURE 1\n#endif\n")
+            main = self._write(
+                tmpdir,
+                "main.cpp",
+                '#include "switch.h"\n#ifdef FEATURE\n#include "on.h"\n#else\n#include "off.h"\n#endif\n',
+            )
+
+            baseline = self._make_deps(tmpdir).process(main, frozenset())
+
+            deps = self._make_deps(tmpdir)
+            deps.process_conditional_blind(main)
+            after_blind = deps.process(main, frozenset())
+
+            assert after_blind == baseline

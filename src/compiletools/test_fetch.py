@@ -848,10 +848,13 @@ def _make_args(verbose: int = 0) -> argparse.Namespace:
     )
     compiletools.headerdeps.add_arguments(cap)
     compiletools.apptools.add_common_arguments(cap)
-    argv = ["--headerdeps", "direct"]
+    args = compiletools.apptools.parseargs(cap, ["--headerdeps", "direct"], context=BuildContext())
+    # Set the level after parsing rather than via argv: --verbose takes no value
+    # (it counts occurrences), so "--verbose 2" is an argparse error. Same
+    # pattern as test_headerdeps' _make_args.
     if verbose:
-        argv += ["--verbose", str(verbose)]
-    return compiletools.apptools.parseargs(cap, argv, context=BuildContext())
+        args.verbose = verbose
+    return args
 
 
 def _make_bare_with_files(root: str, name: str, files: dict[str, str]) -> dict:
@@ -2408,3 +2411,223 @@ def test_sigterm_during_parallel_fetch_forwards_to_all_git_children(tmp_path) ->
     assert not (tmp_path / "DONE.alpha.git").exists() and not (tmp_path / "DONE.beta.git").exists(), (
         "a git child ran to completion as an orphan after the fetch process was signalled"
     )
+
+
+# --- //#GIT= behind a guard the fetch scan cannot evaluate -------------------
+#
+# The scan reads declarations from a file's RAW magic flags (extract_git_externals
+# is conditional-blind by design), but used to choose WHICH files to open by
+# evaluating conditionals. A //#GIT= in a header included behind an unevaluable
+# guard was therefore never seen: external never cloned, build failed on the
+# missing header, nothing printed at any verbosity.
+
+
+def _write_unevaluable_guard_project(root: str, url: str) -> str:
+    """Write a project whose ``//#GIT=`` sits behind an unevaluable guard.
+
+    ``WANT`` is function-like and defined in ``cfg.h``, which ``main.cpp``
+    includes on the line above the guard. ``SimplePreprocessor`` does not follow
+    ``#include``, so within one linear pass over ``main.cpp`` the guard cannot be
+    evaluated — only the magicflags convergence supplies that cross-file
+    visibility, and the fetch scan does not run it. Returns the main.cpp path.
+    """
+    with open(os.path.join(root, "cfg.h"), "w") as fh:
+        fh.write("#ifndef CFG_H\n#define CFG_H\n#define WANT(x) ((x) > 0)\n#endif\n")
+    with open(os.path.join(root, "gitdecl.h"), "w") as fh:
+        fh.write(f'#ifndef GITDECL_H\n#define GITDECL_H\n//#GIT={url}\n#include "e2.h"\n#endif\n')
+    main = os.path.join(root, "main.cpp")
+    with open(main, "w") as fh:
+        fh.write('#include "cfg.h"\n#if WANT(1)\n#include "gitdecl.h"\n#endif\nint main() { return 0; }\n')
+    return main
+
+
+@requires_functional_compiler
+def test_git_declaration_in_header_behind_unevaluable_guard_is_fetched() -> None:
+    """The headline defect: the declaring header is reachable only through a
+    guard the scan cannot evaluate, so it was never opened and its //#GIT= never
+    seen. Fails before the every-branch reachability pass."""
+    with tempfile.TemporaryDirectory() as root:
+        ext = _make_bare_with_files(root, "guardedlib", {"e2.h": "#pragma once\ninline int e2() { return 42; }\n"})
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        main = _write_unevaluable_guard_project(root, ext["url"])
+
+        resolved = fetch_externals([main], _make_args(), BuildContext(), externals_dir=externals)
+
+        assert [r.name for r in resolved] == ["guardedlib"], (
+            "the //#GIT= behind the unevaluable guard was not discovered"
+        )
+        # Resolution is not merely recorded — the external is on disk.
+        assert os.path.isfile(os.path.join(externals, "guardedlib", "e2.h"))
+
+
+@requires_functional_compiler
+def test_declaration_in_guarded_block_of_a_reached_file_still_fetched() -> None:
+    """The measured NOT-broken half, pinned so the fix cannot regress it: the
+    same unevaluable guard, but the declaration sits in a file the scan already
+    reaches. extract_git_externals' conditional-blindness always found this."""
+    with tempfile.TemporaryDirectory() as root:
+        ext = _make_bare_with_files(root, "reachedlib", {"e2.h": "#pragma once\n"})
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        with open(os.path.join(root, "cfg.h"), "w") as fh:
+            fh.write("#ifndef CFG_H\n#define CFG_H\n#define WANT(x) ((x) > 0)\n#endif\n")
+        main = os.path.join(root, "main.cpp")
+        with open(main, "w") as fh:
+            fh.write(f'#include "cfg.h"\n#if WANT(1)\n//#GIT={ext["url"]}\n#endif\nint main() {{ return 0; }}\n')
+
+        resolved = fetch_externals([main], _make_args(), BuildContext(), externals_dir=externals)
+
+        assert [r.name for r in resolved] == ["reachedlib"]
+
+
+@requires_functional_compiler
+def test_blind_scan_reaches_declaration_under_headerdeps_cpp() -> None:
+    """--headerdeps=cpp shells out to ``cpp -MM``, which evaluates conditionals
+    by definition and can never answer the every-branch question. _blind_scanner
+    must build a Direct instance for the scan rather than silently doing nothing.
+    """
+    with tempfile.TemporaryDirectory() as root:
+        ext = _make_bare_with_files(root, "cpplib", {"e2.h": "#pragma once\n"})
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        main = _write_unevaluable_guard_project(root, ext["url"])
+
+        cap = configargparse.ArgumentParser(
+            conflict_handler="resolve",
+            args_for_setting_config_path=["-c", "--config"],
+            ignore_unknown_config_file_keys=True,
+        )
+        compiletools.headerdeps.add_arguments(cap)
+        compiletools.apptools.add_common_arguments(cap)
+        cpp_args = compiletools.apptools.parseargs(cap, ["--headerdeps", "cpp"], context=BuildContext())
+        assert cpp_args.headerdeps == "cpp"  # the branch under test is actually taken
+
+        resolved = fetch_externals([main], cpp_args, BuildContext(), externals_dir=externals)
+
+        assert [r.name for r in resolved] == ["cpplib"]
+
+
+@requires_functional_compiler
+def test_blind_scanner_reuses_a_direct_instance_but_builds_one_for_cpp() -> None:
+    """_blind_scanner returns the caller's walker untouched when it is already
+    Direct (no second construction), and constructs a Direct one only for cpp."""
+    import compiletools.headerdeps as hd_mod
+
+    context = BuildContext()
+    direct = fetch._augmented_headerdeps(_make_args(), context, externals_dir="/tmp/ex", resolved_roots=[])
+    same = fetch._blind_scanner(_make_args(), context, direct, externals_dir="/tmp/ex", resolved_roots=[])
+    assert same is direct
+
+    cpp_hd = hd_mod.CppHeaderDeps(_make_args(), context=BuildContext())
+    built = fetch._blind_scanner(
+        _make_args(), BuildContext(), cpp_hd, externals_dir="/tmp/ex", resolved_roots=["/tmp/ex/alpha"]
+    )
+    assert built is not cpp_hd
+    assert isinstance(built, hd_mod.DirectHeaderDeps)
+    # It carries the same widening the evaluated walk gets.
+    assert "/tmp/ex/alpha" in built._extra_include_dirs
+    assert built._extra_include_dirs[-1] == "/tmp/ex"
+
+
+@requires_functional_compiler
+def test_blind_scan_note_is_emitted_once_per_file_not_once_per_round(
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """The -vv note names each blind-only file exactly once for the whole run.
+
+    The fixpoint driver re-scans every round, so a note emitted from inside
+    _reachable_sources without across-rounds suppression fires once per round and
+    reads like repeated discovery of the same file. Verbose 1 must stay silent.
+    """
+    with tempfile.TemporaryDirectory() as root:
+        ext = _make_bare_with_files(root, "noteonce", {"e2.h": "#pragma once\n"})
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        main = _write_unevaluable_guard_project(root, ext["url"])
+        guarded = os.path.join(root, "gitdecl.h")
+
+        fetch_externals([main], _make_args(verbose=2), BuildContext(), externals_dir=externals)
+        noisy = capsys.readouterr().err
+
+        named = [ln for ln in noisy.splitlines() if guarded in ln and "reached only through" in ln]
+        assert len(named) == 1, f"expected the guarded header named exactly once, got {len(named)}:\n{noisy}"
+
+    # Silent control: the same project at verbose 1 says nothing about it.
+    with tempfile.TemporaryDirectory() as root:
+        ext = _make_bare_with_files(root, "notequiet", {"e2.h": "#pragma once\n"})
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        main = _write_unevaluable_guard_project(root, ext["url"])
+
+        fetch_externals([main], _make_args(verbose=1), BuildContext(), externals_dir=externals)
+        quiet = capsys.readouterr().err
+
+        assert "reached only through" not in quiet, f"the -vv note leaked to verbose 1:\n{quiet}"
+
+
+@requires_functional_compiler
+def test_blind_only_declaration_never_escalates_to_a_conflict_error(
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """A declaration read from a blind-only file is ADDITIVE ONLY.
+
+    README.ct-fetch.rst recommends per-configuration externals in separate
+    headers picked by ``#if``. Once the every-branch pass reads BOTH headers, a
+    naive union turns that documented layout into a hard conflicting-refs
+    FetchError — a working build broken by a change meant only to find MORE
+    externals. The evaluated-reachable declaration wins; the blind-only one is
+    warned about and dropped.
+    """
+    with tempfile.TemporaryDirectory() as root:
+        ext = _make_bare_origin(root)  # has tag v1 and branch master
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        with open(os.path.join(root, "ext_a.h"), "w") as fh:
+            fh.write(f"#pragma once\n//#GIT={ext['url']}@v1\n")
+        with open(os.path.join(root, "ext_b.h"), "w") as fh:
+            fh.write(f"#pragma once\n//#GIT={ext['url']}@master\n")
+        main = os.path.join(root, "main.cpp")
+        with open(main, "w") as fh:
+            fh.write(
+                '#if defined(PLAT_A)\n#include "ext_a.h"\n#else\n#include "ext_b.h"\n#endif\nint main() { return 0; }\n'
+            )
+
+        resolved = fetch_externals([main], _make_args(verbose=1), BuildContext(), externals_dir=externals)
+
+        # The taken branch's ref is the one used, exactly as before the
+        # every-branch pass existed.
+        assert [(r.name, r.ref) for r in resolved] == [("origin", "master")]
+        # The dropped declaration is surfaced, not silently swallowed — and
+        # exactly once, not once per fixpoint round (`declared` persists across
+        # rounds, so the conflict is re-detected on every one).
+        err = capsys.readouterr().err
+        dropped = [ln for ln in err.splitlines() if "ignoring a conflicting //#GIT= declaration" in ln]
+        assert len(dropped) == 1, f"expected the dropped declaration warned once, got {len(dropped)}:\n{err}"
+        assert "ext_a.h" in dropped[0]
+
+
+@requires_functional_compiler
+def test_two_evaluated_files_still_raise_on_conflicting_refs() -> None:
+    """The must-not-move half of the rule above: when BOTH declarations are
+    evaluated-reachable, the hard error is still the right answer and must
+    survive. Without this, 'be additive' could be over-applied into never
+    raising at all."""
+    with tempfile.TemporaryDirectory() as root:
+        ext = _make_bare_origin(root)
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        # Included unconditionally: both are evaluated-reachable.
+        with open(os.path.join(root, "ext_a.h"), "w") as fh:
+            fh.write(f"#pragma once\n//#GIT={ext['url']}@v1\n")
+        with open(os.path.join(root, "ext_b.h"), "w") as fh:
+            fh.write(f"#pragma once\n//#GIT={ext['url']}@master\n")
+        main = os.path.join(root, "main.cpp")
+        with open(main, "w") as fh:
+            fh.write('#include "ext_a.h"\n#include "ext_b.h"\nint main() { return 0; }\n')
+
+        with pytest.raises(FetchError) as excinfo:
+            fetch_externals([main], _make_args(), BuildContext(), externals_dir=externals)
+        msg = str(excinfo.value)
+        assert "conflicting" in msg and "refs" in msg
+        assert "v1" in msg and "master" in msg

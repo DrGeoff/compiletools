@@ -176,11 +176,41 @@ the conditional's outcome. Consequences:
 
 * a ``//#GIT=`` inside a dead ``#if 0`` (or an inactive platform branch) is
   still fetched;
-* pinning the **same** external to **different** refs in mutually-exclusive
-  ``#if`` branches is a hard error (conflicting refs), not a per-branch choice.
+* the same blindness applies to **which files are scanned**: the scan follows
+  every ``#include`` from every branch, so a ``//#GIT=`` in a header pulled in
+  behind a conditional is found whether or not that branch is taken;
+* pinning the **same** external to **different** refs in **one file**, or in two
+  files both reached with the conditionals evaluated, is a hard error
+  (conflicting refs), not a per-branch choice.
 
 Keep per-configuration externals in separate source files, or pin a single ref,
 if you need conditional selection.
+
+Declarations found only down an unevaluable branch are **additive only**
+------------------------------------------------------------------------
+A file the scan reaches *only* by ignoring a conditional can introduce an
+external nobody else declared — that is the point of following every branch —
+but it never wins, and never loses, a conflict. If it names an external that a
+normally-reachable file already declared at a different url or ref, the
+normally-reachable declaration is kept and the other is reported on stderr and
+dropped.
+
+This is what keeps the every-branch scan from breaking the layout recommended
+just above. Two headers pinning one external to different refs, selected by
+``#if``, resolve to the taken branch's ref exactly as they did before every-branch
+scanning existed; a plain union would have turned that into a hard error. The
+rule is that widening the scan may only ever *find more*, never fail a build that
+previously worked.
+
+Following every branch is what makes the two halves agree. Selecting files to
+scan by evaluating conditionals, while reading declarations out of them blind,
+used to lose a ``//#GIT=`` inside a header guarded by a condition the scan could
+not evaluate — the external was never cloned and the build failed on the missing
+header with nothing printed at any verbosity. At ``-vv`` the scan now names each
+file it reached only through a conditional it could not evaluate.
+
+This applies to the fetch scan alone. The build's own dependency graph still
+honours ``#if`` state exactly as before; nothing extra is compiled or linked.
 
 Safety
 ------
