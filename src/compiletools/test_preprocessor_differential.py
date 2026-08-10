@@ -57,13 +57,19 @@ Deliberate generator exclusions (documented, not accidental)
   compilers genuinely disagree: for ``#if (1 >> (0 - 1))`` gcc 16.1 keeps the
   block (it flips the shift direction, ``1 << 1`` -> 2) and emits NO diagnostic
   even under ``-Wall -Wextra -pedantic``, while clang 22.1 warns "integer
-  overflow in preprocessor expression" and treats it as 0. compiletools raises
-  ``ValueError: negative shift count`` out of ``_parse_shift`` and degrades the
-  condition to false. There is therefore no ground truth to compare against, and
-  because gcc is the silent one the ``assume`` gate cannot discard it -- the
-  property test failed on a gcc box and passed on a clang box, purely from the
-  toolchain. This is NOT recorded as a known-divergence xfail: those assert "the
-  C-standard-correct answer", and for UB no such answer exists.
+  overflow in preprocessor expression" and treats it as 0. There is therefore no
+  ground truth to *generate* against, and because gcc is the silent one the
+  ``assume`` gate cannot discard the shape -- the property test failed on a gcc
+  box and passed on a clang box, purely from the toolchain. This is NOT recorded
+  as a known-divergence xfail: those assert "the C-standard-correct answer", and
+  for UB no such answer exists.
+  Since R5 compiletools follows gcc/libcpp (reverse the direction, negate the
+  count, shift every bit out at intmax_t's precision) instead of raising
+  ``ValueError: negative shift count`` out of ``_parse_shift`` and degrading the
+  condition to false. The shapes are pinned as DIRECTED cases in
+  ``_NEGATIVE_SHIFT_CASES`` below, whose oracle half runs only against a
+  gcc-family preprocessor; keeping them out of the generator is what stops that
+  choice from turning into a toolchain-dependent property failure.
   Out-of-range (too large) positive counts are left in: both compilers diagnose
   those, so the gate handles them.
 
@@ -561,6 +567,121 @@ def test_macro_dump_name_set_matches_compiler(ops):
     _active, macros = _ct_process(src)
     got_names = {str(k) for k in macros if str(k).startswith("CTGEN_")}
     assert got_names == expected_names, f"\n--- source ---\n{src}\ncompiler={expected_names} compiletools={got_names}"
+
+
+# ----------------------------------------------------------------------------
+# NEGATIVE SHIFT COUNTS (R5) -- directed, never generated.
+#
+# These stay out of the random stream because the two compilers disagree (see
+# the module docstring), so there is no single oracle answer to generate
+# against. SimplePreprocessor follows gcc/libcpp: reverse the direction, negate
+# the count, and shift every bit out once the count reaches intmax_t's
+# precision. Each case records gcc's answer; the oracle half runs only where the
+# installed compiler is a gcc-family preprocessor, the compiletools half runs
+# everywhere.
+#
+# expr, gcc keeps the block, gcc diagnoses it
+_NEGATIVE_SHIFT_CASES = [
+    ("1 >> (0 - 1)", True, False),  # -> 1 << 1 == 2; the branch R5 used to drop
+    ("4 >> (0 - 2)", True, False),  # -> 4 << 2 == 16
+    ("1 >> (~0)", True, False),  # ~0 == -1, the reproducer's spelling
+    ("1 << (0 - 1)", False, False),  # -> 1 >> 1 == 0; masks a fix checked only here
+    ("8 << (0 - 2)", True, False),  # -> 8 >> 2 == 2; a TRUE flipped left shift
+    ("(0 - 8) >> (0 - 1)", True, False),  # -> -8 << 1 == -16, still non-zero
+    ("(0 - 1) << (0 - 70)", True, False),  # -> -1 >> 70 sign-fills to -1
+    ("1 >> (0 - 63)", True, False),  # -> 1 << 63, the last representable count
+    ("1 >> (0 - 64)", False, True),  # -> 1 << 64, every bit shifted out
+]
+
+_FLIP_PROBE = "#if (1 >> (0 - 1))\nSENTINEL_0\n#endif\n"
+
+
+def _oracle_flips_negative_shift_counts() -> bool:
+    """True when the installed oracle implements libcpp's direction flip.
+
+    Probed rather than read off a version string. A compiler that fails the
+    probe outright (non-zero exit) is reported as not flipping, which skips the
+    oracle half -- the alternative, reading a clean-but-empty result as
+    agreement, would make the gate pass vacuously on a broken toolchain.
+    """
+    assert _CXX is not None  # guaranteed by @requires_functional_compiler
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "probe.cpp")
+        with open(path, "w") as fh:
+            fh.write(_FLIP_PROBE)
+        proc = subprocess.run([_CXX, "-E", "-P", path], capture_output=True, text=True, timeout=_SUBPROCESS_TIMEOUT)
+    return proc.returncode == 0 and bool(_SENTINEL_RE.search(proc.stdout))
+
+
+def _compiler_keeps_and_diagnoses(expr: str):
+    """(returncode, kept, diagnosed) for ``#if <expr>`` under the oracle.
+
+    Unlike ``_compiler_active_sentinels`` this reports the diagnostic instead of
+    discarding on it: a negative shift count is exactly the shape where gcc's
+    overflow warning is part of the expected answer.
+    """
+    assert _CXX is not None  # guaranteed by @requires_functional_compiler
+    src = f"#if {expr}\nSENTINEL_0\n#endif\n"
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "candidate.cpp")
+        with open(path, "w") as fh:
+            fh.write(src)
+        proc = subprocess.run(
+            [_CXX, "-E", "-P", "-Wall", "-Wextra", "-pedantic", path],
+            capture_output=True,
+            text=True,
+            timeout=_SUBPROCESS_TIMEOUT,
+        )
+    return proc.returncode, bool(_SENTINEL_RE.search(proc.stdout)), bool(proc.stderr.strip())
+
+
+@pytest.mark.parametrize("expr, gcc_keeps", [(e, k) for e, k, _d in _NEGATIVE_SHIFT_CASES])
+def test_negative_shift_count_evaluates_the_gcc_way(expr, gcc_keeps):
+    """compiletools keeps exactly the blocks gcc keeps. Needs no compiler, so a
+    clang-only box still pins the semantics compiletools chose."""
+    assert _ct_if_active(expr) is gcc_keeps
+
+
+@requires_functional_compiler
+@pytest.mark.parametrize("expr, gcc_keeps, gcc_diagnoses", _NEGATIVE_SHIFT_CASES)
+def test_negative_shift_count_matches_a_gcc_family_oracle(expr, gcc_keeps, gcc_diagnoses):
+    """The same cases against the installed compiler, where it is gcc-family.
+
+    The expected answers are spelled out rather than read off the oracle, so a
+    compiler that disagrees with the recorded gcc behaviour fails here instead
+    of silently redefining what the test proves.
+    """
+    if not _oracle_flips_negative_shift_counts():
+        pytest.skip(
+            f"{_CXX} does not flip a negative shift count (clang treats it as an "
+            "overflow yielding 0), so it cannot arbitrate these UB shapes"
+        )
+    returncode, kept, diagnosed = _compiler_keeps_and_diagnoses(expr)
+    assert returncode == 0, f"the oracle rejected '#if {expr}' outright"
+    assert kept is gcc_keeps, f"the oracle disagrees with the recorded gcc answer for '#if {expr}'"
+    assert diagnosed is gcc_diagnoses, f"the oracle's diagnostic for '#if {expr}' is not the recorded one"
+    assert _ct_if_active(expr) is kept
+
+
+@requires_functional_compiler
+def test_the_negative_shift_oracle_gate_is_decisive():
+    """The gate must be answering a question about the negative COUNT, not
+    about whether the oracle emits anything at all.
+
+    Two controls bracket the probe: ``#if (1 >> 0)`` is kept by every compiler
+    and ``#if (1 >> 1)`` is dropped by every compiler. A gate stuck at either
+    constant, or an oracle harness that lost the ability to see sentinels,
+    contradicts one of them. The probe then sits between the controls and is
+    what the gate reads.
+    """
+    for control, expected in (("1 >> 0", True), ("1 >> 1", False)):
+        returncode, kept, _diagnosed = _compiler_keeps_and_diagnoses(control)
+        assert returncode == 0, f"{_CXX} cannot preprocess the control '#if {control}'"
+        assert kept is expected, f"the oracle harness misread the control '#if {control}'"
+
+    returncode, kept, _diagnosed = _compiler_keeps_and_diagnoses("1 >> (0 - 1)")
+    assert returncode == 0, f"{_CXX} cannot preprocess the probe at all"
+    assert _oracle_flips_negative_shift_counts() is kept
 
 
 # ----------------------------------------------------------------------------
