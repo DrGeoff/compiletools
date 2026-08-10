@@ -71,6 +71,26 @@ class BuildContext:
         # one per pass over the same file.
         self.warned_preprocessor_conditions: set[tuple[str, str, str]] = set()
 
+        # Unevaluable conditions recorded during a magicflags convergence,
+        # keyed the same way and holding the message to print. A later pass that
+        # evaluates the same condition deletes its entry, so only conditions
+        # still unevaluable once the macro state settles are ever reported.
+        # Insertion-ordered, so the flush prints in discovery order.
+        self.pending_preprocessor_warnings: dict[tuple[str, str, str], str] = {}
+
+        # Conditions some pass of the current convergence evaluated successfully.
+        # Retracting on success is not enough on its own: passes interleave, and
+        # a pass that fails AFTER the one that succeeded would otherwise re-record
+        # a condition already shown to be evaluable. Both stores are emptied when
+        # the convergence flushes.
+        self.resolved_preprocessor_conditions: set[tuple[str, str, str]] = set()
+
+        # Depth of the enclosing magicflags convergence. Zero means no pass will
+        # follow, so a diagnostic is printed immediately and nothing is deferred;
+        # every consumer that drives the preprocessor without magicflags
+        # (ct-headertree, ct-filelist) therefore keeps immediate reporting.
+        self.preprocessor_convergence_depth: int = 0
+
         # -- headerdeps module-level caches --
         self.include_list_cache: dict[tuple[str, MacroCacheKey], IncludeCacheValue] = {}
         self.invariant_include_cache: dict[str, IncludeCacheValue] = {}

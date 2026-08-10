@@ -1,5 +1,6 @@
 """Simple C preprocessor for handling conditional compilation directives."""
 
+import contextlib
 import re
 import sys
 from collections import Counter
@@ -15,6 +16,8 @@ from compiletools.stringzilla_utils import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from compiletools.file_analyzer import FileAnalysisResult, PreprocessorDirective
 
 
@@ -436,6 +439,12 @@ class SimplePreprocessor:
         # Rebound to the BuildContext's set in process_structured; the instance
         # set only serves a preprocessor driven directly, without a context.
         self._warned_conditions: set[tuple[str, str, str]] = set()
+        # Same rebinding for the deferred-report store. Deferral is only armed
+        # when the context reports an enclosing convergence; otherwise a
+        # diagnostic is printed the moment it is found.
+        self._pending_warnings: dict[tuple[str, str, str], str] = {}
+        self._resolved_conditions: set[tuple[str, str, str]] = set()
+        self._defer_warnings: bool = False
         self._current_filepath: str = "<unknown>"
         # Per-call channel from process_structured to _handle_define_structured:
         # which include guard macro to skip when re-#define'd. Kept as instance
@@ -1077,6 +1086,9 @@ class SimplePreprocessor:
         # context carrying only the caches they need (test_preprocessing_cache_scoping
         # does), and a diagnostic must not be the thing that breaks them.
         self._warned_conditions = getattr(context, "warned_preprocessor_conditions", self._warned_conditions)
+        self._pending_warnings = getattr(context, "pending_preprocessor_warnings", self._pending_warnings)
+        self._resolved_conditions = getattr(context, "resolved_preprocessor_conditions", self._resolved_conditions)
+        self._defer_warnings = getattr(context, "preprocessor_convergence_depth", 0) > 0
 
         # Store include guard so _handle_define_structured can skip it
         # Include guards should not be added to macro state as they only prevent
@@ -1253,6 +1265,7 @@ class SimplePreprocessor:
                 # Pass the raw condition: _evaluate_expression_sz strips comments
                 # internally as its first step, so no handler-level strip is needed.
                 result = self._evaluate_expression_sz(directive.condition)
+                self._note_condition_resolved(directive)
                 is_active = bool(result) and condition_stack[-1][0]
                 condition_stack.append((is_active, False, is_active))
                 if self.verbose >= 9:
@@ -1290,6 +1303,7 @@ class SimplePreprocessor:
                 # Pass the raw condition: _evaluate_expression_sz strips comments
                 # internally as its first step, so no handler-level strip is needed.
                 result = self._evaluate_expression_sz(directive.condition)
+                self._note_condition_resolved(directive)
                 new_active = bool(result) and parent_active
                 new_any_condition_met = any_condition_met or new_active
                 condition_stack.append((new_active, False, new_any_condition_met))
@@ -1321,6 +1335,15 @@ class SimplePreprocessor:
         Repeats of the same condition in one file are reported once per build
         session, not once per preprocessor instance: magicflags evaluates the
         same file under a fresh instance on every pass.
+
+        Inside a magicflags convergence the report is recorded rather than
+        printed. An early pass evaluates a file before the macros that control
+        it have been discovered, so a condition unevaluable there is routinely
+        resolved by a later pass; printing from that pass produces
+        "assuming false" on a build whose final answer is the true branch.
+        ``_note_condition_resolved`` retracts the record when that happens and
+        ``flush_pending_warnings`` reports whatever is still unevaluable once
+        the macro state has settled.
         """
         if self.verbose < 1:
             return
@@ -1329,7 +1352,6 @@ class SimplePreprocessor:
         seen_key = (self._current_filepath, directive.directive_type, condition)
         if seen_key in self._warned_conditions:
             return
-        self._warned_conditions.add(seen_key)
 
         detail = ""
         if self._last_expanded and self._last_expanded != condition:
@@ -1337,12 +1359,34 @@ class SimplePreprocessor:
         if self._expansion_notes:
             detail += "; " + "; ".join(self._expansion_notes)
 
-        print(
+        message = (
             f"SimplePreprocessor warning: {self._current_filepath}:{directive.line_num + 1}: "
             f"cannot evaluate '#{directive.directive_type} {condition}' ({error})"
-            f"{detail} - assuming false",
-            file=sys.stderr,
+            f"{detail} - assuming false"
         )
+
+        if self._defer_warnings:
+            if seen_key not in self._resolved_conditions:
+                self._pending_warnings.setdefault(seen_key, message)
+            return
+
+        self._warned_conditions.add(seen_key)
+        print(message, file=sys.stderr)
+
+    def _note_condition_resolved(self, directive: "PreprocessorDirective") -> None:
+        """Record that this condition is evaluable, and drop any pending report.
+
+        Marking is what makes the retraction stick. Passes are not ordered
+        best-last: a convergence can evaluate a file correctly and then process
+        it again from a state that cannot (a cache replay that strands a
+        function-like macro's parameter list, say), and that later pass would
+        re-record a condition already shown to be evaluable.
+        """
+        if not self._defer_warnings:
+            return
+        key = (self._current_filepath, directive.directive_type, str(directive.condition))
+        self._resolved_conditions.add(key)
+        self._pending_warnings.pop(key, None)
 
     def _safe_eval(self, expr: str) -> int:
         """Safely evaluate a numeric expression"""
@@ -1481,6 +1525,61 @@ class SimplePreprocessor:
         # Replace octal: leading 0 followed by one or more octal digits, not 0x/0b already handled
         expr = _RE_OCT_LITERAL.sub(repl_oct, expr)
         return expr
+
+
+def flush_pending_warnings(context: Any) -> int:
+    """Report the conditions still unevaluable now the macro state has settled.
+
+    Returns the number of lines printed. Entries already reported are skipped
+    and the store is emptied either way, so a second flush over the same
+    context prints nothing.
+    """
+    pending = getattr(context, "pending_preprocessor_warnings", None)
+    if not pending:
+        return 0
+
+    reported = getattr(context, "warned_preprocessor_conditions", None)
+    printed = 0
+    for key, message in pending.items():
+        if reported is not None:
+            if key in reported:
+                continue
+            reported.add(key)
+        print(message, file=sys.stderr)
+        printed += 1
+
+    pending.clear()
+    resolved = getattr(context, "resolved_preprocessor_conditions", None)
+    if resolved is not None:
+        resolved.clear()
+    return printed
+
+
+@contextlib.contextmanager
+def converging(context: Any) -> "Iterator[None]":
+    """Defer unevaluable-condition reports for the duration of a convergence.
+
+    magicflags evaluates a file repeatedly, and an early pass runs before the
+    macros controlling that file have been discovered, so its verdict is not
+    the build's answer. Reports raised inside this region are held and only
+    printed on exit, minus any condition a later pass managed to evaluate.
+
+    Re-entrant: only the outermost region flushes. Consumers that drive the
+    preprocessor without a convergence never enter it and keep reporting
+    immediately.
+    """
+    depth = getattr(context, "preprocessor_convergence_depth", None)
+    if depth is None:
+        yield
+        return
+
+    context.preprocessor_convergence_depth = depth + 1
+    try:
+        yield
+    finally:
+        context.preprocessor_convergence_depth -= 1
+        if context.preprocessor_convergence_depth == 0:
+            flush_pending_warnings(context)
 
 
 def print_preprocessor_stats() -> None:

@@ -20,7 +20,7 @@ import compiletools.wrappedos
 from compiletools.file_analyzer import FileAnalysisResult
 from compiletools.global_hash_registry import get_file_hash, get_filepath_by_hash
 from compiletools.preprocessing_cache import MacroState, get_or_compute_preprocessing
-from compiletools.simple_preprocessor import SimplePreprocessor
+from compiletools.simple_preprocessor import SimplePreprocessor, converging
 from compiletools.stringzilla_utils import strip_sz
 from compiletools.utils import instance_cache
 
@@ -525,12 +525,18 @@ class MagicFlagsBase:
         # However, it is possible to call directly so we must
         # ensure that the headerdeps exist manually.
         # Pass empty frozenset since we haven't computed macros for this file yet
-        self._headerdeps.process(filename, frozenset())
+        #
+        # Both this walk and the convergence below evaluate the file before its
+        # controlling macros are all known, so unevaluable-condition reports are
+        # held until the macro state settles and retracted if a later pass
+        # resolves them (see simple_preprocessor.converging).
+        with converging(self.context):
+            self._headerdeps.process(filename, frozenset())
 
-        # Both DirectMagicFlags and CppMagicFlags now use structured data approach
-        flagsforfilename = defaultdict(list)
+            # Both DirectMagicFlags and CppMagicFlags now use structured data approach
+            flagsforfilename = defaultdict(list)
 
-        file_analysis_data = self.get_structured_data(filename)
+            file_analysis_data = self.get_structured_data(filename)
 
         # Expand macros in magic flag values (e.g., LIB_SUFFIX -> O2)
         abs_filename = compiletools.wrappedos.realpath(filename)

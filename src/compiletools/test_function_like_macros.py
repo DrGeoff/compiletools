@@ -26,7 +26,7 @@ from compiletools.build_context import BuildContext
 from compiletools.file_analyzer import analyze_file, set_analyzer_args
 from compiletools.global_hash_registry import get_file_hash
 from compiletools.preprocessing_cache import MacroState, get_or_compute_preprocessing
-from compiletools.simple_preprocessor import SimplePreprocessor
+from compiletools.simple_preprocessor import SimplePreprocessor, converging
 from compiletools.testhelper import requires_functional_compiler
 
 _SUBPROCESS_TIMEOUT = 60
@@ -619,6 +619,205 @@ class TestFunctionLikeMacroAcrossFiles(tb.BaseCompileToolsTestCase):
             }
         )
         assert ldflags.strip() == "-lplain"
+
+
+class TestConvergenceDeferredDiagnostic(tb.BaseCompileToolsTestCase):
+    """A pass that a later pass supersedes must not get to speak.
+
+    magicflags evaluates a file before its controlling macros are all known, so
+    an early pass reports "cannot evaluate ... assuming false" on a build whose
+    settled answer is the true branch — the diagnostic contradicts the flags
+    printed beside it. Reports raised inside a convergence are therefore held
+    and retracted when a later pass evaluates the same condition.
+    """
+
+    def setup_method(self):
+        super().setup_method()
+        compiletools.magicflags.MagicFlagsBase.clear_cache()
+        compiletools.headerdeps.HeaderDepsBase.clear_cache()
+
+    _GATE_HEADER = (
+        "#pragma once\n"
+        "#define EXTLIB_VERSION_MAJOR 2\n"
+        "#define EXTLIB_VERSION_MINOR 4\n"
+        "#define EXTLIB_AT_LEAST(major, minor) \\\n"
+        "    (EXTLIB_VERSION_MAJOR > (major) || (EXTLIB_VERSION_MAJOR == (major) "
+        "&& EXTLIB_VERSION_MINOR >= (minor)))\n"
+    )
+
+    _VARIADIC_HEADER = "#pragma once\n#define COUNTS(first, ...) (first)\n"
+
+    def _parse(self, sources: dict, *names: str):
+        files = uth.write_sources(sources, target_dir=self._tmpdir)
+        self._context = BuildContext()
+        parser = tb.create_magic_parser(["--magic=direct", "-v"], tempdir=self._tmpdir, context=self._context)
+        parser.clear_cache()
+        return [parser.parse(str(files[name])) for name in names]
+
+    @staticmethod
+    def _cxxflags(result) -> str:
+        return " ".join(str(flag) for flag in result.get(sz.Str("CXXFLAGS"), []))
+
+    def test_a_condition_a_later_pass_resolves_is_not_reported(self, capsys):
+        """The build takes the true branch, so nothing may say it assumed false."""
+        (result,) = self._parse(
+            {
+                "inc/version.hpp": self._GATE_HEADER,
+                "src/main.cpp": (
+                    '#include "../inc/version.hpp"\n'
+                    "#if EXTLIB_AT_LEAST(2, 0)\n"
+                    "//#CXXFLAGS=-DHAVE_NEW_EXTLIB\n"
+                    "#else\n"
+                    "//#CXXFLAGS=-DNEED_EXTLIB_SHIM\n"
+                    "#endif\n"
+                    "int main() { return 0; }\n"
+                ),
+            },
+            "src/main.cpp",
+        )
+        stderr = capsys.readouterr().err
+        assert "-DHAVE_NEW_EXTLIB" in self._cxxflags(result)
+        assert "cannot evaluate" not in stderr, stderr
+
+    def test_a_condition_no_pass_resolves_is_still_reported(self, capsys):
+        """The control for the test above: deferral must not become suppression."""
+        (result,) = self._parse(
+            {
+                "inc/counts.hpp": self._VARIADIC_HEADER,
+                "src/main.cpp": (
+                    '#include "../inc/counts.hpp"\n'
+                    "#if COUNTS(1, 2, 3)\n"
+                    "//#CXXFLAGS=-DCOUNTED\n"
+                    "#endif\n"
+                    "int main() { return 0; }\n"
+                ),
+            },
+            "src/main.cpp",
+        )
+        stderr = capsys.readouterr().err
+        assert "-DCOUNTED" not in self._cxxflags(result)
+        assert stderr.count("cannot evaluate '#if COUNTS(1, 2, 3)'") == 1, stderr
+
+    def test_a_second_target_hitting_the_pass_1_cache_still_reports_once(self, capsys, monkeypatch):
+        """The exit with no textual settle point to drain at.
+
+        ``get_structured_data`` returns early on a PASS 1 cache hit, which an
+        ordinary multi-target run reaches on its second target. Lowering the
+        depth at the settle point instead of in a ``finally`` loses that pass's
+        records and leaves the deferral armed for the rest of the process — so
+        the count has to be exactly one, and one is not zero. The hit itself is
+        counted because a corpus that quietly stops hitting the cache would make
+        both assertions pass without exercising the path.
+        """
+        hits = []
+        original = compiletools.magicflags.DirectMagicFlags._check_cache
+
+        def counted(instance, filename, cache_key):
+            result = original(instance, filename, cache_key)
+            hits.append(result is not None)
+            return result
+
+        monkeypatch.setattr(compiletools.magicflags.DirectMagicFlags, "_check_cache", counted)
+
+        files = uth.write_sources(
+            {
+                "inc/counts.hpp": (self._VARIADIC_HEADER + "#if COUNTS(1, 2, 3)\n//#CXXFLAGS=-DCOUNTED\n#endif\n"),
+                "src/a.cpp": '#include "../inc/counts.hpp"\nint main() { return 0; }\n',
+            },
+            target_dir=self._tmpdir,
+        )
+        context = BuildContext()
+        parser = tb.create_magic_parser(["--magic=direct", "-v"], tempdir=self._tmpdir, context=context)
+        parser.clear_cache()
+
+        # The same source under two spellings: the second target reaches the
+        # PASS 1 cache, which a distinct second source cannot do (the cache key
+        # folds the file hash).
+        target = str(files["src/a.cpp"])
+        results = [parser.parse(target), parser.parse(target.replace("/src/", "/src/./"))]
+
+        stderr = capsys.readouterr().err
+        assert hits.count(True) == 1, hits
+        assert [self._cxxflags(result) for result in results] == ["", ""]
+        assert stderr.count("cannot evaluate '#if COUNTS(1, 2, 3)'") == 1, stderr
+        assert context.preprocessor_convergence_depth == 0
+
+    def test_the_depth_is_restored_when_a_cache_hit_raises(self, capsys):
+        """The pre-existing ``_final_macro_states`` crash is one of the region's exits.
+
+        Two same-content sources in different directories collide on the PASS 1
+        cache key, and ``_check_cache`` raises because the second path was never
+        converged. The region has to lower the depth on the way out, or every
+        later diagnostic in the process is recorded and never printed.
+        """
+        files = uth.write_sources(
+            {
+                "inc/counts.hpp": (self._VARIADIC_HEADER + "#if COUNTS(1, 2, 3)\n//#CXXFLAGS=-DCOUNTED\n#endif\n"),
+                "one/main.cpp": '#include "../inc/counts.hpp"\nint main() { return 0; }\n',
+                "two/main.cpp": '#include "../inc/counts.hpp"\nint main() { return 0; }\n',
+            },
+            target_dir=self._tmpdir,
+        )
+        context = BuildContext()
+        parser = tb.create_magic_parser(["--magic=direct", "-v"], tempdir=self._tmpdir, context=context)
+        parser.clear_cache()
+
+        parser.parse(str(files["one/main.cpp"]))
+        with pytest.raises(RuntimeError, match="_final_macro_states not populated"):
+            parser.parse(str(files["two/main.cpp"]))
+
+        assert context.preprocessor_convergence_depth == 0
+        assert capsys.readouterr().err.count("cannot evaluate '#if COUNTS(1, 2, 3)'") == 1
+
+
+class TestConvergingRegion:
+    """``converging`` is what arms deferral, so its bookkeeping is load-bearing."""
+
+    _UNEVALUABLE = """\
+#if "a string literal" @ 3
+MARKER_TAKEN;
+#endif
+"""
+
+    def _record(self, tmp_path):
+        """Run one pass whose condition cannot be evaluated. Returns the context."""
+        file_result, context = _analyze(self._UNEVALUABLE, str(tmp_path))
+        return file_result, context
+
+    @staticmethod
+    def _pass(file_result, context):
+        SimplePreprocessor({}, verbose=1).process_structured(file_result, context)
+
+    def test_only_the_outermost_region_flushes(self, tmp_path, capsys):
+        file_result, context = self._record(tmp_path)
+        with converging(context):
+            with converging(context):
+                self._pass(file_result, context)
+            assert capsys.readouterr().err == ""
+        assert "cannot evaluate" in capsys.readouterr().err
+
+    def test_the_depth_returns_to_zero_when_the_region_raises(self, tmp_path, capsys):
+        """Every exit lowers the depth; a leak disarms the diagnostic process-wide."""
+        file_result, context = self._record(tmp_path)
+        with pytest.raises(RuntimeError):
+            with converging(context):
+                self._pass(file_result, context)
+                raise RuntimeError("the pre-existing _final_macro_states crash path")
+        assert context.preprocessor_convergence_depth == 0
+        assert "cannot evaluate" in capsys.readouterr().err
+
+    def test_a_consumer_without_a_convergence_reports_immediately(self, tmp_path, capsys):
+        """ct-headertree and ct-filelist never enter the region and must not change."""
+        file_result, context = self._record(tmp_path)
+        self._pass(file_result, context)
+        assert "cannot evaluate" in capsys.readouterr().err
+        assert context.pending_preprocessor_warnings == {}
+
+    def test_a_context_without_the_depth_attribute_is_tolerated(self, capsys):
+        """Tests hand-build duck-typed contexts, so the region cannot require the field."""
+        with converging(SimpleNamespace()):
+            pass
+        assert capsys.readouterr().err == ""
 
 
 class TestReadmacrosSuppliedFunctionLikeGate(tb.BaseCompileToolsTestCase):
