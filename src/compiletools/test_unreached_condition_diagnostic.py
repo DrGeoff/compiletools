@@ -155,6 +155,67 @@ class TestASupersededPassIsRetractedBySkipping:
         assert context.pending_preprocessor_warnings == {}
 
 
+class TestADeadOccurrenceDoesNotSilenceALiveOne:
+    """One condition text, two occurrences, only one of them reachable.
+
+    The retraction has to name the occurrence it belongs to. Keyed on
+    ``(filepath, directive_type, condition)`` alone it does not: both
+    occurrences share the key, so the dead one's skip deletes the live one's
+    record and a genuinely unevaluable condition in the shipped build goes
+    unreported. Found by ``evalchannel`` reviewing the key rather than the
+    outcome — every arm in the class above uses one occurrence per file, so
+    none of them can see it.
+
+    All four combinations are one parametrize on purpose. ``dead_only`` is the
+    control that stops the fix from passing by simply never retracting, and
+    ``live_only`` is the control that stops it from passing by never recording;
+    a change that satisfies ``live_then_dead`` alone breaks one of them.
+    """
+
+    _LIVE = f"#if {_GATE}\nMARKER_LIVE;\n#endif\n"
+    _DEAD = f"#if 0\n#if {_GATE}\nMARKER_DEAD;\n#endif\n#endif\n"
+
+    @pytest.mark.parametrize(
+        "source, expected_reports",
+        [
+            (_LIVE, 1),
+            (_DEAD, 0),
+            (_LIVE + _DEAD, 1),
+            (_DEAD + _LIVE, 1),
+        ],
+        ids=["live_only", "dead_only", "live_then_dead", "dead_then_live"],
+    )
+    def test_a_reachable_unevaluable_condition_is_reported_once(self, source, expected_reports, tmp_path, capsys):
+        """Exactly one report per condition per file, and only when it is reachable.
+
+        The count is asserted, not just the presence: the pending store now
+        holds one entry per occurrence, so a flush that forgot to collapse them
+        would report ``live_then_dead`` twice and still satisfy an ``in`` check.
+        """
+        file_result, context = _analyze(source, str(tmp_path))
+        with converging(context):
+            SimplePreprocessor({}, verbose=1).process_structured(file_result, context)
+        stderr = capsys.readouterr().err
+        assert stderr.count("cannot evaluate") == expected_reports, stderr
+
+    @pytest.mark.parametrize("live_first", [True, False], ids=["live_then_dead", "dead_then_live"])
+    def test_the_live_occurrence_is_the_one_named(self, live_first, tmp_path, capsys):
+        """The surviving report must point at the reachable line, not the dead one.
+
+        Counting reports is not enough: an implementation that keeps the wrong
+        occurrence's message emits the right number of lines and sends the user
+        to a branch that was never compiled. Both orders are checked so the
+        assertion is about which occurrence is live, not which comes first.
+        """
+        source = self._LIVE + self._DEAD if live_first else self._DEAD + self._LIVE
+        live_line = 1 if live_first else self._DEAD.count("\n") + 1
+        file_result, context = _analyze(source, str(tmp_path))
+        with converging(context):
+            SimplePreprocessor({}, verbose=1).process_structured(file_result, context)
+        stderr = capsys.readouterr().err
+        assert f":{live_line}: cannot evaluate" in stderr, stderr
+
+
 class TestTheFourArmsEndToEnd(tb.BaseCompileToolsTestCase):
     """The parked R9 corpus, run through ``ct-magicflags``' own convergence.
 

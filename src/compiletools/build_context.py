@@ -77,11 +77,18 @@ class BuildContext:
         self.warned_preprocessor_conditions: set[tuple[str, str, str]] = set()
 
         # Unevaluable conditions recorded during a magicflags convergence,
-        # keyed the same way and holding the message to print. A later pass that
-        # evaluates the same condition deletes its entry, so only conditions
-        # still unevaluable once the macro state settles are ever reported.
-        # Insertion-ordered, so the flush prints in discovery order.
-        self.pending_preprocessor_warnings: dict[tuple[str, str, str], str] = {}
+        # holding the message to print. A later pass that evaluates the same
+        # condition deletes its entry, so only conditions still unevaluable once
+        # the macro state settles are ever reported. Insertion-ordered, so the
+        # flush prints in discovery order.
+        #
+        # Keyed by (filepath, directive_type, condition, line_num) — one entry
+        # per OCCURRENCE, unlike the two sets either side of it. Reachability is
+        # position-dependent: the same condition text can appear twice in a file
+        # with one occurrence live and the other under a dead branch, and a
+        # position-free key lets the dead one's retraction delete the live one's
+        # report. The flush collapses back to one line per condition.
+        self.pending_preprocessor_warnings: dict[tuple[str, str, str, int], str] = {}
 
         # Conditions some pass of the current convergence evaluated successfully.
         # Retracting on success is not enough on its own: passes interleave, and

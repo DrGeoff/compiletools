@@ -442,7 +442,7 @@ class SimplePreprocessor:
         # Same rebinding for the deferred-report store. Deferral is only armed
         # when the context reports an enclosing convergence; otherwise a
         # diagnostic is printed the moment it is found.
-        self._pending_warnings: dict[tuple[str, str, str], str] = {}
+        self._pending_warnings: dict[tuple[str, str, str, int], str] = {}
         self._resolved_conditions: set[tuple[str, str, str]] = set()
         self._defer_warnings: bool = False
         self._current_filepath: str = "<unknown>"
@@ -1370,8 +1370,12 @@ class SimplePreprocessor:
         )
 
         if self._defer_warnings:
+            # Recorded per occurrence, not per condition: a file can spell the
+            # same condition twice with only one of them reachable, and a
+            # position-free key would let either one's fate decide the other's.
+            # The flush collapses these back to one line per condition.
             if seen_key not in self._resolved_conditions:
-                self._pending_warnings.setdefault(seen_key, message)
+                self._pending_warnings.setdefault(seen_key + (directive.line_num,), message)
             return
 
         self._warned_conditions.add(seen_key)
@@ -1385,12 +1389,19 @@ class SimplePreprocessor:
         it again from a state that cannot (a cache replay that strands a
         function-like macro's parameter list, say), and that later pass would
         re-record a condition already shown to be evaluable.
+
+        Retracts across every occurrence of the condition, deliberately:
+        evaluability is a property of the macro state, so a condition this pass
+        could evaluate is one the evaluator can represent wherever else the file
+        spells it. That is the opposite of ``_note_condition_unreached``, which
+        retracts only its own occurrence because reachability IS positional.
         """
         if not self._defer_warnings:
             return
         key = (self._current_filepath, directive.directive_type, str(directive.condition))
         self._resolved_conditions.add(key)
-        self._pending_warnings.pop(key, None)
+        for pending_key in [k for k in self._pending_warnings if k[:3] == key]:
+            del self._pending_warnings[pending_key]
 
     def _note_condition_unreached(self, directive: "PreprocessorDirective") -> None:
         """Record that this pass never reached the condition, and drop any report.
@@ -1408,10 +1419,17 @@ class SimplePreprocessor:
         the requirement for one merely unreached, since a later pass that
         reaches it and still cannot evaluate it must warn. Making this sticky
         would silence exactly the liveparent arm the fix has to preserve.
+
+        Retracts only THIS occurrence, which is why the pending store is keyed
+        by line. Reachability is positional: a file can spell one condition
+        twice with one occurrence live and unevaluable and the other under a
+        dead branch, and a position-free retraction would delete the live one's
+        report. ``_note_condition_resolved`` retracts across occurrences for the
+        opposite reason.
         """
         if not self._defer_warnings:
             return
-        key = (self._current_filepath, directive.directive_type, str(directive.condition))
+        key = (self._current_filepath, directive.directive_type, str(directive.condition), directive.line_num)
         self._pending_warnings.pop(key, None)
 
     def _safe_eval(self, expr: str) -> int:
@@ -1559,18 +1577,29 @@ def flush_pending_warnings(context: Any) -> int:
     Returns the number of lines printed. Entries already reported are skipped
     and the store is emptied either way, so a second flush over the same
     context prints nothing.
+
+    The store holds one entry per OCCURRENCE so that a retraction can name the
+    occurrence it belongs to; the output contract is one line per condition per
+    file, so the dedupe here drops the line number from the key. A file that
+    spells the same unevaluable condition three times still gets one report,
+    naming the first occurrence.
     """
     pending = getattr(context, "pending_preprocessor_warnings", None)
     if not pending:
         return 0
 
     reported = getattr(context, "warned_preprocessor_conditions", None)
+    seen: set[tuple[str, str, str]] = set()
     printed = 0
     for key, message in pending.items():
+        condition_key = key[:3]
+        if condition_key in seen:
+            continue
+        seen.add(condition_key)
         if reported is not None:
-            if key in reported:
+            if condition_key in reported:
                 continue
-            reported.add(key)
+            reported.add(condition_key)
         print(message, file=sys.stderr)
         printed += 1
 
