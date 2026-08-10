@@ -49,6 +49,18 @@ MacroDict = dict[sz.Str, sz.Str]
 FlagsDict = dict[sz.Str, list[sz.Str]]
 
 
+def _define_body(define_info: dict) -> sz.Str:
+    """Body a #define contributes to the macro state.
+
+    A bodyless object-like macro is worth 1 in an #if; a bodyless function-like
+    macro expands to nothing, so its invocation must vanish rather than become
+    a literal 1. Mirrors SimplePreprocessor._handle_define_structured.
+    """
+    if define_info["value"] is not None:
+        return define_info["value"]
+    return sz.Str("") if define_info["is_function_like"] else sz.Str("1")
+
+
 def create(args, headerdeps, context):
     """MagicFlags Factory"""
     classname = args.magic.title() + "MagicFlags"
@@ -543,6 +555,7 @@ class MagicFlagsBase:
                 verbose=self._args.verbose,
                 compiler_path=getattr(self._args, "CXX", ""),
                 cppflags=compiletools.build_apply.get_build_state(self._args).cppflags,
+                function_params=macro_state.function_params,
             )
 
         for file_data in file_analysis_data:
@@ -636,6 +649,7 @@ class MagicFlagsBase:
             cflags_tokens=effective_cflags_tokens,
             cxxflags_tokens=effective_cxxflags_tokens,
             compiler_identity=old_ms.compiler_identity,
+            function_params=old_ms.function_params,
             anchor_root=old_ms.anchor_root,
         )
 
@@ -839,17 +853,24 @@ class DirectMagicFlags(MagicFlagsBase):
 
         # Extract variable macros from active #define directives
         extracted_variable_macros = {}
+        extracted_function_params = {}
         for define_info in file_result.defines:
             if define_info["line_num"] not in active_line_set:
                 continue
-            if define_info["is_function_like"]:
-                continue
 
             macro_name = define_info["name"]
-            macro_value = define_info["value"] if define_info["value"] is not None else sz.Str("1")
-            extracted_variable_macros[macro_name] = macro_value
+            extracted_variable_macros[macro_name] = _define_body(define_info)
+            if define_info["is_function_like"]:
+                extracted_function_params[macro_name] = tuple(define_info["params"])
 
-        return (active_magic_flags, extracted_variable_macros, cppflags_macros, cxxflags_macros, result.file_undefs)
+        return (
+            active_magic_flags,
+            extracted_variable_macros,
+            cppflags_macros,
+            cxxflags_macros,
+            result.file_undefs,
+            extracted_function_params,
+        )
 
     def _process_file_for_macros(self, fname: str, macro_key=None) -> None:
         """Process a single file to extract macros and active magic flags (mutates state).
@@ -873,7 +894,14 @@ class DirectMagicFlags(MagicFlagsBase):
         if cached_result is None:
             return
 
-        active_magic_flags, extracted_variable_macros, cppflags_macros, cxxflags_macros, file_undefs = cached_result
+        (
+            active_magic_flags,
+            extracted_variable_macros,
+            cppflags_macros,
+            cxxflags_macros,
+            file_undefs,
+            extracted_function_params,
+        ) = cached_result
 
         # Store active magic flags for this file to avoid redundant final pass
         self._stored_active_magic_flags[fname] = active_magic_flags
@@ -886,7 +914,7 @@ class DirectMagicFlags(MagicFlagsBase):
         updates.update(extracted_variable_macros)
 
         # Update state immutably
-        self.defined_macros = self.defined_macros.with_updates(updates)
+        self.defined_macros = self.defined_macros.with_updates(updates, extracted_function_params)
         if file_undefs:
             self.defined_macros = self.defined_macros.without_keys(file_undefs)
 
@@ -905,17 +933,16 @@ class DirectMagicFlags(MagicFlagsBase):
             return
 
         updates = {}
+        function_params = {}
         # Extract macros directly from file_analyzer's structured defines data
         for define_info in file_result.defines:
-            if define_info["is_function_like"]:
-                continue
-
             macro_name = define_info["name"]
-            macro_value = define_info["value"] if define_info["value"] is not None else sz.Str("1")
-            updates[macro_name] = macro_value
+            updates[macro_name] = _define_body(define_info)
+            if define_info["is_function_like"]:
+                function_params[macro_name] = tuple(define_info["params"])
 
         if updates:
-            self.defined_macros = self.defined_macros.with_updates(updates)
+            self.defined_macros = self.defined_macros.with_updates(updates, function_params)
 
     def _build_all_files_list(self, filename, headers):
         """Build deduplicated list of all files to process (explicit macros + main + headers)."""

@@ -7,7 +7,12 @@ from typing import TYPE_CHECKING, Any
 
 import stringzilla as sz
 
-from compiletools.stringzilla_utils import is_alnum_or_underscore_sz, is_alpha_or_underscore_sz
+from compiletools.stringzilla_utils import (
+    concat_sz,
+    is_alnum_or_underscore_sz,
+    is_alpha_or_underscore_sz,
+    strip_sz,
+)
 
 if TYPE_CHECKING:
     from compiletools.file_analyzer import FileAnalysisResult, PreprocessorDirective
@@ -94,6 +99,66 @@ _stats: dict[str, Any] = {
 
 
 _CExprToken = int | str
+
+
+def _split_macro_arguments(expr_sz: sz.Str, open_paren: int) -> tuple[list[sz.Str], int] | None:
+    """Split a macro invocation's argument list starting at ``open_paren``.
+
+    Returns ``(arguments, index_past_closing_paren)``, or None when the list is
+    unterminated. Commas nested inside parentheses belong to the argument that
+    contains them, so ``F(G(a, b), c)`` yields two arguments.
+    """
+    depth = 0
+    args: list[sz.Str] = []
+    arg_start = open_paren + 1
+    pos = open_paren
+
+    while pos < len(expr_sz):
+        pos = expr_sz.find_first_of("(),", pos)
+        if pos == -1:
+            return None
+        char = str(expr_sz[pos : pos + 1])
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                args.append(expr_sz[arg_start:pos])
+                return args, pos + 1
+        elif depth == 1:
+            args.append(expr_sz[arg_start:pos])
+            arg_start = pos + 1
+        pos += 1
+
+    return None
+
+
+def _replace_identifiers_sz(body_sz: sz.Str, replacements: dict[sz.Str, sz.Str]) -> sz.Str:
+    """Replace whole-identifier occurrences of each key in ``body_sz``.
+
+    Only complete identifiers are replaced, so a parameter named ``a`` does not
+    rewrite the ``a`` inside ``max``.
+    """
+    result_parts: list[sz.Str] = []
+    i = 0
+    length = len(body_sz)
+
+    while i < length:
+        identifier_start = body_sz.find_first_of(_ID_START_BYTESET, i)
+        if identifier_start == -1:
+            result_parts.append(body_sz[i:])
+            break
+        if identifier_start > i:
+            result_parts.append(body_sz[i:identifier_start])
+
+        identifier_end = body_sz.find_first_not_of(_ID_CONT_BYTESET, identifier_start)
+        if identifier_end == -1:
+            identifier_end = length
+        identifier = body_sz[identifier_start:identifier_end]
+        result_parts.append(replacements.get(identifier, identifier))
+        i = identifier_end
+
+    return concat_sz(*result_parts) if result_parts else sz.Str("")
 
 
 class _CExpressionParser:
@@ -346,13 +411,32 @@ class SimplePreprocessor:
     """
 
     def __init__(
-        self, defined_macros: dict[sz.Str, sz.Str], verbose: int = 0, compiler_path: str = "", cppflags: str = ""
+        self,
+        defined_macros: dict[sz.Str, sz.Str],
+        verbose: int = 0,
+        compiler_path: str = "",
+        cppflags: str = "",
+        function_params: dict[sz.Str, tuple[sz.Str, ...]] | None = None,
     ) -> None:
         # Caller must provide dict with sz.Str keys and values - no type conversion needed
         self.macros = defined_macros.copy()
+        # Parameter lists of the function-like macros in self.macros, keyed by the
+        # same bare name. A name present here is function-like: it expands only
+        # when followed by an argument list, never on its own (C11 6.10.3p10).
+        self.function_params: dict[sz.Str, tuple[sz.Str, ...]] = dict(function_params) if function_params else {}
         self.verbose = verbose
         self.compiler_path = compiler_path
         self.cppflags = cppflags
+        # Diagnostics for the current controlling expression: the text handed to
+        # the evaluator after macro expansion, and any expansion the engine
+        # declined to perform. Both are reported when the expression turns out
+        # to be unevaluable, so the user sees why a branch was assumed false.
+        self._expansion_notes: list[str] = []
+        self._last_expanded: str = ""
+        # Rebound to the BuildContext's set in process_structured; the instance
+        # set only serves a preprocessor driven directly, without a context.
+        self._warned_conditions: set[tuple[str, str, str]] = set()
+        self._current_filepath: str = "<unknown>"
         # Per-call channel from process_structured to _handle_define_structured:
         # which include guard macro to skip when re-#define'd. Kept as instance
         # state rather than a param because _DIRECTIVE_DISPATCH calls every
@@ -417,13 +501,21 @@ class SimplePreprocessor:
 
     def _evaluate_expression_sz(self, expr_sz: sz.Str) -> int:
         """Evaluate a StringZilla expression using native StringZilla operations"""
+        self._expansion_notes = []
         # Strip comments FIRST (faster - avoids expanding macros inside comments)
         stripped_sz = self._strip_comments_sz(expr_sz)
         # Then expand macros
         expanded_sz = self._recursive_expand_macros_sz(stripped_sz)
         # For now, convert final expression to str for safe_eval, but this could be optimized
         expr_str = str(expanded_sz)
+        self._last_expanded = expr_str
         result = self._safe_eval(expr_str)
+        if self._expansion_notes:
+            # An expansion the engine declined leaves source text the tokenizer
+            # then reads as a bare 0, which can still parse to a plausible-
+            # looking number. Refuse the whole expression instead: the caller
+            # turns this into the unevaluable-condition report.
+            raise ValueError("; ".join(self._expansion_notes))
         return result
 
     def _expand_defined_sz(self, expr_sz: sz.Str) -> sz.Str:
@@ -671,8 +763,118 @@ class SimplePreprocessor:
         # Then expand __has_* function calls by querying the compiler (each
         # call's operand is object-macro-expanded inside _expand_has_functions_sz)
         result = self._expand_has_functions_sz(result)
+        # Then expand function-like macro invocations. This runs BEFORE the
+        # object pass so an argument list is still attached to its macro name.
+        result = self._expand_function_macros_sz(result)
         # Finally expand object-like macros in the remaining expression body
         return self._expand_object_macros_sz(result)
+
+    def _expand_function_macros_sz(self, expr_sz: sz.Str, active: frozenset = frozenset()) -> sz.Str:
+        """Expand ``NAME(arg, ...)`` invocations of function-like macros.
+
+        Arguments are substituted positionally into the macro body by token
+        text, exactly as the C preprocessor does — no parentheses are added
+        around an argument, so ``#define TWICE(x) x*2`` expands ``TWICE(1+1)``
+        to ``1+1*2`` (3), matching cpp rather than the intuitive 4.
+
+        ``active`` carries the names currently being expanded so a macro cannot
+        expand itself (C11 6.10.3.4p2, the "blue paint" rule); a self-recursive
+        definition terminates instead of iterating to the expansion cap.
+
+        Unsupported constructs (``...``/``__VA_ARGS__``, an argument-count
+        mismatch, an unterminated argument list) are left in the expression
+        verbatim with a note recorded in ``self._expansion_notes``. The
+        surviving text is then rejected by the tokenizer, so the condition is
+        reported as unevaluable rather than silently evaluating to something
+        else.
+        """
+        if not self.function_params:
+            return expr_sz
+
+        result_parts: list[sz.Str] = []
+        i = 0
+        length = len(expr_sz)
+
+        while i < length:
+            identifier_start = expr_sz.find_first_of(_ID_START_BYTESET, i)
+            if identifier_start == -1:
+                result_parts.append(expr_sz[i:])
+                break
+            if identifier_start > i:
+                result_parts.append(expr_sz[i:identifier_start])
+
+            identifier_end = expr_sz.find_first_not_of(_ID_CONT_BYTESET, identifier_start)
+            if identifier_end == -1:
+                identifier_end = length
+            name = expr_sz[identifier_start:identifier_end]
+
+            params = self.function_params.get(name)
+            open_paren = expr_sz.find_first_not_of(" \t", identifier_end) if identifier_end < length else -1
+            has_arguments = open_paren != -1 and str(expr_sz[open_paren : open_paren + 1]) == "("
+            if params is not None and has_arguments and name in active:
+                # Blue paint (C11 6.10.3.4p2) stops the recursion, but the
+                # invocation it leaves behind is not a value cpp would accept
+                # in an #if -- gcc calls it "missing binary operator".
+                self._note(f"recursive invocation of {name} cannot be expanded in #if")
+            if params is None or not has_arguments or name in active:
+                result_parts.append(name)
+                i = identifier_end
+                continue
+
+            call = _split_macro_arguments(expr_sz, open_paren)
+            if call is None:
+                self._note(f"unterminated argument list for function-like macro {name}")
+                result_parts.append(expr_sz[identifier_start:])
+                i = length
+                continue
+
+            args, call_end = call
+            expansion = self._substitute_macro_arguments(name, params or (), args, active)
+            if expansion is None:
+                result_parts.append(expr_sz[identifier_start:call_end])
+            else:
+                result_parts.append(expansion)
+            i = call_end
+
+        return concat_sz(*result_parts) if result_parts else sz.Str("")
+
+    def _substitute_macro_arguments(
+        self, name: sz.Str, params: tuple[sz.Str, ...], args: list[sz.Str], active: frozenset
+    ) -> sz.Str | None:
+        """Substitute ``args`` for ``params`` in the body of ``name``.
+
+        Returns the expanded body, or None when the invocation cannot be
+        expanded (the caller then leaves the source text in place).
+        """
+        if any(str(p) == "..." for p in params):
+            self._note(f"variadic macro {name} is not supported in #if")
+            return None
+
+        # ``F()`` with a zero-parameter macro is a call with no arguments, not
+        # a call with one empty argument.
+        if len(params) == 0 and len(args) == 1 and len(strip_sz(args[0])) == 0:
+            args = []
+
+        if len(args) != len(params):
+            self._note(f"macro {name} takes {len(params)} argument(s) but was invoked with {len(args)}")
+            return None
+
+        body = self.macros.get(name, sz.Str(""))
+        if len(params) == 0:
+            substituted = body
+        else:
+            # Argument text is macro-expanded before substitution (C11
+            # 6.10.3.1p1). The object pass runs on the outer fixed-point
+            # iteration; this handles a function-like call inside an argument.
+            replacements = {p: self._expand_function_macros_sz(strip_sz(a), active) for p, a in zip(params, args)}
+            substituted = _replace_identifiers_sz(body, replacements)
+
+        return self._expand_function_macros_sz(substituted, active | {name})
+
+    def _note(self, message: str) -> None:
+        """Record why an expansion was declined, for the unevaluable-#if report."""
+        if message not in self._expansion_notes:
+            self._expansion_notes.append(message)
 
     def _expand_object_macros_sz(self, expr_sz: sz.Str) -> sz.Str:
         """Replace object-like macro identifiers with their bodies (single pass).
@@ -705,6 +907,13 @@ class SimplePreprocessor:
 
             # Skip reserved words
             if identifier in _RESERVED_WORDS:
+                continue
+
+            # A function-like macro name is only expanded when followed by an
+            # argument list (C11 6.10.3p10); on its own it stays an identifier,
+            # which _tokenize_c_expression then reads as 0. Any invocation has
+            # already been consumed by _expand_function_macros_sz.
+            if identifier in self.function_params:
                 continue
 
             # Check if it's a macro and replace it
@@ -863,6 +1072,11 @@ class SimplePreprocessor:
         from compiletools.global_hash_registry import get_filepath_by_hash
 
         filepath = get_filepath_by_hash(file_result.content_hash, context)
+        self._current_filepath = filepath or "<unknown>"
+        # getattr, not attribute access: callers are free to pass a duck-typed
+        # context carrying only the caches they need (test_preprocessing_cache_scoping
+        # does), and a diagnostic must not be the thing that breaks them.
+        self._warned_conditions = getattr(context, "warned_preprocessor_conditions", self._warned_conditions)
 
         # Store include guard so _handle_define_structured can skip it
         # Include guards should not be added to macro state as they only prevent
@@ -972,8 +1186,18 @@ class SimplePreprocessor:
                     print(f"SimplePreprocessor: skipping include guard {directive.macro_name}")
                 return
 
-            macro_value = directive.macro_value if directive.macro_value is not None else "1"
+            # A bodyless object-like macro stands for 1 in a controlling
+            # expression; a bodyless function-like macro expands to nothing.
+            if directive.macro_value is not None:
+                macro_value = directive.macro_value
+            else:
+                macro_value = sz.Str("") if directive.macro_params is not None else sz.Str("1")
             self.macros[directive.macro_name] = macro_value
+            if directive.macro_params is not None:
+                self.function_params[directive.macro_name] = tuple(directive.macro_params)
+            else:
+                # A redefinition can turn a function-like macro object-like.
+                self.function_params.pop(directive.macro_name, None)
             if self.verbose >= 9:
                 print(f"SimplePreprocessor: defined macro {directive.macro_name} = {macro_value}")
 
@@ -986,6 +1210,7 @@ class SimplePreprocessor:
 
         if directive.macro_name and directive.macro_name in self.macros:
             del self.macros[directive.macro_name]
+            self.function_params.pop(directive.macro_name, None)
             if self.verbose >= 9:
                 print(f"SimplePreprocessor: undefined macro {directive.macro_name}")
 
@@ -1039,8 +1264,7 @@ class SimplePreprocessor:
                 raise
             except Exception as e:
                 # A malformed/garbage user expression: assume false.
-                if self.verbose >= 8:
-                    print(f"SimplePreprocessor: #if evaluation failed for '{directive.condition}': {e}")
+                self._warn_unevaluable_condition(directive, e)
                 condition_stack.append((False, False, False))
         else:
             # No condition provided
@@ -1076,12 +1300,49 @@ class SimplePreprocessor:
                 # a false branch (see the matching note in the #if handler).
                 raise
             except Exception as e:
-                if self.verbose >= 8:
-                    print(f"SimplePreprocessor: #elif evaluation failed for '{directive.condition}': {e}")
+                self._warn_unevaluable_condition(directive, e)
                 condition_stack.append((False, False, any_condition_met))
         else:
             # Either we already found a true condition or seen_else is True
             condition_stack.append((False, seen_else, any_condition_met))
+
+    def _warn_unevaluable_condition(self, directive: "PreprocessorDirective", error: Exception) -> None:
+        """Report a controlling expression the evaluator could not represent.
+
+        An unevaluable condition is indistinguishable in the output from a
+        legitimately false one, which is what let a whole class of wrong-branch
+        bugs pass unnoticed (a function-like macro guard, an expression outside
+        the supported subset, a valid expression the evaluator rejects). It is
+        therefore reported at ``verbose >= 1`` on stderr, in one grep-able line,
+        rather than at the verbose-8 level that only a debugging session sees.
+        The branch is still assumed false: this changes what the user is told,
+        not what is built.
+
+        Repeats of the same condition in one file are reported once per build
+        session, not once per preprocessor instance: magicflags evaluates the
+        same file under a fresh instance on every pass.
+        """
+        if self.verbose < 1:
+            return
+
+        condition = str(directive.condition)
+        seen_key = (self._current_filepath, directive.directive_type, condition)
+        if seen_key in self._warned_conditions:
+            return
+        self._warned_conditions.add(seen_key)
+
+        detail = ""
+        if self._last_expanded and self._last_expanded != condition:
+            detail = f"; expanded to '{self._last_expanded}'"
+        if self._expansion_notes:
+            detail += "; " + "; ".join(self._expansion_notes)
+
+        print(
+            f"SimplePreprocessor warning: {self._current_filepath}:{directive.line_num + 1}: "
+            f"cannot evaluate '#{directive.directive_type} {condition}' ({error})"
+            f"{detail} - assuming false",
+            file=sys.stderr,
+        )
 
     def _safe_eval(self, expr: str) -> int:
         """Safely evaluate a numeric expression"""
