@@ -570,6 +570,38 @@ class MacroState:
 _EMPTY_FROZENSET: MacroCacheKey = frozenset()
 
 
+def decode_macro_cache_key(key: MacroCacheKey) -> tuple[MacroDict, FunctionParamsDict]:
+    """Split a cache key back into its variable macros and parameter lists.
+
+    The inverse of ``MacroState.get_cache_key``: the synthetic
+    ``#params:<NAME>`` entries ``MacroState._function_params_key_items`` writes
+    are routed to the parameter dict instead of being read as object-like
+    macros. A caller that rebuilds a MacroState from a key must use this —
+    a flat ``dict(key)`` strands every function-like macro's arity and puts a
+    name no C file can spell into the variable dict.
+
+    Feeding the result back to ``MacroState`` re-encodes the identical key, so
+    a key that has been round-tripped is unchanged and caches keyed on it stay
+    warm.
+
+    An entry whose value is empty decodes to an empty parameter tuple — a
+    zero-arity function-like macro (``#define F() 1``), which is distinct from
+    an object-like macro of the same name.
+    """
+    variable: MacroDict = {}
+    function_params: FunctionParamsDict = {}
+    for name, value in key:
+        name_str = str(name)
+        if name_str.startswith(_FUNCTION_PARAMS_KEY_PREFIX):
+            bare = sz.Str(name_str[len(_FUNCTION_PARAMS_KEY_PREFIX) :])
+            value_str = str(value)
+            params = tuple(sz.Str(p) for p in value_str.split(",")) if value_str else ()
+            function_params[bare] = params
+        else:
+            variable[name] = value
+    return variable, function_params
+
+
 def is_permanently_invariant(file_result) -> bool:
     """Determine if a file is permanently invariant (no conditionals).
 

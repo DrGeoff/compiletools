@@ -17,6 +17,7 @@ header the graph selected AND the flags harvested from it.
 import os
 
 import configargparse
+import pytest
 import stringzilla as sz
 
 import compiletools.apptools
@@ -184,3 +185,70 @@ class TestMagicFlagsHarvestsFromTheSelectedHeader(tb.BaseCompileToolsTestCase):
             }
         )
         assert "-DUSING_NEW_API" in cxxflags, cxxflags
+
+
+class TestGateHeaderIncludingItsOwnDefiningHeader(tb.BaseCompileToolsTestCase):
+    """R7: a gate whose defining header is included by the gate itself.
+
+    ``_create_include_list`` evaluates a file's conditionals in one shot before
+    walking any of its includes, so at the moment ``gate.h`` tests its ``#if``
+    the ``macros.h`` it included on the line above has not contributed anything.
+    A single ``headerdeps.process`` therefore reads the gate as false.
+
+    ``magicflags`` recovers because it re-parses until the macro state settles:
+    the second pass seeds the state with ``macros.h``'s defines, and the gate
+    evaluates for real.  These tests pin both halves of that contract — the
+    end-to-end answer is correct, and the reason it is correct is convergence.
+    """
+
+    def setup_method(self):
+        super().setup_method()
+        compiletools.magicflags.MagicFlagsBase.clear_cache()
+        compiletools.headerdeps.HeaderDepsBase.clear_cache()
+
+    def _sources(self, macros: str, condition: str) -> dict:
+        return {
+            "macros.h": macros,
+            "gate.h": _self_including_gate(condition),
+            "new_api.h": _NEW_API,
+            "old_api.h": _OLD_API,
+            "main.cpp": '#include "gate.h"\nint main() { return 0; }\n',
+        }
+
+    def _cxxflags(self, sources: dict) -> str:
+        files = uth.write_sources(sources, target_dir=self._tmpdir)
+        parser = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir, context=BuildContext())
+        parser.clear_cache()
+        result = parser.parse(str(files["main.cpp"]))
+        return " ".join(str(flag) for flag in result.get(sz.Str("CXXFLAGS"), []))
+
+    @pytest.mark.parametrize(
+        "macros,condition",
+        [
+            (_FUNCTION_LIKE_MACROS, "EXTLIB_AT_LEAST(2, 0)"),
+            (_OBJECT_LIKE_MACROS, "USE_NEW"),
+        ],
+        ids=["function-like", "object-like"],
+    )
+    def test_magicflags_converges_onto_the_right_arm(self, macros, condition):
+        cxxflags = self._cxxflags(self._sources(macros, condition))
+        assert "-DUSING_NEW_API" in cxxflags, cxxflags
+        assert "-DUSING_OLD_API" not in cxxflags, cxxflags
+
+    def test_a_single_headerdeps_pass_is_the_documented_limitation(self):
+        """One ``process`` call has no second pass, so it reads the gate false.
+
+        This is the bounded limitation R7 names, pinned so a future interleaving
+        fix trips this test rather than passing unnoticed.  ``magicflags`` never
+        depends on it — see the converging tests above.
+        """
+        files = uth.write_sources(
+            self._sources(_FUNCTION_LIKE_MACROS, "EXTLIB_AT_LEAST(2, 0)"), target_dir=self._tmpdir
+        )
+        context = BuildContext()
+        headers = [
+            os.path.basename(path)
+            for path in _direct_headerdeps(context, self._tmpdir).process(str(files["main.cpp"]), frozenset())
+        ]
+        assert "old_api.h" in headers, headers
+        assert "new_api.h" not in headers, headers

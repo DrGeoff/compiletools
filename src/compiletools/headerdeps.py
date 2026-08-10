@@ -18,9 +18,11 @@ from compiletools.file_analyzer import analyze_file, set_analyzer_args
 from compiletools.global_hash_registry import get_file_hash
 from compiletools.preprocessing_cache import (
     INCLUDE_PATH_ENV_VARS,
+    FunctionParamsDict,
     MacroCacheKey,
     MacroDict,
     MacroState,
+    decode_macro_cache_key,
     get_or_compute_preprocessing,
     is_permanently_invariant,
 )
@@ -255,7 +257,9 @@ class DirectHeaderDeps(HeaderDepsBase):
         # Initialize includes and macros
         self._initialize_includes_and_macros({})
 
-    def _initialize_includes_and_macros(self, variable_macros: MacroDict):
+    def _initialize_includes_and_macros(
+        self, variable_macros: MacroDict, function_params: FunctionParamsDict | None = None
+    ):
         """Initialize include paths and macro definitions from compile flags.
 
         Caches core macros and includes on first call for reuse across all files.
@@ -263,6 +267,10 @@ class DirectHeaderDeps(HeaderDepsBase):
         Args:
             variable_macros: Dict of variable macros (from file #defines).
                             Pass {} for no variable macros (core only).
+            function_params: Parameter lists of the function-like macros among
+                            variable_macros. Omitting it reads every seeded
+                            macro as object-like, so a seeded ``#if F(2, 0)``
+                            takes the wrong branch.
         """
         # Cache core macros and includes - they never change for this instance
         if self._core_macros is None:
@@ -323,6 +331,7 @@ class DirectHeaderDeps(HeaderDepsBase):
             cppflags=self._cpp_flag_string(),
             compiler_identity="",
             anchor_root=self._anchor_root,
+            function_params=function_params or {},
         )
 
     @instance_cache
@@ -378,12 +387,14 @@ class DirectHeaderDeps(HeaderDepsBase):
         """
         realpath = compiletools.wrappedos.realpath(filename)
 
-        # Convert cache key frozenset to MacroDict for MacroState initialization
-        # Ensure all keys/values are sz.Str for consistency (MacroState uses stringzilla exclusively)
-        variable_macros: MacroDict = {sz.Str(k): sz.Str(v) for k, v in macro_cache_key}
+        # Split the key back into bodies and parameter lists. The synthetic
+        # '#params:<NAME>' entries are the encoder's, not a C file's, and a flat
+        # dict() would seed them as object-like macros while leaving every
+        # function-like macro without its arity.
+        variable_macros, function_params = decode_macro_cache_key(macro_cache_key)
 
         # Initialize with variable macros to ensure consistent initial_macro_key for LRU cache
-        self._initialize_includes_and_macros(variable_macros)
+        self._initialize_includes_and_macros(variable_macros, function_params)
         initial_macro_key = self.defined_macros.get_cache_key()
 
         return self._process_impl(realpath, initial_macro_key)
@@ -512,8 +523,8 @@ class DirectHeaderDeps(HeaderDepsBase):
         """Returns the tree of include files"""
         self.ancestor_paths = []
         if macro_cache_key:
-            variable_macros = {sz.Str(k): sz.Str(v) for k, v in macro_cache_key}
-            self._initialize_includes_and_macros(variable_macros)
+            variable_macros, function_params = decode_macro_cache_key(macro_cache_key)
+            self._initialize_includes_and_macros(variable_macros, function_params)
         realpath = compiletools.wrappedos.realpath(filename)
         return self._generate_tree_impl(realpath)
 
