@@ -803,6 +803,13 @@ def find_header_in_paths(header_name, include_paths, verbose=0, label="header"):
     would lock the candidate's resolution in against whatever cwd was live
     on the first call, and go stale under any later chdir.
 
+    ``abspath`` is deliberately cwd-anchored, not gitroot-anchored: a
+    relative ``include_path`` here is a literal search-path entry (like a
+    compiler's relative ``-I``), which the compiler itself resolves against
+    its invocation cwd, not the gitroot. Gitroot-anchoring is a distinct
+    contract used elsewhere (cache-key canonicalisation); do not conflate
+    the two when touching this helper.
+
     Args:
         header_name: Name of header to find (e.g., "stdio.h", "mylib/header.h")
         include_paths: Directories to search, in search order
