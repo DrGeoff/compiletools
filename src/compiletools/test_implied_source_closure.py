@@ -1,12 +1,13 @@
 """Dependency-closure correctness for a file reached as an implied source.
 
-``hunter`` walks a header's sibling ``.cpp`` as an implied source under the
-*root* TU's macro state, so a ``#if`` guard whose operands are defined in a
-header the implied source itself includes is resolved by the assume-false
-fallback and the closure names the branch the compiler did not take. The
-shipped ``implied_source_version_guard`` example and its closure test live in
-``test_function_like_macros.py``; this module covers the three things that one
-test cannot cover on its own:
+``hunter`` walks a header's sibling ``.cpp`` as an implied source under that
+source's *own* converged macro state, so a ``#if`` guard whose operands are
+defined in a header the implied source itself includes resolves the way the
+compiler resolves it. Walked under the root TU's state instead, the guard falls
+to the assume-false fallback and the closure names the branch the compiler did
+not take. The shipped ``implied_source_version_guard`` example and its closure
+test live in ``test_function_like_macros.py``; this module covers the four
+things that one test cannot cover on its own:
 
 * **The object-like guard form.** ``#if PUMPLIB_VERSION_MAJOR >= 2`` is wrong
   in exactly the same way and emits no warning at all, because an undefined
@@ -20,6 +21,12 @@ test cannot cover on its own:
   armed counterpart: a guard macro defined nowhere stays unevaluable after the
   fix, so that row must keep warning. Without it, "no warning" would be
   satisfied by a harness that cannot warn at all.
+* **The hop below the implied source.** The shipped example puts the guard in
+  the implied source itself. ``TestGuardBelowTheImpliedSource`` puts it in a
+  header the implied source includes, so the closure is only right if the
+  source's converged state is threaded into the descent as well as into the
+  source's own header scan. Applied at one of those two sites and not the
+  other, the closure unions both branches instead of choosing one.
 * **Boundary rows.** Eight shipped examples whose closures already agree with
   ``g++ -MM``. They must not move. Every one of them asserts an *absence* --
   the header on the branch the compiler did not take -- because the failure
@@ -162,16 +169,13 @@ class TestObjectLikeImpliedSourceGuard:
     """The silent half of the defect: same wrong closure, no diagnostic at all.
 
     ``PUMPLIB_VERSION_MAJOR`` is defined in ``pumpver.h``, two includes away
-    from ``pump.cpp``. Reached as an implied source, ``pump.cpp`` is walked
-    under ``main.cpp``'s macro state, where that macro has never been seen; an
-    undefined object-like macro evaluates to 0, ``0 >= 2`` is false, and the
-    legacy branch is taken with nothing written to stderr.
+    from ``pump.cpp``. Walk ``pump.cpp`` under ``main.cpp``'s macro state and
+    that macro has never been seen; an undefined object-like macro evaluates to
+    0, ``0 >= 2`` is false, and the legacy branch is taken with nothing written
+    to stderr. Nothing but a closure assertion can catch that, which is why a
+    fix graded only on the audible function-like row would leave it wrong.
     """
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="the implied-source walk evaluates the guard under the root TU's macro state",
-    )
     def test_the_closure_names_the_branch_the_compiler_takes(self, object_like_workspace):
         found = closure(object_like_workspace, "main.cpp")
         assert "modern_pump.h" in found
@@ -224,10 +228,6 @@ class TestUnevaluableWarningSilence:
     """
 
     @uth.requires_functional_compiler
-    @pytest.mark.xfail(
-        strict=True,
-        reason="the implied-source walk reports its first-pass transient as final",
-    )
     def test_the_verbose_run_names_the_modern_branch_and_warns_about_nothing(self, guard_workspace):
         proc = run_filelist(guard_workspace, "-v", "main.cpp")
         assert proc.returncode == 0, proc.stderr
@@ -252,6 +252,119 @@ class TestUnevaluableWarningSilence:
         assert len(reported) == 1, f"expected exactly one report, got {reported}"
         assert "PUMPLIB_DEFINED_NOWHERE" in reported[0]
         assert "pump.cpp" in reported[0]
+
+
+_GIZMO_COMMON = {
+    "main.cpp": '#include "gizmo.h"\nint main() { return gizmo(); }\n',
+    "gizmo.h": "#ifndef GIZMO_H\n#define GIZMO_H\nint gizmo();\n#endif\n",
+    "gizmo_detail.h": (
+        "#ifndef GIZMO_DETAIL_H\n"
+        "#define GIZMO_DETAIL_H\n"
+        "#if GIZMO_IMPL\n"
+        '#include "impl_yes.h"\n'
+        "#else\n"
+        '#include "impl_no.h"\n'
+        "#endif\n"
+        "#endif\n"
+    ),
+    "impl_yes.h": "#ifndef IMPL_YES_H\n#define IMPL_YES_H\ninline int detail_value() { return 1; }\n#endif\n",
+    "impl_no.h": "#ifndef IMPL_NO_H\n#define IMPL_NO_H\ninline int detail_value() { return 0; }\n#endif\n",
+}
+
+# Where ``GIZMO_IMPL`` is defined, which is the whole variable. In both trees
+# it is invisible from ``main.cpp``, so the root TU's macro state resolves the
+# guard to the ``impl_no.h`` branch the compiler never takes.
+_GIZMO_TREES = {
+    # The shipped example's depth: the guard's operand is defined in the
+    # implied source itself.
+    "in_the_source": {
+        **_GIZMO_COMMON,
+        "gizmo.cpp": (
+            '#define GIZMO_IMPL 1\n#include "gizmo.h"\n#include "gizmo_detail.h"\nint gizmo() { return detail_value(); }\n'
+        ),
+    },
+    # One hop further out: the operand arrives from a header the implied
+    # source includes, so it exists only in that source's converged state.
+    "in_a_header_below_the_source": {
+        **_GIZMO_COMMON,
+        "gizmo_cfg.h": "#ifndef GIZMO_CFG_H\n#define GIZMO_CFG_H\n#define GIZMO_IMPL 1\n#endif\n",
+        "gizmo.cpp": (
+            '#include "gizmo.h"\n#include "gizmo_cfg.h"\n#include "gizmo_detail.h"\nint gizmo() { return detail_value(); }\n'
+        ),
+    },
+}
+
+
+def _write_tree(root, files):
+    """Write ``files`` under ``root`` and plant the ``.git`` marker.
+
+    The marker is what ``copy_example_workspace`` plants for the same reason:
+    without it ``find_git_root`` walks out to the pytest tmpdir's ancestors.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    for name, text in files.items():
+        (root / name).write_text(text)
+    git_dir = root / ".git"
+    git_dir.mkdir()
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
+    return root
+
+
+def _mm_headers(cxx, workspace, *sources):
+    """Headers ``g++ -MM`` names across ``sources``, by basename.
+
+    The oracle is derived here rather than pinned as a literal so the
+    expectation cannot drift away from what the compiler actually does with
+    these trees.
+    """
+    found = set()
+    for source in sources:
+        proc = subprocess.run(
+            [cxx, "-MM", "-I", str(workspace), str(workspace / source)],
+            capture_output=True,
+            text=True,
+            timeout=_SUBPROCESS_TIMEOUT,
+        )
+        assert proc.returncode == 0, proc.stderr
+        for token in proc.stdout.replace("\\", " ").split():
+            if token.endswith(".h"):
+                found.add(os.path.basename(token))
+    assert found, f"{cxx} -MM named no headers for {sources}; the oracle is empty"
+    return found
+
+
+class TestGuardBelowTheImpliedSource:
+    """A guard the implied source's own state resolves, in a header below it.
+
+    The shipped example only exercises the guard sitting in the implied source.
+    Threading the source's converged state into its header scan but not into
+    the descent below it still gets that example right, and gets these wrong by
+    adding ``impl_no.h`` on top of ``impl_yes.h``. Unioning both branches is the
+    failure that a closure-equality assertion catches and an ``in`` assertion
+    does not, so these compare the whole set.
+    """
+
+    @pytest.mark.parametrize("shape", sorted(_GIZMO_TREES))
+    @uth.requires_functional_compiler
+    def test_the_closure_is_exactly_what_the_compiler_reads(self, tmp_path, shape):
+        workspace = _write_tree(tmp_path / shape, _GIZMO_TREES[shape])
+        cxx = _functional_cxx()
+        expected = _mm_headers(cxx, workspace, "main.cpp", "gizmo.cpp") | {"main.cpp", "gizmo.cpp"}
+        assert "impl_yes.h" in expected and "impl_no.h" not in expected, expected
+        assert closure(workspace, "main.cpp") == expected
+
+    @pytest.mark.parametrize("shape", sorted(_GIZMO_TREES))
+    def test_the_walk_says_nothing_about_the_guard(self, tmp_path, shape):
+        """``GIZMO_IMPL`` is object-like, so getting it wrong is silent.
+
+        Armed by ``test_the_walk_still_reports_a_genuinely_unevaluable_condition``
+        above, which proves this harness does report when there is something to
+        report.
+        """
+        workspace = _write_tree(tmp_path / shape, _GIZMO_TREES[shape])
+        proc = run_filelist(workspace, "-v", "main.cpp")
+        assert proc.returncode == 0, proc.stderr
+        assert _unevaluable_lines(proc) == []
 
 
 # Closures that already agree with the compiler. Each was checked against

@@ -826,10 +826,10 @@ MARKER_TAKEN;
 class TestImpliedSourceVersionGuard:
     """The guard reached through an implied source, from the shipped example.
 
-    ``hunter.huntsource`` walks the sibling ``pump.cpp`` with an unconverged
-    macro state and outside ``converging()``, so ``PUMPLIB_AT_LEAST(1, 2, 0)``
-    resolves by the assume-false fallback and the dependency closure names the
-    header the compiler did not include.
+    ``hunter`` walks the sibling ``pump.cpp`` under its own converged macro
+    state, so ``PUMPLIB_AT_LEAST(1, 2, 0)`` resolves the way the compiler
+    resolves it and the dependency closure names the header the compiler
+    included.
     """
 
     _EXAMPLE = "implied_source_version_guard"
@@ -851,10 +851,6 @@ class TestImpliedSourceVersionGuard:
             files = hunter.required_files(os.path.join(example, "main.cpp"))
         return {os.path.basename(str(path)) for path in files}
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="the implied-source walk resolves the guard by the assume-false fallback",
-    )
     def test_the_closure_names_the_branch_the_compiler_takes(self):
         closure = self._closure()
         assert "modern_pump.h" in closure
