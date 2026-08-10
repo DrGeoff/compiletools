@@ -1,5 +1,6 @@
 import os
 import re
+import subprocess
 import sys
 from textwrap import dedent
 from unittest.mock import patch
@@ -1559,6 +1560,63 @@ class TestSimplePreprocessorEdgeCases:
         assert self.processor._evaluate_expression_sz(sz.Str("1 >> (0 - 63)")) == 1 << 63
         assert self.processor._evaluate_expression_sz(sz.Str("1 >> (0 - 64)")) == 0
         assert self.processor._evaluate_expression_sz(sz.Str("1 >> (0 - 70)")) == 0
+
+    def test_a_count_that_arrived_positive_clamps_the_same_way_sz(self):
+        """R10: the clamp is a property of the left shift, not of the flip.
+
+        ``1 << 64`` shifts every bit out of an ``intmax_t`` and both gcc and
+        clang drop the block; evaluating it in Python bignums kept it. The
+        boundary partner ``1 << 63`` still has a bit to keep and pins that the
+        clamp did not become blanket suppression. The oracle half lives in
+        ``test_preprocessor_differential.py``.
+        """
+        assert self.processor._evaluate_expression_sz(sz.Str("1 << 63")) == 1 << 63
+        assert self.processor._evaluate_expression_sz(sz.Str("1 << 64")) == 0
+        assert self.processor._evaluate_expression_sz(sz.Str("1 << 200")) == 0
+        assert self.processor._evaluate_expression_sz(sz.Str("(0 - 1) << 70")) == 0
+
+    def test_a_shift_count_too_large_to_evaluate_answers_instead_of_raising(self, capsys):
+        """R10: an oversized count must reach a defined 0, not the fallback path.
+
+        A count past Python's digit limit raised ``OverflowError`` out of the
+        arithmetic, which ``_handle_if_structured`` catches as "malformed user
+        expression" -- so the block was dropped, matching gcc by accident, and
+        the user was told compiletools ``cannot evaluate`` a condition it is
+        perfectly able to evaluate. The answer alone cannot distinguish the two
+        eras (false either way); the diagnostic is what moves, so it is what is
+        asserted.
+        """
+        assert self.processor._evaluate_expression_sz(sz.Str("1 << 1000000000000000000000000000000")) == 0
+        text = dedent("""
+            #if (1 << 1000000000000000000000000000000)
+            dropped
+            #endif
+        """).strip()
+        processor = SimplePreprocessor(dict(self.macros), verbose=1)
+        active = processor.process_structured(_make_file_analysis_result(text), self.ctx)
+        assert 1 not in active, "the block must stay dropped (both compilers drop it)"
+        assert "SimplePreprocessor warning" not in capsys.readouterr().err
+
+    def test_an_oversized_shift_allocates_nothing(self):
+        """R10's other half: the clamp bounds the work, not just the answer.
+
+        ``1 << 10000000000`` is small enough to succeed and large enough to cost
+        1.25 GB of bignum before being tested for truth -- a hostile ``#if`` in
+        any header the dep walk reaches. Run under a 512 MiB address-space cap
+        in a child process, so a regression fails here in bounded memory rather
+        than by exhausting whichever machine runs the suite.
+        """
+        child = dedent("""
+            import resource, sys
+            resource.setrlimit(resource.RLIMIT_AS, (512 * 1024**2, 512 * 1024**2))
+            sys.path.insert(0, sys.argv[1])
+            from compiletools.simple_preprocessor import SimplePreprocessor
+            print(SimplePreprocessor({}, verbose=0)._safe_eval("1 << 10000000000"))
+        """)
+        src_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        proc = subprocess.run([sys.executable, "-c", child, src_root], capture_output=True, text=True, timeout=120)
+        assert proc.returncode == 0, f"the child died evaluating a bounded shift:\n{proc.stderr}"
+        assert proc.stdout.strip() == "0", proc.stdout
 
     def test_the_unsafe_expression_signal_has_its_own_type_sz(self):
         """R5: the tokenizer's deliberate unsafe-expression signal must be

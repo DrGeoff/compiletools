@@ -71,7 +71,9 @@ Deliberate generator exclusions (documented, not accidental)
   gcc-family preprocessor; keeping them out of the generator is what stops that
   choice from turning into a toolchain-dependent property failure.
   Out-of-range (too large) positive counts are left in: both compilers diagnose
-  those, so the gate handles them.
+  those, so the gate handles them. Since R10 they also agree with compiletools --
+  the same intmax_t clamp applies to a count that arrived positive, pinned by
+  ``_INTMAX_SHIFT_COUNT_CASES`` below.
 
 * LEFT SHIFTS WITH A COMPUTED LHS -- ``<<`` takes two literals, bounded so the
   result stays at or under ``2**62``. The left shift is the ONLY operator whose
@@ -682,6 +684,61 @@ def test_the_negative_shift_oracle_gate_is_decisive():
     returncode, kept, _diagnosed = _compiler_keeps_and_diagnoses("1 >> (0 - 1)")
     assert returncode == 0, f"{_CXX} cannot preprocess the probe at all"
     assert _oracle_flips_negative_shift_counts() is kept
+
+
+# ----------------------------------------------------------------------------
+# OVERSIZED POSITIVE SHIFT COUNTS (R10) -- directed, never generated.
+#
+# A left shift by intmax_t's precision or more shifts every bit out and yields
+# 0. Python bignums instead keep growing, so compiletools used to KEEP a block
+# both compilers drop -- silently, since the whole point of an oversized count
+# is that nothing raises. Unlike the negative-count family above this is not a
+# UB choice between two compilers: gcc 16.1 and clang 22.1 agree on the kept/
+# dropped answer for every case here, so the oracle half needs no family gate.
+#
+# The cases are directed rather than generated because the generator's
+# ``assume`` gate discards anything the oracle diagnoses, and the three dropped
+# shapes are diagnosed, so the property stream can never reach them.
+#
+# The DIAGNOSTIC is only recorded where the two compilers agree. ``1 << 63``
+# keeps a bit but overflows a SIGNED intmax_t, and there gcc 16.1 is silent
+# while clang 22.1 warns -- recorded as None, asserted by neither, and the
+# reason this family asserts a diagnostic at all is that a bare "the oracle
+# said nothing" would otherwise be indistinguishable from a broken harness.
+#
+# expr, the compilers keep the block, the compilers diagnose it (None: they differ)
+_INTMAX_SHIFT_COUNT_CASES = [
+    ("1 << 63", True, None),  # the last count with a bit left to keep
+    ("1 << 64", False, True),  # one past it: the boundary partner, and the R10 headline
+    ("1 << 200", False, True),  # far past the width, still a defined 0
+    ("(0 - 1) << 70", False, True),  # a negative LHS shifts its sign bits out too
+]
+
+
+@pytest.mark.parametrize("expr, compilers_keep", [(e, k) for e, k, _d in _INTMAX_SHIFT_COUNT_CASES])
+def test_oversized_shift_count_evaluates_to_zero(expr, compilers_keep):
+    """compiletools keeps exactly the blocks the compilers keep. Needs no
+    compiler, so a box with no toolchain still pins the semantics."""
+    assert _ct_if_active(expr) is compilers_keep
+
+
+@requires_functional_compiler
+@pytest.mark.parametrize("expr, compilers_keep, compilers_diagnose", _INTMAX_SHIFT_COUNT_CASES)
+def test_oversized_shift_count_matches_the_oracle(expr, compilers_keep, compilers_diagnose):
+    """The same cases against the installed compiler.
+
+    The expected answers are spelled out rather than read off the oracle, so a
+    compiler that disagrees fails here instead of silently redefining what the
+    test proves. ``1 << 63`` is the control: the oracle KEEPS it, so a clamp
+    that had become blanket suppression contradicts this test rather than
+    passing it.
+    """
+    returncode, kept, diagnosed = _compiler_keeps_and_diagnoses(expr)
+    assert returncode == 0, f"the oracle rejected '#if {expr}' outright"
+    assert kept is compilers_keep, f"the oracle disagrees with the recorded answer for '#if {expr}'"
+    if compilers_diagnose is not None:
+        assert diagnosed is compilers_diagnose, f"the oracle's diagnostic for '#if {expr}' is not the recorded one"
+    assert _ct_if_active(expr) is kept
 
 
 # ----------------------------------------------------------------------------

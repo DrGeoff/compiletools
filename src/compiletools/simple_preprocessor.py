@@ -185,7 +185,7 @@ def _replace_identifiers_sz(body_sz: sz.Str, replacements: dict[sz.Str, sz.Str])
 # Width of the type C evaluates ``#if`` arithmetic in (``intmax_t``). The
 # evaluator otherwise works in Python bignums -- a documented divergence from
 # C's wraparound -- so this is used only where a bound is needed to keep an
-# operation total: the negative-shift flip in ``_CExpressionParser._c_shift``.
+# operation total: the left-shift count clamp in ``_CExpressionParser._c_shift``.
 _INTMAX_PRECISION = 64
 
 
@@ -353,8 +353,8 @@ class _CExpressionParser:
             rhs = self._parse_additive(evaluate)
             if not evaluate:
                 # Dead subtree (A6/A7): skip the shift entirely. The returned
-                # value is discarded, and a dead ``1 << 10000000000`` never
-                # allocates the bignum a live one would.
+                # value is discarded, so there is nothing to compute. (A live
+                # oversized shift is bounded too, by ``_c_shift``'s clamp.)
                 value = 0
             else:
                 value = self._c_shift(value, op, rhs)
@@ -362,28 +362,35 @@ class _CExpressionParser:
 
     @classmethod
     def _c_shift(cls, value: int, op: str, count: int) -> int:
-        """Apply ``<<``/``>>`` with the C preprocessor's negative-count rule.
+        """Apply ``<<``/``>>`` the way libcpp's ``num_binary_op`` does.
 
-        C99 6.5.7p3 leaves a negative shift count undefined, and Python's shift
-        operators raise ``ValueError`` on one. gcc's libcpp (``num_binary_op``)
-        instead reverses the direction and negates the count, so ``1 >> -1`` is
-        ``1 << 1`` and the ``#if`` branch is kept; measured against
-        ``g++ -E -P -Wall -Wextra -pedantic`` on every shape pinned in
-        ``test_simple_preprocessor.py``. clang treats the same expressions as
-        an overflow yielding 0, so the shapes stay out of the differential
-        test's generator -- following gcc here is a choice between two
-        compilers, not between right and wrong.
+        Two rules, both measured against ``g++ -E -P -Wall -Wextra -pedantic``.
 
-        The flipped LEFT direction clamps at ``intmax_t``'s precision, matching
+        A NEGATIVE count is undefined in C99 6.5.7p3, and Python's shift
+        operators raise ``ValueError`` on one. libcpp instead reverses the
+        direction and negates the count, so ``1 >> -1`` is ``1 << 1`` and the
+        ``#if`` branch is kept. clang treats the same expressions as an
+        overflow yielding 0, so the shapes stay out of the differential test's
+        generator -- following gcc here is a choice between two compilers, not
+        between right and wrong.
+
+        A LEFT shift by ``intmax_t``'s precision or more yields 0, matching
         libcpp's ``num_lshift``: once the count reaches the width, every bit is
-        shifted out. The flipped RIGHT direction needs no clamp -- Python's
-        arithmetic shift already sign-fills to 0 or -1 as libcpp does.
+        shifted out. The clamp applies to a count that arrived positive as much
+        as to one the flip produced -- ``#if (1 << 64)`` is a block gcc drops,
+        and evaluating it in Python bignums kept it. Right shifts need no clamp:
+        Python's arithmetic shift already sign-fills to 0 or -1 as libcpp does.
+
+        The clamp is also what keeps the operation total. A live
+        ``1 << 10000000000`` would otherwise materialise a gigabyte-wide bignum
+        before being tested for truth, and a count past ``PY_SSIZE_T_MAX``
+        raises out of the arithmetic entirely.
         """
         if count < 0:
             op = ">>" if op == "<<" else "<<"
             count = -count
-            if op == "<<" and count >= _INTMAX_PRECISION:
-                return 0
+        if op == "<<" and count >= _INTMAX_PRECISION:
+            return 0
         return value << count if op == "<<" else value >> count
 
     def _parse_additive(self, evaluate: bool) -> int:
