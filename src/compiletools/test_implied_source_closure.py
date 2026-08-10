@@ -1,0 +1,301 @@
+"""Dependency-closure correctness for a file reached as an implied source.
+
+``hunter`` walks a header's sibling ``.cpp`` as an implied source under the
+*root* TU's macro state, so a ``#if`` guard whose operands are defined in a
+header the implied source itself includes is resolved by the assume-false
+fallback and the closure names the branch the compiler did not take. The
+shipped ``implied_source_version_guard`` example and its closure test live in
+``test_function_like_macros.py``; this module covers the three things that one
+test cannot cover on its own:
+
+* **The object-like guard form.** ``#if PUMPLIB_VERSION_MAJOR >= 2`` is wrong
+  in exactly the same way and emits no warning at all, because an undefined
+  object-like macro is legally 0. Only a closure assertion can catch it, so a
+  fix that moves only the audible function-like row leaves this one wrong.
+* **The silence control.** After the fix ``ct-filelist -v`` must not print the
+  unevaluable-condition warning for the example -- and must not print it from
+  a superseded convergence pass either, which is why the control runs the real
+  CLI in a fresh process rather than inspecting one preprocessor object.
+  ``test_the_walk_still_reports_a_genuinely_unevaluable_condition`` is its
+  armed counterpart: a guard macro defined nowhere stays unevaluable after the
+  fix, so that row must keep warning. Without it, "no warning" would be
+  satisfied by a harness that cannot warn at all.
+* **Boundary rows.** Eight shipped examples whose closures already agree with
+  ``g++ -MM``. They must not move. Every one of them asserts an *absence* --
+  the header on the branch the compiler did not take -- because the failure
+  mode of a half-applied fix is a closure that unions both branches.
+"""
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import configargparse
+import pytest
+
+import compiletools.apptools
+import compiletools.headerdeps
+import compiletools.hunter
+import compiletools.magicflags
+import compiletools.testhelper as uth
+from compiletools.build_context import BuildContext
+from compiletools.examples_registry import example_path
+
+_SUBPROCESS_TIMEOUT = 120
+
+_GUARD_EXAMPLE = "implied_source_version_guard"
+
+_FUNCTION_LIKE_GUARD = "#if PUMPLIB_AT_LEAST(1, 2, 0)"
+_OBJECT_LIKE_GUARD = "#if PUMPLIB_VERSION_MAJOR >= 2"
+_NEVER_DEFINED_GUARD = "#if PUMPLIB_DEFINED_NOWHERE(1, 2, 0)"
+
+_UNEVALUABLE_MARKER = "cannot evaluate"
+
+_FILELIST_DRIVER = "import sys, compiletools.filelist as f; sys.exit(f.main(sys.argv[1:]))"
+
+
+def _functional_cxx() -> str:
+    cxx = compiletools.apptools.get_functional_cxx_compiler()
+    if not cxx:
+        pytest.skip("no functional C++ compiler detected")
+    return str(cxx)
+
+
+@pytest.fixture(autouse=True)
+def _reset_parser_state():
+    """Wipe the global configargparse parser cache around every test."""
+    uth.reset()
+    yield
+    uth.reset()
+
+
+def closure(include_dir, entry):
+    """Basenames of the dependency closure hunter reports for ``entry``.
+
+    Same call path as ``ct-filelist``: a Hunter over a headerdeps/magicflags
+    pair built from a throwaway config, run in its own BuildContext.
+    """
+    with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
+        cap = configargparse.ArgumentParser(
+            conflict_handler="resolve",
+            args_for_setting_config_path=["-c", "--config"],
+            ignore_unknown_config_file_keys=True,
+        )
+        compiletools.hunter.add_arguments(cap)
+        context = BuildContext()
+        args = compiletools.apptools.parseargs(cap, ["-c", temp_config, "--include", str(include_dir)], context=context)
+        headerdeps = compiletools.headerdeps.create(args, context=context)
+        magicparser = compiletools.magicflags.create(args, headerdeps, context=context)
+        hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=context)
+        files = hunter.required_files(os.path.join(str(include_dir), entry))
+    return {os.path.basename(str(path)) for path in files}
+
+
+def _guard_workspace(tmp_path, name, guard):
+    """The shipped guard example with its ``#if`` rewritten to ``guard``.
+
+    The rewrite is the workspace's only difference from the shipped example,
+    which is what makes the guard form the sole variable under test. Both
+    assertions exist to stop the fixture degrading into a copy of the example
+    if the example's directive text ever changes: the first catches a
+    substitution that matched nothing, the second a substitution that matched
+    more than the directive.
+    """
+    workspace = uth.copy_example_workspace(Path(example_path(_GUARD_EXAMPLE)), tmp_path / name)
+    pump = workspace / "pump.cpp"
+    original = pump.read_text()
+    patched = original.replace(_FUNCTION_LIKE_GUARD, guard)
+    assert patched != original, f"{_FUNCTION_LIKE_GUARD!r} is no longer in pump.cpp; the fixture patched nothing"
+    assert patched.count(guard) == 1, f"expected exactly one {guard!r} in the patched pump.cpp"
+    pump.write_text(patched)
+    return workspace
+
+
+@pytest.fixture
+def object_like_workspace(tmp_path):
+    """The guard example with an object-like version test in place of the macro call."""
+    return _guard_workspace(tmp_path, "object_like", _OBJECT_LIKE_GUARD)
+
+
+@pytest.fixture
+def never_defined_workspace(tmp_path):
+    """The guard example with a guard macro that no header in the tree defines."""
+    return _guard_workspace(tmp_path, "never_defined", _NEVER_DEFINED_GUARD)
+
+
+@pytest.fixture
+def guard_workspace(tmp_path):
+    """The guard example verbatim, in a workspace of its own."""
+    return uth.copy_example_workspace(Path(example_path(_GUARD_EXAMPLE)), tmp_path / "as_shipped")
+
+
+def run_filelist(workspace, *argv):
+    """Run ``ct-filelist`` over ``workspace`` in a fresh interpreter.
+
+    A subprocess, not an in-process ``filelist.main`` call, for two reasons.
+    The preprocessing caches and ``BuildContext.warned_preprocessor_conditions``
+    are reachable across tests in one pytest process, so an in-process
+    "no warning was printed" assertion can pass because an earlier test already
+    consumed the report. And a subprocess captures stderr from every
+    convergence pass, including a superseded one, which is the specific thing
+    the deferred-warning machinery is supposed to prevent from reaching the user.
+    """
+    return subprocess.run(
+        [sys.executable, "-c", _FILELIST_DRIVER, *argv],
+        cwd=str(workspace),
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+    )
+
+
+def _stdout_basenames(proc):
+    return {os.path.basename(line.strip()) for line in proc.stdout.splitlines() if line.strip()}
+
+
+def _unevaluable_lines(proc):
+    return [line for line in proc.stderr.splitlines() if _UNEVALUABLE_MARKER in line]
+
+
+class TestObjectLikeImpliedSourceGuard:
+    """The silent half of the defect: same wrong closure, no diagnostic at all.
+
+    ``PUMPLIB_VERSION_MAJOR`` is defined in ``pumpver.h``, two includes away
+    from ``pump.cpp``. Reached as an implied source, ``pump.cpp`` is walked
+    under ``main.cpp``'s macro state, where that macro has never been seen; an
+    undefined object-like macro evaluates to 0, ``0 >= 2`` is false, and the
+    legacy branch is taken with nothing written to stderr.
+    """
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="the implied-source walk evaluates the guard under the root TU's macro state",
+    )
+    def test_the_closure_names_the_branch_the_compiler_takes(self, object_like_workspace):
+        found = closure(object_like_workspace, "main.cpp")
+        assert "modern_pump.h" in found
+        assert "legacy_pump.h" not in found
+
+    def test_the_same_guard_resolves_correctly_when_the_file_is_the_target(self, object_like_workspace):
+        """Isolates the defect to the walk rather than to the guard.
+
+        Naming ``pump.cpp`` directly gives it its own converged macro state and
+        the closure is right, so nothing about the object-like guard is beyond
+        the evaluator. Only the implied-source route gets it wrong.
+        """
+        found = closure(object_like_workspace, "pump.cpp")
+        assert "modern_pump.h" in found
+        assert "legacy_pump.h" not in found
+
+    @uth.requires_functional_compiler
+    def test_the_compiler_takes_the_modern_branch(self, object_like_workspace):
+        """Pins the expectation above against cpp, so it is not an invention."""
+        cxx = _functional_cxx()
+        proc = subprocess.run(
+            [cxx, "-E", "-P", "-I", str(object_like_workspace), str(object_like_workspace / "pump.cpp")],
+            capture_output=True,
+            text=True,
+            timeout=_SUBPROCESS_TIMEOUT,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert '"modern"' in proc.stdout
+        assert '"legacy"' not in proc.stdout
+
+    @uth.requires_functional_compiler
+    def test_the_wrong_branch_is_taken_with_nothing_on_stderr(self, object_like_workspace):
+        """Why the row above needs a closure assertion and not a stderr one.
+
+        Paired with ``test_the_walk_still_reports_a_genuinely_unevaluable_condition``,
+        which proves this same harness does print when there is something to
+        print. Without that pair, an empty stderr here would be indistinguishable
+        from a harness that never warns.
+        """
+        proc = run_filelist(object_like_workspace, "-v", "main.cpp")
+        assert proc.returncode == 0, proc.stderr
+        assert _unevaluable_lines(proc) == []
+
+
+class TestUnevaluableWarningSilence:
+    """``ct-filelist -v`` on the shipped example, which the done criteria name.
+
+    The verbose run must agree with itself: the closure it prints and the
+    warnings it does not print describe the same branch.
+    """
+
+    @uth.requires_functional_compiler
+    @pytest.mark.xfail(
+        strict=True,
+        reason="the implied-source walk reports its first-pass transient as final",
+    )
+    def test_the_verbose_run_names_the_modern_branch_and_warns_about_nothing(self, guard_workspace):
+        proc = run_filelist(guard_workspace, "-v", "main.cpp")
+        assert proc.returncode == 0, proc.stderr
+        found = _stdout_basenames(proc)
+        assert "modern_pump.h" in found
+        assert "legacy_pump.h" not in found
+        assert _unevaluable_lines(proc) == []
+
+    @uth.requires_functional_compiler
+    def test_the_walk_still_reports_a_genuinely_unevaluable_condition(self, never_defined_workspace):
+        """The armed control for the assertion above, and a regression guard.
+
+        ``PUMPLIB_DEFINED_NOWHERE`` is defined in no header in the tree, so no
+        amount of convergence makes it evaluable and the warning is accurate
+        both before and after the fix. Deferring the implied-source walk's
+        warnings must not swallow this one: a fix that silences the walk
+        wholesale, rather than letting it settle and then reporting, fails here.
+        """
+        proc = run_filelist(never_defined_workspace, "-v", "main.cpp")
+        assert proc.returncode == 0, proc.stderr
+        reported = _unevaluable_lines(proc)
+        assert len(reported) == 1, f"expected exactly one report, got {reported}"
+        assert "PUMPLIB_DEFINED_NOWHERE" in reported[0]
+        assert "pump.cpp" in reported[0]
+
+
+# Closures that already agree with the compiler. Each was checked against
+# ``g++ -MM`` before being pinned, so these are compiler-correct rows rather
+# than a snapshot of current behaviour; entries hunter adds that ``-MM`` cannot
+# report -- the entry file itself, and implied sources -- are noted per row.
+# The absence side of each row is the load-bearing half: a walk that resolves
+# guards by unioning both branches, or that re-walks an implied source under a
+# second macro state, adds a header here rather than removing one.
+_BOUNDARY_ROWS = {
+    # The false branch is guarded by a compiler built-in, so windows_header.h
+    # must stay out.
+    "conditional_includes": ("main.cpp", {"linux_header.h", "main.cpp"}),
+    # linux_extra.h / windows_extra.h are the branches not taken.
+    "computed_include": ("main.cpp", {"default_extra.h", "main.cpp"}),
+    # debug.h is the branch not taken; this example exists for exactly the
+    # macro-state-keyed caching the fix perturbs.
+    "macro_state_dependency": ("sample.cpp", {"feature.h", "release.h", "sample.cpp"}),
+    # optional_feature.h is the __has_include branch not taken.
+    "has_include": ("main.cpp", {"main.cpp", "stdheader_extras.h"}),
+    # the_code_lin.cpp is an implied source reached through a header, i.e. the
+    # same hunter branch as the defect, already correct today.
+    "magicsourceinheader": (
+        "main.cpp",
+        {"another_header.hpp", "main.cpp", "some_header.hpp", "the_code_lin.cpp"},
+    ),
+    # A version guard resolved through magicflags convergence, which already
+    # converges; it must keep the answer it has.
+    "version_dependent_api": ("test_main.cpp", {"api_config.h", "test_main.cpp", "version.h"}),
+    "hunter_macro_propagation": ("app.cpp", {"app.cpp", "config.h", "renderer.h"}),
+    "movingheaders": ("main.cpp", {"main.cpp", "someheader.hpp"}),
+}
+
+
+class TestClosureBoundaryRows:
+    """Shipped closures that must not move, in either direction.
+
+    These are the rows a fix is graded against for over-reach. A change that
+    gives every implied source its own converged macro state touches every
+    example with an implied source, not only the broken one, so the rows that
+    are already right have to be watched as closely as the row that is wrong.
+    """
+
+    @pytest.mark.parametrize("example", sorted(_BOUNDARY_ROWS))
+    def test_the_closure_is_unchanged(self, example):
+        entry, expected = _BOUNDARY_ROWS[example]
+        assert closure(example_path(example), entry) == expected
