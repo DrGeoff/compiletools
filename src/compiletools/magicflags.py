@@ -10,6 +10,7 @@ import compiletools.apptools
 import compiletools.apptools_pkgconfig
 import compiletools.build_apply
 import compiletools.compiler_macros
+import compiletools.flag_ops
 import compiletools.git_utils
 import compiletools.headerdeps
 import compiletools.namer
@@ -138,6 +139,11 @@ class MagicFlagsBase:
         # Populated by subclasses; declared here for type checkers and to
         # avoid AttributeError if _handle_readmacros runs before subclass init.
         self._explicit_macro_files: set = set()
+
+        # (source file, READMACROS value) pairs already warned about. PASS 1
+        # and PASS 2 of get_structured_data each re-collect the same file, so
+        # without this the unconditional warning prints twice per entry.
+        self._warned_unresolved_readmacros: set = set()
 
     def parse(self, filename):
         """Parse magic flags for the given file. Implemented by subclasses."""
@@ -421,18 +427,112 @@ class MagicFlagsBase:
 
         return flagsforfilename
 
-    def _resolve_readmacros_path(self, flag, source_filename):
+    def _file_declared_include_paths(self, analysis_result: FileAnalysisResult) -> list[str]:
+        """Include directories a single file declares through its own magic flags.
+
+        Harvests ``-I`` / ``-isystem`` from that file's ``CPPFLAGS`` /
+        ``CFLAGS`` / ``CXXFLAGS`` annotations, the directory an ``INCLUDE``
+        annotation names outright, and the ``--cflags`` of every package a
+        ``PKG-CONFIG`` annotation lists. Declaration order is preserved and
+        duplicates dropped.
+
+        The result is only ever used to resolve the SAME file's ``READMACROS``
+        entries, which pins three limits worth stating:
+
+        * Values are used unexpanded. READMACROS collection runs in PASS 1 of
+          ``get_structured_data``, before any macro state converges, so a path
+          assembled from a macro will not resolve.
+        * Every annotation in the file counts, including ones sitting in a
+          preprocessor branch that turns out to be inactive. That matches how
+          ``_collect_explicit_macro_files`` already treats READMACROS itself.
+        * A relative directory is taken as written, i.e. relative to the
+          invocation cwd, exactly as the compiler would read it -- not
+          relative to the declaring file.
+        """
+        include_paths: list[str] = []
+
+        for magic_flag in analysis_result.magic_flags:
+            key = str(magic_flag["key"])
+            value = str(magic_flag["value"])
+
+            if key in ("CPPFLAGS", "CFLAGS", "CXXFLAGS"):
+                try:
+                    tokens = compiletools.utils.split_command_cached(value)
+                except ValueError:
+                    # A malformed value gets its diagnostic from the
+                    # authoritative tokenize in _process_magic_flag; path
+                    # discovery just skips it.
+                    continue
+                include_paths.extend(compiletools.flag_ops.system_include_paths_from_tokens(tokens))
+            elif key == "INCLUDE":
+                include_paths.append(value)
+            elif key == "PKG-CONFIG":
+                include_paths.extend(self._pkg_config_include_paths(value, analysis_result))
+
+        return list(dict.fromkeys(include_paths))
+
+    def _pkg_config_include_paths(self, flag_value: str, analysis_result: FileAnalysisResult) -> list[str]:
+        """Include directories the packages of one ``//#PKG-CONFIG=`` contribute.
+
+        Best-effort by design: every failure mode here already has an
+        authoritative diagnostic on the real flag-processing path
+        (``_handle_pkg_config`` via ``_process_magic_flag``), and raising from
+        PASS 1 would replace that curated message with a traceback. In
+        particular a ``PkgConfigError`` -- what ``--pkg-config-errors=error``
+        promotes a missing package to -- is swallowed so the later
+        ``SystemExit(1)`` with the install hint is still what the user sees.
+        """
+        del analysis_result
+
+        try:
+            packages = compiletools.apptools.tokenize_pkg_config_specs([flag_value])
+        except (compiletools.utils.FlagTokenizeError, ValueError):
+            return []
+
+        include_paths: list[str] = []
+        for pkg in packages:
+            try:
+                cflags_raw = compiletools.apptools.cached_pkg_config(pkg, "--cflags")
+            except compiletools.apptools_pkgconfig.PkgConfigError:
+                continue
+            if not cflags_raw:
+                continue
+            cflags_str = compiletools.apptools.filter_pkg_config_cflags(cflags_raw, self._args.verbose, package=pkg)
+            tokens = compiletools.apptools_pkgconfig.tokenize_pkg_config_output(
+                cflags_str, package=pkg, option="--cflags", verbose=self._args.verbose
+            )
+            include_paths.extend(compiletools.flag_ops.system_include_paths_from_tokens(tokens))
+
+        return include_paths
+
+    def _resolve_readmacros_path(self, flag, source_filename, extra_include_paths=None):
         """Resolve READMACROS flag to absolute path (pure path resolution logic).
+
+        Resolution order, in full:
+
+        1. An absolute value is taken as-is.
+        2. The global ``-I`` / ``-isystem`` set (command line plus conf files)
+           via ``apptools.find_system_header``.
+        3. ``extra_include_paths``, in declaration order -- the include
+           directories the declaring file contributes through its own magic
+           flags (see ``_file_declared_include_paths``).
+        4. The declaring file's own directory.
+
+        Global before file-declared mirrors the compiler's own search order:
+        per-file magic flags are appended after the global flags on the real
+        command line.
 
         Args:
             flag: The flag value from READMACROS magic flag
             source_filename: The file containing the READMACROS flag
+            extra_include_paths: Optional additional directories to search
+                after the global set
 
         Returns:
             str: Absolute path to the resolved file
 
         Raises:
-            IOError: If resolved file doesn't exist
+            OSError: If resolved file doesn't exist
         """
         # Absolute path - use as-is
         if compiletools.wrappedos.isabs_sz(flag):
@@ -442,6 +542,9 @@ class MagicFlagsBase:
             resolved_flag_str = compiletools.apptools.find_system_header(
                 str(flag), self._args, verbose=self._args.verbose
             )
+            if not resolved_flag_str:
+                resolved_flag_str = self._find_in_include_paths(str(flag), extra_include_paths or [])
+
             if resolved_flag_str:
                 resolved_flag = sz.Str(resolved_flag_str)
             else:
@@ -459,8 +562,28 @@ class MagicFlagsBase:
 
         return str(resolved_flag)
 
+    def _find_in_include_paths(self, header_name: str, include_paths: list[str]) -> Optional[str]:
+        """First existing ``<include_path>/<header_name>``, or None."""
+        for include_path in include_paths:
+            candidate = compiletools.wrappedos.join(include_path, header_name)
+            if compiletools.wrappedos.isfile(candidate):
+                return compiletools.wrappedos.realpath(candidate)
+
+        if self._args.verbose >= 9 and include_paths:
+            print(f"READMACROS '{header_name}' not found in file-declared include paths: {include_paths}")
+
+        return None
+
     def _collect_explicit_macro_files(self, source_files: list[str]) -> set:
         """Scan files for READMACROS flags and return set of explicit macro files.
+
+        Each entry is resolved and reported independently: an unresolvable
+        entry costs that entry alone, never the remaining entries of the same
+        file. It is also warned about unconditionally, because the failure is
+        otherwise indistinguishable from success -- the macros the header
+        would have defined are simply absent, and the ``#if`` guarding them
+        reads as false, so the build gets the wrong branch's flags and exits
+        zero.
 
         Args:
             source_files: List of source files to scan
@@ -473,26 +596,44 @@ class MagicFlagsBase:
         for source_file in source_files:
             try:
                 analysis_result = self._get_file_analyzer_result(source_file)
-
-                for magic_flag in analysis_result.magic_flags:
-                    if magic_flag["key"] == sz.Str("READMACROS"):
-                        resolved_path = self._resolve_readmacros_path(magic_flag["value"], source_file)
-                        explicit_files.add(resolved_path)
-
-                        if self._args.verbose >= 5:
-                            print(
-                                f"READMACROS: Will process '{resolved_path}' for macro extraction (from {source_file})"
-                            )
             except OSError as e:
-                # A missing/unreadable file here is not necessarily fatal (the
-                # READMACROS flag is re-resolved uncached at parse time, which
-                # raises properly), but don't whisper: a swallowed scan failure
-                # means macros silently missing from preprocessing.
                 if self._args.verbose >= 1:
                     print(
                         f"DirectMagicFlags warning: could not scan {source_file} for READMACROS: {e}",
                         file=sys.stderr,
                     )
+                continue
+
+            readmacros_flags = [mf for mf in analysis_result.magic_flags if mf["key"] == sz.Str("READMACROS")]
+            if not readmacros_flags:
+                continue
+
+            # Only files carrying a relative READMACROS need the harvest, and
+            # it may run pkg-config, so defer it until one is seen.
+            declared_include_paths = None
+
+            for magic_flag in readmacros_flags:
+                if declared_include_paths is None and not compiletools.wrappedos.isabs_sz(magic_flag["value"]):
+                    declared_include_paths = self._file_declared_include_paths(analysis_result)
+
+                try:
+                    resolved_path = self._resolve_readmacros_path(
+                        magic_flag["value"], source_file, extra_include_paths=declared_include_paths
+                    )
+                except OSError as e:
+                    warn_key = (source_file, str(magic_flag["value"]))
+                    if warn_key not in self._warned_unresolved_readmacros:
+                        self._warned_unresolved_readmacros.add(warn_key)
+                        print(
+                            f"DirectMagicFlags warning: could not resolve READMACROS in {source_file}: {e}",
+                            file=sys.stderr,
+                        )
+                    continue
+
+                explicit_files.add(resolved_path)
+
+                if self._args.verbose >= 5:
+                    print(f"READMACROS: Will process '{resolved_path}' for macro extraction (from {source_file})")
 
         return explicit_files
 

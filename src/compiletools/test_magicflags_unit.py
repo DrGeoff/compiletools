@@ -187,6 +187,111 @@ class TestResolveReadmacrosPath:
         with pytest.raises(OSError, match="does not exist"):
             obj._resolve_readmacros_path(sz.Str("/nonexistent/macros.hpp"), "/some/source.cpp")
 
+    def test_resolve_via_extra_include_paths(self, tmp_path):
+        obj = self._make_base()
+        incdir = tmp_path / "vendor"
+        incdir.mkdir()
+        (incdir / "macros.hpp").write_text("#define FOO 1")
+        source = str(tmp_path / "src" / "source.cpp")
+
+        result = obj._resolve_readmacros_path(sz.Str("macros.hpp"), source, extra_include_paths=[str(incdir)])
+
+        assert result == os.path.realpath(str(incdir / "macros.hpp"))
+
+    def test_extra_include_paths_searched_in_order(self, tmp_path):
+        obj = self._make_base()
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        first.mkdir()
+        second.mkdir()
+        (first / "macros.hpp").write_text("#define FOO 1")
+        (second / "macros.hpp").write_text("#define FOO 2")
+
+        result = obj._resolve_readmacros_path(
+            sz.Str("macros.hpp"), str(tmp_path / "source.cpp"), extra_include_paths=[str(first), str(second)]
+        )
+
+        assert result == os.path.realpath(str(first / "macros.hpp"))
+
+    def test_global_include_path_beats_file_declared(self, tmp_path):
+        """Global -I is searched before the file's own declarations.
+
+        This mirrors the real command line, where per-file magic flags are
+        appended after the global flags.
+        """
+        globaldir = tmp_path / "global"
+        filedir = tmp_path / "filedeclared"
+        globaldir.mkdir()
+        filedir.mkdir()
+        (globaldir / "macros.hpp").write_text("#define FOO 1")
+        (filedir / "macros.hpp").write_text("#define FOO 2")
+
+        obj = _make_partial(CPPFLAGS=f"-I{globaldir}", CFLAGS="", CXXFLAGS="", INCLUDE="")
+
+        result = obj._resolve_readmacros_path(
+            sz.Str("macros.hpp"), str(tmp_path / "source.cpp"), extra_include_paths=[str(filedir)]
+        )
+
+        assert result == os.path.realpath(str(globaldir / "macros.hpp"))
+
+
+class TestFileDeclaredIncludePaths:
+    """Test MagicFlagsBase._file_declared_include_paths()."""
+
+    @staticmethod
+    def _analysis(*pairs):
+        return SimpleNamespace(magic_flags=[{"key": sz.Str(key), "value": sz.Str(value)} for key, value in pairs])
+
+    def test_harvests_isystem_and_I_from_compile_slots(self):
+        obj = _make_partial()
+        analysis = self._analysis(
+            ("CXXFLAGS", "-isystem /opt/a"),
+            ("CPPFLAGS", "-I/opt/b"),
+            ("CFLAGS", "-I /opt/c"),
+        )
+
+        assert obj._file_declared_include_paths(analysis) == ["/opt/a", "/opt/b", "/opt/c"]
+
+    def test_include_magic_value_is_the_directory(self):
+        obj = _make_partial()
+        analysis = self._analysis(("INCLUDE", "/opt/vendor"))
+
+        assert obj._file_declared_include_paths(analysis) == ["/opt/vendor"]
+
+    def test_unrelated_keys_and_non_path_flags_contribute_nothing(self):
+        obj = _make_partial()
+        analysis = self._analysis(
+            ("CXXFLAGS", "-DFOO=1 -O2"),
+            ("LDFLAGS", "-L/opt/lib -lfoo"),
+            ("SOURCE", "helper.cpp"),
+            ("READMACROS", "version.hpp"),
+        )
+
+        assert obj._file_declared_include_paths(analysis) == []
+
+    def test_duplicates_dropped_first_occurrence_wins(self):
+        obj = _make_partial()
+        analysis = self._analysis(
+            ("CXXFLAGS", "-I/opt/a -I/opt/b"),
+            ("CPPFLAGS", "-isystem /opt/a"),
+        )
+
+        assert obj._file_declared_include_paths(analysis) == ["/opt/a", "/opt/b"]
+
+    def test_malformed_value_is_skipped_not_raised(self):
+        """A tokenize failure here must not abort discovery.
+
+        The authoritative diagnostic for a malformed value comes from
+        _process_magic_flag; path discovery just moves on.
+        """
+        obj = _make_partial()
+        analysis = self._analysis(
+            ("CXXFLAGS", '-DFOO="bar'),
+            ("CPPFLAGS", "-I/opt/good"),
+        )
+
+        assert obj._file_declared_include_paths(analysis) == ["/opt/good"]
+
 
 class TestHandleReadmacros:
     """Test MagicFlagsBase._handle_readmacros()."""

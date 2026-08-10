@@ -1374,3 +1374,199 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         assert hash1 != hash2, (
             f"CppMagicFlags: different per-file CPPFLAGS should produce different hash: {hash1} vs {hash2}"
         )
+
+    def test_readmacros_resolves_against_same_file_isystem(self):
+        """READMACROS resolves through an -isystem dir the same file declares.
+
+        Defect 1 of bugreport-readmacros-and-function-like-macros.md: the
+        include path was only ever looked up in the global BuildState slots,
+        so the version header was never read and the guarded flag was lost.
+        """
+        incdir = os.path.join(self._tmpdir, "extlib", "include")
+        files = uth.write_sources(
+            {
+                "extlib/include/extlib/version.hpp": (
+                    "#pragma once\n#define EXTLIB_VERSION_MAJOR 2\n#define EXTLIB_VERSION_MINOR 4\n"
+                ),
+                "src/main.cpp": (
+                    f"//#CXXFLAGS=-isystem {incdir}\n"
+                    "//#READMACROS=extlib/version.hpp\n"
+                    "\n"
+                    "#if EXTLIB_VERSION_MAJOR >= 2\n"
+                    "//#CXXFLAGS=-DHAVE_NEW_EXTLIB\n"
+                    "#endif\n"
+                    "\n"
+                    "int main() { return 0; }\n"
+                ),
+            }
+        )
+
+        result = self._parse_with_magic("direct", str(files["src/main.cpp"]))
+
+        cxxflags = [str(flag) for flag in result.get(sz.Str("CXXFLAGS"), [])]
+        assert "-DHAVE_NEW_EXTLIB" in cxxflags, (
+            f"READMACROS should have resolved through the file's own -isystem: {cxxflags}"
+        )
+
+    def test_readmacros_resolves_against_same_file_include_magic(self):
+        """A ``//#INCLUDE=`` dir declared by the same file also resolves READMACROS."""
+        incdir = os.path.join(self._tmpdir, "vendor")
+        files = uth.write_sources(
+            {
+                "vendor/vendor_version.hpp": "#pragma once\n#define VENDOR_LEVEL 7\n",
+                "app/main.cpp": (
+                    f"//#INCLUDE={incdir}\n"
+                    "//#READMACROS=vendor_version.hpp\n"
+                    "\n"
+                    "#if VENDOR_LEVEL >= 7\n"
+                    "//#CXXFLAGS=-DVENDOR_MODERN\n"
+                    "#endif\n"
+                    "\n"
+                    "int main() { return 0; }\n"
+                ),
+            }
+        )
+
+        result = self._parse_with_magic("direct", str(files["app/main.cpp"]))
+
+        cxxflags = [str(flag) for flag in result.get(sz.Str("CXXFLAGS"), [])]
+        assert "-DVENDOR_MODERN" in cxxflags, f"//#INCLUDE dir should resolve READMACROS: {cxxflags}"
+
+    def test_readmacros_resolves_against_same_file_pkg_config(self, monkeypatch):
+        """READMACROS resolves through the --cflags of a package the same file names."""
+        incdir = os.path.join(self._tmpdir, "pkginc")
+        pcdir = os.path.join(self._tmpdir, "pc")
+        uth.write_sources(
+            {
+                "pkginc/pkgversion.hpp": "#pragma once\n#define PKG_LEVEL 5\n",
+                "pc/ctreadmacrospkg.pc": (
+                    "Name: ctreadmacrospkg\n"
+                    "Description: READMACROS include-path fixture\n"
+                    "Version: 1.0.0\n"
+                    f"Cflags: -I{incdir}\n"
+                    "Libs:\n"
+                ),
+            }
+        )
+        monkeypatch.setenv("PKG_CONFIG_PATH", pcdir)
+        pkgconfig.clear_cache()
+
+        files = uth.write_sources(
+            {
+                "pkgapp/main.cpp": (
+                    "//#PKG-CONFIG=ctreadmacrospkg\n"
+                    "//#READMACROS=pkgversion.hpp\n"
+                    "\n"
+                    "#if PKG_LEVEL >= 5\n"
+                    "//#CXXFLAGS=-DPKG_MODERN\n"
+                    "#endif\n"
+                    "\n"
+                    "int main() { return 0; }\n"
+                )
+            }
+        )
+
+        result = self._parse_with_magic("direct", str(files["pkgapp/main.cpp"]))
+
+        cxxflags = [str(flag) for flag in result.get(sz.Str("CXXFLAGS"), [])]
+        assert "-DPKG_MODERN" in cxxflags, f"pkg-config --cflags dir should resolve READMACROS: {cxxflags}"
+
+    def test_readmacros_file_declared_path_does_not_leak_to_other_files(self):
+        """The harvest is per-file: one file's -isystem must not resolve another's READMACROS.
+
+        PASS 1 collects READMACROS across the whole header set in one sweep,
+        so the contract has to be that each file only sees include paths it
+        declares itself. main.cpp declares the -isystem and is scanned first;
+        the header scanned after it declares the READMACROS and must still
+        fail to resolve.
+        """
+        incdir = os.path.join(self._tmpdir, "otherlib")
+        files = uth.write_sources(
+            {
+                "otherlib/otherlib_version.hpp": "#pragma once\n#define OTHER_LEVEL 3\n",
+                "leaky/decl.hpp": (
+                    "#pragma once\n"
+                    "//#READMACROS=otherlib_version.hpp\n"
+                    "\n"
+                    "#if OTHER_LEVEL >= 3\n"
+                    "//#CXXFLAGS=-DOTHER_MODERN\n"
+                    "#endif\n"
+                ),
+                "leaky/main.cpp": f'#include "decl.hpp"\n//#CXXFLAGS=-isystem {incdir}\n\nint main() {{ return 0; }}\n',
+            }
+        )
+
+        result = self._parse_with_magic("direct", str(files["leaky/main.cpp"]))
+
+        cxxflags = [str(flag) for flag in result.get(sz.Str("CXXFLAGS"), [])]
+        assert "-DOTHER_MODERN" not in cxxflags, (
+            f"Another file's -isystem must not resolve this file's READMACROS: {cxxflags}"
+        )
+
+    def test_unresolvable_readmacros_does_not_discard_later_entries(self):
+        """Defect 2: one bad READMACROS costs one entry, not the rest of the file."""
+        files = uth.write_sources(
+            {
+                "inc/good.hpp": "#pragma once\n#define GOOD_MACRO_DEFINED 1\n",
+                "src/main.cpp": (
+                    "//#READMACROS=missing/absent.hpp\n"
+                    "//#READMACROS=../inc/good.hpp\n"
+                    "\n"
+                    "#if GOOD_MACRO_DEFINED\n"
+                    "//#CXXFLAGS=-DSAW_GOOD_MACRO\n"
+                    "#endif\n"
+                    "\n"
+                    "int main() { return 0; }\n"
+                ),
+            }
+        )
+
+        result = self._parse_with_magic("direct", str(files["src/main.cpp"]))
+
+        cxxflags = [str(flag) for flag in result.get(sz.Str("CXXFLAGS"), [])]
+        assert "-DSAW_GOOD_MACRO" in cxxflags, (
+            f"The second READMACROS must still be processed after the first fails: {cxxflags}"
+        )
+
+    def test_unresolvable_readmacros_warns_once_per_entry(self, capsys):
+        """PASS 1 and PASS 2 both re-collect, but the user hears about it once.
+
+        The good READMACROS here changes the macro state, which is what makes
+        get_structured_data run its second discovery pass over the same file.
+        """
+        files = uth.write_sources(
+            {
+                "inc/good.hpp": "#pragma once\n#define GOOD_MACRO_DEFINED 1\n",
+                "src/main.cpp": (
+                    "//#READMACROS=missing/absent.hpp\n"
+                    "//#READMACROS=../inc/good.hpp\n"
+                    "\n"
+                    "#if GOOD_MACRO_DEFINED\n"
+                    "//#CXXFLAGS=-DSAW_GOOD_MACRO\n"
+                    "#endif\n"
+                    "\n"
+                    "int main() { return 0; }\n"
+                ),
+            }
+        )
+
+        self._parse_with_magic("direct", str(files["src/main.cpp"]))
+
+        captured = capsys.readouterr()
+        warnings_emitted = [line for line in captured.err.splitlines() if "missing/absent.hpp" in line]
+        assert len(warnings_emitted) == 1, f"Expected exactly one warning, got: {warnings_emitted}"
+
+    def test_unresolvable_readmacros_warns_unconditionally(self, capsys):
+        """A READMACROS that cannot be resolved is reported at default verbosity.
+
+        Silence here means macros missing from preprocessing and a
+        wrong-but-plausible flag set, so the warning must not be gated on -v.
+        """
+        files = uth.write_sources({"src/main.cpp": "//#READMACROS=missing/absent.hpp\nint main() { return 0; }\n"})
+
+        self._parse_with_magic("direct", str(files["src/main.cpp"]))
+
+        captured = capsys.readouterr()
+        assert "missing/absent.hpp" in captured.err, (
+            f"Expected an unresolvable-READMACROS warning on stderr, got: {captured.err!r}"
+        )
