@@ -6,6 +6,8 @@ build-state core (gather/compute/apply) inside :func:`apptools.parseargs`:
 
 * :func:`_check_resolved_compiler_available` -- the resolved CC/CXX/LD binary
   must be on PATH.
+* :func:`_check_compiler_minimum_version` -- the resolved CXX must meet the
+  C++20 floor (gcc/clang >= 10) even when no ``-std=`` is requested.
 * :func:`_check_wild_linker_usable` -- the ``wild`` / ``wild-B`` linker axis
   must be installed and (for ``-fuse-ld=wild`` on gcc) new enough.
 * :func:`_check_compiler_supports_requested_standard` -- the detected compiler
@@ -235,6 +237,42 @@ def _check_wild_linker_usable(args) -> None:
                     "or use the -B fallback axis (--variant=...,wild-B), which "
                     "works on any gcc."
                 )
+
+
+def _check_compiler_minimum_version(args) -> None:
+    """Fail loud when the resolved C++ compiler is below compiletools' floor.
+
+    compiletools assumes a C++20-capable toolchain throughout (the
+    functional-compiler auto-detect itself gates on a ``-std=c++20``
+    compile), but a toolchain axis that pins CXX explicitly bypasses that
+    probe, and the requested-standard check above only fires when a
+    ``-std=`` flag is present — the bundled ``gcc.conf`` pins none. On a
+    gcc 8 host the build then fails far downstream with no pointer at the
+    toolchain. Refuse at parseargs instead, using the ``c++20`` row of
+    _STD_MIN_COMPILER_VERSION as the floor (gcc >= 10, clang >= 10).
+    Unrecognised drivers skip silently, same as the requested-standard
+    check.
+    """
+    compiler = getattr(args, "CXX", None)
+    if not compiler:
+        return
+    identity = _compiler_major_version(compiler, slot="CXX")
+    if identity is None:
+        return
+    family, major = identity
+    min_required = _STD_MIN_COMPILER_VERSION["c++20"].get(family)
+    if min_required is None or major >= min_required:
+        return
+    variant = getattr(args, "variant", "<unknown>")
+    raise RuntimeError(
+        f"Resolved CXX={compiler!r} is {family} {major}, which is below "
+        f"compiletools' minimum supported toolchain ({family} >= {min_required}, "
+        f"the C++20 floor).\n"
+        f"  variant: {variant}\n"
+        f"  compiletools requires a C++20-capable compiler. Upgrade the "
+        f"{family} toolchain, or point CXX / the toolchain axis at a newer "
+        f"compiler (e.g. CXX=g++-{min_required} or --variant=clang,...)."
+    )
 
 
 def _check_compiler_supports_requested_standard(args) -> None:

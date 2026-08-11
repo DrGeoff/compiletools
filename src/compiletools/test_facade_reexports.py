@@ -82,6 +82,7 @@ _add(
     "compiletools.apptools_validate",
     [
         "_check_resolved_compiler_available",
+        "_check_compiler_minimum_version",
         "_check_wild_linker_usable",
         "_check_compiler_supports_requested_standard",
         "_check_legacy_variant_config_keys",

@@ -285,6 +285,9 @@ from compiletools.apptools_validate import (
     _STD_MIN_COMPILER_VERSION as _STD_MIN_COMPILER_VERSION,
 )
 from compiletools.apptools_validate import (
+    _check_compiler_minimum_version as _check_compiler_minimum_version,
+)
+from compiletools.apptools_validate import (
     _check_compiler_supports_requested_standard as _check_compiler_supports_requested_standard,
 )
 from compiletools.apptools_validate import (
@@ -1870,18 +1873,21 @@ def parseargs(cap, argv, verbose=None, *, context):
 
     # With args.variant canonicalised and the raw compile flags final,
     # validate that the resolved compiler is actually usable for what the
-    # variant requested. Three checks:
+    # variant requested. Four checks:
     #   1. Binary on PATH? — catches "user picked --variant=gcc.* but
     #      gcc isn't installed" (would otherwise be a generic compile
     #      failure with no pointer at the variant chain).
-    #   2. Wild linker usable? — catches a missing `wild` binary or the
+    #   2. Compiler meets the C++20 floor? — catches gcc/clang < 10 even
+    #      when the variant pins no -std= (compiletools assumes a
+    #      C++20-capable toolchain throughout).
+    #   3. Wild linker usable? — catches a missing `wild` binary or the
     #      `wild` axis paired with gcc < 16 (which can't drive
     #      -fuse-ld=wild), before the link fails opaquely.
-    #   3. Compiler version supports the requested -std=c++NN? — catches
+    #   4. Compiler version supports the requested -std=c++NN? — catches
     #      "user picked cxx26 on a system with gcc 11" (would otherwise
     #      be an opaque "unrecognized command line option '-std=c++26'"
     #      from the compiler).
-    # All three checks emit a clear diagnostic naming the variant and
+    # All four checks emit a clear diagnostic naming the variant and
     # suggesting either a different variant or a toolchain upgrade.
     #
     # The raw args.{CPPFLAGS,...} attrs keep their pre-gather values --
@@ -1897,6 +1903,7 @@ def parseargs(cap, argv, verbose=None, *, context):
     # calls parseargs, so it needs its own catch-and-render here.
     try:
         _check_resolved_compiler_available(args)
+        _check_compiler_minimum_version(args)
         _check_wild_linker_usable(args)
         _check_compiler_supports_requested_standard(args)
     except compiletools.utils.FlagTokenizeError as err:

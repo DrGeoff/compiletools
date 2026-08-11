@@ -2849,6 +2849,39 @@ class TestResolvedCompilerAvailable:
             apptools._check_resolved_compiler_available(args)
 
 
+class TestCompilerMinimumVersion:
+    """compiletools assumes a C++20-capable toolchain, but a toolchain axis
+    pinning CXX explicitly bypasses the functional-compiler probe and the
+    bundled gcc.conf pins no -std=, so nothing else catches gcc 8. The floor
+    check refuses at parseargs with a pointer at the toolchain."""
+
+    def test_gcc_below_floor_raises(self, monkeypatch):
+        monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda path, **_kw: ("gcc", 8))
+        args = SimpleNamespace(variant="gcc.debug", CXX="g++")
+        with pytest.raises(RuntimeError) as excinfo:
+            apptools._check_compiler_minimum_version(args)
+        msg = str(excinfo.value)
+        assert "below compiletools' minimum supported toolchain" in msg
+        assert "gcc >= 10" in msg
+        assert "gcc.debug" in msg
+
+    def test_gcc_at_floor_passes(self, monkeypatch):
+        monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda path, **_kw: ("gcc", 10))
+        apptools._check_compiler_minimum_version(SimpleNamespace(variant="gcc.debug", CXX="g++"))
+
+    def test_old_clang_raises(self, monkeypatch):
+        monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda path, **_kw: ("clang", 9))
+        with pytest.raises(RuntimeError, match="clang >= 10"):
+            apptools._check_compiler_minimum_version(SimpleNamespace(variant="clang.debug", CXX="clang++"))
+
+    def test_unknown_driver_skips_silently(self, monkeypatch):
+        monkeypatch.setattr(apptools_validate, "_compiler_major_version", lambda path, **_kw: None)
+        apptools._check_compiler_minimum_version(SimpleNamespace(variant="x", CXX="some-cross-compiler"))
+
+    def test_unset_cxx_skips_silently(self):
+        apptools._check_compiler_minimum_version(SimpleNamespace(variant="x", CXX=None))
+
+
 def _std_check_args(*, variant="x", cc="g++", cxx="g++", cflags="-O0", cxxflags=""):
     """Finalized namespace for _check_compiler_supports_requested_standard.
     Defaults match the most common shape (gcc-style driver, -O0 cflags)."""

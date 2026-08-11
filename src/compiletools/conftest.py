@@ -131,11 +131,53 @@ def pytest_runtest_call(item):
     """
     try:
         return (yield)
-    except (RuntimeError, AssertionError) as exc:
-        reason = _std_skip_reason(str(exc))
+    except (RuntimeError, AssertionError, pytest.fail.Exception) as exc:
+        reason = _guard_skip_reason(exc)
         if reason is not None:
             pytest.skip(reason)
         raise
+
+
+def _guard_skip_reason(exc: BaseException) -> str | None:
+    """Skip reason when *exc* means "this host's toolchain is under-spec",
+    ``None`` when it is a genuine test failure.
+
+    A ``pytest.raises(..., match=...)`` mismatch is a test ASSERTING on a
+    guard message that fired with the wrong text — a regressed guard, which
+    must fail loudly. Its failure message QUOTES the actual error (so naive
+    marker matching would mask the regression) and chains the real error in
+    ``__context__`` (so a naive chain walk would too); refuse that shape
+    before any marker matching.
+
+    The ``__context__`` walk runs ONLY for the one wrapper shape that hides
+    a guard error behind an unrelated message: a guard RuntimeError raised
+    inside a ``pytest.warns`` block surfaces as ``Failed("DID NOT WARN")``.
+    Any other failure with a guard error merely in its context is a test
+    observing that error on a capable host — a failure.
+    """
+    msg = str(exc)
+    if _is_match_mismatch(msg):
+        return None
+    reason = _std_skip_reason(msg)
+    if reason is not None:
+        return reason
+    if "DID NOT WARN" in msg:
+        seen = exc.__context__
+        for _ in range(5):
+            if seen is None:
+                break
+            reason = _std_skip_reason(str(seen))
+            if reason is not None:
+                return reason
+            seen = seen.__context__
+    return None
+
+
+def _is_match_mismatch(msg: str) -> bool:
+    """True when *msg* is pytest's raises-match failure, which quotes the
+    actual error text. Covers the pytest >= 8.4 AssertionError wording and
+    the older Failed wording."""
+    return "Regex pattern did not match" in msg or ("Pattern" in msg and "does not match" in msg)
 
 
 def _std_skip_reason(msg: str) -> str | None:
@@ -147,6 +189,8 @@ def _std_skip_reason(msg: str) -> str | None:
     """
     for line in msg.splitlines():
         if "does not support -std=" in line:
+            return line.strip()
+        if "below compiletools' minimum supported toolchain" in line:
             return line.strip()
         if "unrecognized command-line option" in line and "-std=c++" in line:
             return line.strip()
