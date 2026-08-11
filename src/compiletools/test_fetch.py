@@ -2831,3 +2831,55 @@ def test_url_displacement_leaves_a_preexisting_checkout_as_is() -> None:
         assert _git(target, "remote", "get-url", "origin") == losing["url"], (
             "a pre-existing checkout was clobbered by the URL-displacement re-clone"
         )
+
+
+@requires_functional_compiler
+def test_a_third_evaluated_conflict_after_a_displacement_still_raises() -> None:
+    """Once an evaluated declaration displaces a blind prior, the name is
+    evaluated-backed: a SECOND evaluated declaration disagreeing on ref must
+    hard-error, not displace again.
+
+    This is what the ``declared_blind.discard`` after a displacement buys.
+    Without it both evaluated declarations stay flagged blind and displace
+    each other every round, so the run ping-pongs to the
+    ``_MAX_FIXPOINT_ROUNDS`` cap and raises "did not converge" instead —
+    still a FetchError, which is why this test must assert the
+    conflicting-refs message, not just the raise.
+
+    Rounds: 1 reads main.cpp (blind ``origin@v1`` via the dead ``#if 0``,
+    plus provider); 2 reads provider/api.h (evaluated ``origin@master``
+    displaces the blind prior, plus second); 3 reads second/deep.h
+    (evaluated ``origin@feature`` meets the now evaluated-backed master).
+    """
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)  # tag v1, branches master + feature
+        second = _make_bare_with_files(root, "second", {"deep.h": f"#pragma once\n//#GIT={origin['url']}@feature\n"})
+        provider = _make_bare_with_files(
+            root,
+            "provider",
+            {
+                "api.h": f"#pragma once\n"
+                f"//#GIT={origin['url']}@master\n"
+                f"//#GIT={second['url']}\n"
+                '#include "second/deep.h"\n'
+            },
+        )
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        with open(os.path.join(root, "blind.h"), "w") as fh:
+            fh.write(f"#pragma once\n//#GIT={origin['url']}@v1\n")
+        main = os.path.join(root, "main.cpp")
+        with open(main, "w") as fh:
+            fh.write(
+                f"//#GIT={provider['url']}\n"
+                '#if 0\n#include "blind.h"\n#endif\n'
+                '#include "provider/api.h"\n'
+                "int main() { return 0; }\n"
+            )
+
+        with pytest.raises(FetchError) as excinfo:
+            fetch_externals([main], _make_args(), BuildContext(), externals_dir=externals)
+        msg = str(excinfo.value)
+        assert "conflicting //#GIT= refs" in msg, f"expected the hard conflicting-refs error, got: {msg}"
+        assert "master" in msg and "feature" in msg
+        assert "did not converge" not in msg
