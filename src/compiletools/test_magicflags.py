@@ -1378,9 +1378,9 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
     def test_readmacros_resolves_against_same_file_isystem(self):
         """READMACROS resolves through an -isystem dir the same file declares.
 
-        Defect 1 of bugreport-readmacros-and-function-like-macros.md: the
-        include path was only ever looked up in the global BuildState slots,
-        so the version header was never read and the guarded flag was lost.
+        Regression: the include path was only ever looked up in the global
+        BuildState slots, so the version header was never read and the
+        guarded flag was lost.
         """
         incdir = os.path.join(self._tmpdir, "extlib", "include")
         files = uth.write_sources(

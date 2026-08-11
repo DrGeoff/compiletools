@@ -1,6 +1,6 @@
 """Function-like macro expansion in ``#if``/``#elif`` controlling expressions.
 
-Covers the third defect in bugreport-readmacros-and-function-like-macros.md:
+Regression coverage for a since-fixed defect:
 ``#define F(a, b) ...`` was stored with its parameter list stripped and expanded
 object-like, so ``#if F(2, 0)`` produced ``BODY(2, 0)``, the tokenizer rejected
 the dangling argument list, and the ``#if`` degraded to false at verbose 8.
