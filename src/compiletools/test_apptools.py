@@ -2953,6 +2953,33 @@ class TestCompilerSupportsRequestedStandard:
             f"wrapped side means subprocess raised OSError on the compound string."
         )
 
+    def test_compiler_major_version_probes_once_across_slot_spellings(self):
+        # slot= is error attribution, not identity: the four parseargs
+        # guards ask about the same compiler string under different slots,
+        # and each must hit ONE cached --version probe. The cache keys on
+        # the tokenized argv (slot stays outside), so keying drift that
+        # fragments it into one subprocess per guard shows up here as
+        # misses > 1.
+        import compiletools.apptools_compiler as ac
+
+        real_cxx = shutil.which("g++") or shutil.which("clang++")
+        if not real_cxx:
+            pytest.skip("no real C++ compiler on PATH")
+
+        ac._compiler_version_probe.cache_clear()
+        try:
+            first = apptools._compiler_major_version(real_cxx, slot="CXX")
+            second = apptools._compiler_major_version(real_cxx, slot="LD")
+            third = apptools._compiler_major_version(real_cxx)
+            assert first == second == third
+            assert first is not None, "Precondition: the real compiler must be recognised."
+            info = ac._compiler_version_probe.cache_info()
+            assert info.currsize == 1 and info.misses == 1, (
+                f"cache fragmented on slot: {info.misses} --version probes for one compiler string ({info})"
+            )
+        finally:
+            ac._compiler_version_probe.cache_clear()
+
 
 # ---------------------------------------------------------------------------
 # Round 3: --ffile-prefix-map-target CLI flag (cross-user CAS sharing)

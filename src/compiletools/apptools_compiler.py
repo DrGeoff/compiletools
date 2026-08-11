@@ -528,28 +528,39 @@ def tool_version(tool: str, default: tuple[int, int] = (0, 0)) -> tuple[int, int
 def _compiler_major_version(compiler_path: str, *, slot: str = "compiler command") -> tuple[str, int] | None:
     """Probe a compiler binary for its (family, major version).
 
-    Runs ``<compiler> --version`` (one shot, ~10 ms) and parses gcc/clang
-    output formats. Returns ``("gcc", N)`` / ``("clang", N)`` or ``None``
-    if the binary isn't a recognised compiler driver. Wrapper scripts
-    (coverage/sccache shims) that forward to a real gcc/clang typically
-    pass-through ``--version`` and parse just like the real binary, so
-    this is intentionally permissive.
+    Runs ``<compiler> --version`` (one shot, ~10 ms; cached like
+    :func:`tool_version` — four parseargs guards share one probe) and parses
+    gcc/clang output formats. Returns ``("gcc", N)`` / ``("clang", N)`` or
+    ``None`` if the binary isn't a recognised compiler driver. Wrapper
+    scripts (coverage/sccache shims) that forward to a real gcc/clang
+    typically pass-through ``--version`` and parse just like the real
+    binary, so this is intentionally permissive.
 
     *slot* attributes a raised FlagTokenizeError (see split_compiler_command)
     to the caller's flag slot when known (``"CXX"``, ``"LD"``); left at the
     generic default for callers that genuinely don't know the role of the
-    string they're probing.
+    string they're probing. Only the tokenize step reads it, so it stays
+    OUTSIDE the cached probe — keying the cache on slot would fragment one
+    compiler string into one subprocess per calling guard.
     """
-    import re as _re
-    import subprocess
-
     # Tokenize so wrapper invocations like "ccache g++" forward --version
     # to the real compiler. Feeding the compound string as argv0 raises
     # OSError and silently degrades the check to "unknown driver, skip".
     argv = split_compiler_command(compiler_path, slot=slot) if " " in compiler_path else [compiler_path]
+    return _compiler_version_probe(tuple(argv))
+
+
+@functools.cache
+def _compiler_version_probe(argv: tuple[str, ...]) -> tuple[str, int] | None:
+    """The subprocess half of :func:`_compiler_major_version`, cached on the
+    tokenized argv alone (two spellings like ``"g++"`` and ``"ccache g++"``
+    that resolve to different argvs are genuinely different probes)."""
+    import re as _re
+    import subprocess
+
     try:
         proc = subprocess.run(
-            argv + ["--version"],
+            [*argv, "--version"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -587,10 +598,13 @@ def clear_cache():
     preserved here (no ``tool_version.cache_clear()`` call) so the net
     behaviour is identical. ``apptools.clear_cache`` calls this helper for
     the moved functions and continues to clear the non-moved
-    ``cached_pkg_config`` directly.
+    ``cached_pkg_config`` directly. ``_compiler_version_probe`` postdates
+    that inventory and IS cleared: a test that writes a fake compiler
+    script to a reused path must not inherit the previous script's probe.
     """
     _get_functional_cxx_compiler_cached.cache_clear()
     compiler_identity.cache_clear()
     _compiler_kind_probe.cache_clear()
+    _compiler_version_probe.cache_clear()
     compiler_default_cxx_std.cache_clear()
     find_system_std_module_source.cache_clear()
