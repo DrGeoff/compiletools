@@ -6,16 +6,17 @@ plus :mod:`compiletools.wrappedos` and :mod:`compiletools.utils` (themselves
 leaves). It MUST NOT import ``compiletools.apptools`` -- doing so would
 reintroduce the very cycle this split removes.
 
-:mod:`compiletools.git_utils` is imported *inside*
-:func:`_setup_pkg_config_overrides_locked` (deferred), not at module scope,
-because ``git_utils`` itself does a top-level ``import compiletools.apptools``
-(used only lazily). A module-scope import here would form the cycle
-apptools -> apptools_pkgconfig -> git_utils -> apptools and crash at
-``apptools`` initialisation. The deferred import runs only after every module
-is fully initialised.
+:mod:`compiletools.git_utils` is off limits at module scope for the same
+reason: it does a top-level ``import compiletools.apptools`` (used only
+lazily), so importing it here would form the cycle apptools ->
+apptools_pkgconfig -> git_utils -> apptools and crash at ``apptools``
+initialisation. Nothing here needs it -- the gitroot-relative
+``ct.conf.d/pkgconfig`` candidate discovery lives in
+:func:`compiletools.build_inputs._compute_pkg_config_path`, which defers the
+import inside the function.
 
-It groups the functions that invoke ``pkg-config`` and that manage the
-process-wide ``PKG_CONFIG_PATH`` override state:
+It groups the functions that invoke ``pkg-config`` and that compute the
+process-wide ``PKG_CONFIG_PATH`` override value:
 
 * :func:`cached_pkg_config` -- ``@functools.cache``-memoised single-package
   ``pkg-config --cflags`` / ``--libs`` probe.
@@ -31,13 +32,18 @@ process-wide ``PKG_CONFIG_PATH`` override state:
   output.
 * :func:`_batch_pkg_config` -- batched multi-package query with per-package
   fallback through :func:`cached_pkg_config`.
-* :func:`_add_flags_from_pkg_config` -- fold pkg-config cflags/libs into
-  ``args.{CPPFLAGS,CFLAGS,CXXFLAGS,LDFLAGS}``.
-* :func:`_setup_pkg_config_overrides` /
-  :func:`_setup_pkg_config_overrides_locked` -- apply project + CLI
-  ``PKG_CONFIG_PATH`` overrides under ``_PKG_CONFIG_OVERRIDE_LOCK``.
+* :func:`compute_pkg_config_path` -- pure merge of the existing environment
+  value with the conf/CLI prepend/append lists and the auto-discovered
+  candidates, producing the ``PKG_CONFIG_PATH`` the build runs under.
+  ``gather_inputs`` calls it; ``apply_effects`` performs the env write.
+* :func:`emit_pkg_config_path_provenance` -- the ``verbose >= 4``
+  ``Prepended/Appended pkg-config path: ...`` lines over that same merge.
 * :func:`_pkg_config_provenance_label` -- best-effort origin attribution for
   emitted ``Prepended/Appended pkg-config path: ...`` diagnostic lines.
+* :func:`_audit_pkg_config_output` -- the two undefined-``${variable}``
+  detectors (:func:`_undefined_pc_variables` over the ``Requires`` closure,
+  :func:`_bare_detached_flags` over the query output), run on every
+  successful flag query and routed through the same warn/error policy.
 
 The ``args_parser`` provenance side-channel
 (``_ComposingArgumentParser.get_conf_file_provenance()``) is reached purely
@@ -59,7 +65,6 @@ import re
 import shlex
 import subprocess
 import sys
-import threading
 import warnings
 from typing import Literal
 
@@ -128,8 +133,11 @@ def tokenize_pkg_config_specs(values: list[str], *, slot: str = "pkg-config", so
 def clear_cache():
     """Clear the pkg-config cache moved out of :mod:`compiletools.apptools`.
 
-    ``apptools.clear_cache`` fans out here so both the result memo
-    (``cached_pkg_config``) and its package-spec existence memo are cleared.
+    ``apptools.clear_cache`` fans out here so the result memo
+    (``cached_pkg_config``), its package-spec existence memo, and the
+    once-per-package undefined-variable report are all cleared. The
+    ``pc_path`` memo is deliberately kept: it caches pkg-config's compiled-in
+    default search list, which no build changes.
 
     Deliberately leaves the failure policy alone. ``--pkg-config-errors``
     is set once by ``parseargs`` and is an enforcement policy, not a cache;
@@ -141,6 +149,7 @@ def clear_cache():
     cached_pkg_config.cache_clear()
     _cached_pkg_config_exists.cache_clear()
     _forwarded_pkg_config_stderr.clear()
+    _report_undefined_pc_variables.cache_clear()
 
 
 def get_pkg_config_errors() -> Literal["warn", "error"]:
@@ -156,6 +165,7 @@ def set_pkg_config_errors(errors: Literal["warn", "error"]) -> None:
     if errors != _pkg_config_errors:
         cached_pkg_config.cache_clear()
         _cached_pkg_config_exists.cache_clear()
+        _report_undefined_pc_variables.cache_clear()
     _pkg_config_errors = errors
 
 
@@ -251,6 +261,276 @@ def _cached_pkg_config_exists(package: str) -> bool:
 
 _forwarded_pkg_config_stderr: set[tuple[str, str, str]] = set()
 
+# pkg-config supplies these itself, so a ``.pc`` that references one without
+# assigning it is correct. Measured on pkgconf 1.4.2: pcfiledir,
+# pc_sysrootdir and pc_top_builddir resolve to a value for a file defining
+# none of them; the remaining three resolve to empty but are global
+# properties of the installation, never the per-file typo this hunts.
+_PC_BUILTIN_VARIABLES = frozenset(
+    {
+        "pcfiledir",
+        "pc_sysrootdir",
+        "pc_top_builddir",
+        "pc_path",
+        "pc_system_includedirs",
+        "pc_system_libdirs",
+    }
+)
+
+_PC_ASSIGNMENT_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_.+-]*)\s*=")
+_PC_REFERENCE_RE = re.compile(r"\$\{([^}]*)\}")
+_PC_KEYWORD_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_.]*)\s*:\s*(.*)$")
+
+# Flags whose argument may be detached. A bare one at the end of the output,
+# or immediately before another flag, is what an ``-I${undefined}`` collapses
+# to once the expansion eats the whole path.
+_PC_ARGUMENT_TAKING_FLAGS = frozenset(
+    {"-I", "-L", "-l", "-D", "-U", "-F", "-isystem", "-iquote", "-idirafter", "-include", "-framework"}
+)
+
+
+def _bare_package_name(spec: str) -> str:
+    """Return the package name from a tokenized spec, dropping any version
+    constraint in either the spaced (``zlib >= 1.2``) or attached
+    (``zlib>=1.2``) form."""
+    head = spec.split()[0] if spec.split() else spec
+    for index, character in enumerate(head):
+        if character in "<>=!":
+            return head[:index]
+    return head
+
+
+@functools.cache
+def _pkg_config_default_search_dirs() -> tuple[str, ...]:
+    """Return pkg-config's own default ``.pc`` search list.
+
+    One subprocess per process, and only when ``PKG_CONFIG_LIBDIR`` is unset
+    (that variable replaces the default list outright).
+
+    ANY failure degrades to an empty list rather than propagating. This is
+    the only probe the undefined-variable scanner adds to the pkg-config
+    call pattern, and it must not be able to change the outcome of the query
+    it decorates -- a caller (or a test) that stubs ``subprocess.run`` to
+    model only ``--exists`` and ``--cflags`` would otherwise see a build fail
+    on a diagnostic. An empty list means the scanner locates no ``.pc`` file
+    and stays silent, which is the correct degradation.
+    """
+    try:
+        result = subprocess.run(
+            ["pkg-config", "--variable", "pc_path", "pkg-config"],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        if result.returncode != 0:
+            return ()
+        return tuple(d for d in result.stdout.strip().split(os.pathsep) if d)
+    except Exception:
+        return ()
+
+
+def _pkg_config_search_dirs() -> tuple[str, ...]:
+    """Return the live ``.pc`` search list, honouring PKG_CONFIG_PATH and
+    PKG_CONFIG_LIBDIR. Read from the environment on every call because both
+    change between builds (and between tests)."""
+    dirs = [d for d in os.environ.get("PKG_CONFIG_PATH", "").split(os.pathsep) if d]
+    libdir = os.environ.get("PKG_CONFIG_LIBDIR")
+    if libdir is not None:
+        dirs.extend(d for d in libdir.split(os.pathsep) if d)
+    else:
+        dirs.extend(_pkg_config_default_search_dirs())
+    return tuple(dirs)
+
+
+def _locate_pc_file(package: str) -> str | None:
+    """Return the ``.pc`` file pkg-config would read for *package*, or None.
+
+    A pure-python walk of the same search order rather than a
+    ``--variable=pcfiledir`` subprocess per package: measured agreement with
+    pkgconf's own answer on 20/20 sampled system packages, at ~4us against
+    ~1.3ms. Returning None costs only the diagnostic.
+    """
+    for directory in _pkg_config_search_dirs():
+        candidate = os.path.join(directory, f"{package}.pc")
+        # NOT wrappedos: the search dirs come from PKG_CONFIG_PATH, whose
+        # entries are user-supplied and may be relative, so a cached answer
+        # keyed on the candidate string would survive a chdir and resolve
+        # against the wrong directory. The walk is per-package on a
+        # diagnostic path, so the cache would buy little anyway.
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def _pc_required_packages(value: str) -> list[str]:
+    """Return the bare package names in a ``Requires``/``Requires.private``
+    value, dropping comparison operators and version operands."""
+    packages = []
+    tokens = value.replace(",", " ").split()
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token[0] in "<>=!":
+            # A spaced comparison consumes its operator and its operand.
+            index += 2 if _PKG_CONFIG_COMPARISON_RE.fullmatch(token) and not token.rstrip("<>=!") else 1
+            continue
+        name = _bare_package_name(token)
+        if name:
+            packages.append(name)
+        # An attached constraint (``foo>=1.2``) carries its own operand;
+        # a trailing bare operator takes the following token as the operand.
+        if name != token:
+            index += 1
+            continue
+        index += 1
+        if index < len(tokens) and tokens[index][0] in "<>=!":
+            operator = tokens[index]
+            index += 2 if not operator.rstrip("<>=!") else 1
+    return packages
+
+
+def _read_pc_file(path: str) -> list[str]:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            return handle.read().splitlines()
+    except OSError:
+        return []
+
+
+def _undefined_pc_variables(path: str) -> list[str]:
+    """Return the names of ``${var}`` references *path* never assigns.
+
+    The scan is order-sensitive: only an assignment on a strictly earlier
+    line satisfies a reference, and an assignment takes effect at the end of
+    its own line so ``foo=${foo}/x`` is checked against the prior ``foo``.
+    Both implementations were measured to agree that a definition placed
+    below its use is undefined -- pkgconf expands ``-I${late}/b`` to
+    ``-I/b`` at exit 0, freedesktop 0.29.2 reports ``Variable 'late' not
+    defined`` and exits 1 -- so an order-independent scan would deliberately
+    suppress a true positive.
+
+    Commented-out lines are skipped: three system icu ``.pc`` files carry
+    ``${pkgdatadir}`` behind a ``#``, and counting those put the measured
+    false-positive rate at 3/236 instead of 0/236.
+
+    Deliberately NOT treating ``PKG_CONFIG_<PKG>_<VAR>`` as a definition:
+    measured on pkgconf 1.4.2, that override is ignored outright (it does not
+    even override a variable the file *does* define), so honouring it here
+    would suppress a true positive on the shipped implementation.
+    """
+    defined = set(_PC_BUILTIN_VARIABLES)
+    undefined: list[str] = []
+    for line in _read_pc_file(path):
+        if line.lstrip().startswith("#"):
+            continue
+        for name in _PC_REFERENCE_RE.findall(line):
+            if name and name not in defined and name not in undefined:
+                undefined.append(name)
+        assignment = _PC_ASSIGNMENT_RE.match(line)
+        if assignment:
+            defined.add(assignment.group(1))
+    return undefined
+
+
+def _pc_requires_closure(package: str) -> list[tuple[str, str]]:
+    """Return ``(package, pc_path)`` for *package* and every package reachable
+    through ``Requires`` / ``Requires.private``, in breadth-first order.
+
+    The consumer's flags carry its dependencies' flags, so a dependency's
+    typo truncates the consumer's compile line -- and the consumer is the only
+    name the user typed. Cycles are terminated by the seen set. No shipped
+    ``.pc`` fixture carries a ``Requires`` edge, so the cycles that reach this
+    walk are constructed in
+    ``test_apptools_pkgconfig.TestTheRequiresClosureTerminatesOnCycles``; the
+    shipped ``cycle-alpha``/``cycle-beta`` pair is cyclic in link order only
+    and never enters the queue.
+    """
+    found: list[tuple[str, str]] = []
+    seen = {package}
+    queue = [package]
+    while queue:
+        current = queue.pop(0)
+        path = _locate_pc_file(current)
+        if path is None:
+            continue
+        found.append((current, path))
+        for line in _read_pc_file(path):
+            if line.lstrip().startswith("#"):
+                continue
+            keyword = _PC_KEYWORD_RE.match(line)
+            if keyword is None or keyword.group(1) not in ("Requires", "Requires.private"):
+                continue
+            for dependency in _pc_required_packages(keyword.group(2)):
+                if dependency not in seen:
+                    seen.add(dependency)
+                    queue.append(dependency)
+    return found
+
+
+@functools.cache
+def _report_undefined_pc_variables(package: str) -> None:
+    """Warn once per package about ``${var}`` references nothing defines.
+
+    pkgconf expands an undefined variable to the empty string and exits 0 --
+    measured identical on 1.4.2 and 2.3.0, under every switch that looks like
+    it should report (``--validate``, ``--print-errors``,
+    ``--errors-to-stdout``, ``--simulate``, ``--log-file``,
+    ``PKG_CONFIG_DEBUG_SPEW``). freedesktop pkg-config 0.29.2 reports it and
+    exits 1, so the build breaks loudly there and silently here. Scanning the
+    ``.pc`` text is the only detection available on the shipped
+    implementation.
+    """
+    for owner, path in _pc_requires_closure(_bare_package_name(package)):
+        for variable in _undefined_pc_variables(path):
+            via = "" if owner == _bare_package_name(package) else f" (required by {package!r})"
+            _warn_pkg_config(
+                f"pkg-config package {owner!r}{via} references undefined variable ${{{variable}}} in {path}",
+                "pkgconf expands it to the empty string and still exits 0, so the flag it appears in "
+                "reaches the compiler silently truncated",
+            )
+
+
+def _bare_detached_flags(output: str) -> list[str]:
+    """Return argument-taking flags left bare in *output*.
+
+    The visible symptom of the same defect at the far end: once
+    ``-I${undefined}`` has eaten the whole path, the remaining ``-I`` eats the
+    next argv token instead, and a bare ``-L`` before ``-lfoo`` makes the
+    linker read the library name as a search *directory*.
+
+    Only a flag that is last, or immediately followed by another flag, counts.
+    A detached-but-satisfied pair is legitimate and common -- narrowing to
+    this shape took the measured false-positive count on 236 system packages
+    from one (``libbsd-overlay``'s ``-isystem /usr/include/bsd``) to zero.
+    """
+    try:
+        tokens = shlex.split(output)
+    except ValueError:
+        tokens = output.split()
+    bare = []
+    for index, token in enumerate(tokens):
+        if token not in _PC_ARGUMENT_TAKING_FLAGS:
+            continue
+        if index + 1 == len(tokens) or tokens[index + 1].startswith("-"):
+            bare.append(token)
+    return bare
+
+
+def _audit_pkg_config_output(package: str, option: str, output: str) -> None:
+    """Run both undefined-variable detectors over one successful query.
+
+    Called from the single funnel every flag query passes through, so the
+    batch fast path (which skips the per-package ``--exists``) is covered by
+    the same code as the per-package fallback.
+    """
+    _report_undefined_pc_variables(package)
+    for flag in _bare_detached_flags(output):
+        _warn_pkg_config(
+            f"pkg-config {option} {package!r} returned a detached {flag!r} with no argument",
+            "an undefined ${variable} expands to the empty string, so the flag consumes the next "
+            "token on the command line instead of its own path",
+        )
+
 
 def _run_pkg_config_query(package: str, option: str) -> str:
     """Run one flag query and route a nonzero returncode through the policy.
@@ -293,7 +573,9 @@ def _run_pkg_config_query(package: str, option: str) -> str:
         if key not in _forwarded_pkg_config_stderr:
             _forwarded_pkg_config_stderr.add(key)
             print(stderr, file=sys.stderr)
-    return result.stdout.rstrip()
+    output = result.stdout.rstrip()
+    _audit_pkg_config_output(package, option, output)
+    return output
 
 
 @functools.cache
@@ -456,71 +738,6 @@ def _pkg_config_provenance_label(
     return "(from CLI)"
 
 
-def _setup_pkg_config_overrides(context, verbose=0, prepend_paths=None, append_paths=None, args_parser=None):
-    """Apply project-level and CLI-specified pkg-config path overrides to PKG_CONFIG_PATH.
-
-    Priority order (highest first):
-
-    1. ``prepend-PKG-CONFIG-PATH`` entries, with CLI winning over conf-file
-       entries and — within the accumulated conf-file entries — the
-       higher-priority axis conf (composed later in the variant) winning
-       over the lower-priority one (e.g. project ``ct.conf``).
-    2. ``<cwd>/ct.conf.d/pkgconfig/`` (project-local, auto-discovered)
-    3. ``<gitroot>/ct.conf.d/pkgconfig/`` (repo-level, auto-discovered)
-    4. Existing ``PKG_CONFIG_PATH`` entries
-    5. ``append-PKG-CONFIG-PATH`` entries, symmetric to (1): CLI wins over
-       conf-file entries, higher-priority axis wins within the conf-file
-       group.
-
-    Args:
-        context: BuildContext instance tracking per-build state.
-        verbose: verbosity level for diagnostic output.
-        prepend_paths: directories to prepend (from ``--prepend-PKG-CONFIG-PATH``).
-        append_paths: directories to append (from ``--append-PKG-CONFIG-PATH``).
-        args_parser: optional ``_ComposingArgumentParser`` whose
-            ``get_conf_file_provenance()`` is consulted at ``verbose >= 4``
-            to attribute each emitted ``Prepended/Appended pkg-config
-            path: ...`` line back to its origin (conf-file:line, CLI, or
-            auto-discovered). Best-effort: if absent or empty the
-            output degrades to bare paths (today's format).
-
-    Must be called before any pkg-config subprocess invocation
-    (i.e., before _add_flags_from_pkg_config and before magicflags
-    processing).
-
-    Concurrency contract
-    --------------------
-    This function mutates the **process-wide** ``os.environ['PKG_CONFIG_PATH']``,
-    which is global state. Callers MUST observe the following:
-
-    * Per-process serialization is enforced via a module-level
-      ``threading.Lock`` (``_PKG_CONFIG_OVERRIDE_LOCK``). Two threads
-      racing into this function will not interleave their reads/writes
-      of ``PKG_CONFIG_PATH``.
-    * The lock does NOT protect against other code paths in the process
-      mutating ``os.environ['PKG_CONFIG_PATH']`` independently.
-    * The lock does NOT serialize across processes. Multiple processes
-      sharing a single ``BuildContext`` is unsupported.
-    * The ``context.pkg_config_overrides_applied`` flag is checked and
-      set within the lock to make the apply-once invariant safe under
-      concurrent calls on the same context.
-    * After mutation, ``context._original_pkg_config_path`` records the
-      prior value so ``BuildContext.restore_pkg_config_path()`` can
-      undo the mutation. Restore is also single-process / serial.
-      Callers should prefer the
-      ``BuildContext.pkg_config_path_restored()`` context manager
-      (``cake.main`` holds it around the whole invocation) over pairing
-      apply/restore calls by hand.
-    """
-    with _PKG_CONFIG_OVERRIDE_LOCK:
-        _setup_pkg_config_overrides_locked(context, verbose, prepend_paths, append_paths, args_parser)
-
-
-# Process-local serialization for the env-mutation in _setup_pkg_config_overrides.
-# See the docstring of that function for the full contract.
-_PKG_CONFIG_OVERRIDE_LOCK = threading.Lock()
-
-
 def _merged_pkg_config_path_entries(existing, prepend_paths, append_paths, cwd_candidates, gitroot_candidates):
     """Yield ``(dir, label, origin)`` for each entry of the final
     PKG_CONFIG_PATH, in emission order, deduplicated.
@@ -547,7 +764,7 @@ def _merged_pkg_config_path_entries(existing, prepend_paths, append_paths, cwd_c
     source defines).
 
     ``label``/``origin`` are the provenance-printing hints
-    ``_setup_pkg_config_overrides_locked`` consumes at ``verbose >= 4``;
+    ``emit_pkg_config_path_provenance`` consumes at ``verbose >= 4``;
     both are None for middle (pre-existing) entries.
     """
     existing_dirs = [compiletools.wrappedos.normpath(d) for d in existing.split(os.pathsep)] if existing else []
@@ -577,11 +794,9 @@ def compute_pkg_config_path(existing, prepend_paths, append_paths, cwd_candidate
     """Pure merge producing the final PKG_CONFIG_PATH value, or None when
     the merge is empty.
 
-    Extraction of the merge loop of ``_setup_pkg_config_overrides_locked``
-    (which now calls this and keeps only the candidate discovery, env write
-    and provenance printing). ``gather_inputs`` calls it too so the pure
-    build-state core receives the value as data instead of reading the
-    mutated environment.
+    ``gather_inputs`` calls it so the pure build-state core receives the
+    value as data instead of reading the mutated environment; the env write
+    itself is a ``SetEnv`` effect performed by ``apply_effects``.
     """
     final = [
         d
@@ -622,100 +837,6 @@ def emit_pkg_config_path_provenance(
             print(f"{label} pkg-config path: {d} {attribution}")
         else:
             print(f"{label} pkg-config path: {d}")
-
-
-def _setup_pkg_config_overrides_locked(context, verbose, prepend_paths, append_paths, args_parser=None):
-    """Body of _setup_pkg_config_overrides; assumes the module lock is held."""
-    if context.pkg_config_overrides_applied:
-        return
-
-    # Deferred import: ``compiletools.git_utils`` is NOT a leaf -- it does a
-    # top-level ``import compiletools.apptools`` (used only lazily inside its
-    # own functions). Importing it at module scope here would create the cycle
-    # apptools -> apptools_pkgconfig -> git_utils -> apptools and fail at
-    # ``apptools`` init time (partially-initialised module). Importing inside
-    # the function keeps apptools_pkgconfig a true import-time leaf; by the
-    # time this runs every module is fully initialised. Importing the symbol
-    # (``from ... import find_git_root``) rather than the submodule avoids
-    # rebinding the local ``compiletools`` name, keeping the
-    # ``compiletools.wrappedos.*`` references below resolvable by the type
-    # checker.
-    from compiletools.git_utils import find_git_root
-
-    gitroot = find_git_root()
-
-    cwd_candidates = []
-    cwd_pkgconfig = os.path.join(os.getcwd(), "ct.conf.d", "pkgconfig")
-    if compiletools.wrappedos.isdir(cwd_pkgconfig):
-        cwd_candidates.append(compiletools.wrappedos.normpath(cwd_pkgconfig))
-
-    gitroot_candidates = []
-    if gitroot:
-        repo_pkgconfig = os.path.join(gitroot, "ct.conf.d", "pkgconfig")
-        if compiletools.wrappedos.isdir(repo_pkgconfig):
-            repo_pkgconfig = compiletools.wrappedos.normpath(repo_pkgconfig)
-            if repo_pkgconfig not in cwd_candidates:
-                gitroot_candidates.append(repo_pkgconfig)
-
-    existing = os.environ.get("PKG_CONFIG_PATH", "")
-
-    emit_pkg_config_path_provenance(
-        existing, prepend_paths, append_paths, cwd_candidates, gitroot_candidates, verbose, args_parser
-    )
-
-    new_value = compute_pkg_config_path(existing, prepend_paths, append_paths, cwd_candidates, gitroot_candidates)
-
-    # Save original ONLY if we are about to mutate, so restore_pkg_config_path
-    # can faithfully undo. Set the flag AFTER the mutation succeeds so a
-    # caller hitting an exception above can retry.
-    if new_value is not None and new_value != existing:
-        context._original_pkg_config_path = existing if "PKG_CONFIG_PATH" in os.environ else True
-        os.environ["PKG_CONFIG_PATH"] = new_value
-
-    context.pkg_config_overrides_applied = True
-
-
-def _add_flags_from_pkg_config(args):
-    """Add flags for the package specs already canonicalized on ``args``.
-
-    Legacy mutate-in-place writer with no production caller: the build
-    pipeline queries pkg-config in ``gather_inputs`` and folds the results
-    in ``build_state.stage_pkg_config_flags``. Kept (and re-exported from
-    ``apptools``) for tests and library embedders that drive it directly;
-    expects ``args.pkg_config`` to already be a tokenized list.
-    """
-    packages = list(args.pkg_config)
-    if not packages:
-        return
-
-    # Batch pkg-config calls: query all packages at once instead of one subprocess
-    # per package.  Falls back to per-package calls if the batch fails (e.g. a
-    # package is missing and we need to identify which one).
-    # hasattr IS the CAP registration: populate_args never materializes
-    # slot attrs, so an unregistered LDFLAGS stays absent and hasattr
-    # answers "does this tool link?" on any namespace shape.
-    want_libs = hasattr(args, "LDFLAGS")
-
-    batch_cflags = _batch_pkg_config(packages, "--cflags")
-    batch_libs = _batch_pkg_config(packages, "--libs") if want_libs else {}
-
-    for pkg in packages:
-        raw_cflags = batch_cflags.get(pkg, "")
-        cflags = filter_pkg_config_cflags(raw_cflags, args.verbose, package=pkg)
-
-        if cflags:
-            args.CPPFLAGS += f" {cflags}"
-            args.CFLAGS += f" {cflags}"
-            args.CXXFLAGS += f" {cflags}"
-            if args.verbose >= 6:
-                print(f"pkg-config --cflags {pkg} added FLAGS={cflags}")
-
-        if want_libs:
-            libs = batch_libs.get(pkg, "")
-            if libs:
-                args.LDFLAGS += f" {libs}"
-                if args.verbose >= 6:
-                    print(f"pkg-config --libs {pkg} added LDFLAGS={libs}")
 
 
 def _batch_pkg_config(packages: list[str], option: str) -> dict[str, str]:

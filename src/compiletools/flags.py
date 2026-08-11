@@ -46,12 +46,36 @@ class Flags:
     ld: tuple[str, ...] = field(default_factory=tuple)
     compiler_identity: str = ""
 
+    _HASH_RELEVANT_SLOTS = ("cpp", "c", "cxx")
+
     def hash_relevant(self, slot: str) -> list[str]:
         """Return tokens for the given slot with -D/-U and diagnostic-only
-        flags removed. Used by cache-key hashing.
+        flags removed. Used by object/PCH/PCM cache-key hashing.
 
-        slot: one of "cpp", "c", "cxx", "ld".
+        slot: one of "cpp", "c", "cxx" -- COMPILE slots only.
+
+        "ld" is rejected, not merely undefined. The filter encodes compile-line
+        semantics: ``-Wl,...`` is dropped there because it is inert under
+        ``-c``, and ``-v`` / ``--verbose`` are dropped as diagnostic-only. On a
+        link line those are exactly the load-bearing tokens -- ``-Wl,-rpath``,
+        ``-Wl,--version-script``, ``-Wl,--as-needed`` all change the linked
+        bytes -- so a link key built from this method would collapse distinct
+        links onto one key. cas-exedir has no consume-time verification, so
+        that is a silent wrong-binary hit, the same failure class the
+        object CAS's 168-bit path guards against.
+
+        No production caller passes "ld" today; the link key folds canonical
+        LDFLAGS through its own path. This raises so the first one that tries
+        gets a diagnostic instead of a plausible-looking wrong answer.
         """
+        if slot == "ld":
+            raise ValueError(
+                "Flags.hash_relevant does not accept the 'ld' slot: its filter drops -Wl, "
+                "as inert under -c, which would silently erase -rpath/--version-script/"
+                "--as-needed from a link key. Hash the ld tokens directly."
+            )
+        if slot not in self._HASH_RELEVANT_SLOTS:
+            raise ValueError(f"Flags.hash_relevant: unknown slot {slot!r}; expected one of {self._HASH_RELEVANT_SLOTS}")
         stripped = strip_d_u_tokens(getattr(self, slot))
         return filter_hash_irrelevant_tokens(stripped)
 

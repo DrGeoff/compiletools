@@ -143,12 +143,12 @@ def test_conf_dir_placeholder_expansion_is_independent_of_consumer_cwd(tmp_path,
 
 
 # ---------------------------------------------------------------------------
-# Option 1: end-to-end through _setup_pkg_config_overrides.
+# Option 1: end-to-end through the parseargs gather/compute/apply chain.
 # ---------------------------------------------------------------------------
 
 
 def test_pkg_config_path_env_contains_anchored_absolute_after_parseargs(tmp_path, monkeypatch):
-    """Once ``parseargs`` has run ``_setup_pkg_config_overrides``,
+    """Once ``parseargs`` has applied the ``SetEnv`` effect,
     ``os.environ['PKG_CONFIG_PATH']`` is the source of truth for every
     pkg-config subprocess in the build. With the fix in place, the
     ``${CONF_DIR}``-expanded absolute path must be present so pkg-config
@@ -317,7 +317,7 @@ def test_provenance_records_source_file_for_each_conf_value(tmp_path, monkeypatc
     """For every key that came from a conf file, the provenance side
     channel must record at least one ``(value, source_file, lineno)``
     entry. Lets ``-vv`` diagnostics in
-    ``_setup_pkg_config_overrides_locked`` and ``ct-config`` attribute
+    ``emit_pkg_config_path_provenance`` and ``ct-config`` attribute
     every entry on ``PKG_CONFIG_PATH`` back to the conf file (and line)
     that contributed it."""
     args = _parse_with_flavor_conf("b", str(tmp_path), monkeypatch)

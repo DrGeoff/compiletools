@@ -5,6 +5,7 @@ import io
 import os
 import shutil
 import subprocess
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -814,3 +815,259 @@ def test_makefile_backend_main_entry_point_exists():
     the callable must exist at that import path."""
 
     assert callable(main)
+
+
+class TestGenerateThenRunFreshening:
+    """A hand-run ``make`` must keep the cas-exedir entries it uses warm.
+
+    ``ct-create-makefile`` builds the graph, writes the Makefile and returns —
+    nothing calls ``execute()``, so ``BuildBackend._freshen_published_cas_entries``
+    never runs on this workflow, and the publish rule that would freshen the
+    entry is skipped by make because ``bin/<name>`` is already current. Left at
+    that, a published entry keeps the mtime of its first publish forever while
+    every build goes on linking against it.
+
+    What that costs: ``trim_exedir``'s hard-link protection spares an entry at
+    ``nlink > 1`` regardless of mtime, so a normally-published entry is safe.
+    An EXDEV publish leaves the entry at ``nlink == 1``, and there a stale mtime
+    is evicted by both ``--max-age`` and the ``--max-size`` budget, stranding
+    the published path as a dangling symlink.
+    """
+
+    @staticmethod
+    def _cas_entries(cas_exedir):
+        return sorted(
+            os.path.join(root, name)
+            for root, _dirs, files in os.walk(cas_exedir)
+            for name in files
+            if name.endswith(".exe")
+        )
+
+    @staticmethod
+    def _backdate_everything(tempdir, when):
+        """Age every build input and output so make has nothing legitimate to do.
+
+        Needed for the ``--use-mtime`` cell: there objects and the published exe
+        are real prerequisites, so staling the cas entry alone would make it
+        older than its own objects and trigger an honest relink — which moves
+        the mtime for a reason that has nothing to do with freshening.
+        """
+        for root, _dirs, files in os.walk(tempdir):
+            for name in files:
+                path = os.path.join(root, name)
+                if os.path.exists(path):
+                    os.utime(path, (when, when))
+
+    @classmethod
+    def _generated_and_built(cls, tempdir, extra_argv=()):
+        """Run ct-create-makefile then make; return the single cas entry path.
+
+        The source is copied into ``tempdir`` rather than compiled in place so
+        ``_backdate_everything`` can age it along with the build outputs — a
+        source left outside the tree is newer than every backdated object and
+        would drag the ``--use-mtime`` cell into a full rebuild.
+        """
+        source = os.path.join(tempdir, "helloworld_cpp.cpp")
+        shutil.copy2(uth.example_file("simple/helloworld_cpp.cpp"), source)
+        cas_exedir = os.path.join(tempdir, "cas-exe")
+        with uth.TempConfigContext(tempdir=tempdir) as temp_config_name:
+            argv = [
+                "--config=" + temp_config_name,
+                "--no-file-locking",
+                "--cas-exedir",
+                cas_exedir,
+                "--cas-objdir",
+                os.path.join(tempdir, "cas-obj"),
+                "--bindir",
+                os.path.join(tempdir, "bin"),
+                *extra_argv,
+                source,
+            ]
+            with uth.ParserContext():
+                compiletools.makefile_backend.main(argv)
+
+        subprocess.check_output(["make", "-f", "Makefile"], universal_newlines=True, stderr=subprocess.STDOUT)
+        entries = cls._cas_entries(cas_exedir)
+        assert len(entries) == 1, f"expected exactly one published cas entry, got {entries}"
+        return entries[0]
+
+    @uth.requires_functional_compiler
+    def test_a_hand_run_make_freshens_a_stale_published_entry(self):
+        with uth.TempDirContextWithChange() as tempdir:
+            entry = self._generated_and_built(tempdir)
+
+            stale = time.time() - 90 * 86400
+            os.utime(entry, (stale, stale))
+
+            output = subprocess.check_output(
+                ["make", "-f", "Makefile"], universal_newlines=True, stderr=subprocess.STDOUT
+            )
+
+            assert "ct-cas-publish" not in output, f"the freshening must not retrigger the publish rule:\n{output}"
+            assert os.path.getmtime(entry) > stale + 3600, (
+                "a no-op make left the published cas entry at its stale mtime; "
+                "ct-trim-cache --max-age will age out an entry this build still uses"
+            )
+
+    @uth.requires_functional_compiler
+    def test_a_warm_entry_is_left_alone_so_the_age_floor_survives(self):
+        """The freshening carries the same one-hour floor as the execute-side pass.
+
+        Without a floor every pass bumps the entry, which under ninja costs one
+        republish per build forever (``_FRESHEN_MIN_AGE_SECONDS``). Nothing about
+        the generate-then-run path licenses dropping it.
+        """
+        with uth.TempDirContextWithChange() as tempdir:
+            entry = self._generated_and_built(tempdir)
+
+            warm = time.time() - 300
+            os.utime(entry, (warm, warm))
+            before = os.path.getmtime(entry)
+
+            subprocess.check_output(["make", "-f", "Makefile"], universal_newlines=True, stderr=subprocess.STDOUT)
+
+            assert os.path.getmtime(entry) == before, "an entry inside the age floor was freshened"
+
+    @staticmethod
+    def _emitted_touch_argv(tempdir):
+        """The ``touch`` the generated Makefile runs, lifted out of its ``find``.
+
+        Reading the argv the emitter actually wrote keeps the cell honest: a
+        hand-written ``touch -c -m`` control would pass while the Makefile on
+        disk said something else.
+
+        The extraction fails loudly rather than recovering a plausible-looking
+        argv, because a silently wrong lift would make the caller's assertion
+        vacuous: exactly one ``_CT_FRESHEN`` line, exactly one ``-exec`` per
+        ``find``, and the recovered argv must actually start with ``touch``.
+        """
+        with open(os.path.join(tempdir, "Makefile")) as f:
+            text = f.read()
+        lines = [line for line in text.splitlines() if line.startswith("_CT_FRESHEN")]
+        assert len(lines) == 1, f"expected exactly one _CT_FRESHEN line, got {lines}"
+        assert lines[0].count(" -exec ") == 1, f"more than one -exec to lift from:\n{lines[0]}"
+        argv = lines[0].split(" -exec ", 1)[1].split(" {} +", 1)[0].split()
+        assert argv[0] == "touch", f"lifted argv is not a touch: {argv}"
+        return argv
+
+    @staticmethod
+    def _published_exe(tempdir):
+        candidates = [
+            os.path.join(root, name)
+            for root, _dirs, files in os.walk(os.path.join(tempdir, "bin"))
+            for name in files
+            if name == "helloworld_cpp"
+        ]
+        assert len(candidates) == 1, f"expected exactly one published exe, got {candidates}"
+        return candidates[0]
+
+    def test_every_chunk_carries_the_same_touch_spelling(self):
+        """``_RM_CHUNK_SIZE`` splits the entries across several ``find`` calls.
+
+        The end-to-end cells build one artefact and therefore only ever see the
+        first chunk. A pool large enough to split would be uniform by
+        construction today, but nothing states that, so an emitter that grew a
+        per-chunk branch could leave later chunks creating evicted entries with
+        every cell still green.
+        """
+        entries = [
+            f"/tmp/cas-exe/ab/app{i}_deadbeef.exe" for i in range(compiletools.makefile_backend._RM_CHUNK_SIZE + 5)
+        ]
+        graph = BuildGraph()
+        for i, entry in enumerate(entries):
+            graph.add_rule(
+                BuildRule(
+                    output=f"/tmp/bin/app{i}",
+                    inputs=[entry],
+                    command=["ct-cas-publish", "--cas-path", entry, "--user-path", f"/tmp/bin/app{i}"],
+                    rule_type="symlink",
+                )
+            )
+        backend = MakefileBackend(args=_make_args(), hunter=MagicMock())
+
+        directive = backend._freshen_directive(graph)
+
+        finds = directive.count("$(shell find ")
+        assert finds == 2, f"expected the entries to split across two find calls, got {finds}"
+        assert directive.count("-exec touch -c -m {} +") == finds, (
+            f"a chunk was emitted without the -c that stops an evicted entry being recreated:\n{directive}"
+        )
+
+    @uth.requires_functional_compiler
+    def test_the_freshening_does_not_create_an_entry_a_peer_trim_removed(self):
+        """A missing entry must be skipped, never created.
+
+        ``find -exec ... +`` stats the paths and runs one ``touch`` at the end,
+        so a peer ``ct-trim-cache`` unlinking an entry inside that window lands
+        the ``touch`` on a path that no longer exists — and ``-mmin +60``
+        selects exactly the population ``--max-age`` evicts. Plain ``touch``
+        creates the file; the build then publishes a zero-byte executable at
+        exit 0, with an ``mtime=now`` that makes it the last thing a sweep would
+        evict. ``os.utime`` (the execute-side pass) raises instead, so without
+        ``-c`` the two freshening paths disagree in the one failure mode both
+        docstrings call out.
+        """
+        with uth.TempDirContextWithChange() as tempdir:
+            entry = self._generated_and_built(tempdir)
+            touch_argv = self._emitted_touch_argv(tempdir)
+
+            os.remove(entry)
+            os.remove(self._published_exe(tempdir))
+            subprocess.run(touch_argv + [entry], check=False)
+
+            assert not os.path.exists(entry), (
+                f"{' '.join(touch_argv)} created the evicted cas entry; the publish rule "
+                "will hardlink those zero bytes to bin/ and the build will exit 0"
+            )
+
+            subprocess.check_output(["make", "-f", "Makefile"], universal_newlines=True, stderr=subprocess.STDOUT)
+            published = self._published_exe(tempdir)
+            assert os.path.getsize(published) > 0, "make republished an empty executable"
+            assert subprocess.run([published], check=False).returncode == 0, "the republished executable does not run"
+
+    @uth.requires_functional_compiler
+    def test_a_dry_run_does_not_freshen(self):
+        """``make -n`` must not mutate the cache.
+
+        The directive is a parse-time ``:=`` assignment, so it runs on every
+        invocation including the ones that promise to change nothing. The
+        second half is the non-vacuity control: an executing make over the same
+        stale entry must still freshen it, so a cell that passed because
+        freshening broke entirely would fail here.
+        """
+        with uth.TempDirContextWithChange() as tempdir:
+            entry = self._generated_and_built(tempdir)
+
+            stale = time.time() - 90 * 86400
+            os.utime(entry, (stale, stale))
+
+            subprocess.check_output(["make", "-n", "-f", "Makefile"], universal_newlines=True, stderr=subprocess.STDOUT)
+            assert os.path.getmtime(entry) == stale, "make -n freshened a cas entry; a dry run must not mutate anything"
+
+            subprocess.check_output(["make", "-f", "Makefile"], universal_newlines=True, stderr=subprocess.STDOUT)
+            assert os.path.getmtime(entry) > stale + 3600, (
+                "the executing make no longer freshens; the cell above is vacuous"
+            )
+
+    @uth.requires_functional_compiler
+    def test_use_mtime_does_not_freshen(self):
+        """Under ``--use-mtime`` the entry's timestamp is a rebuild input.
+
+        The published exe is the same inode as the entry and the TEST rule keeps
+        a real prereq on it, so bumping the entry re-runs every test. The
+        execute-side pass returns early for this reason; the generated Makefile
+        must make the same choice.
+        """
+        with uth.TempDirContextWithChange() as tempdir:
+            entry = self._generated_and_built(tempdir, extra_argv=["--use-mtime=True"])
+
+            stale = time.time() - 90 * 86400
+            self._backdate_everything(tempdir, stale)
+            before = os.path.getmtime(entry)
+
+            output = subprocess.check_output(
+                ["make", "-f", "Makefile"], universal_newlines=True, stderr=subprocess.STDOUT
+            )
+
+            assert "Nothing to be done" in output, f"the cell is only meaningful on a genuine no-op build:\n{output}"
+            assert os.path.getmtime(entry) == before, "--use-mtime must not freshen published entries"

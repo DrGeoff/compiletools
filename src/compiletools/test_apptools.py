@@ -1396,7 +1396,7 @@ class TestVerbosePrintConfig:
 
 
 class TestSetupPkgConfigOverrides:
-    """Tests for _setup_pkg_config_overrides()."""
+    """Tests for the PKG_CONFIG_PATH override the build applies."""
 
     @pytest.fixture
     def pkgconfig_dir(self, tmp_path):
@@ -1406,11 +1406,11 @@ class TestSetupPkgConfigOverrides:
         d.mkdir(parents=True)
         return d
 
-    def test_setup_pkg_config_overrides_emits_provenance_at_verbose_4(self, monkeypatch, tmp_path, capsys):
+    def test_pkg_config_overrides_emit_provenance_at_verbose_4(self, monkeypatch, tmp_path, capsys):
         """A prepend-PKG-CONFIG-PATH set in a conf file produces an
         attribution line of the form ``(from <abs_conf_path>:<lineno>)``
         at verbose>=4. Confirms the conf-file provenance side channel
-        is wired through ``_setup_pkg_config_overrides_locked``."""
+        is wired through ``emit_pkg_config_path_provenance``."""
 
         conf_dir = tmp_path / "ct.conf.d"
         conf_dir.mkdir(parents=True)
@@ -1482,7 +1482,7 @@ class TestSetupPkgConfigOverrides:
         """End-to-end repro: project ``ct.conf`` and a higher-priority
         axis conf each set ``prepend-PKG-CONFIG-PATH``. After running
         through the real ``parseargs`` pipeline (configargparse +
-        ``${CONF_DIR}`` expansion + ``_setup_pkg_config_overrides``),
+        ``${CONF_DIR}`` expansion + the ``SetEnv`` effect),
         the axis-conf directory must land leftmost in
         ``PKG_CONFIG_PATH``. Before the fix, the project ct.conf's
         prepend was leftmost and silently shadowed the axis override,

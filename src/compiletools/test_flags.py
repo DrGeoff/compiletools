@@ -15,6 +15,7 @@ import compiletools.configutils
 import compiletools.testhelper as uth
 import compiletools.utils as utils
 from compiletools.build_context import BuildContext
+from compiletools.flag_ops import filter_hash_irrelevant_tokens
 from compiletools.flags import Flags
 
 
@@ -188,3 +189,37 @@ def test_compiler_identity_distinguishes_two_real_binaries(tmp_path):
     assert id_a != ""
     assert id_b != ""
     assert id_a != id_b, f"distinct binaries must yield distinct identity: {id_a!r} == {id_b!r}"
+
+
+class TestHashRelevantRejectsTheLdSlot:
+    """hash_relevant's filter is compile-line semantics. Handing it the ld
+    slot produces a link key that ignores the flags most likely to change the
+    linked bytes, so the method refuses rather than answering wrongly."""
+
+    def test_the_ld_slot_is_rejected(self):
+        with pytest.raises(ValueError, match="ld"):
+            Flags(ld=("-Wl,--as-needed",)).hash_relevant("ld")
+
+    def test_the_filter_would_have_dropped_the_load_bearing_linker_flags(self):
+        """The reason for the rejection, measured rather than asserted. These
+        are real LDFLAGS whose presence changes the linked output; run through
+        the compile-slot filter they vanish, because -Wl, is dropped there as
+        inert under -c and -v/--verbose are dropped as diagnostic-only."""
+        ldflags = ("-Wl,--as-needed", "-Wl,-rpath,/opt/lib", "-Wl,--version-script,v.map", "-lm")
+        survivors = filter_hash_irrelevant_tokens(ldflags)
+        assert survivors == ["-lm"], survivors
+
+    def test_an_unknown_slot_is_rejected_too(self):
+        with pytest.raises(ValueError, match="unknown"):
+            Flags().hash_relevant("cxxflags")
+
+    @pytest.mark.parametrize(
+        ("slot", "flags"),
+        [
+            ("cpp", Flags(cpp=("-O2", "-Wall"))),
+            ("c", Flags(c=("-O2", "-Wall"))),
+            ("cxx", Flags(cxx=("-O2", "-Wall"))),
+        ],
+    )
+    def test_the_three_compile_slots_still_answer(self, slot, flags):
+        assert flags.hash_relevant(slot) == ["-O2"]

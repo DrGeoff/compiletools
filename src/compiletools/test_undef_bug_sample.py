@@ -24,7 +24,7 @@ class TestUndefBugSample(BaseCompileToolsTestCase):
 
     @pytest.mark.usefixtures("pkgconfig_env")
     def test_undef_bug_sample_finds_all_headers(self):
-        """Test that #undef in cleans_up.hpp allows should_not_see_macro.hpp to be included.
+        """Test that #undef in cleans_up.hpp allows should_be_included.hpp to be included.
 
         Dependency chain:
         main.cpp
@@ -37,8 +37,8 @@ class TestUndefBugSample(BaseCompileToolsTestCase):
         BUG: If #undef is ignored, TEMP_BUFFER_SIZE persists and #ifndef fails,
         so should_be_included.hpp is NOT included.
 
-        Expected: 4 headers (uses_conditional, cleans_up, defines_macro, should_not_see_macro)
-        Buggy: 3 headers (missing should_not_see_macro)
+        Expected: 4 headers (uses_conditional, cleans_up, defines_macro, should_be_included)
+        Buggy: 3 headers (missing should_be_included)
         """
         sample_dir = Path(example_path("undef_bug"))
         main_cpp = sample_dir / "main.cpp"
@@ -80,6 +80,6 @@ class TestUndefBugSample(BaseCompileToolsTestCase):
 
         assert "leaked-macro-pkg" in pkg_configs, (
             "BUG: PKG-CONFIG=leaked-macro-pkg NOT found!\n"
-            "     This flag is in should_not_see_macro.hpp which was not discovered.\n"
+            "     This flag is in should_be_included.hpp which was not discovered.\n"
             "     The #undef bug prevented the header from being included."
         )

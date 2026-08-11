@@ -190,3 +190,24 @@ forbidden_modules =
     shutil
     pathlib
 allow_indirect_imports = True
+
+[importlinter:contract:flag-ops-is-a-leaf]
+name = flag_ops stays a leaf (no compiletools imports at all)
+type = forbidden
+source_modules =
+    compiletools.flag_ops
+forbidden_modules =
+    compiletools.apptools
+    compiletools.flags
+    compiletools.headerdeps
+    compiletools.utils
+    compiletools.build_state
+    compiletools.build_backend
+ignore_imports =
+    # The one exception, deliberate and call-time only: dedup_tokens
+    # delegates to utils.deduplicate_compiler_flags rather than forking a
+    # second copy of the pair-aware equality. Deferring the import to call
+    # time keeps flag_ops' MODULE-level surface stdlib-only, which is what
+    # lets flags.py import it at top level without reviving the historical
+    # flags <-> apptools cycle. Any new edge here needs the same argument.
+    compiletools.flag_ops -> compiletools.utils

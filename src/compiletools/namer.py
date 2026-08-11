@@ -2,6 +2,7 @@ import functools
 import os
 
 import compiletools.apptools
+import compiletools.build_apply
 import compiletools.configutils
 import compiletools.git_utils
 import compiletools.utils
@@ -32,12 +33,12 @@ class Namer:
     # fallback is PERMANENT.
     @property
     def _bindir(self):
-        state = getattr(self.args, "_build_state", None)
+        state = compiletools.build_apply.get_build_state_or_none(self.args)
         return state.names.bindir if state is not None else self.args.bindir
 
     @property
     def _cas_objdir(self):
-        state = getattr(self.args, "_build_state", None)
+        state = compiletools.build_apply.get_build_state_or_none(self.args)
         return state.names.cas_objdir if state is not None else self.args.cas_objdir
 
     @staticmethod

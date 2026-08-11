@@ -116,6 +116,24 @@ while ct-cake fails. The asymmetry is deliberate: a reporter may degrade
 and say so, an actor may not proceed on a set discovery could not
 finish.
 
+Write the positionals BEFORE the library flag: ``--static`` and
+``--dynamic`` each take a list, so a positional written after one is
+absorbed into that list. That accident builds rather than failing -- the
+executable's object is archived into the library and no executable is
+produced -- so a source in a library slot that carries an exemarker
+draws a warning on stderr naming the file, the marker and the ordering
+rule. It is a warning, not a refusal: a source carrying ``main`` can
+legitimately be part of a library. ``-q`` silences it. The warning
+reaches the ct-findtargets route only; ``ct-create-makefile`` does not
+read exemarkers, so the same mistake made directly against it is
+unwarned.
+
+Discovery never INVENTS a library target. Whether a source belongs in a
+static library, a shared library or an executable is a partition its
+author chooses -- nothing in the source distinguishes the three -- so
+the library buckets hold exactly what the command line named plus what
+the conf tiers supply.
+
 --auto-exclude drops files from the search. Give it multiple times to build
 up a list, or set it in a ct.conf. A pattern containing a path separator
 matches the gitroot-relative path (a leading ``/`` anchors there, as in

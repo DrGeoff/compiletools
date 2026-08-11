@@ -59,10 +59,25 @@ The whole sequence runs while holding the ``<cas-path>.lock`` sidecar,
 the same lock ``ct-trim-cache`` takes before evicting an entry, so a
 publish and a concurrent trim of the same CAS entry are totally
 ordered. Trim first leaves nothing to publish: the helper reports
-``CAS entry missing at publish (<path>): removed by a concurrent trim,
-or never produced; rerun the build`` and exits ``3``, and the next
-build rebuilds the artefact. Publish first raises
-the entry's ``nlink`` to 2, which trim's hard-link protection honours.
+``CAS entry missing at publish (<path>): removed by a concurrent
+ct-trim-cache sweep, or never produced by its build rule; rerun the
+build`` and exits ``3``, and the next build rebuilds the artefact.
+Publish first raises the entry's ``nlink`` to 2, which trim's hard-link
+protection honours.
+
+Rerunning the build is the whole remedy, and it is the only mechanism
+that works. This helper links an entry, it never produces one, so
+retrying the publish re-fails deterministically however many times it
+runs; only re-entering the build graph reaches the link rule that
+recreates the entry. Nothing in compiletools retries a lost publish for
+that reason.
+
+Exit ``3`` is for a human or a wrapper running ``ct-cas-publish``
+directly. No build reads it: make exits ``2`` and keeps the ``3`` only
+in its ``Error 3`` text, ninja exits ``3``, the Shake backend raises a
+``CalledProcessError`` carrying ``3``, and ``ct-cake`` renders all
+three and exits ``1``. The message above is what actually reaches the
+user, and it streams to stderr under every backend.
 
 Those two are the only outcomes on the hardlink path. A publish that
 fell back to ``symlink()`` leaves the entry at ``nlink == 1``, which
@@ -106,6 +121,41 @@ bounds that to one republish per artefact per hour while keeping an
 entry in daily use within an hour of current, far inside any
 ``--max-age`` a sweep expresses in days. Make compares the published
 path against the entry live and is unaffected either way.
+
+A generate-then-run workflow never reaches that pass at all.
+``ct-create-makefile`` builds the graph, writes the Makefile and
+returns; the user then runs ``make`` by hand, and nothing calls
+``execute()``. So the make backend also writes a ``_CT_FRESHEN :=
+$(shell find ... -mmin +60 -exec touch -c -m {} +)`` assignment into the
+generated Makefile. Make expands it once at parse time on every
+invocation, including the no-op rebuild where the publish rule is
+skipped; it creates no target and joins no dependency graph, so it does
+not change what make decides to build. Same one-hour floor, same
+``--use-mtime`` exclusion (under which no assignment is emitted at
+all). Errors are swallowed — an entry a peer trim already evicted, an
+entry owned by another user on a shared pool, and a ``find`` without
+GNU/BSD ``-mmin`` are cache bookkeeping, not build failures. Ninja has
+no parse-time equivalent, and ``ct-cake --backend=ninja`` always runs
+``execute()``, so ninja is covered by the pass above.
+
+The ``-c`` on that ``touch`` is a correctness requirement. ``find -exec
+... +`` stats the matched paths and runs one ``touch`` at the end, so a
+``ct-trim-cache`` sweep unlinking an entry inside that window lands the
+``touch`` on a path that no longer exists — and ``-mmin +60`` selects
+exactly the population ``--max-age`` evicts. A plain ``touch`` would
+CREATE the entry, empty, with ``mtime=now``; the publish rule then
+hardlinks those zero bytes to ``bin/<name>`` and the build exits 0 with
+an executable that cannot run. The fresh mtime also puts the corrupt
+entry last in line for the next sweep, so it persists. ``-c`` skips the
+missing path, which is what ``os.utime`` does on the execute side, and
+the build relinks the entry normally.
+
+A companion ``CT_DRY_RUN`` assignment suppresses the freshening under
+``make -n`` and ``make -q``, which are contracts to change nothing. It
+reads GNU Make's single-letter options out of the first word of
+``MAKEFLAGS`` at parse time. Every other invocation freshens, including
+``make clean``: the entry is still one this build's graph names, and
+``clean`` removes the published path rather than the cache.
 
 OPTIONS
 =======
@@ -204,9 +254,13 @@ EXIT CODES
     is recoverable: rerun the build and the artefact is relinked into
     the cache. A producer rule that exits 0 without writing its output
     lands here too, which a rerun will not fix, so the message names
-    both. Distinct from ``1`` so a wrapper COULD retry this case without
-    retrying real errors — no in-tree caller does this today; the
-    generated build recipes treat any nonzero exit as a hard failure.
+    both. Distinct from ``1`` for a human or a wrapper reading this
+    helper's exit directly; no build reads it, because make erases the
+    code and ``ct-cake`` collapses every failure to ``1``. A wrapper
+    that sees this code should rerun the BUILD, not this command — the
+    helper cannot produce the entry it lost, so re-invoking it re-fails
+    every time. The generated build recipes treat any nonzero exit as a
+    hard failure and do not retry.
 
 CONCURRENCY
 ===========

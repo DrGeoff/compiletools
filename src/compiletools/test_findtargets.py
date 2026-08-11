@@ -738,6 +738,71 @@ class TestAutoExcludePatternNormalisation:
         assert not self._excluded(tmp_path, "///", "src/main.cpp")
 
 
+# The root-slash family, where a pattern's meaning is decided by how many
+# separators it carries and nothing else. ``git check-ignore`` is the
+# authority the --auto-exclude docstring appeals to, so the agreement is
+# measured against a real repository rather than restated.
+_ROOT_PATTERN_ORACLE_FILES = ("src/vendor/a.cpp", "vendor/b.cpp", "vendor/sub/c.cpp", "top.cpp")
+_ROOT_PATTERN_ORACLE_PATTERNS = ("/", "//", "///", "/*", "vendor/", "/vendor")
+
+
+class TestRootPatternsAgreeWithGitignore:
+    """A bare ``/`` excludes NOTHING, and ``/*`` excludes everything.
+
+    The one-character difference is the whole decision. ``/`` looks like the
+    anchored spelling of the tree root, which under the "a directory name
+    excludes its whole subtree" rule would exclude every file -- the silent
+    discover-nothing outcome ``_commits_to_a_path_inside`` exists to prevent.
+    git resolves it the other way, and these cells prove compiletools agrees
+    with git rather than merely claiming to.
+    """
+
+    @staticmethod
+    def _tree(tmp_path):
+        root = tmp_path / "rootpatterns"
+        root.mkdir()
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        for relpath in _ROOT_PATTERN_ORACLE_FILES:
+            path = root / relpath
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("int main() { return 0; }\n")
+        return root
+
+    @staticmethod
+    def _git_ignored(root, pattern):
+        (root / ".gitignore").write_text(pattern + "\n")
+        return {
+            relpath
+            for relpath in _ROOT_PATTERN_ORACLE_FILES
+            if subprocess.run(["git", "check-ignore", "-q", relpath], cwd=str(root)).returncode == 0
+        }
+
+    @staticmethod
+    def _excluded(root, pattern):
+        return {
+            relpath
+            for relpath in _ROOT_PATTERN_ORACLE_FILES
+            if compiletools.findtargets.is_auto_excluded(
+                os.path.join(str(root), relpath), (pattern,), anchor_root=str(root)
+            )
+        }
+
+    @pytest.mark.parametrize("pattern", _ROOT_PATTERN_ORACLE_PATTERNS)
+    def test_the_exclusion_set_matches_what_git_ignores(self, tmp_path, pattern):
+        root = self._tree(tmp_path)
+        assert self._excluded(root, pattern) == self._git_ignored(root, pattern)
+
+    def test_the_oracle_discriminates(self, tmp_path):
+        """Guard against a vacuous pass. If ``git check-ignore`` reported
+        nothing ignored for every pattern -- an unreadable .gitignore, a git
+        that refuses to answer -- the agreement above would hold trivially
+        against an implementation that also excludes nothing. Pin the two
+        ends of the range the parametrized cells run over."""
+        root = self._tree(tmp_path)
+        assert self._git_ignored(root, "/*") == set(_ROOT_PATTERN_ORACLE_FILES)
+        assert self._git_ignored(root, "/") == set()
+
+
 class TestAutoExcludeInDiscovery:
     """The exclusion applies inside FindTargets.__call__, so both the
     tracked-files generator and the os.walk fallback honour it."""
@@ -879,7 +944,13 @@ def test_an_explicit_target_suppresses_discovery(reanchor_repo, capsys):
     discovered one. scripts/ct-build feeds this string to ct-create-makefile,
     so a merged list hands it the named target twice -- once in the caller's
     spelling and once in the discovered absolute one, which ordered_unique
-    cannot collapse."""
+    cannot collapse.
+
+    The target is a POSITIONAL. There is no --filename option: argparse
+    prefix-resolves that spelling to --filenametestmatch, a store_true whose
+    default is already True, and the path that follows lands on the
+    positional anyway -- so the option spelling passed for the wrong reason.
+    """
     named = os.path.join("appalpha", "main.cpp")
     with uth.DirectoryContext(str(reanchor_repo)):
         with uth.ParserContext():
@@ -1187,3 +1258,143 @@ class TestArgsStyleRoundTripsIntoCtCreateMakefile:
 
         assert parsed.static == ["lib/widget.cpp"]
         assert parsed.filename == [os.path.realpath(str(library_repo / "app" / "main.cpp"))]
+
+
+_EXE_TARGET = os.path.join("app", "main.cpp")
+_LIB_TARGET = os.path.join("lib", "widget.cpp")
+_LIB_FLAGS = ["--dynamic", "--static"]
+
+
+def _expected_warning(target, flag, markers):
+    return (
+        f"Warning: {target} is named as a {flag} target but contains an executable "
+        f"marker ({markers}). A positional written after {flag} is absorbed into its "
+        f"list, so name executables before {flag}."
+    )
+
+
+class TestExemarkerInALibrarySlotWarns:
+    """``--static``/``--dynamic`` take a list, so a positional written AFTER
+    one is absorbed into it. The result builds: ``ct-build --static
+    lib/widget.cpp app/main.cpp`` exits 0, archives main.o into libwidget.a
+    and produces no executable. Nothing downstream notices -- the same
+    single-pass ``ct-create-makefile`` invocation produces the identical
+    artefact set, so this is the CLI shape, not a ct-build wart.
+
+    The warning is the mitigation: it names the file, the exemarker that
+    makes it look like an executable, and the ordering rule that explains
+    how it got there. It does NOT refuse -- a source carrying ``main`` can
+    legitimately live in a library -- so the exit code stays 0 and the
+    target is still reported.
+    """
+
+    @staticmethod
+    def _run(repo, argv, capsys):
+        with uth.DirectoryContext(str(repo)):
+            with uth.ParserContext():
+                assert compiletools.findtargets.main(argv) == 0
+        return capsys.readouterr()
+
+    @pytest.mark.parametrize("flag", _LIB_FLAGS)
+    def test_a_library_slot_holding_an_executable_source_warns(self, library_repo, capsys, flag):
+        captured = self._run(library_repo, ["--style=args", flag, _EXE_TARGET], capsys)
+        assert captured.err.strip() == _expected_warning(_EXE_TARGET, flag, "main")
+
+    @pytest.mark.parametrize("flag", _LIB_FLAGS)
+    def test_a_genuine_library_source_is_silent(self, library_repo, capsys, flag):
+        """Anti-vacuity for the test above: the same invocation over a source
+        with no exemarker must produce no stderr at all, so the warning is
+        keyed on the marker rather than on the slot being populated."""
+        captured = self._run(library_repo, ["--style=args", flag, _LIB_TARGET], capsys)
+        assert captured.err == ""
+
+    @pytest.mark.parametrize("flag", _LIB_FLAGS)
+    def test_the_accident_that_motivates_the_warning_is_the_one_that_fires(self, library_repo, capsys, flag):
+        """The real shape: the user wrote the executable positional after the
+        library flag and argparse absorbed it. Both sources land in the
+        library slot, the executable slot is empty, and only the source
+        carrying the exemarker is named."""
+        captured = self._run(library_repo, ["--style=args", flag, _LIB_TARGET, _EXE_TARGET], capsys)
+        assert captured.out.split() == [flag, _LIB_TARGET, _EXE_TARGET]
+        assert captured.err.strip() == _expected_warning(_EXE_TARGET, flag, "main")
+
+    @pytest.mark.parametrize("flag", _LIB_FLAGS)
+    def test_warning_not_refusal(self, library_repo, capsys, flag):
+        """Exit 0 and the target still reported: a source carrying ``main``
+        in a library is legal, so the run must not be blocked."""
+        captured = self._run(library_repo, ["--style=args", flag, _EXE_TARGET], capsys)
+        assert captured.out.split() == [flag, _EXE_TARGET]
+
+    @pytest.mark.parametrize("flag", _LIB_FLAGS)
+    def test_the_warning_reaches_the_default_verbosity(self, library_repo, capsys, flag):
+        """No -v anywhere in the argv above; this pins that explicitly, and
+        pins -q as the way to turn it off, since the audience is exactly the
+        user who typed the accident without asking for diagnostics."""
+        loud = self._run(library_repo, ["--style=args", flag, _EXE_TARGET], capsys)
+        assert loud.err != ""
+        quiet = self._run(library_repo, ["--style=args", "-q", flag, _EXE_TARGET], capsys)
+        assert quiet.err == ""
+
+    @pytest.mark.parametrize("flag", _LIB_FLAGS)
+    def test_a_named_library_that_does_not_exist_is_not_an_error(self, library_repo, capsys, flag):
+        """The check hashes and analyses the named file; a path that resolves
+        to nothing must fall through to the report rather than crash there."""
+        captured = self._run(library_repo, ["--style=args", flag, "lib/absent.cpp"], capsys)
+        assert captured.out.split() == [flag, "lib/absent.cpp"]
+        assert captured.err == ""
+
+    def test_both_slots_are_checked_in_one_run(self, library_repo, capsys):
+        """--static and --dynamic can both be populated; each is scanned."""
+        argv = ["--style=args", "--static", _EXE_TARGET, "--dynamic", _EXE_TARGET]
+        captured = self._run(library_repo, argv, capsys)
+        assert captured.err.splitlines() == [
+            _expected_warning(_EXE_TARGET, "--static", "main"),
+            _expected_warning(_EXE_TARGET, "--dynamic", "main"),
+        ]
+
+    def test_the_marker_named_is_the_one_configured(self, library_repo, capsys, tmp_path):
+        """Anti-tautology for the marker text: with a different exemarker
+        configured, the warning names THAT marker, so ``main`` above is read
+        out of the file rather than hardcoded."""
+        (library_repo / "lib" / "plugin.cpp").write_text("void wxIMPLEMENT_APP() {}\n")
+        argv = ["--style=args", "--exemarkers=wxIMPLEMENT_APP", "--static", os.path.join("lib", "plugin.cpp")]
+        captured = self._run(library_repo, argv, capsys)
+        assert captured.err.strip() == _expected_warning(
+            os.path.join("lib", "plugin.cpp"), "--static", "wxIMPLEMENT_APP"
+        )
+
+    def test_a_marker_that_only_appears_in_a_comment_is_not_named(self, library_repo, capsys):
+        """The marker list is the classifier's, not a substring scan.
+
+        ``_detect_marker_type`` skips a hit inside a comment or a string
+        literal, so a comment mentioning a marker never contributes to the
+        EXE verdict. Naming it anyway points the user at a line that did not
+        trigger the warning -- and the default exemarker list makes that
+        reachable with nothing configured, since a comment mentioning
+        ``wxIMPLEMENT_APP`` in any file carrying ``main`` would be named.
+        """
+        source = os.path.join("lib", "plugin.cpp")
+        (library_repo / source).write_text(
+            "// wxIMPLEMENT_APP is the wxWidgets entry point; this file does not use it.\n"
+            'const char *usage = "wxIMPLEMENT_APP";\n'
+            "int main() { return 0; }\n"
+        )
+        argv = ["--style=args", "--exemarkers=wxIMPLEMENT_APP", "--static", source]
+        captured = self._run(library_repo, argv, capsys)
+        assert captured.err.strip() == _expected_warning(source, "--static", "main")
+
+    def test_the_same_marker_outside_a_comment_is_named(self, library_repo, capsys):
+        """Anti-vacuity for the test above: the comment is what suppresses
+        ``wxIMPLEMENT_APP``, not the marker being unnameable."""
+        source = os.path.join("lib", "plugin.cpp")
+        (library_repo / source).write_text("void wxIMPLEMENT_APP() {}\nint main() { return 0; }\n")
+        argv = ["--style=args", "--exemarkers=wxIMPLEMENT_APP", "--static", source]
+        captured = self._run(library_repo, argv, capsys)
+        assert captured.err.strip() == _expected_warning(source, "--static", "main, wxIMPLEMENT_APP")
+
+    def test_a_marker_configured_twice_is_named_once(self, library_repo, capsys):
+        """``--exemarkers`` appends to the conf list rather than replacing it,
+        so re-stating a marker the conf already carries delivers it twice."""
+        argv = ["--style=args", "--exemarkers=main", "--static", _EXE_TARGET]
+        captured = self._run(library_repo, argv, capsys)
+        assert captured.err.strip() == _expected_warning(_EXE_TARGET, "--static", "main")

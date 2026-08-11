@@ -17,9 +17,12 @@ from compiletools.filesystem_utils import (
     get_filesystem_type,
     get_lock_strategy,
     get_lockdir_sleep_interval,
+    match_mountpoint,
+    parse_mount_lines,
     safe_read_text_file,
     should_parallelize_scan,
     supports_mmap_safely,
+    unescape_mount_field,
 )
 
 
@@ -512,3 +515,89 @@ def test_atomic_output_file_force_mode_overrides_preserved_restrictive_mode(tmp_
         f.write("new")
     mode = stat.S_IMODE(os.stat(target).st_mode)
     assert mode == 0o666
+
+
+class TestMountFieldUnescaping:
+    """proc(5) mangles four characters in the mountpoint field. Decoding only
+    ``\\040`` left the other three literal, so a mountpoint containing a tab,
+    a newline or a backslash never matched a realpath and its filesystem was
+    reported ``unknown`` -- silently selecting the wrong lock strategy on the
+    NFS/CIFS/GPFS branches that consume this."""
+
+    @pytest.mark.parametrize(
+        ("escaped", "decoded"),
+        [
+            ("/mnt/two\\040words", "/mnt/two words"),
+            ("/mnt/two\\011words", "/mnt/two\twords"),
+            ("/mnt/two\\012words", "/mnt/two\nwords"),
+            ("/mnt/two\\134words", "/mnt/two\\words"),
+        ],
+        ids=["space", "tab", "newline", "backslash"],
+    )
+    def test_each_proc5_escape_decodes(self, escaped, decoded):
+        assert unescape_mount_field(escaped) == decoded
+
+    def test_an_escaped_backslash_is_not_decoded_twice(self):
+        r"""A mountpoint literally named ``/mnt/\040`` is written by the kernel
+        as ``/mnt/\134040``. Any implementation that runs one str.replace per
+        escape decodes the ``040`` tail a second time and yields ``/mnt/ ``,
+        whichever order the replaces run in. The single left-to-right pass
+        consumes all four characters of ``\134`` and resumes past them."""
+        assert unescape_mount_field("/mnt/\\134040") == "/mnt/\\040"
+
+    def test_a_bare_backslash_run_is_left_alone(self):
+        """Only backslash + exactly three octal digits is an escape; \\8 and
+        \\04 are not, and must survive verbatim rather than raising."""
+        assert unescape_mount_field("/mnt/\\8\\04x") == "/mnt/\\8\\04x"
+
+    def test_the_device_field_is_not_confused_for_the_mountpoint(self):
+        """Field 1 is the device, field 2 the mountpoint. Both are mangled, so
+        a device name that looks like a path must not be picked up."""
+        line = "/dev/sda1 /mnt/two\\040words ext4 rw,relatime 0 0"
+        assert parse_mount_lines([line]) == [("/mnt/two words", "ext4")]
+
+    def test_short_lines_are_skipped_not_fatal(self):
+        assert parse_mount_lines(["", "garbage\n", "/dev/sda1 /mnt ext4 rw 0 0"]) == [("/mnt", "ext4")]
+
+
+class TestMountpointMatching:
+    _MOUNTS = (
+        ("/", "ext4"),
+        ("/data", "gpfs"),
+        ("/data2", "nfs"),
+        ("/data/nested", "cifs"),
+    )
+
+    def test_a_sibling_mount_sharing_a_name_prefix_wins_on_its_own(self):
+        assert match_mountpoint("/data2/file.o", self._MOUNTS) == "nfs"
+        assert match_mountpoint("/data/file.o", self._MOUNTS) == "gpfs"
+
+    def test_a_prefix_sibling_that_is_not_itself_a_mount_falls_through(self):
+        """The case the ``trimmed + "/"`` boundary actually decides. When the
+        sibling IS a mount (``/data2`` above) the longest-first sort reaches it
+        before ``/data``, so a bare startswith gives the right answer by
+        accident and that test cannot see the boundary at all -- verified by
+        mutation. Here ``/database`` is not a mount, so nothing shadows the
+        comparison: without the boundary it matches ``/data`` and reports gpfs,
+        selecting the GPFS fcntl lock strategy for a path that is really on
+        ext4."""
+        mounts = [("/", "ext4"), ("/data", "gpfs")]
+        assert match_mountpoint("/database/file.o", mounts) == "ext4"
+
+    def test_the_most_specific_mountpoint_wins(self):
+        assert match_mountpoint("/data/nested/file.o", self._MOUNTS) == "cifs"
+
+    def test_the_mountpoint_itself_matches_exactly(self):
+        assert match_mountpoint("/data", self._MOUNTS) == "gpfs"
+
+    def test_root_catches_what_nothing_else_does(self):
+        assert match_mountpoint("/usr/lib/x.so", self._MOUNTS) == "ext4"
+
+    def test_no_match_returns_none_rather_than_a_guess(self):
+        assert match_mountpoint("/data/file.o", [("/other", "xfs")]) is None
+
+    def test_an_escaped_mountpoint_matches_the_real_path(self):
+        """End to end over the two helpers: the realpath the caller holds is
+        unescaped, so the comparison only lands if parsing decoded first."""
+        mounts = parse_mount_lines(["/dev/sdb1 /mnt/two\\040words nfs rw 0 0"])
+        assert match_mountpoint("/mnt/two words/obj.o", mounts) == "nfs"
