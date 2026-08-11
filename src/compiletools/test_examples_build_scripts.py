@@ -15,14 +15,17 @@ still parses and runs against the current CLI.
 
 from __future__ import annotations
 
+import functools
 import glob
 import os
 import pathlib
 import shutil
 import subprocess
+import tempfile
 
 import pytest
 
+import compiletools.apptools
 import compiletools.testhelper as uth
 
 # Discovered from disk rather than hand-listed so a new tour script is
@@ -49,6 +52,40 @@ _EXPECTED_BUILD_SCRIPTS = frozenset(
 # demonstrates --use-mtime=True, which only make and ninja honour, so it
 # spells out --backend=make and needs make on PATH.
 _REQUIRED_BACKEND_TOOL = {"cli_features": "make"}
+
+
+@functools.cache
+def _asan_link_works() -> bool:
+    """Probe whether the functional compiler can link -fsanitize=address.
+
+    A toolchain can accept the flag at compile time yet fail at link when
+    the runtime library is absent (e.g. gcc installed without its matching
+    libasan package), so the probe must compile AND link.
+    """
+    cxx = compiletools.apptools.get_functional_cxx_compiler()
+    if not cxx:
+        return False
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, "probe.cpp")
+        with open(src, "w") as f:
+            f.write("int main() { return 0; }\n")
+        try:
+            r = subprocess.run(
+                [cxx, "-fsanitize=address", src, "-o", os.path.join(td, "probe")],
+                capture_output=True,
+                timeout=60,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
+    return r.returncode == 0
+
+
+# Scripts whose steps need a toolchain capability beyond "compiles C++".
+# multi_axis_variant runs --variant=gcc,debug,asan, which links against
+# libasan -- absent on hosts whose gcc ships without its sanitizer runtime.
+_REQUIRED_TOOLCHAIN_CAPABILITY = {
+    "multi_axis_variant": (_asan_link_works, "compiler cannot link -fsanitize=address (libasan missing)"),
+}
 
 
 def _bash_available() -> bool:
@@ -123,6 +160,12 @@ def test_build_script_runs_clean(example_name: str, tmp_path) -> None:
     tool = _REQUIRED_BACKEND_TOOL.get(example_name)
     if tool is not None and shutil.which(tool) is None:
         pytest.skip(f"{example_name}/build.sh pins --backend={tool}, which is not on PATH")
+
+    capability = _REQUIRED_TOOLCHAIN_CAPABILITY.get(example_name)
+    if capability is not None:
+        probe, reason = capability
+        if not probe():
+            pytest.skip(f"{example_name}/build.sh: {reason}")
 
     workspace = _make_script_workspace(
         pathlib.Path(uth.e2e_dir()) / example_name,

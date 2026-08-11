@@ -891,6 +891,7 @@ class TestNinjaLogClassifiesTestRules:
         assert by_target["obj/foo.o"].category == "compile"
 
 
+@pytest.mark.skipif(_ninja_unavailable, reason="ninja not on PATH")
 class TestFreshenedEntryDoesNotRepublishForever:
     """Ninja's answer to ``test_makefile_backend.py``'s freshening question.
 
