@@ -1761,12 +1761,14 @@ def fetch_externals(
             #     remove our clone and let resolve_external clone fresh.
             force_update = ext.name in forced_update and ext.name in fresh_clones and ext.ref is not None
             force_reclone = ext.name in forced_reclone and ext.name in fresh_clones
-            # NOT wrappedos.isdir: this existence check races the clone below
-            # and must be re-answered per round (skip case 2).
-            existed_before = os.path.isdir(target)
             with compiletools.locking.FileLock(target + ".lock", args):
-                # NOT wrappedos.isdir: re-answered under the lock (skip case 2).
-                if force_reclone and os.path.isdir(target):
+                # NOT wrappedos.isdir: races peer clones and must be re-answered
+                # per round (skip case 2). Sampled INSIDE the lock: this drives
+                # fresh_clones, the gate protecting a peer's just-finished clone
+                # from the rmtree/--update repairs below, so a pre-lock sample
+                # would misattribute a concurrent peer's clone to this run.
+                existed_before = os.path.isdir(target)
+                if force_reclone and existed_before:
                     shutil.rmtree(target)
                 result = resolve_external(
                     ext,
