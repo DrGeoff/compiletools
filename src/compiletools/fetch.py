@@ -1759,12 +1759,13 @@ def fetch_externals(
             #     origin-mismatch path warns and uses the tree as-is, and the
             #     winning ref may not even exist at the losing origin), so
             #     remove our clone and let resolve_external clone fresh.
-            # NOT wrappedos.isdir: this existence check races the clone below
-            # and must be re-answered per round (skip case 2).
             force_update = ext.name in forced_update and ext.name in fresh_clones and ext.ref is not None
             force_reclone = ext.name in forced_reclone and ext.name in fresh_clones
+            # NOT wrappedos.isdir: this existence check races the clone below
+            # and must be re-answered per round (skip case 2).
             existed_before = os.path.isdir(target)
             with compiletools.locking.FileLock(target + ".lock", args):
+                # NOT wrappedos.isdir: re-answered under the lock (skip case 2).
                 if force_reclone and os.path.isdir(target):
                     shutil.rmtree(target)
                 result = resolve_external(
