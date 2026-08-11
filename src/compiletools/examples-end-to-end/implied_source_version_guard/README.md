@@ -11,8 +11,9 @@ regression guard.
 ## The issue
 
 `hunter._expand_deps_recursive` threaded one `macro_state_key` — the root
-translation unit's — through the whole closure, and `hunter.py:121` handed that
-key to `headerdeps.process(implied, ...)`. `pump.cpp` is its own translation
+translation unit's — through the whole closure, and the implied-source branch
+of `hunter._get_immediate_deps` handed that key to
+`headerdeps.process(implied, ...)`. `pump.cpp` is its own translation
 unit, so evaluating its guard against `main.cpp`'s macro state asks a question
 about the wrong TU: `main.cpp` never includes `pumpcompat.h`, so
 `PUMPLIB_AT_LEAST` is undefined there.
@@ -27,21 +28,22 @@ branch is taken.
 Path to the failure:
 
 ```
-hunter.py:754  huntsource
-hunter.py:121  _get_immediate_deps      <- the implied-source branch
-headerdeps.py:400  process
-simple_preprocessor.py:1338  _handle_if_structured
-simple_preprocessor.py:1389  _warn_unevaluable_condition
+hunter.py                Hunter.huntsource
+hunter.py                Hunter._get_immediate_deps   <- the implied-source branch
+headerdeps.py            DirectHeaderDeps.process
+simple_preprocessor.py   SimplePreprocessor._handle_if_structured
+simple_preprocessor.py   SimplePreprocessor._warn_unevaluable_condition
 ```
 
 Of the four `headerdeps.process` call sites outside `converging()`, only two
-carried the defect. `hunter.py:700` (`header_dependencies`) already calls
+carried the defect. `hunter.header_dependencies` already calls
 `self.magicflags(source_filename)` first, so its key is post-convergence and its
 answer was always right — which is why `dep_hash` was never affected (see *Why
-it matters*). `fetch.py:1369` passes `frozenset()` deliberately: it is a
-tolerant pre-fetch scan for `//#GIT=` declarations that runs before the externals
-it would need in order to converge exist. It has its own separate defect,
-written up in `bugreport-fetch-guarded-git-declaration.md`.
+it matters*). `fetch._reachable_sources` passes `frozenset()` deliberately: it
+is a tolerant pre-fetch scan for `//#GIT=` declarations that runs before the
+externals it would need in order to converge exist. The blindness that scan
+needs on the declaration-reading side now extends to file reachability too —
+see "Preprocessor conditionals" in `README.ct-fetch.rst`.
 
 **Function-like-ness is the noise, not the cause.** Swap the guard for an
 object-like control (`#if PUMPLIB_VERSION_MAJOR >= 2`) and the dependency list

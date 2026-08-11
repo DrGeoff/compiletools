@@ -191,9 +191,13 @@ Declarations found only down an unevaluable branch are **additive only**
 A file the scan reaches *only* by ignoring a conditional can introduce an
 external nobody else declared — that is the point of following every branch —
 but it never wins, and never loses, a conflict. If it names an external that a
-normally-reachable file already declared at a different url or ref, the
-normally-reachable declaration is kept and the other is reported on stderr and
-dropped.
+normally-reachable file declares at a different url or ref, the
+normally-reachable declaration is kept and the other is dropped (reported on
+stderr at ``-v`` and above — the recommended layout is correct usage, so the
+default verbosity stays quiet about it). Discovery order does not matter: a
+normally-reachable declaration found in a later scan round (for example inside
+an external fetched by an earlier round) still displaces one recorded from an
+unevaluable branch.
 
 This is what keeps the every-branch scan from breaking the layout recommended
 just above. Two headers pinning one external to different refs, selected by

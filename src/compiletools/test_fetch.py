@@ -2608,6 +2608,40 @@ def test_blind_only_declaration_never_escalates_to_a_conflict_error(
 
 
 @requires_functional_compiler
+def test_dropped_blind_declaration_is_silent_at_default_verbosity(
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """The dropped-declaration note gates on verbose >= 1.
+
+    The layout that produces it is the one README.ct-fetch.rst RECOMMENDS for
+    conditional selection, so an ungated warning would nag every default-
+    verbosity run of correct usage with no way to silence it. Same project as
+    the warning test above, verbose 0: resolution is identical, stderr says
+    nothing about the drop."""
+    with tempfile.TemporaryDirectory() as root:
+        ext = _make_bare_origin(root)
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        with open(os.path.join(root, "ext_a.h"), "w") as fh:
+            fh.write(f"#pragma once\n//#GIT={ext['url']}@v1\n")
+        with open(os.path.join(root, "ext_b.h"), "w") as fh:
+            fh.write(f"#pragma once\n//#GIT={ext['url']}@master\n")
+        main = os.path.join(root, "main.cpp")
+        with open(main, "w") as fh:
+            fh.write(
+                '#if defined(PLAT_A)\n#include "ext_a.h"\n#else\n#include "ext_b.h"\n#endif\nint main() { return 0; }\n'
+            )
+
+        resolved = fetch_externals([main], _make_args(), BuildContext(), externals_dir=externals)
+
+        assert [(r.name, r.ref) for r in resolved] == [("origin", "master")]
+        err = capsys.readouterr().err
+        assert "ignoring a conflicting //#GIT= declaration" not in err, (
+            f"the dropped-declaration note leaked to default verbosity:\n{err}"
+        )
+
+
+@requires_functional_compiler
 def test_two_evaluated_files_still_raise_on_conflicting_refs() -> None:
     """The must-not-move half of the rule above: when BOTH declarations are
     evaluated-reachable, the hard error is still the right answer and must
@@ -2631,3 +2665,169 @@ def test_two_evaluated_files_still_raise_on_conflicting_refs() -> None:
         msg = str(excinfo.value)
         assert "conflicting" in msg and "refs" in msg
         assert "v1" in msg and "master" in msg
+
+
+def _write_cross_round_conflict_project(root: str) -> tuple[str, str, dict]:
+    """A project whose blind-only declaration is recorded a ROUND BEFORE the
+    conflicting evaluated-reachable one becomes visible.
+
+    Round 1 reads ``main.cpp``: the ``provider`` declaration (evaluated) and,
+    via the every-branch pass through the dead ``#if 0``, ``blind.h``'s
+    ``origin@v1`` (blind-only). Only after ``provider`` is FETCHED does round 2
+    reach ``provider/api.h``, whose evaluated ``origin@master`` then meets a
+    persisted prior that round 2's ``blind_only`` set no longer covers.
+    Returns ``(main_path, externals_dir, origin_meta)``.
+    """
+    origin = _make_bare_origin(root)  # tag v1, branch master (tips differ)
+    provider = _make_bare_with_files(root, "provider", {"api.h": f"#pragma once\n//#GIT={origin['url']}@master\n"})
+    externals = os.path.join(root, "externals")
+    os.makedirs(externals)
+    with open(os.path.join(root, "blind.h"), "w") as fh:
+        fh.write(f"#pragma once\n//#GIT={origin['url']}@v1\n")
+    main = os.path.join(root, "main.cpp")
+    with open(main, "w") as fh:
+        fh.write(
+            f"//#GIT={provider['url']}\n"
+            '#if 0\n#include "blind.h"\n#endif\n'
+            '#include "provider/api.h"\n'
+            "int main() { return 0; }\n"
+        )
+    return main, externals, origin
+
+
+@requires_functional_compiler
+def test_blind_prior_loses_to_an_evaluated_declaration_from_a_later_round(
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """The additive-only rule must hold ACROSS rounds, not just within one.
+
+    ``declared`` persists across fixpoint rounds while ``blind_only`` is
+    recomputed per round, so a blind-only declaration recorded in round 1
+    used to become an ordinary prior that an evaluated declaration from a
+    just-fetched external hard-conflicted with — a working build broken by a
+    dead ``#if 0`` branch, exactly the regression class the additive-only
+    rule exists to prevent. Blind must lose the conflict regardless of which
+    round read it first."""
+    with tempfile.TemporaryDirectory() as root:
+        main, externals, origin = _write_cross_round_conflict_project(root)
+
+        resolved = fetch_externals([main], _make_args(verbose=1), BuildContext(), externals_dir=externals)
+
+        assert [(r.name, r.ref) for r in resolved] == [("provider", None), ("origin", "master")]
+        # The result is not merely recorded: the losing declaration was
+        # resolved first (round 2 clones at v1 before round 3 displaces it),
+        # so the checkout must have been MOVED to the winning ref.
+        assert _git(os.path.join(externals, "origin"), "rev-parse", "HEAD") == origin["c2"], (
+            "the displaced blind declaration's clone was left at the losing ref"
+        )
+        # The displaced declaration is surfaced with the same dropped-blind
+        # warning the within-round case emits, naming the blind file as loser.
+        err = capsys.readouterr().err
+        dropped = [ln for ln in err.splitlines() if "ignoring a conflicting //#GIT= declaration" in ln]
+        assert dropped, f"the displaced blind declaration was not warned about:\n{err}"
+        assert "blind.h" in dropped[0]
+
+
+@requires_functional_compiler
+def test_status_agrees_with_fetch_on_a_cross_round_blind_conflict(
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """--status on the same layout must report the ref a build resolves.
+
+    gather_external_status shares the displacement rule (its own _scan_round
+    copy), including the status_cache invalidation for the re-declared name —
+    a stale cached entry would report the losing ref with a straight face."""
+    with tempfile.TemporaryDirectory() as root:
+        main, externals, _origin = _write_cross_round_conflict_project(root)
+        # Fetch first so provider is on disk: status never fetches, and only a
+        # present external's headers can supply the round-2 declaration.
+        fetch_externals([main], _make_args(), BuildContext(), externals_dir=externals)
+        capsys.readouterr()
+
+        statuses = fetch.gather_external_status([main], _make_args(), BuildContext(), externals_dir=externals)
+
+        assert [(s.name, s.ref) for s in statuses] == [("provider", None), ("origin", "master")]
+
+
+@requires_functional_compiler
+def test_url_displaced_blind_clone_is_recloned_from_the_winning_url() -> None:
+    """A URL displacement must RE-CLONE, not just force-update the ref.
+
+    When the blind prior and the evaluated winner disagree on URL (same
+    derived name, different repos), the round-2 clone made from the losing
+    declaration points at the wrong origin entirely. A forced --update
+    cannot repair that — resolve_external warns about the origin mismatch
+    and uses the tree as-is — so pre-fix the result claimed the winning URL
+    while the build compiled the losing repo's content. The fresh clone must
+    be removed and re-cloned from the winner."""
+    with tempfile.TemporaryDirectory() as root:
+        losing_dir = os.path.join(root, "a")
+        winning_dir = os.path.join(root, "b")
+        os.makedirs(losing_dir)
+        os.makedirs(winning_dir)
+        losing = _make_bare_with_files(losing_dir, "mylib", {"who.h": "#pragma once\n#define WHO LOSER\n"})
+        winning = _make_bare_with_files(winning_dir, "mylib", {"who.h": "#pragma once\n#define WHO WINNER\n"})
+        provider = _make_bare_with_files(root, "provider", {"api.h": f"#pragma once\n//#GIT={winning['url']}@master\n"})
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        with open(os.path.join(root, "blind.h"), "w") as fh:
+            fh.write(f"#pragma once\n//#GIT={losing['url']}@master\n")
+        main = os.path.join(root, "main.cpp")
+        with open(main, "w") as fh:
+            fh.write(
+                f"//#GIT={provider['url']}\n"
+                '#if 0\n#include "blind.h"\n#endif\n'
+                '#include "provider/api.h"\n'
+                "int main() { return 0; }\n"
+            )
+
+        resolved = fetch_externals([main], _make_args(), BuildContext(), externals_dir=externals)
+
+        mylib = next(r for r in resolved if r.name == "mylib")
+        assert mylib.url == winning["url"]
+        # The claim must match the bytes: origin and content are the winner's.
+        target = os.path.join(externals, "mylib")
+        assert _git(target, "remote", "get-url", "origin") == winning["url"], (
+            "the displaced blind clone still points at the losing URL"
+        )
+        with open(os.path.join(target, "who.h")) as fh:
+            assert "WINNER" in fh.read(), "the losing repo's content shipped under the winning URL"
+
+
+@requires_functional_compiler
+def test_url_displacement_leaves_a_preexisting_checkout_as_is() -> None:
+    """The must-not-move half of the re-clone rule: a checkout that existed
+    BEFORE this run (user-placed or from an earlier run) is never removed.
+    Only a clone this run itself created from the losing declaration is
+    fair game — same fresh_clones gate the ref-displacement repair uses."""
+    with tempfile.TemporaryDirectory() as root:
+        losing_dir = os.path.join(root, "a")
+        winning_dir = os.path.join(root, "b")
+        os.makedirs(losing_dir)
+        os.makedirs(winning_dir)
+        losing = _make_bare_with_files(losing_dir, "mylib", {"who.h": "#pragma once\n#define WHO LOSER\n"})
+        winning = _make_bare_with_files(winning_dir, "mylib", {"who.h": "#pragma once\n#define WHO WINNER\n"})
+        provider = _make_bare_with_files(root, "provider", {"api.h": f"#pragma once\n//#GIT={winning['url']}@master\n"})
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        # Pre-existing checkout of the LOSING repo at the managed location.
+        _git(root, "clone", "-q", losing["url"], os.path.join(externals, "mylib"))
+        with open(os.path.join(root, "blind.h"), "w") as fh:
+            fh.write(f"#pragma once\n//#GIT={losing['url']}@master\n")
+        main = os.path.join(root, "main.cpp")
+        with open(main, "w") as fh:
+            fh.write(
+                f"//#GIT={provider['url']}\n"
+                '#if 0\n#include "blind.h"\n#endif\n'
+                '#include "provider/api.h"\n'
+                "int main() { return 0; }\n"
+            )
+
+        fetch_externals([main], _make_args(), BuildContext(), externals_dir=externals)
+
+        # The pre-existing tree survives untouched (leave-as-is semantics,
+        # with resolve_external's origin-mismatch warning as the signal).
+        target = os.path.join(externals, "mylib")
+        assert _git(target, "remote", "get-url", "origin") == losing["url"], (
+            "a pre-existing checkout was clobbered by the URL-displacement re-clone"
+        )

@@ -1372,6 +1372,20 @@ def _blind_scanner(args, context, headerdeps, *, externals_dir: str, resolved_ro
     reused as-is; under ``--headerdeps=cpp`` a Direct instance is built solely
     for this scan, leaving the caller's choice of walker for the actual build
     untouched.
+
+    Rebuilding the cpp-path instance every fixpoint round is deliberate, not
+    an oversight to hoist away. The instance's ``@instance_cache`` on
+    ``_search_project_includes`` caches NEGATIVE answers (``None`` for an
+    include that isn't on disk yet), and a round boundary is exactly where
+    those go stale — the round just cloned externals whose headers now exist
+    (the same staleness the driver's per-round ``wrappedos.clear_cache()``
+    kills for the global stat caches). A hoisted instance would need those
+    caches cleared and ``_extra_include_dirs`` re-widened per round, which is
+    a rebuild by another name. A ``resolved_roots``-keyed cache would also
+    almost never hit: fetch's roots grow on every continuing round (new
+    externals resolved), so only status mode declaring a missing external
+    repeats a root set. Measured construction cost: ~0.1 ms per round,
+    against per-round git clones.
     """
     import compiletools.headerdeps
 
@@ -1621,10 +1635,37 @@ def fetch_externals(
     declared: dict[str, GitExternal] = {}
     declared_files: dict[str, str] = {}  # name -> first declaring file (best-effort diagnostics)
     declared_lower: dict[str, str] = {}  # lowercased name -> first-declared original-cased name (N3)
+    # Names whose recorded declaration came from a blind-only file. `declared`
+    # persists across rounds but `blind_only` is recomputed per round, so
+    # without this provenance a blind declaration recorded in round 1 becomes
+    # an ordinary `prior` that an evaluated-reachable declaration discovered
+    # in round 2 (e.g. inside a just-fetched external's headers) then hard-
+    # conflicts with — inverting the additive-only rule by arrival order.
+    declared_blind: set[str] = set()
+    # Names whose managed clone THIS run created (target did not exist before
+    # _resolve_one ran). A displaced blind declaration may have already cloned
+    # at the wrong ref; correcting that checkout is only safe when the clone
+    # is ours — a pre-existing tree keeps the standard leave-as-is semantics.
+    fresh_clones: set[str] = set()
+    # Displaced names whose re-resolve must move the checkout to the evaluated
+    # ref (branch refs otherwise warn-and-leave without --update).
+    forced_update: set[str] = set()
+    # Displaced names whose evaluated declaration names a DIFFERENT URL than
+    # the blind prior. A ref can be corrected in place, a URL cannot:
+    # resolve_external on a present checkout with a mismatched origin warns
+    # and uses it as-is, so the losing repo's content would ship behind a
+    # result claiming the winning URL. The re-resolve must re-clone instead —
+    # only ever a clone THIS run created (gated on fresh_clones in
+    # _resolve_one); a pre-existing tree keeps leave-as-is semantics.
+    forced_reclone: set[str] = set()
     # (name, declaring file) pairs already warned about as dropped blind-only
     # declarations. The driver re-scans every round and `declared` persists,
     # so the same conflict is re-detected on each one.
     dropped_reported: set[tuple[str, str]] = set()
+    # The dropped-declaration notes gate on verbosity from EITHER channel: the
+    # explicit parameter (cake / ct-fetch thread args.verbose into it) or
+    # args.verbose itself (the channel the -vv blind-scan note already reads).
+    scan_verbose = max(verbose, getattr(args, "verbose", 0))
     # Union of every //#GIT_ALLOW_PROTOCOL= list declared by a reachable source.
     # A project widens the permitted transport set (e.g. to add `ext`) by
     # declaring it; the union is the explicit opt-in. Empty => the safe default.
@@ -1703,15 +1744,40 @@ def fetch_externals(
             import compiletools.wrappedos
 
             target = compiletools.wrappedos.join(externals_dir, ext.name)
+            # A displaced blind declaration re-resolves at the evaluated
+            # declaration, but resolve_external treats a present checkout
+            # tolerantly — so the clone THIS run made from the losing
+            # declaration would stay at the losing state while the result
+            # claims the winner. Two repairs, both gated on the clone being
+            # ours (fresh this run; a pre-existing tree keeps the standard
+            # leave-as-is semantics):
+            #   * ref-only displacement: --update semantics move the checkout,
+            #     only when the winner actually pins a ref (an unpinned
+            #     declaration is satisfied by any checkout, and forcing
+            #     --update onto it trips the A21 detached-HEAD refusal);
+            #   * URL displacement: a ref cannot fix a wrong origin (the
+            #     origin-mismatch path warns and uses the tree as-is, and the
+            #     winning ref may not even exist at the losing origin), so
+            #     remove our clone and let resolve_external clone fresh.
+            # NOT wrappedos.isdir: this existence check races the clone below
+            # and must be re-answered per round (skip case 2).
+            force_update = ext.name in forced_update and ext.name in fresh_clones and ext.ref is not None
+            force_reclone = ext.name in forced_reclone and ext.name in fresh_clones
+            existed_before = os.path.isdir(target)
             with compiletools.locking.FileLock(target + ".lock", args):
-                return resolve_external(
+                if force_reclone and os.path.isdir(target):
+                    shutil.rmtree(target)
+                result = resolve_external(
                     ext,
                     externals_dir=externals_dir,
                     override_path=None,
                     no_fetch=no_fetch,
-                    update=update,
+                    update=update or force_update,
                     verbose=verbose,
                 )
+            if not existed_before:
+                fresh_clones.add(ext.name)
+            return result
         finally:
             _git_run_ctx.reset(token)
 
@@ -1778,6 +1844,7 @@ def fetch_externals(
                 for value in extract_git_allow_protocols(source_file, args, context):
                     allow_protocol_tokens.update(t for t in value.split(":") if t)
             for ext in extract_git_externals(source_file, args, context):
+                is_blind = source_file in blind_only
                 prior = declared.get(ext.name)
                 if prior is None:
                     # N3: overrides key on the lowercased name, so two names that
@@ -1797,6 +1864,8 @@ def fetch_externals(
                     declared[ext.name] = ext
                     declared_files[ext.name] = source_file
                     declared_lower[lower] = ext.name
+                    if is_blind:
+                        declared_blind.add(ext.name)
                     # First time this name is declared, so it cannot already be
                     # in `resolved` (which only holds previously-declared names).
                     new_names.append(ext)
@@ -1807,14 +1876,16 @@ def fetch_externals(
                 # hard conflict errors below. Those files are reachable only
                 # through a branch this scan could not evaluate, so at most one of
                 # the conflicting declarations is live in any real configuration
-                # — and the evaluated-reachable one, recorded first, is the one
-                # with evidence behind it. Raising here would break the layout
+                # — and the evaluated-reachable one is the one with evidence
+                # behind it. Raising here would break the layout
                 # README.ct-fetch.rst recommends for conditional selection
                 # (per-configuration externals in separate headers picked by
                 # `#if`), which resolved cleanly before the every-branch pass
-                # existed. Warn so the ambiguity is visible, then keep `prior`.
-                if source_file in blind_only and (prior.url != ext.url or prior.ref != ext.ref):
-                    if (ext.name, source_file) not in dropped_reported:
+                # existed. Surface the ambiguity at verbose >= 1, then keep
+                # `prior` — that layout is documented correct usage, so the
+                # note must not nag every default-verbosity run.
+                if is_blind and (prior.url != ext.url or prior.ref != ext.ref):
+                    if scan_verbose >= 1 and (ext.name, source_file) not in dropped_reported:
                         dropped_reported.add((ext.name, source_file))
                         _warn(
                             f"ignoring a conflicting //#GIT= declaration for '{ext.name}' in "
@@ -1822,6 +1893,37 @@ def fetch_externals(
                             f"through a conditional this scan cannot evaluate, so "
                             f"'{prior.url}@{prior.ref}' (in {declared_files.get(ext.name, '?')}) is kept."
                         )
+                    continue
+                # The mirror case, which arrival order alone cannot handle:
+                # `declared` persists across fixpoint rounds while `blind_only`
+                # is recomputed per round, so a blind-only declaration recorded
+                # in an earlier round is an ordinary `prior` by the time an
+                # evaluated-reachable declaration turns up (typically inside a
+                # just-fetched external's headers). Blind never wins a conflict
+                # regardless of which round read it first: displace the blind
+                # prior, warn with the same wording as the drop above, and
+                # re-resolve at the evaluated declaration.
+                if not is_blind and ext.name in declared_blind:
+                    if prior.url != ext.url or prior.ref != ext.ref:
+                        displaced_file = declared_files.get(ext.name, "?")
+                        if scan_verbose >= 1 and (ext.name, displaced_file) not in dropped_reported:
+                            dropped_reported.add((ext.name, displaced_file))
+                            _warn(
+                                f"ignoring a conflicting //#GIT= declaration for '{ext.name}' in "
+                                f"'{displaced_file}' ({prior.url}@{prior.ref}): that file is reachable "
+                                f"only through a conditional this scan cannot evaluate, so "
+                                f"'{ext.url}@{ext.ref}' (in {source_file}) is kept."
+                            )
+                        declared[ext.name] = ext
+                        declared_files[ext.name] = source_file
+                        if prior.url != ext.url:
+                            forced_reclone.add(ext.name)
+                        else:
+                            forced_update.add(ext.name)
+                        new_names.append(ext)
+                    # Either way the name is now evaluated-backed: a later
+                    # evaluated conflict must hard-error, not displace again.
+                    declared_blind.discard(ext.name)
                     continue
                 # Same name seen before — must agree on URL.
                 if prior.url != ext.url:
@@ -1989,8 +2091,10 @@ def gather_external_status(
 
     declared: dict[str, GitExternal] = {}
     declared_files: dict[str, str] = {}  # name -> first declaring file (best-effort diagnostics)
+    declared_blind: set[str] = set()  # names whose recorded declaration is blind-only (see fetch_externals)
     ordered_names: list[str] = []
     dropped_reported: set[tuple[str, str]] = set()  # see fetch_externals' copy
+    verbose = getattr(args, "verbose", 0)
     # status is report-only and never mutates the filesystem, so an external's
     # on-disk state cannot change mid-run. Compute each ExternalStatus at most
     # once and reuse it across rounds (root selection) and in the final pass,
@@ -2025,10 +2129,13 @@ def gather_external_status(
         new_found = False
         for source_file in reachable:
             for ext in extract_git_externals(source_file, args, context):
+                is_blind = source_file in blind_only
                 prior = declared.get(ext.name)
                 if prior is None:
                     declared[ext.name] = ext
                     declared_files[ext.name] = source_file
+                    if is_blind:
+                        declared_blind.add(ext.name)
                     ordered_names.append(ext.name)
                     new_found = True
                     continue
@@ -2037,16 +2144,35 @@ def gather_external_status(
                 # declared, but it does not contest one. Reporting a "conflict"
                 # here that the build deliberately resolves would make --status
                 # disagree with what a build actually does.
-                if source_file in blind_only and (prior.url != ext.url or prior.ref != ext.ref):
-                    if (ext.name, source_file) in dropped_reported:
-                        continue
-                    dropped_reported.add((ext.name, source_file))
-                    _warn(
-                        f"ignoring a conflicting //#GIT= declaration for '{ext.name}' in "
-                        f"'{source_file}' ({ext.url}@{ext.ref}): that file is reachable only "
-                        f"through a conditional this scan cannot evaluate, so "
-                        f"'{prior.url}@{prior.ref}' (in {declared_files.get(ext.name, '?')}) is kept."
-                    )
+                if is_blind and (prior.url != ext.url or prior.ref != ext.ref):
+                    if verbose >= 1 and (ext.name, source_file) not in dropped_reported:
+                        dropped_reported.add((ext.name, source_file))
+                        _warn(
+                            f"ignoring a conflicting //#GIT= declaration for '{ext.name}' in "
+                            f"'{source_file}' ({ext.url}@{ext.ref}): that file is reachable only "
+                            f"through a conditional this scan cannot evaluate, so "
+                            f"'{prior.url}@{prior.ref}' (in {declared_files.get(ext.name, '?')}) is kept."
+                        )
+                    continue
+                # Mirror case across rounds, exactly as in fetch_externals: a
+                # blind-recorded prior loses to an evaluated-reachable
+                # declaration no matter which round read it first, keeping
+                # --status's answer identical to what a build resolves.
+                if not is_blind and ext.name in declared_blind:
+                    if prior.url != ext.url or prior.ref != ext.ref:
+                        displaced_file = declared_files.get(ext.name, "?")
+                        if verbose >= 1 and (ext.name, displaced_file) not in dropped_reported:
+                            dropped_reported.add((ext.name, displaced_file))
+                            _warn(
+                                f"ignoring a conflicting //#GIT= declaration for '{ext.name}' in "
+                                f"'{displaced_file}' ({prior.url}@{prior.ref}): that file is reachable "
+                                f"only through a conditional this scan cannot evaluate, so "
+                                f"'{ext.url}@{ext.ref}' (in {source_file}) is kept."
+                            )
+                        declared[ext.name] = ext
+                        declared_files[ext.name] = source_file
+                        status_cache.pop(ext.name, None)
+                    declared_blind.discard(ext.name)
                     continue
                 # Same name seen before. In report mode we never raise on a
                 # conflict (mirrors fetch_externals' wording, but tolerant):
