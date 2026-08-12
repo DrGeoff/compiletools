@@ -45,6 +45,18 @@ from compiletools.utils import instance_cache
 #       key (no compiler flag starts with an underscore).
 _HARD_ORDERINGS_KEY = sz.Str("_HARD_ORDERINGS")
 
+
+class MacroConvergenceError(Exception):
+    """Macro state failed to settle within the convergence iteration bound.
+
+    Raised when the final `_converge_macro_state` call exhausts its iteration
+    budget while the macro state is still changing — a macro chain deeper than
+    the budget. Without this error the build would silently emit the flags of
+    whatever intermediate state the cap happened to land on (measured: a
+    10-deep reverse-order chain links the wrong library with no diagnostic).
+    """
+
+
 # Type aliases for clarity
 MacroDict = dict[sz.Str, sz.Str]
 FlagsDict = dict[sz.Str, list[sz.Str]]
@@ -1147,12 +1159,26 @@ class DirectMagicFlags(MagicFlagsBase):
     def _converge_macro_state(self, all_files, max_iterations=5):
         """Iteratively process files until macro state converges.
 
-        Returns: number of iterations taken
+        Returns: (iterations taken, converged). converged is False when the
+        state was still moving after `max_iterations` state-CHANGING passes —
+        the caller of the FINAL convergence must treat that as an error,
+        because the emitted flags come from whatever intermediate point the
+        budget landed on and can be silently wrong.
+
+        Only changing passes count against the budget, and exhaustion is
+        detected by the pass AFTER the budget is spent: a state that settles
+        exactly on the last budgeted pass is confirmed by one further
+        (no-change, cache-warm) pass rather than misreported as exhausted.
+        Raising on that boundary would break a build whose flags are correct
+        (measured: a 9-deep reverse-order chain settles on the final budgeted
+        pass and links the right library).
         """
         file_last_macro_version = {}
         iteration = 0
+        changing_passes = 0
+        converged = False
 
-        while iteration < max_iterations:
+        while True:
             iteration += 1
             # Track state object identity to detect convergence
             # with_updates() returns self if no effective changes occur
@@ -1165,6 +1191,7 @@ class DirectMagicFlags(MagicFlagsBase):
             files_to_process = [fname for fname in all_files if file_last_macro_version.get(fname) != current_macro_key]
 
             if not files_to_process:
+                converged = True
                 break
 
             # Process files that need reprocessing
@@ -1177,9 +1204,32 @@ class DirectMagicFlags(MagicFlagsBase):
             # Check convergence - identity check works because with_updates returns
             # self if no changes occurred
             if self.defined_macros is macro_state_before:
+                converged = True
                 break
 
-        return iteration
+            changing_passes += 1
+            if changing_passes > max_iterations:
+                break
+
+        return iteration, converged
+
+    def _raise_if_not_converged(self, converged: bool, iterations: int, filename: str) -> None:
+        """Fail loudly when the FINAL convergence for `filename` exhausted its bound.
+
+        Only the last `_converge_macro_state` call needs this: pass-1
+        exhaustion is benign when Pass 2 follows, since Pass 2 re-converges
+        from the pass-1 state with a fresh budget (a chain of depth 6-9
+        exhausts pass 1 and still settles correctly in pass 2).
+        """
+        if converged:
+            return
+        raise MacroConvergenceError(
+            f"Macro state for {filename} did not converge after {iterations} iterations. "
+            f"A macro dependency chain deeper than the iteration bound would silently "
+            f"resolve conditional magic flags (//#CXXFLAGS, //#LDFLAGS, ...) from an "
+            f"unsettled intermediate state. Break up the chain, or include the headers "
+            f"closer to dependency order so each pass resolves more of it."
+        )
 
     def _finalize_and_cache_result(self, filename, headers, cache_key):
         """Store final macro state and build cached result."""
@@ -1266,7 +1316,7 @@ class DirectMagicFlags(MagicFlagsBase):
 
         # Converge macro state with Pass 1 file set
         all_files = self._build_all_files_list(filename, headers)
-        self._converge_macro_state(all_files)
+        iterations, converged = self._converge_macro_state(all_files)
 
         # PASS 2: Re-discover if macros changed during convergence
         pass1_macro_key = self.defined_macros.get_cache_key()
@@ -1306,7 +1356,12 @@ class DirectMagicFlags(MagicFlagsBase):
 
             # Re-converge with expanded file set
             all_files = self._build_all_files_list(filename, headers)
-            self._converge_macro_state(all_files)
+            iterations, converged = self._converge_macro_state(all_files)
+
+        # Only the FINAL convergence must have settled: an exhausted Pass 1
+        # always changes the macro key, so Pass 2 (with a fresh budget) is
+        # guaranteed to run after it and its verdict supersedes.
+        self._raise_if_not_converged(converged, iterations, filename)
 
         # Finalize with FINAL dependency list
         final_all_deps = sorted(set(headers) | self._explicit_macro_files)

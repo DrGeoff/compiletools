@@ -403,8 +403,9 @@ class TestConvergeMacroState:
         mock_state = MagicMock()
         mock_state.get_cache_key.return_value = frozenset()
         obj.defined_macros = mock_state
-        iterations = obj._converge_macro_state([])
+        iterations, converged = obj._converge_macro_state([])
         assert iterations == 1
+        assert converged
 
 
 class TestCollectExplicitMacroFiles:

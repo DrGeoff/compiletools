@@ -1623,3 +1623,70 @@ class TestUndefRedefineInTheConvergenceLoop(tb.BaseCompileToolsTestCase):
         )
         assert "-DX_UNDEFINED" in cxxflags, cxxflags
         assert "-DX_DEFINED" not in cxxflags, cxxflags
+
+
+def _reverse_order_chain_sources(depth: int) -> dict:
+    """Synthetic macro chain of `depth` links, included in reverse dependency
+    order so each convergence iteration resolves exactly one more link.
+
+    link_0 defines LINK_0; link_i (i>0) computes LINK_i from LINK_{i-1}; the
+    gate at the top reads LINK_{depth-1} and picks a library. main.cpp
+    includes top-of-chain first, so a single accumulating pass resolves only
+    the bottom link and settling takes about one iteration per link.
+    """
+    sources = {
+        "gate.h": (
+            "#pragma once\n"
+            f"#if LINK_{depth - 1} >= 5\n"
+            "//#CXXFLAGS=-DDEEP_HIGH=1\n"
+            "//#LDFLAGS=-ldeep_high\n"
+            "#else\n"
+            "//#CXXFLAGS=-DDEEP_LOW=1\n"
+            "//#LDFLAGS=-ldeep_low\n"
+            "#endif\n"
+        ),
+        "link_0.h": "#pragma once\n#define LINK_0 8\n",
+    }
+    for i in range(1, depth):
+        sources[f"link_{i}.h"] = (
+            f"#pragma once\n#if LINK_{i - 1} >= 7\n#define LINK_{i} 9\n#else\n#define LINK_{i} 1\n#endif\n"
+        )
+    includes = ['#include "gate.h"'] + [f'#include "link_{i}.h"' for i in range(depth - 1, -1, -1)]
+    sources["main.cpp"] = "\n".join(includes) + "\nint main() { return 0; }\n"
+    return sources
+
+
+class TestConvergenceCapExhaustion(tb.BaseCompileToolsTestCase):
+    """A chain deeper than the iteration budget must raise, not silently emit
+    the intermediate state's flags. Before the fix, a 10-deep reverse-order
+    chain reported iters=[5, 5] and linked -ldeep_low where -ldeep_high is
+    correct, with no diagnostic at any verbosity.
+
+    The deep test asserts the error fires rather than any particular flag
+    set, so it does not ossify the current cap value.
+    """
+
+    def setup_method(self):
+        super().setup_method()
+        compiletools.magicflags.MagicFlagsBase.clear_cache()
+        compiletools.headerdeps.HeaderDepsBase.clear_cache()
+
+    def _parse_chain(self, depth: int):
+        files = uth.write_sources(_reverse_order_chain_sources(depth), target_dir=self._tmpdir)
+        parser = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir, context=BuildContext())
+        parser.clear_cache()
+        return parser.parse(str(files["main.cpp"]))
+
+    def test_a_chain_deeper_than_the_iteration_budget_raises(self):
+        with pytest.raises(compiletools.magicflags.MacroConvergenceError, match="did not converge"):
+            self._parse_chain(depth=30)
+
+    def test_control_a_shallow_chain_still_converges_and_links_correctly(self):
+        """The must-not-move side: a chain the budget covers keeps building,
+        and to the settled branch. Guards against over-applying the error to
+        a convergence that merely NEEDED more than one iteration."""
+        result = self._parse_chain(depth=3)
+
+        ldflags = " ".join(str(flag) for flag in result.get(sz.Str("LDFLAGS"), []))
+        assert "-ldeep_high" in ldflags, ldflags
+        assert "-ldeep_low" not in ldflags, ldflags

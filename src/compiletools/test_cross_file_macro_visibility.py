@@ -113,20 +113,25 @@ class TestConvergenceIterationLoop:
         assert "-lchain_high" in flags.get("LDFLAGS", ""), flags
         assert "-lchain_low" not in flags.get("LDFLAGS", ""), flags
 
-    def test_control_capping_the_loop_at_one_iteration_changes_the_answer(self, monkeypatch):
-        """Proof the chain still needs the loop. This fails if someone sorts
-        chain_main.cpp's includes into dependency order, which would leave the
-        build correct while removing the loop's only coverage.
+    def test_control_replacing_the_loop_with_one_pass_changes_the_answer(self, monkeypatch):
+        """Proof the chain still needs the loop. The ablation is what deleting
+        the loop would leave behind: one accumulating pass that claims
+        convergence, so the exhaustion error cannot mask the wrong flags.
+        This fails if someone sorts chain_main.cpp's includes into dependency
+        order, which would leave the build correct while removing the loop's
+        only coverage.
 
         It also fails loudly if ``_converge_macro_state`` is deleted outright,
         since the patch target would no longer exist.
         """
-        original = compiletools.magicflags.DirectMagicFlags._converge_macro_state
         calls = []
 
-        def single_pass(self, all_files, max_iterations=5):
+        def single_pass(self, all_files):
             calls.append(len(all_files))
-            return original(self, all_files, max_iterations=1)
+            macro_key = self.defined_macros.get_cache_key()
+            for fname in all_files:
+                self._process_file_for_macros(fname, macro_key)
+            return 1, True
 
         monkeypatch.setattr(
             compiletools.magicflags.DirectMagicFlags,
@@ -137,7 +142,7 @@ class TestConvergenceIterationLoop:
 
         assert calls, "the ablation never ran, so this control proves nothing"
         assert "-DCHAIN_LOW=1" in flags.get("CXXFLAGS", ""), (
-            f"capped at one iteration the chain should have resolved to the low branch, got {flags}"
+            f"without the iteration loop the chain should have resolved to the low branch, got {flags}"
         )
         assert "-lchain_low" in flags.get("LDFLAGS", ""), flags
 
