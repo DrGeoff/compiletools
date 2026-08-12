@@ -74,16 +74,21 @@ class FileEffects:
         content_hash: Hash of the producing file's content, used to resolve
             the file path for condition-occurrence replay.
         file_defines: Macros this file actively #define's (final values).
-        file_undefs: Names this file actively #undef's, disjoint from
-            file_defines: a name both undef'd and redefined keeps only its
-            final #define here, so apply order between the two sets cannot
-            change the outcome.
+        file_undefs: Names this file actively #undef's. The sets MAY
+            overlap: get_or_compute_preprocessing deliberately carries a
+            name that is both undef'd and redefined in both sets so a warm
+            caller whose input already holds a stale value reconstructs to
+            the file's final one — which is exactly why apply()'s
+            undefs-before-defines order is load-bearing. (magicflags'
+            producer additionally makes ITS two sets disjoint per the
+            positional verdict; that is a property of that producer, not
+            something apply() relies on.)
         file_function_params: Parameter lists of the function-like macros
             among file_defines. Without them a replay restores a macro's
             body but not its arity.
         condition_occurrences: ``(kind, directive_type, condition, line_num)``
             tuples for every condition this file's processing resolved or
-            found unreached (see :func:`replay_condition_occurrences`).
+            found unreached (see :func:`_replay_condition_occurrences`).
     """
 
     content_hash: str
@@ -136,7 +141,7 @@ class ProcessingResult:
     active_magic_flags: list[dict]
     active_defines: list[dict]
     updated_macros: "MacroState"  # Forward reference
-    effects: FileEffects = field(default_factory=lambda: FileEffects(content_hash=""))
+    effects: FileEffects
 
     @property
     def file_defines(self) -> MacroDict:

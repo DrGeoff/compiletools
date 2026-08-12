@@ -1,12 +1,14 @@
 import os
 import warnings
 
+import configargparse
 import pytest
 import stringzilla as sz
 
 import compiletools.apptools
 import compiletools.apptools_pkgconfig as pkgconfig
 import compiletools.headerdeps
+import compiletools.hunter
 import compiletools.magicflags
 import compiletools.test_base as tb
 import compiletools.testhelper as uth
@@ -1690,3 +1692,33 @@ class TestConvergenceCapExhaustion(tb.BaseCompileToolsTestCase):
         ldflags = " ".join(str(flag) for flag in result.get(sz.Str("LDFLAGS"), []))
         assert "-ldeep_high" in ldflags, ldflags
         assert "-ldeep_low" not in ldflags, ldflags
+
+    def test_the_error_escapes_hunters_broad_expansion_handler(self):
+        """Hunter.huntsource wraps source expansion in a broad
+        except-Exception that downgrades to a stderr warning and drops the
+        expansion — which would re-silence exactly the failure this error
+        exists to make loud (the dropped implied sources resurface as an
+        undefined reference at link, with no pointer back). The escape
+        hatch must re-raise it like the PkgConfigError one above it."""
+        uth.write_sources(_reverse_order_chain_sources(30), target_dir=self._tmpdir)
+        main_path = os.path.join(self._tmpdir, "main.cpp")
+        temp_config = uth.create_temp_config(self._tmpdir)
+
+        argv = ["-c", temp_config, "--magic=direct"]
+        cap = configargparse.ArgumentParser(
+            conflict_handler="resolve",
+            args_for_setting_config_path=["-c", "--config"],
+            ignore_unknown_config_file_keys=True,
+        )
+        compiletools.hunter.add_arguments(cap)
+        ctx = BuildContext()
+        args = compiletools.apptools.parseargs(cap, argv, context=ctx)
+        # huntsource reads the target list via getattr; --filename itself is
+        # registered by cake's parser, not hunter's.
+        args.filename = [main_path]
+        headerdeps = compiletools.headerdeps.create(args, context=ctx)
+        magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
+        hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
+
+        with pytest.raises(compiletools.magicflags.MacroConvergenceError, match="did not converge"):
+            hunter.huntsource()

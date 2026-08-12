@@ -1173,10 +1173,12 @@ class DirectMagicFlags(MagicFlagsBase):
         Only changing passes count against the budget, and exhaustion is
         detected by the pass AFTER the budget is spent: a state that settles
         exactly on the last budgeted pass is confirmed by one further
-        (no-change, cache-warm) pass rather than misreported as exhausted.
-        Raising on that boundary would break a build whose flags are correct
+        (no-change, cache-warm) pass rather than misreported as exhausted
         (measured: a 9-deep reverse-order chain settles on the final budgeted
-        pass and links the right library).
+        pass and links the right library). This moves the raise boundary by
+        one, it does not remove it: a chain exactly one deeper still raises
+        even when its flags happen to land right, the conservative side of
+        the trade.
         """
         file_last_macro_version = {}
         iteration = 0
@@ -1363,9 +1365,11 @@ class DirectMagicFlags(MagicFlagsBase):
             all_files = self._build_all_files_list(filename, headers)
             iterations, converged = self._converge_macro_state(all_files)
 
-        # Only the FINAL convergence must have settled: an exhausted Pass 1
-        # always changes the macro key, so Pass 2 (with a fresh budget) is
-        # guaranteed to run after it and its verdict supersedes.
+        # Only the FINAL convergence must be enforced. When Pass 2 runs, its
+        # verdict (fresh budget over the pass-1 state) supersedes pass-1
+        # exhaustion; when it does not run, Pass 1 IS the final convergence
+        # and its verdict is the one to enforce — including the oscillation
+        # edge case where an exhausted Pass 1 lands back on the input key.
         self._raise_if_not_converged(converged, iterations, filename)
 
         # Finalize with FINAL dependency list

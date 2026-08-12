@@ -780,6 +780,12 @@ class Hunter:
 
             except compiletools.apptools_pkgconfig.PkgConfigError as exc:
                 _terminate_on_strict_pkg_config(exc, source)
+            except compiletools.magicflags.MacroConvergenceError:
+                # The whole point of this error is a loud stop instead of
+                # silently wrong flags; downgrading it to a warning here
+                # would drop the source's expansion and resurface as an
+                # undefined-reference at link with no pointer back.
+                raise
             except Exception as e:
                 # Deliberately broad: the expansion walks headerdeps + magic
                 # flags, whose failure modes span OSError/ValueError/parse
@@ -829,6 +835,9 @@ class Hunter:
                         test_sources.update(required_sources)
                     except compiletools.apptools_pkgconfig.PkgConfigError as exc:
                         _terminate_on_strict_pkg_config(exc, source)
+                    except compiletools.magicflags.MacroConvergenceError:
+                        # See huntsource: this error must stop the build.
+                        raise
                     except Exception as e:
                         # Same contract as huntsource: broad on purpose (deep
                         # headerdeps/magicflags walk), loud on purpose.

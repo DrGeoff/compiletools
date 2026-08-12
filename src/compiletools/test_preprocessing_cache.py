@@ -14,6 +14,7 @@ from compiletools.build_context import BuildContext
 from compiletools.file_analyzer import FileAnalysisResult, PreprocessorDirective
 from compiletools.preprocessing_cache import (
     INCLUDE_PATH_ENV_VARS,
+    FileEffects,
     MacroState,
     clear_cache,
     decode_macro_cache_key,
@@ -669,6 +670,48 @@ class TestGetHashVariableOnly:
         """Empty variable produces the all-zeros XOR result."""
         state = MacroState({}, {}, anchor_root="")
         assert state.get_hash() == "0000000000000000"
+
+
+class TestFileEffectsApply:
+    """Direct unit coverage of the apply() contract, independent of the
+    cache paths that exercise it indirectly. The overlap case is the one
+    that makes the internal ordering load-bearing."""
+
+    def test_an_overlapping_undef_and_define_lands_on_the_define(self):
+        """The producer may carry a name in BOTH sets (undef'd then
+        redefined); undefs-before-defines reconstructs the final value even
+        when the input holds a stale one. Defines-first would strip the
+        just-reapplied value back out."""
+        effects = FileEffects(
+            content_hash="h",
+            file_defines={sz.Str("X"): sz.Str("2")},
+            file_undefs=frozenset({sz.Str("X")}),
+        )
+        stale_input = MacroState({}, {sz.Str("X"): sz.Str("1")}, anchor_root="")
+
+        result = effects.apply(stale_input, BuildContext())
+
+        assert result.variable[sz.Str("X")] == sz.Str("2")
+
+    def test_a_redefinition_to_object_like_drops_the_old_parameter_list(self):
+        """with_updates drops function_params for redefined names absent
+        from the effects' own params, so a function-like macro redefined
+        object-like must not keep its stale arity through a replay."""
+        effects = FileEffects(
+            content_hash="h",
+            file_defines={sz.Str("F"): sz.Str("1")},
+        )
+        input_state = MacroState(
+            {},
+            {sz.Str("F"): sz.Str("0")},
+            function_params={sz.Str("F"): (sz.Str("a"),)},
+            anchor_root="",
+        )
+
+        result = effects.apply(input_state, BuildContext())
+
+        assert result.variable[sz.Str("F")] == sz.Str("1")
+        assert sz.Str("F") not in result.function_params
 
 
 class TestCacheHitMacroReconstruction(_CacheTestBase):
