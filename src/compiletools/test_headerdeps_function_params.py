@@ -1,10 +1,10 @@
 """Function-like macro arity survives the DirectHeaderDeps include cache.
 
 ``_create_include_list`` keeps its own two-tier cache of
-``(include_list, file_defines, file_undefs, file_function_params)`` per file.
-Before the fourth slot existed the replay restored a function-like macro's
-*body* without its *parameter list*, so a warm traversal saw ``F`` as
-object-like and every ``#if F(2, 0)`` downstream of it took the other branch.
+``(include_list, FileEffects)`` per file. Before the effects carried
+``file_function_params`` the replay restored a function-like macro's *body*
+without its *parameter list*, so a warm traversal saw ``F`` as object-like
+and every ``#if F(2, 0)`` downstream of it took the other branch.
 
 The damage is not confined to branch selection.  ``magicflags`` builds
 ``all_source_files = [filename] + headers`` straight off
@@ -277,9 +277,9 @@ class TestUndefRedefineSurvivesTheIncludeCache(tb.BaseCompileToolsTestCase):
     warm hit even when the warm caller's macro state already has X defined
     to something else -- see preprocessing_cache.py's reconstruction order
     fix. DirectHeaderDeps' own include-list cache (``_create_include_list``)
-    replays the identical (file_defines, file_undefs) pair and is
-    susceptible to the same ordering bug independently of the preprocessing
-    cache it wraps.
+    replays the identical FileEffects and would be susceptible to the same
+    ordering bug independently of the preprocessing cache it wraps if it
+    bypassed ``FileEffects.apply``.
     """
 
     def setup_method(self):
