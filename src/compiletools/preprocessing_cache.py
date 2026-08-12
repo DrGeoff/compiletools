@@ -16,7 +16,7 @@ The hash is deterministic across Python runs, enabling future disk caching suppo
 
 import os
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Optional
@@ -143,15 +143,40 @@ class FileEffects:
         return result
 
 
-@dataclass
+def _frozen_directive_entries(entries) -> tuple[Mapping, ...]:
+    """Snapshot directive dicts behind read-only views, as a tuple.
+
+    Each entry is snapshot-copied first, so the result also stops aliasing
+    the producer's dicts (the cached FileAnalysisResult's own
+    includes/magic_flags/defines lists). A ``mappingproxy`` compares equal
+    to the dict it wraps, so consumers reading these entries see no change.
+    The list-valued keys a define entry carries (``lines``, ``params``) stay
+    lists: coercing them to tuples would break that equality.
+
+    An already-frozen sequence passes through by identity. The warm-hit path
+    rebuilds a ProcessingResult around the cached one's own containers, so
+    re-copying every entry there would put the snapshot cost on every hit.
+    """
+    if type(entries) is tuple and (not entries or isinstance(entries[0], MappingProxyType)):
+        return entries
+    return tuple(MappingProxyType(dict(entry)) for entry in entries)
+
+
+@dataclass(frozen=True)
 class ProcessingResult:
     """Result of preprocessing a file with conditional compilation.
 
+    Instances are deeply immutable for the same reason FileEffects is: one
+    result is served by identity to every consumer of a warm cache entry,
+    so ``__post_init__`` coerces the four ``active_*`` containers to tuples
+    of read-only views. Their annotations stay at the read-only supertype
+    so a producer can pass the lists it built.
+
     Attributes:
         active_lines: Line numbers that are active after preprocessing (0-based)
-        active_includes: List of active #include directives with metadata
-        active_magic_flags: List of active magic flags with metadata
-        active_defines: List of active #define directives with metadata
+        active_includes: Active #include directives with metadata
+        active_magic_flags: Active magic flags with metadata
+        active_defines: Active #define directives with metadata
         updated_macros: Macro state after processing (input + defines - undefs)
         effects: What processing this file did to the macro state — the
             defines/undefs/function-params/condition-occurrences bundle a
@@ -159,12 +184,22 @@ class ProcessingResult:
             four legacy slot names remain readable as delegating properties.
     """
 
-    active_lines: list[int]
-    active_includes: list[dict]
-    active_magic_flags: list[dict]
-    active_defines: list[dict]
+    active_lines: Sequence[int]
+    active_includes: Sequence[Mapping]
+    active_magic_flags: Sequence[Mapping]
+    active_defines: Sequence[Mapping]
     updated_macros: "MacroState"  # Forward reference
     effects: FileEffects
+
+    def __post_init__(self):
+        # frozen=True only stops attribute REBINDING; the list fields of a
+        # cached result would still be mutable in place, and one result is
+        # handed by identity to every caller a warm tier serves. Deep-freeze
+        # so no consumer can corrupt the entry for all the others.
+        object.__setattr__(self, "active_lines", tuple(self.active_lines))
+        object.__setattr__(self, "active_includes", _frozen_directive_entries(self.active_includes))
+        object.__setattr__(self, "active_magic_flags", _frozen_directive_entries(self.active_magic_flags))
+        object.__setattr__(self, "active_defines", _frozen_directive_entries(self.active_defines))
 
     @property
     def file_defines(self) -> MacroMapping:

@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 # can serve the only settled-state evaluation a convergence sees; apply()'s
 # occurrence replay is what retracts a pending "cannot evaluate" record from
 # the convergence's own early pass.
-IncludeCacheValue = tuple[list[sz.Str], "FileEffects"]
+IncludeCacheValue = tuple[tuple[sz.Str, ...], "FileEffects"]
 
 
 class BuildContext:

@@ -2,6 +2,7 @@ import os
 import sys
 
 import configargparse
+import pytest
 
 import compiletools.apptools
 import compiletools.headerdeps
@@ -873,3 +874,49 @@ class TestConditionalBlindWalk(tb.BaseCompileToolsTestCase):
             after_blind = deps.process(main, frozenset())
 
             assert after_blind == baseline
+
+
+class TestIncludeListCacheIsImmutable(tb.BaseCompileToolsTestCase):
+    """``_create_include_list`` returns its cache entry by identity.
+
+    Both halves of the entry are shared with every later caller for the same
+    key — the ``FileEffects`` half is deeply immutable, and the include list
+    must be too, or one consumer's edit rewrites the include graph every
+    other traversal sees.
+    """
+
+    def _make_deps(self, tmpdir, context):
+        cap = configargparse.ArgumentParser(
+            conflict_handler="resolve",
+            description="include-list immutability parser",
+            args_for_setting_config_path=["-c", "--config"],
+            ignore_unknown_config_file_keys=True,
+        )
+        compiletools.headerdeps.add_arguments(cap)
+        args = compiletools.apptools.parseargs(cap, ["-q", f"--CPPFLAGS=-I{tmpdir}"], context=context)
+        return compiletools.headerdeps.DirectHeaderDeps(args, context=context)
+
+    @staticmethod
+    def _write(tmpdir, name, text):
+        path = os.path.join(tmpdir, name)
+        with open(path, "w") as fh:
+            fh.write(text)
+        return compiletools.wrappedos.realpath(path)
+
+    def test_a_warm_include_list_is_shared_and_rejects_mutation(self):
+        """The identity assertion is the precondition: without the sharing
+        there would be nothing for the mutation to corrupt."""
+        with uth.TempDirContextNoChange() as tmpdir:
+            self._write(tmpdir, "header.h", "#pragma once\n")
+            main = self._write(tmpdir, "main.cpp", '#include "header.h"\nint main() { return 0; }\n')
+
+            context = BuildContext()
+            deps = self._make_deps(tmpdir, context)
+            cold = deps._create_include_list(main)
+            warm = deps._create_include_list(main)
+
+            assert warm is cold, "precondition: the cache entry is served by identity"
+            with pytest.raises(AttributeError):
+                cold.append("hijacked.h")  # type: ignore[attr-defined]
+
+            assert [str(inc) for inc in warm] == ["header.h"]

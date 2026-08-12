@@ -509,7 +509,11 @@ class DirectHeaderDeps(HeaderDepsBase):
 
         result = get_or_compute_preprocessing(analysis_result, self.defined_macros, self.args.verbose, context=ctx)
 
-        include_list = [sz.Str(inc["filename"]) for inc in result.active_includes if not inc.get("is_commented", False)]
+        # A tuple, not a list: the cache entry is returned by identity on
+        # every warm hit, so a consumer must not be able to mutate it.
+        include_list = tuple(
+            sz.Str(inc["filename"]) for inc in result.active_includes if not inc.get("is_commented", False)
+        )
 
         self.defined_macros = result.updated_macros
         cache[cache_key] = (include_list, result.effects)

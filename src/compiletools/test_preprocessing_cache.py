@@ -307,6 +307,58 @@ class TestPreprocessingCache(_CacheTestBase):
         stats = get_cache_stats(self.ctx)
         assert stats["misses"] == 2
 
+    def test_a_warm_hit_shares_its_containers_and_they_reject_mutation(self):
+        """Every warm hit for one key is handed the producing result's own
+        active_* containers, so an in-place mutation through any consumer
+        would corrupt the entry for all the others. The identity assertions
+        are the precondition that makes the mutation assertions matter."""
+        text = dedent("""
+            #ifdef FOO
+            #include "shared.h"
+            #endif
+        """).strip()
+
+        file_result = self._create_simple_file_result(text, "hash_frozen_001")
+        macros = MacroState({}, {sz.Str("FOO"): sz.Str("1")}, anchor_root="")
+
+        result1 = get_or_compute_preprocessing(file_result, macros, 0, context=self.ctx)
+        result2 = get_or_compute_preprocessing(file_result, macros, 0, context=self.ctx)
+
+        assert result1.active_includes is result2.active_includes
+        assert result1.active_lines is result2.active_lines
+
+        with pytest.raises(AttributeError):
+            result1.active_lines.append(99)  # type: ignore[attr-defined]
+        with pytest.raises(AttributeError):
+            result1.active_includes.append({})  # type: ignore[attr-defined]
+        with pytest.raises(AttributeError):
+            result1.active_magic_flags.append({})  # type: ignore[attr-defined]
+        with pytest.raises(AttributeError):
+            result1.active_defines.append({})  # type: ignore[attr-defined]
+        with pytest.raises(TypeError):
+            result1.active_includes[0]["filename"] = sz.Str("hijacked.h")  # type: ignore[index]
+
+        assert str(result2.active_includes[0]["filename"]) == "shared.h"
+        assert 1 in result2.active_lines
+
+    def test_the_directive_entries_stop_aliasing_the_analyzed_file(self):
+        """The entries are snapshot copies, so a later edit of the
+        FileAnalysisResult dict they were built from must not reach a result
+        already served from the cache."""
+        text = dedent("""
+            #ifdef FOO
+            #include "original.h"
+            #endif
+        """).strip()
+
+        file_result = self._create_simple_file_result(text, "hash_frozen_002")
+        macros = MacroState({}, {sz.Str("FOO"): sz.Str("1")}, anchor_root="")
+
+        result = get_or_compute_preprocessing(file_result, macros, 0, context=self.ctx)
+        file_result.includes[0]["filename"] = sz.Str("changed.h")
+
+        assert str(result.active_includes[0]["filename"]) == "original.h"
+
     def test_macro_state_propagation(self):
         """Test that macro state is correctly returned in updated_macros."""
         text = dedent("""
