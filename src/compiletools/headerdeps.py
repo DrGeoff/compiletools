@@ -25,7 +25,6 @@ from compiletools.preprocessing_cache import (
     decode_macro_cache_key,
     get_or_compute_preprocessing,
     is_permanently_invariant,
-    replay_condition_occurrences,
 )
 from compiletools.utils import instance_cache, tokenize_flags_or_raise
 
@@ -478,66 +477,30 @@ class DirectHeaderDeps(HeaderDepsBase):
         var_inc_cache = ctx.include_list_cache
 
         # Check if file is permanently invariant (no conditionals at all)
-        # This is a fast check based on file content, not macro state
+        # This is a fast check based on file content, not macro state.
+        # One hit/miss sequence for both tiers, parameterised by cache dict
+        # and key — mirrors get_or_compute_preprocessing.
         if is_permanently_invariant(analysis_result):
             # Invariant file - use content_hash only as cache key
-            if content_hash in inv_inc_cache:
-                cached_includes, cached_file_defines, cached_file_undefs, cached_params, cached_hash, cached_occ = (
-                    inv_inc_cache[content_hash]
-                )
-                # Undefs before defines: a name can be both undef'd and
-                # redefined within the same file, so it can appear in both
-                # sets. Applying defines first would let without_keys strip
-                # the just-reapplied value back out. See the matching fix in
-                # preprocessing_cache.get_or_compute_preprocessing.
-                if cached_file_undefs:
-                    self.defined_macros = self.defined_macros.without_keys(cached_file_undefs)
-                if cached_file_defines:
-                    self.defined_macros = self.defined_macros.with_updates(cached_file_defines, cached_params)
-                # magicflags drives this walk inside its `converging` region,
-                # so a warm hit here can be the only settled-state evaluation
-                # a convergence sees — it must retract pending records just
-                # like get_or_compute_preprocessing's own hits do.
-                replay_condition_occurrences(cached_occ, cached_hash, ctx)
-                return cached_includes
+            cache, cache_key = inv_inc_cache, content_hash
+        else:
+            # Variant file - use file-specific macro key (only macros that affect this file)
+            macro_key = self.defined_macros.get_relevant_key(analysis_result.conditional_macros)
+            cache, cache_key = var_inc_cache, (content_hash, macro_key)
 
-            # Cache miss for invariant file - compute and store
-            result = get_or_compute_preprocessing(analysis_result, self.defined_macros, self.args.verbose, context=ctx)
-
-            include_list = [
-                sz.Str(inc["filename"]) for inc in result.active_includes if not inc.get("is_commented", False)
-            ]
-
-            self.defined_macros = result.updated_macros
-            inv_inc_cache[content_hash] = (
-                include_list,
-                result.file_defines,
-                result.file_undefs,
-                result.file_function_params,
-                content_hash,
-                result.condition_occurrences,
-            )
-            return include_list
-
-        # Variant file - use file-specific macro key (only macros that affect this file)
-        macro_key = self.defined_macros.get_relevant_key(analysis_result.conditional_macros)
-        cache_key = (content_hash, macro_key)
-
-        if cache_key in var_inc_cache:
-            cached_includes, cached_file_defines, cached_file_undefs, cached_params, cached_hash, cached_occ = (
-                var_inc_cache[cache_key]
-            )
-            # See the invariant-cache branch above: undefs before defines.
-            if cached_file_undefs:
-                self.defined_macros = self.defined_macros.without_keys(cached_file_undefs)
-            if cached_file_defines:
-                self.defined_macros = self.defined_macros.with_updates(cached_file_defines, cached_params)
-            # See the invariant-cache branch above: warm hits inside a
-            # convergence must replay occurrences.
-            replay_condition_occurrences(cached_occ, cached_hash, ctx)
+        hit = cache.get(cache_key)
+        if hit is not None:
+            cached_includes, cached_effects = hit
+            # apply() owns the undefs-before-defines ordering and the
+            # occurrence replay. magicflags drives this walk inside its
+            # `converging` region, so a warm hit here can be the only
+            # settled-state evaluation a convergence sees — the replay is
+            # what retracts pending records, just like
+            # get_or_compute_preprocessing's own hits.
+            self.defined_macros = cached_effects.apply(self.defined_macros, ctx)
             return cached_includes
 
-        # Cache miss for variant file - compute and store
+        # Cache miss - compute and store
         if self.args.verbose >= 9 and analysis_result.include_positions:
             print(
                 f"DirectHeaderDeps::analyze - file_analyzer pre-found "
@@ -549,14 +512,7 @@ class DirectHeaderDeps(HeaderDepsBase):
         include_list = [sz.Str(inc["filename"]) for inc in result.active_includes if not inc.get("is_commented", False)]
 
         self.defined_macros = result.updated_macros
-        var_inc_cache[cache_key] = (
-            include_list,
-            result.file_defines,
-            result.file_undefs,
-            result.file_function_params,
-            content_hash,
-            result.condition_occurrences,
-        )
+        cache[cache_key] = (include_list, result.effects)
 
         return include_list
 

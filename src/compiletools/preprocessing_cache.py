@@ -725,12 +725,6 @@ def is_macro_invariant(file_result, input_macros: "MacroState") -> bool:
 # 2. Cache key must be extracted from file_result and macros
 # 3. We need full objects to compute results, not just hashes
 # 4. Provides enhanced debugging (dump_cache_keys with file path resolution)
-def replay_condition_occurrences(condition_occurrences, content_hash, context) -> None:
-    """Thin wrapper over the replay step of :meth:`FileEffects.apply`, for
-    callers that carry the occurrence tuple separately."""
-    _replay_condition_occurrences(condition_occurrences, content_hash, context)
-
-
 def _replay_condition_occurrences(condition_occurrences, content_hash, context) -> None:
     """Replay a cached compute's condition-resolution events on a cache HIT.
 
@@ -742,9 +736,10 @@ def _replay_condition_occurrences(condition_occurrences, content_hash, context) 
     though the cached entry is itself proof the condition resolves (or was
     never reached) at this exact macro state.
 
-    Shared by every warm tier over a computed ProcessingResult: the two
-    caches here, and DirectHeaderDeps' include-list cache (which fronts this
-    one and can serve the only settled-state evaluation a convergence sees).
+    Reached only through :meth:`FileEffects.apply`, which every warm tier
+    over a computed ProcessingResult uses: the two caches here, and
+    DirectHeaderDeps' include-list cache (which fronts this one and can
+    serve the only settled-state evaluation a convergence sees).
     """
     if not condition_occurrences:
         return

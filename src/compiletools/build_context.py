@@ -23,25 +23,19 @@ if TYPE_CHECKING:
     from compiletools.build_inputs import PkgConfigResult
     from compiletools.build_timer import BuildTimer
     from compiletools.file_analyzer import FileAnalysisResult
-    from compiletools.preprocessing_cache import FunctionParamsDict, MacroCacheKey, MacroDict, ProcessingResult
+    from compiletools.preprocessing_cache import FileEffects, MacroCacheKey, ProcessingResult
 
-# Type alias for headerdeps cache values:
-# (include_list, file_defines, file_undefs, file_function_params,
-#  content_hash, condition_occurrences)
+# Type alias for headerdeps cache values: (include_list, FileEffects).
 #
-# The fourth slot carries the parameter lists of the function-like macros among
-# file_defines.  Without it a replay restores a macro's body but not its arity,
-# ``#if F(2, 0)`` downstream reads F as object-like, and the include graph takes
-# the other branch on every warm traversal.
-#
-# The last two slots let a warm hit replay the producing run's condition
-# occurrences against the deferred-warning stores
-# (preprocessing_cache.replay_condition_occurrences).  magicflags drives
-# headerdeps inside its ``converging`` region, so this tier can serve the only
-# settled-state evaluation a convergence sees; without the replay, a pending
-# "cannot evaluate" record from the convergence's own early pass survives to
-# the flush and prints against a gate the build resolved.
-IncludeCacheValue = tuple[list[sz.Str], "MacroDict", frozenset, "FunctionParamsDict", str, tuple]
+# Only include_list is derived here; everything a warm hit must replay
+# (defines, undefs, function params, condition occurrences) travels as the
+# producing ProcessingResult's FileEffects, applied via FileEffects.apply so
+# this tier cannot drift from the preprocessing cache's replay contract.
+# magicflags drives headerdeps inside its ``converging`` region, so this tier
+# can serve the only settled-state evaluation a convergence sees; apply()'s
+# occurrence replay is what retracts a pending "cannot evaluate" record from
+# the convergence's own early pass.
+IncludeCacheValue = tuple[list[sz.Str], "FileEffects"]
 
 
 class BuildContext:
