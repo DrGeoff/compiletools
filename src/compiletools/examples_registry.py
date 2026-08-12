@@ -78,6 +78,7 @@ EXAMPLES_E2E: frozenset[str] = frozenset(
 EXAMPLES_FEATURES: frozenset[str] = frozenset(
     {
         "conf_dir_relative_pkgconfig",
+        "cross_file_macro_visibility",
         "cycle",
         "duplicate_flags",
         "dynamic_library",
