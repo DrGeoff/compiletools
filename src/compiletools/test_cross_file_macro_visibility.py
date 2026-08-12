@@ -17,6 +17,7 @@ nothing.
 """
 
 import subprocess
+import tempfile
 
 import pytest
 
@@ -37,13 +38,17 @@ def _flags_for(source_name):
     compiletools.magicflags.MagicFlagsBase.clear_cache()
     compiletools.headerdeps.HeaderDepsBase.clear_cache()
     context = BuildContext()
-    parser = tb.create_magic_parser(
-        ["--magic=direct", "--headerdeps=direct", "--include", sample_dir],
-        tempdir=sample_dir,
-        context=context,
-    )
-    parser.clear_cache()
-    result = parser.parse(f"{sample_dir}/{source_name}")
+    # The temp config must NOT be created inside sample_dir: that is a
+    # tracked fixture directory, and create_magic_parser never removes the
+    # mkstemp'd .conf it creates there.
+    with tempfile.TemporaryDirectory() as config_dir:
+        parser = tb.create_magic_parser(
+            ["--magic=direct", "--headerdeps=direct", "--include", sample_dir],
+            tempdir=config_dir,
+            context=context,
+        )
+        parser.clear_cache()
+        result = parser.parse(f"{sample_dir}/{source_name}")
     return {str(key): " ".join(str(v) for v in values) for key, values in result.items()}
 
 
