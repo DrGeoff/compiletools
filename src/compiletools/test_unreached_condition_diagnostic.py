@@ -27,6 +27,7 @@ import compiletools.testhelper as uth
 from compiletools.build_context import BuildContext
 from compiletools.file_analyzer import analyze_file, set_analyzer_args
 from compiletools.global_hash_registry import get_file_hash
+from compiletools.preprocessing_cache import MacroState, get_or_compute_preprocessing
 from compiletools.simple_preprocessor import SimplePreprocessor, converging, flush_pending_warnings
 
 # The gate every arm shares: function-like, so it is unevaluable until
@@ -384,3 +385,149 @@ class TestTheFourArmsEndToEnd(tb.BaseCompileToolsTestCase):
         flags, stderr = self._run(self._LIVE_PARENT_GATE, "#define USE_NEW 1\n", capsys)
         assert flags == "-DGATE_SEEN", flags
         assert f"cannot evaluate '#if {_GATE}'" in stderr, stderr
+
+
+class TestAWarmCacheHitStillRetractsAPendingRecord:
+    """Every class above drives ``SimplePreprocessor`` directly, bypassing the
+    preprocessing cache entirely -- each pass gets its own fresh instance, so
+    ``_note_condition_resolved`` always runs. Production never does that: two
+    translation units sharing a header go through
+    ``preprocessing_cache.get_or_compute_preprocessing``, and a second
+    encounter at a macro state some earlier call already computed is served
+    from the cache WITHOUT running ``SimplePreprocessor`` again -- so the
+    retraction those classes rely on cannot fire on a cache hit unless the
+    cache layer replays it itself.
+
+    The repro needs two *separate* ``converging`` regions sharing one
+    ``BuildContext`` (mirroring two independent magicflags/headerdeps
+    passes) plus a genuinely, permanently unevaluable condition in an
+    unrelated file: ``flush_pending_warnings`` short-circuits without
+    clearing the resolved store when its pending dict happens to be empty
+    (see its ``if not pending: return 0``), so a first convergence whose
+    only occurrence resolves cleanly would never exercise the clear. The
+    unrelated garbage condition forces a real flush, which is what "an
+    intervening flush of a real warning clears the resolved store" refers
+    to.
+    """
+
+    _GARBAGE_SOURCE = "#if 1 @ 2\nMARKER;\n#endif\n"
+
+    @staticmethod
+    def _analyze_sharing(context, source: str, tmpdir: str, name: str):
+        """Like the module-level ``_analyze``, but against a caller-supplied
+        context so multiple files' results share one cache and one set of
+        deferred-warning stores -- the module helper mints a fresh
+        ``BuildContext`` per call, which would defeat this test entirely."""
+        path = os.path.join(tmpdir, name)
+        with open(path, "w") as fh:
+            fh.write(source)
+        return analyze_file(get_file_hash(path, context), context)
+
+    def test_a_settled_variant_hit_retracts_an_earlier_pending_record(self, tmp_path, capsys):
+        gate_source = f"#if {_GATE}\nMARKER;\n#endif\n"
+        context = BuildContext()
+        set_analyzer_args(
+            SimpleNamespace(
+                max_read_size=0,
+                verbose=0,
+                exemarkers=[],
+                testmarkers=[],
+                librarymarkers=[],
+                use_mmap=True,
+                force_mmap=False,
+                suppress_fd_warnings=True,
+                suppress_filesystem_warnings=True,
+            ),
+            context,
+        )
+        gate_result = self._analyze_sharing(context, gate_source, str(tmp_path), "gate.cpp")
+        garbage_result = self._analyze_sharing(context, self._GARBAGE_SOURCE, str(tmp_path), "garbage.cpp")
+        macros_result = self._analyze_sharing(context, _MACROS_HEADER, str(tmp_path), "macros.h")
+
+        early_macros = MacroState({}, {}, anchor_root="")
+        settled_macros = get_or_compute_preprocessing(
+            macros_result, early_macros, verbose=0, context=context
+        ).updated_macros
+
+        # First convergence: the gate resolves cleanly at the settled key
+        # (populating the variant cache and the resolved store), and an
+        # unrelated, permanently-unevaluable garbage condition in a
+        # different file gives the exit flush something real to report --
+        # which is what makes it actually clear the resolved store instead
+        # of short-circuiting.
+        with converging(context):
+            get_or_compute_preprocessing(gate_result, settled_macros, verbose=1, context=context)
+            get_or_compute_preprocessing(garbage_result, early_macros, verbose=1, context=context)
+        first_flush_stderr = capsys.readouterr().err
+        assert "1 @ 2" in first_flush_stderr, first_flush_stderr
+        assert "EXTLIB_AT_LEAST" not in first_flush_stderr, first_flush_stderr
+
+        # Second, independent convergence: an early pass (macro state not
+        # yet settled) cannot evaluate the gate and records it pending...
+        with converging(context):
+            get_or_compute_preprocessing(gate_result, early_macros, verbose=1, context=context)
+            assert context.pending_preprocessor_warnings, "early pass should record pending"
+
+            # ...then the settled pass hits the SAME variant cache entry the
+            # first convergence populated. The condition IS resolved at this
+            # macro state -- the cached entry is proof, since it was only
+            # ever stored by a SimplePreprocessor run that got past the
+            # evaluation without raising -- so this must retract the pending
+            # record from the early pass.
+            get_or_compute_preprocessing(gate_result, settled_macros, verbose=1, context=context)
+
+        second_flush_stderr = capsys.readouterr().err
+        assert "cannot evaluate" not in second_flush_stderr, (
+            "stale pending record from the early pass survived a warm cache hit that resolved it: "
+            f"{second_flush_stderr!r}"
+        )
+
+    def test_an_entry_seeded_outside_any_convergence_still_retracts_on_a_warm_hit(self, tmp_path, capsys):
+        """The production seeding order: DirectHeaderDeps calls
+        get_or_compute_preprocessing OUTSIDE any ``converging`` region, and
+        the headerdeps walk runs BEFORE the magicflags convergence over the
+        same context caches -- so the settled-state entry is typically
+        seeded at convergence depth 0. Occurrence recording must not be
+        gated on ``_defer_warnings``: a depth-0-seeded entry that recorded
+        nothing replays nothing, and the stale pending record from the
+        convergence's own early pass survives exactly as in the original
+        finding. (No unrelated garbage warning is needed here: the resolved
+        store is empty from the start because the depth-0 seeding pass,
+        with deferral off, never wrote to it.)"""
+        gate_source = f"#if {_GATE}\nMARKER;\n#endif\n"
+        context = BuildContext()
+        set_analyzer_args(
+            SimpleNamespace(
+                max_read_size=0,
+                verbose=0,
+                exemarkers=[],
+                testmarkers=[],
+                librarymarkers=[],
+                use_mmap=True,
+                force_mmap=False,
+                suppress_fd_warnings=True,
+                suppress_filesystem_warnings=True,
+            ),
+            context,
+        )
+        gate_result = self._analyze_sharing(context, gate_source, str(tmp_path), "gate.cpp")
+        macros_result = self._analyze_sharing(context, _MACROS_HEADER, str(tmp_path), "macros.h")
+
+        early_macros = MacroState({}, {}, anchor_root="")
+        settled_macros = get_or_compute_preprocessing(
+            macros_result, early_macros, verbose=0, context=context
+        ).updated_macros
+
+        # Depth-0 seeding, as the headerdeps walk does it.
+        get_or_compute_preprocessing(gate_result, settled_macros, verbose=1, context=context)
+        assert capsys.readouterr().err == ""
+
+        with converging(context):
+            get_or_compute_preprocessing(gate_result, early_macros, verbose=1, context=context)
+            assert context.pending_preprocessor_warnings, "early pass should record pending"
+            get_or_compute_preprocessing(gate_result, settled_macros, verbose=1, context=context)
+
+        stderr = capsys.readouterr().err
+        assert "cannot evaluate" not in stderr, (
+            f"a depth-0-seeded cache entry replayed no occurrences, stranding the pending record: {stderr!r}"
+        )

@@ -807,6 +807,200 @@ class TestCacheHitMacroReconstruction(_CacheTestBase):
         assert merged[sz.Str("LOCAL_DEF")] == sz.Str("42")
         assert merged[sz.Str("GATE")] == sz.Str("1")
 
+    def _file_with_undef_then_redefine(self, content_hash: str) -> FileAnalysisResult:
+        """File with '#undef X' followed by '#define X 2', no conditionals
+        (invariant). The undef is a no-op the first time this is processed
+        (X starts absent) but must still be recorded as an active undef
+        target so cache reconstruction against a different caller's input
+        (where X is already defined) removes the stale inherited value
+        before reapplying the file's own final value."""
+        undef_directive = PreprocessorDirective(
+            line_num=0,
+            byte_pos=0,
+            directive_type="undef",
+            continuation_lines=0,
+            condition=None,
+            macro_name=sz.Str("X"),
+            macro_value=None,
+        )
+        define_directive = PreprocessorDirective(
+            line_num=1,
+            byte_pos=9,
+            directive_type="define",
+            continuation_lines=0,
+            condition=None,
+            macro_name=sz.Str("X"),
+            macro_value=sz.Str("2"),
+        )
+        return FileAnalysisResult(
+            line_count=2,
+            line_byte_offsets=[0, 9],
+            include_positions=[],
+            magic_positions=[],
+            directive_positions={"undef": [0], "define": [9]},
+            directives=[undef_directive, define_directive],
+            directive_by_line={0: undef_directive, 1: define_directive},
+            bytes_analyzed=20,
+            was_truncated=False,
+            includes=[],
+            defines=[{"line_num": 1, "name": sz.Str("X"), "value": sz.Str("2"), "is_function_like": False}],
+            magic_flags=[],
+            content_hash=content_hash,
+            include_guard=None,
+            conditional_macros=frozenset(),
+        )
+
+    @_skip_on_pypy
+    def test_invariant_cache_hit_reconstructs_undef_then_redefine(self):
+        """A cached '#undef X' + '#define X 2' must reconstruct X='2' on a
+        warm hit even when the second caller's input already has X defined
+        to a stale value. Reconstruction must remove the caller's stale
+        value (file_undefs) BEFORE reapplying the file's own final value
+        (file_defines) — applying them in the opposite order deletes X
+        entirely, since with_updates sets X='2' first and without_keys then
+        strips it back out."""
+        file_result = self._file_with_undef_then_redefine("hash_inv_undef_redefine")
+
+        first_input = MacroState({}, {}, anchor_root="")
+        first_result = get_or_compute_preprocessing(file_result, first_input, 0, context=self.ctx)
+        assert first_result.updated_macros.variable[sz.Str("X")] == sz.Str("2")
+
+        # Second caller inherits X='1' from earlier in its own TU (unrelated
+        # to this file). The cache hit must still land on X='2'.
+        second_input = MacroState({}, {sz.Str("X"): sz.Str("1")}, anchor_root="")
+        second_result = get_or_compute_preprocessing(file_result, second_input, 0, context=self.ctx)
+
+        stats = get_cache_stats(self.ctx)
+        assert stats["invariant_hits"] == 1, "second call should hit invariant cache"
+        assert second_result.updated_macros.variable[sz.Str("X")] == sz.Str("2")
+
+    @_skip_on_pypy
+    def test_variant_cache_hit_reconstructs_undef_then_redefine(self):
+        """Same as the invariant case, but for the variant-tier reconstruction
+        block (guarded by a conditional so the file lands in the variant
+        cache instead)."""
+        undef_directive = PreprocessorDirective(
+            line_num=1,
+            byte_pos=14,
+            directive_type="undef",
+            continuation_lines=0,
+            condition=None,
+            macro_name=sz.Str("X"),
+            macro_value=None,
+        )
+        define_directive = PreprocessorDirective(
+            line_num=2,
+            byte_pos=23,
+            directive_type="define",
+            continuation_lines=0,
+            condition=None,
+            macro_name=sz.Str("X"),
+            macro_value=sz.Str("2"),
+        )
+        ifdef_directive = PreprocessorDirective(
+            line_num=0,
+            byte_pos=0,
+            directive_type="ifdef",
+            continuation_lines=0,
+            condition=None,
+            macro_name=sz.Str("GATE"),
+            macro_value=None,
+        )
+        endif_directive = PreprocessorDirective(
+            line_num=3,
+            byte_pos=32,
+            directive_type="endif",
+            continuation_lines=0,
+            condition=None,
+            macro_name=None,
+            macro_value=None,
+        )
+        file_result = FileAnalysisResult(
+            line_count=4,
+            line_byte_offsets=[0, 14, 23, 32],
+            include_positions=[],
+            magic_positions=[],
+            directive_positions={"ifdef": [0], "undef": [14], "define": [23], "endif": [32]},
+            directives=[ifdef_directive, undef_directive, define_directive, endif_directive],
+            directive_by_line={0: ifdef_directive, 1: undef_directive, 2: define_directive, 3: endif_directive},
+            bytes_analyzed=40,
+            was_truncated=False,
+            includes=[],
+            defines=[{"line_num": 2, "name": sz.Str("X"), "value": sz.Str("2"), "is_function_like": False}],
+            magic_flags=[],
+            content_hash="hash_var_undef_redefine",
+            include_guard=None,
+            conditional_macros=frozenset({sz.Str("GATE")}),
+        )
+
+        first_input = MacroState({}, {sz.Str("GATE"): sz.Str("1")}, anchor_root="")
+        first_result = get_or_compute_preprocessing(file_result, first_input, 0, context=self.ctx)
+        assert first_result.updated_macros.variable[sz.Str("X")] == sz.Str("2")
+
+        second_input = MacroState(
+            {},
+            {sz.Str("GATE"): sz.Str("1"), sz.Str("X"): sz.Str("1")},
+            anchor_root="",
+        )
+        second_result = get_or_compute_preprocessing(file_result, second_input, 0, context=self.ctx)
+
+        stats = get_cache_stats(self.ctx)
+        assert stats["variant_hits"] == 1, "second call should hit variant cache"
+        assert second_result.updated_macros.variable[sz.Str("X")] == sz.Str("2")
+
+    @_skip_on_pypy
+    def test_invariant_cache_reconstructs_redefinition_to_different_value(self):
+        """file_defines must capture a macro that this file redefines to a
+        NEW value even when the macro was already present (at some other
+        value) in the caller whose input produced the cached entry — a
+        presence-only filter drops the redefinition, so a later caller with
+        a different (or absent) input reconstructs the stale/absent value
+        instead of this file's actual final value."""
+        file_result = self._file_with_define("hash_inv_redefine_diffval")
+
+        # First caller already has LOCAL_DEF='1' -- the file redefines it to
+        # '42'. A presence-only filter sees the key already present and
+        # drops the delta entirely, even though the value changed.
+        first_input = MacroState({}, {sz.Str("LOCAL_DEF"): sz.Str("1")}, anchor_root="")
+        first_result = get_or_compute_preprocessing(file_result, first_input, 0, context=self.ctx)
+        assert first_result.updated_macros.variable[sz.Str("LOCAL_DEF")] == sz.Str("42")
+
+        # Second caller has no prior value for LOCAL_DEF at all. A correct
+        # reconstruction still lands on '42' -- the file's own define.
+        second_input = MacroState({}, {}, anchor_root="")
+        second_result = get_or_compute_preprocessing(file_result, second_input, 0, context=self.ctx)
+
+        stats = get_cache_stats(self.ctx)
+        assert stats["invariant_hits"] == 1, "second call should hit invariant cache"
+        assert second_result.updated_macros.variable[sz.Str("LOCAL_DEF")] == sz.Str("42")
+
+    @_skip_on_pypy
+    def test_undef_then_redefine_to_the_producers_own_input_value(self):
+        """The value-aware file_defines filter alone is not enough when the
+        producer's input already holds X at the very value the file
+        redefines it to: X is then absent from file_defines (no delta
+        relative to THAT input) while file_undefs still records the #undef,
+        so a warm hit from a caller with a different X removes it and never
+        reapplies the file's own final value. A name in file_undefs that
+        the file also actively defines must always be carried in
+        file_defines, delta or not."""
+        file_result = self._file_with_undef_then_redefine("hash_inv_undef_redefine_same")
+
+        # Producer's input coincidentally already has X='2' -- the exact
+        # value the file's '#undef X' / '#define X 2' pair lands on.
+        first_input = MacroState({}, {sz.Str("X"): sz.Str("2")}, anchor_root="")
+        first_result = get_or_compute_preprocessing(file_result, first_input, 0, context=self.ctx)
+        assert first_result.updated_macros.variable[sz.Str("X")] == sz.Str("2")
+
+        # Warm consumer inherits a DIFFERENT stale X. Reconstruction must
+        # still land on the file's own final value, not delete X outright.
+        second_input = MacroState({}, {sz.Str("X"): sz.Str("1")}, anchor_root="")
+        second_result = get_or_compute_preprocessing(file_result, second_input, 0, context=self.ctx)
+
+        stats = get_cache_stats(self.ctx)
+        assert stats["invariant_hits"] == 1, "second call should hit invariant cache"
+        assert second_result.updated_macros.variable[sz.Str("X")] == sz.Str("2")
+
 
 class TestClearVariantCache(_CacheTestBase):
     """clear_variant_cache must purge variant entries but preserve invariant

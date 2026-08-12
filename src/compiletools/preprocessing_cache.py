@@ -72,6 +72,16 @@ class ProcessingResult:
         file_defines: Macros defined BY this file only (for cache reconstruction)
         file_function_params: Parameter lists of the function-like macros among
             file_defines (for cache reconstruction)
+        condition_occurrences: ``(kind, directive_type, condition, line_num)``
+            tuples recording every ``_note_condition_resolved`` /
+            ``_note_condition_unreached`` call SimplePreprocessor made while
+            computing this result (kind is ``"resolved"`` or ``"unreached"``).
+            A cache HIT replays these against the caller's deferred-warning
+            stores so a pending "cannot evaluate" record from an earlier,
+            unevaluable pass gets retracted even though this pass never runs
+            SimplePreprocessor again -- without this, a warm hit at a macro
+            state that DID resolve the condition could never retract a
+            pending record an earlier pass left behind at a different state.
     """
 
     active_lines: list[int]
@@ -82,6 +92,7 @@ class ProcessingResult:
     file_defines: MacroDict = field(default_factory=dict)
     file_undefs: frozenset = field(default_factory=frozenset)
     file_function_params: "FunctionParamsDict" = field(default_factory=dict)
+    condition_occurrences: tuple = ()
 
 
 @dataclass
@@ -654,6 +665,39 @@ def is_macro_invariant(file_result, input_macros: "MacroState") -> bool:
 # 2. Cache key must be extracted from file_result and macros
 # 3. We need full objects to compute results, not just hashes
 # 4. Provides enhanced debugging (dump_cache_keys with file path resolution)
+def _replay_condition_occurrences(cached: ProcessingResult, content_hash, context) -> None:
+    """Replay a cached compute's condition-resolution events on a cache HIT.
+
+    A live SimplePreprocessor run never happens on a cache hit, so
+    ``_note_condition_resolved``/``_note_condition_unreached`` cannot fire
+    on their own -- without this, a pending "cannot evaluate" record left by
+    an earlier, unevaluable pass over this same file survives forever once a
+    later pass's result comes from the cache instead of a live rerun, even
+    though the cached entry is itself proof the condition resolves (or was
+    never reached) at this exact macro state.
+    """
+    if not cached.condition_occurrences:
+        return
+    pending = getattr(context, "pending_preprocessor_warnings", None)
+    resolved = getattr(context, "resolved_preprocessor_conditions", None)
+    if pending is None and resolved is None:
+        return
+
+    from compiletools.global_hash_registry import get_filepath_by_hash
+
+    # Same fallback a live run uses (process_structured's `filepath or
+    # "<unknown>"`): pending records for an unresolvable hash are keyed
+    # under "<unknown>", so the replay must address them the same way.
+    filepath = get_filepath_by_hash(content_hash, context) or "<unknown>"
+
+    for kind, directive_type, condition, line_num in cached.condition_occurrences:
+        key = (filepath, directive_type, condition, line_num)
+        if kind == "resolved" and resolved is not None:
+            resolved.add(key)
+        if pending is not None:
+            pending.pop(key, None)
+
+
 def get_or_compute_preprocessing(
     file_result,
     input_macros: "MacroState",
@@ -700,14 +744,21 @@ def get_or_compute_preprocessing(
             stats["invariant_hits"] += 1
             cached = inv_cache[content_hash]
             # Reconstruct updated_macros from caller's input + file's defines
-            # to prevent stale macro pollution from first caller's context
+            # to prevent stale macro pollution from first caller's context.
+            # Undefs must apply BEFORE defines: a name can be both undef'd and
+            # redefined within the same file (#undef X / #define X 2), so
+            # file_undefs and file_defines can share a key. Removing first
+            # then reapplying the file's final value reproduces that
+            # ordering; applying defines first would let without_keys strip
+            # the just-reapplied value back out.
             reconstructed_macros = input_macros
+            if cached.file_undefs:
+                reconstructed_macros = reconstructed_macros.without_keys(cached.file_undefs)
             if cached.file_defines:
                 reconstructed_macros = reconstructed_macros.with_updates(
                     cached.file_defines, cached.file_function_params
                 )
-            if cached.file_undefs:
-                reconstructed_macros = reconstructed_macros.without_keys(cached.file_undefs)
+            _replay_condition_occurrences(cached, content_hash, context)
             return ProcessingResult(
                 active_lines=cached.active_lines,
                 active_includes=cached.active_includes,
@@ -717,6 +768,7 @@ def get_or_compute_preprocessing(
                 file_defines=cached.file_defines,
                 file_function_params=cached.file_function_params,
                 file_undefs=cached.file_undefs,
+                condition_occurrences=cached.condition_occurrences,
             )
 
         stats["misses"] += 1
@@ -731,13 +783,17 @@ def get_or_compute_preprocessing(
             stats["hits"] += 1
             stats["variant_hits"] += 1
             cached = var_cache[cache_key]
+            # See the invariant-cache branch above: undefs must apply before
+            # defines so a name that is both undef'd and redefined within
+            # this file reconstructs to its final (redefined) value.
             reconstructed_macros = input_macros
+            if cached.file_undefs:
+                reconstructed_macros = reconstructed_macros.without_keys(cached.file_undefs)
             if cached.file_defines:
                 reconstructed_macros = reconstructed_macros.with_updates(
                     cached.file_defines, cached.file_function_params
                 )
-            if cached.file_undefs:
-                reconstructed_macros = reconstructed_macros.without_keys(cached.file_undefs)
+            _replay_condition_occurrences(cached, content_hash, context)
             return ProcessingResult(
                 active_lines=cached.active_lines,
                 active_includes=cached.active_includes,
@@ -747,6 +803,7 @@ def get_or_compute_preprocessing(
                 file_defines=cached.file_defines,
                 file_function_params=cached.file_function_params,
                 file_undefs=cached.file_undefs,
+                condition_occurrences=cached.condition_occurrences,
             )
 
         stats["misses"] += 1
@@ -792,12 +849,32 @@ def get_or_compute_preprocessing(
     # Only add to variable if not in core
     new_variable_macros = {k: v for k, v in preprocessor.macros.items() if k not in input_macros.core}
 
+    # Active undef targets: macro names from #undef directives on active lines.
+    # Input-independent: safe to cache for both invariant and variant entries.
+    # without_keys() handles the intersection with the caller's variable macros.
+    # Computed BEFORE file_defines: the delta filter below must consult it.
+    file_undefs = frozenset(
+        d.macro_name
+        for d in file_result.directives
+        if d.directive_type == "undef" and d.macro_name and d.line_num in active_line_set
+    )
+
     # Store file-specific defines for cache reconstruction
-    # file_defines should ONLY contain macros defined BY this file (not inherited from input)
+    # file_defines should ONLY contain macros this file added or changed
+    # relative to input (not macros inherited unchanged from input). A
+    # presence-only check here would drop a redefinition to a NEW value
+    # whenever the name happened to already exist in this call's input,
+    # silently discarding the delta a later caller (with a different input)
+    # needs to reconstruct the correct final value. And a name the file
+    # also actively #undef's must be carried even when its final value
+    # matches this call's input (no delta relative to THIS input): the
+    # warm-hit reconstruction removes every file_undefs name first, so
+    # omitting the define would delete the macro outright for a caller
+    # whose input held a different value.
     # Note: Include guards are already excluded by SimplePreprocessor._handle_define_structured()
     file_defines: MacroDict = {}
     for k, v in new_variable_macros.items():
-        if k not in input_macros.variable:
+        if k in file_undefs or k not in input_macros.variable or input_macros.variable[k] != v:
             file_defines[k] = v
 
     # Parameter lists travel with the bodies they belong to, through both the
@@ -806,15 +883,6 @@ def get_or_compute_preprocessing(
         k: v for k, v in preprocessor.function_params.items() if k in new_variable_macros
     }
     file_function_params: FunctionParamsDict = {k: v for k, v in new_function_params.items() if k in file_defines}
-
-    # Active undef targets: macro names from #undef directives on active lines.
-    # Input-independent: safe to cache for both invariant and variant entries.
-    # without_keys() handles the intersection with the caller's variable macros.
-    file_undefs = frozenset(
-        d.macro_name
-        for d in file_result.directives
-        if d.directive_type == "undef" and d.macro_name and d.line_num in active_line_set
-    )
 
     # Build updated state: new_variable_macros already reflects the correct
     # post-preprocessing state (input macros + file defines - file undefs)
@@ -844,6 +912,7 @@ def get_or_compute_preprocessing(
         file_defines=file_defines,
         file_undefs=file_undefs,
         file_function_params=file_function_params,
+        condition_occurrences=tuple(preprocessor.condition_occurrences),
     )
 
     # Store in appropriate cache

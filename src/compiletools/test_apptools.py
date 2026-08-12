@@ -2930,6 +2930,7 @@ class TestCompilerSupportsRequestedStandard:
         with pytest.raises(RuntimeError, match=r"does not support -std=c\+\+2c"):
             apptools._check_compiler_supports_requested_standard(args)
 
+    @uth.requires_functional_compiler
     def test_compiler_major_version_handles_wrapper(self):
         # ccache-gcc.conf sets CXX="ccache g++". _compiler_major_version
         # must tokenize the wrapper invocation rather than feeding it to
@@ -2939,9 +2940,8 @@ class TestCompilerSupportsRequestedStandard:
         # everywhere — `env --version` prints recognisable output, but
         # `env <gcc>` will forward --version to the real compiler.
 
-        real_cxx = shutil.which("g++") or shutil.which("clang++")
-        if not real_cxx:
-            pytest.skip("no real C++ compiler on PATH")
+        real_cxx = apptools.get_functional_cxx_compiler()
+        assert real_cxx, "the requires_functional_compiler decorator guarantees this"
         wrapper = shutil.which("env")
         assert wrapper, "POSIX `env` must be on PATH"
 
@@ -2953,6 +2953,7 @@ class TestCompilerSupportsRequestedStandard:
             f"wrapped side means subprocess raised OSError on the compound string."
         )
 
+    @uth.requires_functional_compiler
     def test_compiler_major_version_probes_once_across_slot_spellings(self):
         # slot= is error attribution, not identity: the four parseargs
         # guards ask about the same compiler string under different slots,
@@ -2962,9 +2963,8 @@ class TestCompilerSupportsRequestedStandard:
         # misses > 1.
         import compiletools.apptools_compiler as ac
 
-        real_cxx = shutil.which("g++") or shutil.which("clang++")
-        if not real_cxx:
-            pytest.skip("no real C++ compiler on PATH")
+        real_cxx = apptools.get_functional_cxx_compiler()
+        assert real_cxx, "the requires_functional_compiler decorator guarantees this"
 
         ac._compiler_version_probe.cache_clear()
         try:

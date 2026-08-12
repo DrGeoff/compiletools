@@ -503,6 +503,14 @@ class SimplePreprocessor:
         self._resolved_conditions: set[tuple[str, str, str, int]] = set()
         self._defer_warnings: bool = False
         self._current_filepath: str = "<unknown>"
+        # Occurrence-keyed record of every _note_condition_resolved /
+        # _note_condition_unreached call made during ONE process_structured
+        # call, reset at its start. preprocessing_cache attaches this to the
+        # cached ProcessingResult so a later cache HIT for the same file can
+        # replay the same pending-store retractions a live rerun would have
+        # made, without re-running the preprocessor. See
+        # ProcessingResult.condition_occurrences.
+        self.condition_occurrences: list[tuple[str, str, str, int]] = []
         # Per-call channel from process_structured to _handle_define_structured:
         # which include guard macro to skip when re-#define'd. Kept as instance
         # state rather than a param because _DIRECTIVE_DISPATCH calls every
@@ -1139,6 +1147,7 @@ class SimplePreprocessor:
 
         filepath = get_filepath_by_hash(file_result.content_hash, context)
         self._current_filepath = filepath or "<unknown>"
+        self.condition_occurrences = []
         # getattr, not attribute access: callers are free to pass a duck-typed
         # context carrying only the caches they need (test_preprocessing_cache_scoping
         # does), and a diagnostic must not be the thing that breaks them.
@@ -1455,6 +1464,17 @@ class SimplePreprocessor:
         the other not, so a text-wide retraction would let the evaluable one
         silence the report the other still owes.
         """
+        # Recorded UNCONDITIONALLY, before the deferral gate: evaluability is
+        # a property of the run, not of whether a convergence is listening.
+        # A cache entry seeded at depth 0 (the production order — the
+        # headerdeps walk runs outside any converging region, before the
+        # magicflags convergence over the same context caches) must still
+        # carry the occurrences a later warm hit inside a convergence needs
+        # to replay; gating this on _defer_warnings left such entries empty
+        # and stranded the early pass's pending record.
+        self.condition_occurrences.append(
+            ("resolved", directive.directive_type, str(directive.condition), directive.line_num)
+        )
         if not self._defer_warnings:
             return
         key = (self._current_filepath, directive.directive_type, str(directive.condition), directive.line_num)
@@ -1485,6 +1505,11 @@ class SimplePreprocessor:
         report. ``_note_condition_resolved`` is occurrence-keyed for the same
         reason, with the macro state playing the role of reachability.
         """
+        # Unconditional for the same reason as _note_condition_resolved's
+        # record: a depth-0-seeded cache entry must carry its occurrences.
+        self.condition_occurrences.append(
+            ("unreached", directive.directive_type, str(directive.condition), directive.line_num)
+        )
         if not self._defer_warnings:
             return
         key = (self._current_filepath, directive.directive_type, str(directive.condition), directive.line_num)

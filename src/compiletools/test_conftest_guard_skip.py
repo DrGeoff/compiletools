@@ -78,3 +78,30 @@ def test_guard_text_in_context_of_an_ordinary_failure_fails():
 
 def test_unrelated_error_does_not_skip():
     assert conftest._guard_skip_reason(RuntimeError("segmentation fault")) is None
+
+
+def test_a_bare_pytest_fail_quoting_guard_text_fails():
+    """``pytest.fail.Exception`` was widened into the caught tuple to catch
+    the ``DID NOT WARN`` wrapper shape (see
+    ``test_guard_error_behind_did_not_warn_skips``), but the same widening
+    also let a completely unrelated, test-authored ``pytest.fail(...)`` call
+    skip instead of fail whenever its own message happens to quote text
+    that matches a guard pattern -- e.g. a test asserting on captured
+    compiler stderr with ``pytest.fail(f"unexpected output: {stderr}")``.
+    Unlike the DID NOT WARN wrapper (whose message is exactly that literal
+    string, with the real guard error only in __context__), a bare
+    pytest.fail() call's message IS the test's own claim and must never be
+    treated as guard-worthy directly -- only the DID NOT WARN wrapper shape
+    may reach a guard error through pytest.fail.Exception."""
+    try:
+        pytest.fail(f"unexpected compiler output: {_STD_TEXT}")
+    except pytest.fail.Exception as exc:
+        # A bool, not the raw reason string: pytest's assertion-rewrite would
+        # otherwise embed the (possibly guard-matching) reason text straight
+        # into THIS assertion's own failure message, which the outer
+        # pytest_runtest_call hook would then re-classify as a guard skip —
+        # the exact defect under test, tripped by the test itself.
+        would_skip = conftest._guard_skip_reason(exc) is not None
+        assert not would_skip, "a bare pytest.fail() call quoting guard-like text must fail, not skip"
+    else:
+        pytest.fail("pytest.fail() unexpectedly did not raise")

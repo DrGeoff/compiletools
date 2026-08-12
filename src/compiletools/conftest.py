@@ -149,6 +149,15 @@ def _guard_skip_reason(exc: BaseException) -> str | None:
     ``__context__`` (so a naive chain walk would too); refuse that shape
     before any marker matching.
 
+    ``pytest.fail.Exception`` (``Failed``) is caught only for the ``DID NOT
+    WARN`` wrapper shape below — never matched directly against its own
+    message. Unlike ``RuntimeError``/``AssertionError`` (whose message is
+    either the guard's own text or a captured subprocess stderr blob), a
+    ``pytest.fail(...)`` message is always test-authored prose; a test that
+    quotes unrelated compiler output containing a guard-like phrase (e.g.
+    ``pytest.fail(f"unexpected output: {stderr}")``) must fail, not be
+    silently downgraded to a skip.
+
     The ``__context__`` walk runs ONLY for the one wrapper shape that hides
     a guard error behind an unrelated message: a guard RuntimeError raised
     inside a ``pytest.warns`` block surfaces as ``Failed("DID NOT WARN")``.
@@ -158,9 +167,10 @@ def _guard_skip_reason(exc: BaseException) -> str | None:
     msg = str(exc)
     if _is_match_mismatch(msg):
         return None
-    reason = _std_skip_reason(msg)
-    if reason is not None:
-        return reason
+    if not isinstance(exc, pytest.fail.Exception):
+        reason = _std_skip_reason(msg)
+        if reason is not None:
+            return reason
     if "DID NOT WARN" in msg:
         seen = exc.__context__
         for _ in range(5):

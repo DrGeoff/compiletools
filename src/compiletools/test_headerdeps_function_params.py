@@ -252,3 +252,54 @@ class TestGateHeaderIncludingItsOwnDefiningHeader(tb.BaseCompileToolsTestCase):
         ]
         assert "old_api.h" in headers, headers
         assert "new_api.h" not in headers, headers
+
+
+# target.h both #undef's and redefines X. The FIRST traversal to reach it
+# (via first.cpp) has X absent beforehand, so its cached file_defines/
+# file_undefs are recorded correctly. The SECOND traversal (via second.cpp)
+# reaches target.h with X already defined to a stale value, warm-hitting
+# the invariant include cache built by the first. Whatever the prior value
+# of X was, target.h's own #undef/#define pair must leave X == 2 -- the
+# gate below must always select new_api.h.
+_UNDEF_REDEFINE_SOURCES = {
+    "definer.h": "#pragma once\n#define X 1\n",
+    "target.h": "#pragma once\n#undef X\n#define X 2\n",
+    "gate.h": ('#pragma once\n#if X == 2\n#include "new_api.h"\n#else\n#include "old_api.h"\n#endif\n'),
+    "new_api.h": "#pragma once\n//#CXXFLAGS=-DUSING_NEW_API\n",
+    "old_api.h": "#pragma once\n//#CXXFLAGS=-DUSING_OLD_API\n",
+    "first.cpp": '#include "target.h"\n#include "gate.h"\nint main() { return 0; }\n',
+    "second.cpp": '#include "definer.h"\n#include "target.h"\n#include "gate.h"\nint main() { return 0; }\n',
+}
+
+
+class TestUndefRedefineSurvivesTheIncludeCache(tb.BaseCompileToolsTestCase):
+    """A cached '#undef X' + '#define X 2' header must reconstruct X=2 on a
+    warm hit even when the warm caller's macro state already has X defined
+    to something else -- see preprocessing_cache.py's reconstruction order
+    fix. DirectHeaderDeps' own include-list cache (``_create_include_list``)
+    replays the identical (file_defines, file_undefs) pair and is
+    susceptible to the same ordering bug independently of the preprocessing
+    cache it wraps.
+    """
+
+    def setup_method(self):
+        super().setup_method()
+        compiletools.magicflags.MagicFlagsBase.clear_cache()
+        compiletools.headerdeps.HeaderDepsBase.clear_cache()
+
+    def test_second_traversal_still_lands_on_new_api(self):
+        files = uth.write_sources(_UNDEF_REDEFINE_SOURCES, target_dir=self._tmpdir)
+        context = BuildContext()
+
+        first = [
+            os.path.basename(path)
+            for path in _direct_headerdeps(context, self._tmpdir).process(str(files["first.cpp"]), frozenset())
+        ]
+        assert "new_api.h" in first, f"cold traversal already wrong: {first}"
+
+        second = [
+            os.path.basename(path)
+            for path in _direct_headerdeps(context, self._tmpdir).process(str(files["second.cpp"]), frozenset())
+        ]
+        assert "new_api.h" in second, f"warm traversal took the other branch: {second}"
+        assert "old_api.h" not in second, second

@@ -2729,6 +2729,165 @@ def test_blind_prior_loses_to_an_evaluated_declaration_from_a_later_round(
 
 
 @requires_functional_compiler
+def test_an_unpinned_winner_displacing_a_pinned_blind_prior_reclones() -> None:
+    """A ref-only displacement to an UNPINNED winner cannot be repaired by
+    forcing --update: ``_handle_no_ref`` only pulls when the winner names a
+    ref-independent update, and forcing --update onto a checkout the blind
+    prior left DETACHED (a pinned tag) trips the A21 "no branch to
+    fast-forward" refusal. Pre-fix, ``force_update`` required ``ext.ref is
+    not None``, so an unpinned winner triggered neither the update repair
+    nor the reclone repair -- the fresh clone this run made from the LOSING
+    blind declaration (pinned at v1) was left exactly there, even though the
+    result claims the winning (unpinned, default-branch) declaration. A
+    clean build that only ever saw the winning declaration would clone
+    unpinned and land on the branch tip -- so this run must match that,
+    which only a reclone (same repair as a URL displacement) can do without
+    tripping A21."""
+    with tempfile.TemporaryDirectory() as root:
+        origin = _make_bare_origin(root)  # tag v1, branch master (tip c2)
+        provider = _make_bare_with_files(root, "provider", {"api.h": f"#pragma once\n//#GIT={origin['url']}\n"})
+        externals = os.path.join(root, "externals")
+        os.makedirs(externals)
+        with open(os.path.join(root, "blind.h"), "w") as fh:
+            fh.write(f"#pragma once\n//#GIT={origin['url']}@v1\n")
+        main = os.path.join(root, "main.cpp")
+        with open(main, "w") as fh:
+            fh.write(
+                f"//#GIT={provider['url']}\n"
+                '#if 0\n#include "blind.h"\n#endif\n'
+                '#include "provider/api.h"\n'
+                "int main() { return 0; }\n"
+            )
+
+        resolved = fetch_externals([main], _make_args(), BuildContext(), externals_dir=externals)
+
+        origin_result = next(r for r in resolved if r.name == "origin")
+        assert origin_result.ref is None
+        # The clone made from the losing (pinned-at-v1) blind declaration
+        # must have been moved off v1 and onto the winning, unpinned
+        # declaration's actual state: the default branch tip, on a real
+        # branch (not the detached HEAD a bare --update onto the v1
+        # checkout would have left behind).
+        target = os.path.join(externals, "origin")
+        assert _git(target, "rev-parse", "HEAD") == origin["c2"], (
+            "the displaced blind declaration's clone was left at the losing pinned ref"
+        )
+        assert fetch._current_branch(target) is not None, (
+            "the repaired checkout is detached -- a clean unpinned clone is always on a branch"
+        )
+
+
+class TestClassifyBlindDeclaration:
+    """Unit tests for the shared blind-conflict classifier both
+    ``fetch_externals`` and ``gather_external_status`` route through.
+
+    Before this helper existed, the ~40 lines of blind-drop / blind-
+    displacement policy (including the exact warning wording) were duplicated verbatim
+    between the two ``_scan_round`` closures, with only a comment asking
+    future edits to keep them in sync. These tests pin the classifier's pure
+    decision logic directly, independent of either caller's mode-specific
+    side effects (raise-vs-warn, forced_update/forced_reclone bookkeeping,
+    status_cache invalidation) — so a change to one caller's wiring cannot
+    silently leave the other with a different verdict for the same inputs.
+    """
+
+    _PRIOR = GitExternal(name="mylib", url="https://example.com/mylib.git", ref="v1")
+    _SAME = GitExternal(name="mylib", url="https://example.com/mylib.git", ref="v1")
+    _DIFFERENT_REF = GitExternal(name="mylib", url="https://example.com/mylib.git", ref="v2")
+    _DIFFERENT_URL = GitExternal(name="mylib", url="https://example.com/other.git", ref="v1")
+
+    def test_a_blind_file_disagreeing_with_a_recorded_prior_drops(self):
+        verdict = fetch._classify_blind_declaration(
+            ext=self._DIFFERENT_REF,
+            source_file="blind.h",
+            is_blind=True,
+            prior=self._PRIOR,
+            prior_file="main.cpp",
+            name_is_declared_blind=False,
+        )
+        assert verdict.action == "drop"
+        assert verdict.warning == (
+            "ignoring a conflicting //#GIT= declaration for 'mylib' in "
+            "'blind.h' (https://example.com/mylib.git@v2): that file is reachable only "
+            "through a conditional this scan cannot evaluate, so "
+            "'https://example.com/mylib.git@v1' (in main.cpp) is kept."
+        )
+
+    def test_a_blind_file_agreeing_with_a_recorded_prior_is_not_applicable(self):
+        """An exact match is not a conflict at all -- falls through to the
+        ordinary same-name duplicate handling, which silently dedupes."""
+        verdict = fetch._classify_blind_declaration(
+            ext=self._SAME,
+            source_file="blind.h",
+            is_blind=True,
+            prior=self._PRIOR,
+            prior_file="main.cpp",
+            name_is_declared_blind=False,
+        )
+        assert verdict.action == "not_applicable"
+
+    def test_an_evaluated_file_displacing_a_disagreeing_blind_prior(self):
+        verdict = fetch._classify_blind_declaration(
+            ext=self._DIFFERENT_REF,
+            source_file="provider/api.h",
+            is_blind=False,
+            prior=self._PRIOR,
+            prior_file="blind.h",
+            name_is_declared_blind=True,
+        )
+        assert verdict.action == "displace"
+        assert verdict.warning == (
+            "ignoring a conflicting //#GIT= declaration for 'mylib' in "
+            "'blind.h' (https://example.com/mylib.git@v1): that file is reachable "
+            "only through a conditional this scan cannot evaluate, so "
+            "'https://example.com/mylib.git@v2' (in provider/api.h) is kept."
+        )
+
+    def test_an_evaluated_file_matching_a_blind_prior_displaces_silently(self):
+        """The blind-prior bookkeeping still needs clearing (the name is now
+        evaluated-backed) even though there is nothing to warn about."""
+        verdict = fetch._classify_blind_declaration(
+            ext=self._SAME,
+            source_file="provider/api.h",
+            is_blind=False,
+            prior=self._PRIOR,
+            prior_file="blind.h",
+            name_is_declared_blind=True,
+        )
+        assert verdict.action == "displace"
+        assert verdict.warning is None
+
+    def test_two_evaluated_files_are_not_applicable(self):
+        """Neither side is blind -- the ordinary same-name conflict path
+        (raise in fetch, warn-and-keep in status) owns this case."""
+        verdict = fetch._classify_blind_declaration(
+            ext=self._DIFFERENT_REF,
+            source_file="b.cpp",
+            is_blind=False,
+            prior=self._PRIOR,
+            prior_file="a.cpp",
+            name_is_declared_blind=False,
+        )
+        assert verdict.action == "not_applicable"
+
+    def test_url_disagreement_uses_the_evaluated_declarations_own_url_in_the_message(self):
+        """Regression pin for a copy/paste hazard: the drop message must
+        quote *ext*'s own (losing) url/ref, not the prior's."""
+        verdict = fetch._classify_blind_declaration(
+            ext=self._DIFFERENT_URL,
+            source_file="blind.h",
+            is_blind=True,
+            prior=self._PRIOR,
+            prior_file="main.cpp",
+            name_is_declared_blind=False,
+        )
+        assert verdict.action == "drop"
+        assert verdict.warning is not None
+        assert "https://example.com/other.git@v1" in verdict.warning
+        assert "https://example.com/mylib.git@v1" in verdict.warning
+
+
+@requires_functional_compiler
 def test_status_agrees_with_fetch_on_a_cross_round_blind_conflict(
     capsys: pytest.CaptureFixture,
 ) -> None:

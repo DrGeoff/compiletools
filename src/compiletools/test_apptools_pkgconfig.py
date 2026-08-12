@@ -560,13 +560,25 @@ class TestUndefinedPkgConfigVariables:
         assert any(str(tmp_path / "undefvar.pc") in m for m in messages), messages
         assert any("empty" in m for m in messages), messages
 
-    def test_strict_mode_promotes_it(self, tmp_path, monkeypatch):
+    def test_strict_mode_does_not_promote_it(self, tmp_path, monkeypatch):
+        """Unlike a missing package, an undefined ``.pc`` variable is a
+        cosmetic finding: pkg-config itself exits 0 with usable (if
+        truncated) flags, and the closure-wide scan can trip on a package
+        the user never declared and cannot fix (a transitive
+        ``Requires``/``Requires.private`` dependency's own ``.pc``, possibly
+        distro-owned). ``--pkg-config-errors=error`` governs *missing
+        packages* and *failed queries* -- promoting this diagnostic too
+        would hard-fail a build that pkg-config itself considered
+        successful, with no way for the user to silence just this one
+        finding short of abandoning strict mode entirely. Same carve-out as
+        ``_warn_pkg_config_tokenize_degraded``: always warn, never raise."""
         _write_pc(tmp_path, "undefvar", "Name: U\nDescription: d\nVersion: 1\nCflags: -I${includedir_typo}/u\n")
         monkeypatch.setenv("PKG_CONFIG_PATH", str(tmp_path))
         pkgconfig.set_pkg_config_errors("error")
 
-        with pytest.raises(pkgconfig.PkgConfigError, match="includedir_typo"):
-            pkgconfig.cached_pkg_config("undefvar", "--cflags")
+        with pytest.warns(UserWarning, match="includedir_typo"):
+            result = pkgconfig.cached_pkg_config("undefvar", "--cflags")
+        assert result == "-I/u"
 
     def test_a_well_formed_pc_file_is_silent(self, tmp_path, monkeypatch):
         """Anti-vacuity for every positive case above: the same code path
@@ -601,6 +613,25 @@ class TestUndefinedPkgConfigVariables:
 
         messages = [str(w.message) for w in recorded]
         assert any("prefix_typo" in m and "dep.pc" in m for m in messages), messages
+
+    def test_strict_mode_does_not_promote_a_transitive_dependency_typo(self, tmp_path, monkeypatch):
+        """The closure-wide scan can trip on a package the user never
+        declared and cannot fix -- a transitive ``Requires`` dependency's
+        own (possibly distro-owned) ``.pc``. Strict mode must not turn that
+        into a hard build failure: pkg-config itself resolved the actual
+        ``--cflags`` query the caller asked for."""
+        _write_pc(tmp_path, "dep", "Name: D\nDescription: d\nVersion: 1\nCflags: -I${prefix_typo}/dep\n")
+        _write_pc(
+            tmp_path,
+            "top",
+            "Name: T\nDescription: d\nVersion: 1\nRequires: dep >= 1\nCflags: -I/opt/top\n",
+        )
+        monkeypatch.setenv("PKG_CONFIG_PATH", str(tmp_path))
+        pkgconfig.set_pkg_config_errors("error")
+
+        with pytest.warns(UserWarning, match="prefix_typo"):
+            result = pkgconfig.cached_pkg_config("top", "--cflags")
+        assert result == "-I/opt/top -I/dep"
 
     def test_a_definition_below_its_use_is_reported(self, tmp_path, monkeypatch):
         """The scan is order-sensitive because both implementations are.
@@ -717,6 +748,24 @@ class TestBareDetachedPkgConfigFlags:
 
         with pytest.warns(UserWarning, match=r"detached '-L'"):
             pkgconfig.cached_pkg_config("truncated", "--libs")
+
+    def test_strict_mode_does_not_promote_it(self, monkeypatch):
+        """Same carve-out as the undefined-variable audit: pkg-config exited
+        0 with the (truncated) flags it queried for, so this is a diagnostic
+        about a third-party ``.pc``'s quality, not a query failure --
+        ``--pkg-config-errors=error`` must not turn it into a build break."""
+
+        def truncating_query(cmd, **_kwargs):
+            if "--exists" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="-L -lfoo", stderr="")
+
+        monkeypatch.setattr(pkgconfig.subprocess, "run", truncating_query)
+        pkgconfig.set_pkg_config_errors("error")
+
+        with pytest.warns(UserWarning, match=r"detached '-L'"):
+            result = pkgconfig.cached_pkg_config("truncated", "--libs")
+        assert result == "-L -lfoo"
 
     def test_a_narrow_subprocess_stub_cannot_break_the_query(self, monkeypatch):
         """The scanner adds one probe (``--variable pc_path pkg-config``) to
@@ -841,3 +890,73 @@ class TestTheRequiresClosureTerminatesOnCycles:
         with pytest.raises(_DidNotTerminate):
             with _fails_if_it_does_not_terminate():
                 unguarded_closure("cyc-a")
+
+
+class TestDefaultSearchDirsSurvivesTransientFailure:
+    """``_pkg_config_default_search_dirs`` degrades any failure to ``()`` so
+    a caller stubbing ``subprocess.run`` for an unrelated test never breaks.
+    But a real transient failure (pkg-config momentarily unavailable, a test
+    stub active for one call) must not permanently poison the process-wide
+    memo -- only a genuinely successful probe should be cached, since that
+    is the only case the "compiled-in list never changes" rationale for
+    skipping ``clear_cache()`` actually applies to.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_default_search_dirs_cache(self, monkeypatch):
+        monkeypatch.setattr(pkgconfig, "_pkg_config_default_search_dirs_cache", None)
+        yield
+        monkeypatch.setattr(pkgconfig, "_pkg_config_default_search_dirs_cache", None)
+
+    def test_a_failed_probe_is_retried_on_the_next_call(self, monkeypatch):
+        calls = []
+
+        def failing_then_succeeding(cmd, **_kwargs):
+            calls.append(cmd)
+            if len(calls) == 1:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="pkg-config: not found")
+            return subprocess.CompletedProcess(cmd, 0, stdout="/opt/pkgconfig/default\n", stderr="")
+
+        monkeypatch.setattr(pkgconfig.subprocess, "run", failing_then_succeeding)
+
+        first = pkgconfig._pkg_config_default_search_dirs()
+        assert first == ()
+
+        second = pkgconfig._pkg_config_default_search_dirs()
+        assert second == ("/opt/pkgconfig/default",)
+        assert len(calls) == 2, "a failed probe must not be cached -- the second call must re-probe"
+
+    def test_an_exception_during_the_probe_is_retried_on_the_next_call(self, monkeypatch):
+        calls = []
+
+        def raising_then_succeeding(cmd, **_kwargs):
+            calls.append(cmd)
+            if len(calls) == 1:
+                raise OSError("pkg-config executable vanished mid-probe")
+            return subprocess.CompletedProcess(cmd, 0, stdout="/opt/pkgconfig/default\n", stderr="")
+
+        monkeypatch.setattr(pkgconfig.subprocess, "run", raising_then_succeeding)
+
+        first = pkgconfig._pkg_config_default_search_dirs()
+        assert first == ()
+
+        second = pkgconfig._pkg_config_default_search_dirs()
+        assert second == ("/opt/pkgconfig/default",)
+        assert len(calls) == 2, "an exception during the probe must not be cached"
+
+    def test_a_successful_probe_is_still_cached(self, monkeypatch):
+        """The no-regression half: a genuinely successful probe (even one
+        resolving to an empty list) must be memoised, not re-run every call
+        -- that is the whole point of the process-wide cache."""
+        calls = []
+
+        def always_succeeding(cmd, **_kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="/opt/pkgconfig/default\n", stderr="")
+
+        monkeypatch.setattr(pkgconfig.subprocess, "run", always_succeeding)
+
+        first = pkgconfig._pkg_config_default_search_dirs()
+        second = pkgconfig._pkg_config_default_search_dirs()
+        assert first == second == ("/opt/pkgconfig/default",)
+        assert len(calls) == 1, "a successful probe must be cached across calls"

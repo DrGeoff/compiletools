@@ -217,6 +217,26 @@ def _warn_pkg_config(message: str, detail: str = "") -> None:
     warnings.warn(message, UserWarning, stacklevel=4)
 
 
+def _warn_pkg_config_advisory(message: str, detail: str = "") -> None:
+    """Warn about a cosmetic ``.pc`` quality finding, never promoted to a
+    hard failure regardless of ``--pkg-config-errors``.
+
+    Deliberately unconditional, like ``_warn_pkg_config_tokenize_degraded``:
+    pkg-config itself exited 0 with usable flags for the query the caller
+    actually made, so this is a diagnostic about a third-party ``.pc``
+    file's quality, not a failure of that query. The scan that feeds this
+    also walks the full ``Requires``/``Requires.private`` closure, so a
+    finding can originate in a package the user never declared and cannot
+    fix (a transitive, possibly distro-owned dependency) -- routing it
+    through ``_warn_pkg_config`` would let strict mode hard-fail a build
+    over a file the user has no way to correct, with no per-finding opt-out
+    short of abandoning strict mode entirely.
+    """
+    if detail:
+        message = f"{message}: {detail}"
+    warnings.warn(message, UserWarning, stacklevel=4)
+
+
 @functools.cache
 def _cached_pkg_config_exists(package: str) -> bool:
     """Check one package spec once and emit a stable failure category."""
@@ -300,12 +320,26 @@ def _bare_package_name(spec: str) -> str:
     return head
 
 
-@functools.cache
+# None = not yet successfully probed (retry on next call). A tuple (possibly
+# empty) = a genuine successful probe result, cached for the process
+# lifetime -- see _pkg_config_default_search_dirs. Not a functools.cache:
+# that would memoise a transient failure (subprocess momentarily
+# unavailable, a test stub active for one call) as a permanent (),
+# silencing the undefined-variable scanner for the rest of the process
+# with no reset path (clear_cache() deliberately leaves this alone, since a
+# real answer never changes mid-build).
+_pkg_config_default_search_dirs_cache: tuple[str, ...] | None = None
+
+
 def _pkg_config_default_search_dirs() -> tuple[str, ...]:
     """Return pkg-config's own default ``.pc`` search list.
 
-    One subprocess per process, and only when ``PKG_CONFIG_LIBDIR`` is unset
-    (that variable replaces the default list outright).
+    At most one subprocess per process for a genuinely successful probe
+    (memoised in ``_pkg_config_default_search_dirs_cache``), and only when
+    ``PKG_CONFIG_LIBDIR`` is unset (that variable replaces the default list
+    outright). A failed or erroring probe is deliberately NOT memoised, so
+    the next call retries rather than latching a transient failure for the
+    rest of the process.
 
     ANY failure degrades to an empty list rather than propagating. This is
     the only probe the undefined-variable scanner adds to the pkg-config
@@ -315,6 +349,10 @@ def _pkg_config_default_search_dirs() -> tuple[str, ...]:
     on a diagnostic. An empty list means the scanner locates no ``.pc`` file
     and stays silent, which is the correct degradation.
     """
+    global _pkg_config_default_search_dirs_cache
+    if _pkg_config_default_search_dirs_cache is not None:
+        return _pkg_config_default_search_dirs_cache
+
     try:
         result = subprocess.run(
             ["pkg-config", "--variable", "pc_path", "pkg-config"],
@@ -324,9 +362,12 @@ def _pkg_config_default_search_dirs() -> tuple[str, ...]:
         )
         if result.returncode != 0:
             return ()
-        return tuple(d for d in result.stdout.strip().split(os.pathsep) if d)
+        dirs = tuple(d for d in result.stdout.strip().split(os.pathsep) if d)
     except Exception:
         return ()
+
+    _pkg_config_default_search_dirs_cache = dirs
+    return dirs
 
 
 def _pkg_config_search_dirs() -> tuple[str, ...]:
@@ -483,7 +524,7 @@ def _report_undefined_pc_variables(package: str) -> None:
     for owner, path in _pc_requires_closure(_bare_package_name(package)):
         for variable in _undefined_pc_variables(path):
             via = "" if owner == _bare_package_name(package) else f" (required by {package!r})"
-            _warn_pkg_config(
+            _warn_pkg_config_advisory(
                 f"pkg-config package {owner!r}{via} references undefined variable ${{{variable}}} in {path}",
                 "pkgconf expands it to the empty string and still exits 0, so the flag it appears in "
                 "reaches the compiler silently truncated",
@@ -525,7 +566,7 @@ def _audit_pkg_config_output(package: str, option: str, output: str) -> None:
     """
     _report_undefined_pc_variables(package)
     for flag in _bare_detached_flags(output):
-        _warn_pkg_config(
+        _warn_pkg_config_advisory(
             f"pkg-config {option} {package!r} returned a detached {flag!r} with no argument",
             "an undefined ${variable} expands to the empty string, so the flag consumes the next "
             "token on the command line instead of its own path",
