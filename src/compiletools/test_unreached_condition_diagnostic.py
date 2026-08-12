@@ -531,3 +531,131 @@ class TestAWarmCacheHitStillRetractsAPendingRecord:
         assert "cannot evaluate" not in stderr, (
             f"a depth-0-seeded cache entry replayed no occurrences, stranding the pending record: {stderr!r}"
         )
+
+    def test_a_depth_zero_warm_hit_does_not_pre_resolve_the_next_convergence(self, tmp_path, capsys):
+        """The mirror of the depth-0 seeding case: a warm hit at depth 0
+        (Hunter's headerdeps walks run between TU parses, outside any
+        ``converging`` region) must not write the resolved store. A live run
+        at depth 0 leaves both stores alone (``_note_condition_resolved``
+        returns before touching them when deferral is off); a replay that
+        writes ``resolved`` unconditionally leaves a key behind that the NEXT
+        convergence reads, so its early pass skips recording a pending report
+        for a condition that convergence never resolves -- the owed "cannot
+        evaluate ... assuming false" line vanishes from the flush."""
+        gate_source = f"#if {_GATE}\nMARKER;\n#endif\n"
+        context = BuildContext()
+        set_analyzer_args(
+            SimpleNamespace(
+                max_read_size=0,
+                verbose=0,
+                exemarkers=[],
+                testmarkers=[],
+                librarymarkers=[],
+                use_mmap=True,
+                force_mmap=False,
+                suppress_fd_warnings=True,
+                suppress_filesystem_warnings=True,
+            ),
+            context,
+        )
+        gate_result = self._analyze_sharing(context, gate_source, str(tmp_path), "gate.cpp")
+        macros_result = self._analyze_sharing(context, _MACROS_HEADER, str(tmp_path), "macros.h")
+
+        early_macros = MacroState({}, {}, anchor_root="")
+        settled_macros = get_or_compute_preprocessing(
+            macros_result, early_macros, verbose=0, context=context
+        ).updated_macros
+
+        # Depth-0 seed, then a depth-0 WARM hit of the same entry.
+        get_or_compute_preprocessing(gate_result, settled_macros, verbose=1, context=context)
+        get_or_compute_preprocessing(gate_result, settled_macros, verbose=1, context=context)
+        assert not context.resolved_preprocessor_conditions, (
+            "a depth-0 warm hit wrote the resolved store; the next convergence inherits it"
+        )
+
+        # The next convergence only ever sees the gate at the early state:
+        # genuinely unevaluable, so the flush owes the warning.
+        with converging(context):
+            get_or_compute_preprocessing(gate_result, early_macros, verbose=1, context=context)
+
+        stderr = capsys.readouterr().err
+        assert "cannot evaluate" in stderr, (
+            f"the owed warning was suppressed by resolved-store pollution from a depth-0 warm hit: {stderr!r}"
+        )
+
+
+class TestTheIncludeListTierAlsoReplaysOccurrences:
+    """DirectHeaderDeps keeps its own include-list cache in front of
+    ``get_or_compute_preprocessing``, and magicflags drives headerdeps INSIDE
+    its ``converging`` region -- so a settled-state evaluation can be served
+    entirely from that tier, never reaching the preprocessing cache's replay.
+    Without a replay of its own, the include tier strands the early pass's
+    pending record and the flush prints "assuming false" against a gate the
+    build resolved.
+    """
+
+    @staticmethod
+    def _headerdeps(context, tempdir):
+        import configargparse
+
+        import compiletools.apptools
+        import compiletools.headerdeps
+
+        cap = configargparse.ArgumentParser(
+            conflict_handler="resolve",
+            args_for_setting_config_path=["-c", "--config"],
+            ignore_unknown_config_file_keys=True,
+        )
+        compiletools.headerdeps.add_arguments(cap)
+        argv = ["--headerdeps=direct", "-c", uth.create_temp_config(tempdir)]
+        args = compiletools.apptools.parseargs(cap, argv, context=context)
+        args.verbose = 1
+        return compiletools.headerdeps.create(args, context=context)
+
+    def test_a_settled_include_tier_hit_retracts_an_early_pending_record(self, tmp_path, monkeypatch, capsys):
+        """``good.cpp`` walks the defining header first, so its depth-0 walk
+        (Hunter's production order) seeds gate.h's settled-key include-list
+        entry with the gate resolved. Inside the convergence, ``bad.cpp``
+        walks the gate before its defining header -- a live run that records
+        the condition pending -- and the re-walk of ``good.cpp`` is served
+        from the include-list tier. That warm hit is the only settled-state
+        evaluation the convergence ever performs, so it must replay the
+        cached occurrences or the flush reports a condition the build
+        resolved."""
+        monkeypatch.chdir(tmp_path)
+        files = uth.write_sources(
+            {
+                "macros.h": (
+                    "#pragma once\n"
+                    "#define EXTLIB_MAJOR 2\n"
+                    "#define EXTLIB_MINOR 5\n"
+                    "#define EXTLIB_AT_LEAST(major, minor) \\\n"
+                    "    (EXTLIB_MAJOR > (major) || (EXTLIB_MAJOR == (major) && EXTLIB_MINOR >= (minor)))\n"
+                ),
+                "gate.h": f'#pragma once\n#if {_GATE}\n#include "new_api.h"\n#endif\n',
+                "new_api.h": "#pragma once\nint x;\n",
+                "good.cpp": '#include "macros.h"\n#include "gate.h"\nint main() { return 0; }\n',
+                "bad.cpp": '#include "gate.h"\n#include "macros.h"\nint bee() { return 0; }\n',
+            },
+            target_dir=str(tmp_path),
+        )
+        context = BuildContext()
+
+        # Fresh instances sharing one context, like the function-params suite:
+        # the per-instance whole-walk memo (`_process_impl`) would otherwise
+        # serve the re-walk and hide the include-list tier under test. In
+        # production the cross-TU sharing layer IS the context tier — each
+        # TU's walk has its own root, so the root memo never crosses TUs.
+        self._headerdeps(context, str(tmp_path)).process(str(files["good.cpp"]), frozenset())
+        assert "cannot evaluate" not in capsys.readouterr().err
+
+        with converging(context):
+            headerdeps = self._headerdeps(context, str(tmp_path))
+            headerdeps.process(str(files["bad.cpp"]), frozenset())
+            assert context.pending_preprocessor_warnings, "the early gate walk should record pending"
+            self._headerdeps(context, str(tmp_path)).process(str(files["good.cpp"]), frozenset())
+
+        stderr = capsys.readouterr().err
+        assert "cannot evaluate" not in stderr, (
+            f"an include-list-tier warm hit replayed nothing, stranding the pending record: {stderr!r}"
+        )

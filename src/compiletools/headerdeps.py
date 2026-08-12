@@ -25,6 +25,7 @@ from compiletools.preprocessing_cache import (
     decode_macro_cache_key,
     get_or_compute_preprocessing,
     is_permanently_invariant,
+    replay_condition_occurrences,
 )
 from compiletools.utils import instance_cache, tokenize_flags_or_raise
 
@@ -481,23 +482,23 @@ class DirectHeaderDeps(HeaderDepsBase):
         if is_permanently_invariant(analysis_result):
             # Invariant file - use content_hash only as cache key
             if content_hash in inv_inc_cache:
-                cached_includes, cached_file_defines, cached_file_undefs, cached_params = inv_inc_cache[content_hash]
+                cached_includes, cached_file_defines, cached_file_undefs, cached_params, cached_hash, cached_occ = (
+                    inv_inc_cache[content_hash]
+                )
                 # Undefs before defines: a name can be both undef'd and
                 # redefined within the same file, so it can appear in both
                 # sets. Applying defines first would let without_keys strip
                 # the just-reapplied value back out. See the matching fix in
                 # preprocessing_cache.get_or_compute_preprocessing.
-                # NOTE: this warm hit replays macro state only, not the
-                # condition_occurrences that get_or_compute_preprocessing's
-                # own hits replay for deferred-warning retraction — benign
-                # while headerdeps always runs at convergence depth 0 (no
-                # deferral armed, nothing pending to retract). If headerdeps
-                # ever runs inside a `converging` region, this tier needs
-                # the same _replay_condition_occurrences treatment.
                 if cached_file_undefs:
                     self.defined_macros = self.defined_macros.without_keys(cached_file_undefs)
                 if cached_file_defines:
                     self.defined_macros = self.defined_macros.with_updates(cached_file_defines, cached_params)
+                # magicflags drives this walk inside its `converging` region,
+                # so a warm hit here can be the only settled-state evaluation
+                # a convergence sees — it must retract pending records just
+                # like get_or_compute_preprocessing's own hits do.
+                replay_condition_occurrences(cached_occ, cached_hash, ctx)
                 return cached_includes
 
             # Cache miss for invariant file - compute and store
@@ -513,6 +514,8 @@ class DirectHeaderDeps(HeaderDepsBase):
                 result.file_defines,
                 result.file_undefs,
                 result.file_function_params,
+                content_hash,
+                result.condition_occurrences,
             )
             return include_list
 
@@ -521,12 +524,17 @@ class DirectHeaderDeps(HeaderDepsBase):
         cache_key = (content_hash, macro_key)
 
         if cache_key in var_inc_cache:
-            cached_includes, cached_file_defines, cached_file_undefs, cached_params = var_inc_cache[cache_key]
+            cached_includes, cached_file_defines, cached_file_undefs, cached_params, cached_hash, cached_occ = (
+                var_inc_cache[cache_key]
+            )
             # See the invariant-cache branch above: undefs before defines.
             if cached_file_undefs:
                 self.defined_macros = self.defined_macros.without_keys(cached_file_undefs)
             if cached_file_defines:
                 self.defined_macros = self.defined_macros.with_updates(cached_file_defines, cached_params)
+            # See the invariant-cache branch above: warm hits inside a
+            # convergence must replay occurrences.
+            replay_condition_occurrences(cached_occ, cached_hash, ctx)
             return cached_includes
 
         # Cache miss for variant file - compute and store
@@ -546,6 +554,8 @@ class DirectHeaderDeps(HeaderDepsBase):
             result.file_defines,
             result.file_undefs,
             result.file_function_params,
+            content_hash,
+            result.condition_occurrences,
         )
 
         return include_list

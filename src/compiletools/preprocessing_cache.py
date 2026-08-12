@@ -665,7 +665,7 @@ def is_macro_invariant(file_result, input_macros: "MacroState") -> bool:
 # 2. Cache key must be extracted from file_result and macros
 # 3. We need full objects to compute results, not just hashes
 # 4. Provides enhanced debugging (dump_cache_keys with file path resolution)
-def _replay_condition_occurrences(cached: ProcessingResult, content_hash, context) -> None:
+def replay_condition_occurrences(condition_occurrences, content_hash, context) -> None:
     """Replay a cached compute's condition-resolution events on a cache HIT.
 
     A live SimplePreprocessor run never happens on a cache hit, so
@@ -675,8 +675,21 @@ def _replay_condition_occurrences(cached: ProcessingResult, content_hash, contex
     later pass's result comes from the cache instead of a live rerun, even
     though the cached entry is itself proof the condition resolves (or was
     never reached) at this exact macro state.
+
+    Shared by every warm tier over a computed ProcessingResult: the two
+    caches here, and DirectHeaderDeps' include-list cache (which fronts this
+    one and can serve the only settled-state evaluation a convergence sees).
     """
-    if not cached.condition_occurrences:
+    if not condition_occurrences:
+        return
+    # Mirror the live path's deferral gate (_note_condition_resolved returns
+    # before touching either store when no convergence is listening): a
+    # depth-0 warm hit — Hunter's headerdeps walks between TU parses — must
+    # not write the resolved store, or the key survives until the NEXT
+    # convergence's flush and silences a "cannot evaluate" report that
+    # convergence still owes. The stores are per-convergence state; only a
+    # replay inside one may touch them.
+    if getattr(context, "preprocessor_convergence_depth", 0) <= 0:
         return
     pending = getattr(context, "pending_preprocessor_warnings", None)
     resolved = getattr(context, "resolved_preprocessor_conditions", None)
@@ -690,7 +703,7 @@ def _replay_condition_occurrences(cached: ProcessingResult, content_hash, contex
     # under "<unknown>", so the replay must address them the same way.
     filepath = get_filepath_by_hash(content_hash, context) or "<unknown>"
 
-    for kind, directive_type, condition, line_num in cached.condition_occurrences:
+    for kind, directive_type, condition, line_num in condition_occurrences:
         key = (filepath, directive_type, condition, line_num)
         if kind == "resolved" and resolved is not None:
             resolved.add(key)
@@ -758,7 +771,7 @@ def get_or_compute_preprocessing(
                 reconstructed_macros = reconstructed_macros.with_updates(
                     cached.file_defines, cached.file_function_params
                 )
-            _replay_condition_occurrences(cached, content_hash, context)
+            replay_condition_occurrences(cached.condition_occurrences, content_hash, context)
             return ProcessingResult(
                 active_lines=cached.active_lines,
                 active_includes=cached.active_includes,
@@ -793,7 +806,7 @@ def get_or_compute_preprocessing(
                 reconstructed_macros = reconstructed_macros.with_updates(
                     cached.file_defines, cached.file_function_params
                 )
-            _replay_condition_occurrences(cached, content_hash, context)
+            replay_condition_occurrences(cached.condition_occurrences, content_hash, context)
             return ProcessingResult(
                 active_lines=cached.active_lines,
                 active_includes=cached.active_includes,

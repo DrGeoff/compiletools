@@ -26,13 +26,22 @@ if TYPE_CHECKING:
     from compiletools.preprocessing_cache import FunctionParamsDict, MacroCacheKey, MacroDict, ProcessingResult
 
 # Type alias for headerdeps cache values:
-# (include_list, file_defines, file_undefs, file_function_params)
+# (include_list, file_defines, file_undefs, file_function_params,
+#  content_hash, condition_occurrences)
 #
 # The fourth slot carries the parameter lists of the function-like macros among
 # file_defines.  Without it a replay restores a macro's body but not its arity,
 # ``#if F(2, 0)`` downstream reads F as object-like, and the include graph takes
 # the other branch on every warm traversal.
-IncludeCacheValue = tuple[list[sz.Str], "MacroDict", frozenset, "FunctionParamsDict"]
+#
+# The last two slots let a warm hit replay the producing run's condition
+# occurrences against the deferred-warning stores
+# (preprocessing_cache.replay_condition_occurrences).  magicflags drives
+# headerdeps inside its ``converging`` region, so this tier can serve the only
+# settled-state evaluation a convergence sees; without the replay, a pending
+# "cannot evaluate" record from the convergence's own early pass survives to
+# the flush and prints against a gate the build resolved.
+IncludeCacheValue = tuple[list[sz.Str], "MacroDict", frozenset, "FunctionParamsDict", str, tuple]
 
 
 class BuildContext:
