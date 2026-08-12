@@ -975,6 +975,34 @@ class TestCacheHitMacroReconstruction(_CacheTestBase):
         assert second_result.updated_macros.variable[sz.Str("LOCAL_DEF")] == sz.Str("42")
 
     @_skip_on_pypy
+    def test_a_define_equal_to_the_producers_input_still_transfers(self):
+        """file_defines must carry a macro the file actively #define's even
+        when the producer's own input already held it at that exact value
+        (no delta relative to THAT input): the cached entry is shared with
+        callers whose input does NOT hold it, and a delta-vs-input filter
+        deletes the define for exactly those callers -- the build result
+        then depends on which TU populated the cache first."""
+        file_result = self._file_with_define("hash_inv_equal_value")
+
+        # Producer's input coincidentally already has LOCAL_DEF at the very
+        # value the file defines it to.
+        first_input = MacroState({}, {sz.Str("LOCAL_DEF"): sz.Str("42")}, anchor_root="")
+        first_result = get_or_compute_preprocessing(file_result, first_input, 0, context=self.ctx)
+        assert first_result.updated_macros.variable[sz.Str("LOCAL_DEF")] == sz.Str("42")
+
+        # Warm consumer with no prior LOCAL_DEF: a cold run would define it,
+        # so the warm hit must too.
+        second_input = MacroState({}, {}, anchor_root="")
+        second_result = get_or_compute_preprocessing(file_result, second_input, 0, context=self.ctx)
+
+        stats = get_cache_stats(self.ctx)
+        assert stats["invariant_hits"] == 1, "second call should hit invariant cache"
+        assert sz.Str("LOCAL_DEF") in second_result.updated_macros.variable, (
+            "warm hit reconstructed without LOCAL_DEF while a cold run defines it"
+        )
+        assert second_result.updated_macros.variable[sz.Str("LOCAL_DEF")] == sz.Str("42")
+
+    @_skip_on_pypy
     def test_undef_then_redefine_to_the_producers_own_input_value(self):
         """The value-aware file_defines filter alone is not enough when the
         producer's input already holds X at the very value the file

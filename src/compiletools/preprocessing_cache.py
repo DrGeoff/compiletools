@@ -872,22 +872,27 @@ def get_or_compute_preprocessing(
         if d.directive_type == "undef" and d.macro_name and d.line_num in active_line_set
     )
 
+    # Names this file actively #define's on active lines. Input-independent
+    # for the entry's key space (activity is fixed by the cache key), so
+    # every one of them belongs in file_defines: a cold run over this file
+    # defines them no matter what the caller's input held.
+    actively_defined = {d["name"] for d in active_defines}
+
     # Store file-specific defines for cache reconstruction
-    # file_defines should ONLY contain macros this file added or changed
-    # relative to input (not macros inherited unchanged from input). A
-    # presence-only check here would drop a redefinition to a NEW value
-    # whenever the name happened to already exist in this call's input,
-    # silently discarding the delta a later caller (with a different input)
-    # needs to reconstruct the correct final value. And a name the file
-    # also actively #undef's must be carried even when its final value
-    # matches this call's input (no delta relative to THIS input): the
-    # warm-hit reconstruction removes every file_undefs name first, so
-    # omitting the define would delete the macro outright for a caller
-    # whose input held a different value.
+    # file_defines contains every macro this file actively defines, plus any
+    # macro whose value changed relative to input. Filtering to the delta
+    # against THIS call's input is wrong on both halves: a redefinition whose
+    # final value happens to equal the producer's own input is no delta HERE
+    # but is one for a warm caller with a different (or absent) input — the
+    # entry is shared, so omitting the define makes the reconstruction depend
+    # on which caller populated the cache first. The delta conditions are
+    # kept for macros that reach new_variable_macros without an active
+    # #define line, and file_undefs names are carried so the undefs-then-
+    # defines reconstruction can reapply the file's final value.
     # Note: Include guards are already excluded by SimplePreprocessor._handle_define_structured()
     file_defines: MacroDict = {}
     for k, v in new_variable_macros.items():
-        if k in file_undefs or k not in input_macros.variable or input_macros.variable[k] != v:
+        if k in actively_defined or k in file_undefs or k not in input_macros.variable or input_macros.variable[k] != v:
             file_defines[k] = v
 
     # Parameter lists travel with the bodies they belong to, through both the
