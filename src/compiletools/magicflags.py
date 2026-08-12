@@ -955,8 +955,19 @@ class DirectMagicFlags(MagicFlagsBase):
             macro_key: Frozenset cache key of current macro state (from MacroState.get_cache_key())
 
         Returns:
-            Tuple of (active_magic_flags, extracted_variable_macros_dict, cppflags_macros, cxxflags_macros)
-            or None if file cannot be processed
+            Tuple of (active_magic_flags, magic_macros, effects) where
+            magic_macros holds the -D macros extracted from active CPPFLAGS/
+            CXXFLAGS magic flags and effects is a FileEffects over the
+            active #define/#undef directives. None if the file cannot be
+            processed.
+
+            The effects sets are deliberately NOT the ProcessingResult's own:
+            magicflags extracts from every active #define line (including
+            include guards the preprocessor strips from file_defines), and
+            makes the define/undef sets disjoint per the positional verdict
+            (see the comment at the extraction below). Its occurrence tuple
+            is empty because get_or_compute_preprocessing already replayed
+            this computation's occurrences.
         """
         try:
             file_result = self._get_file_analyzer_result(fname)
@@ -986,7 +997,10 @@ class DirectMagicFlags(MagicFlagsBase):
             magic_flag for magic_flag in file_result.magic_flags if magic_flag["line_num"] in active_line_set
         ]
 
-        # Collect macros from active magic flags for caching
+        # Collect macros from active magic flags for caching. CPPFLAGS
+        # entries first, then CXXFLAGS, so a name present in both slots
+        # keeps the CXXFLAGS value regardless of line order (the merge
+        # order dict(cpp + cxx) always had).
         cppflags_macros = []
         cxxflags_macros = []
         if active_magic_flags:
@@ -1002,6 +1016,7 @@ class DirectMagicFlags(MagicFlagsBase):
                             cppflags_macros.append((macro_name, macro_value))
                         else:
                             cxxflags_macros.append((macro_name, macro_value))
+        magic_macros = dict(cppflags_macros + cxxflags_macros)
 
         # Extract variable macros from active #define directives. A name can
         # be both actively #define'd and actively #undef'd, and which wins is
@@ -1027,14 +1042,13 @@ class DirectMagicFlags(MagicFlagsBase):
 
         file_undefs = frozenset(u for u in result.file_undefs if u not in extracted_variable_macros)
 
-        return (
-            active_magic_flags,
-            extracted_variable_macros,
-            cppflags_macros,
-            cxxflags_macros,
-            file_undefs,
-            extracted_function_params,
+        effects = compiletools.preprocessing_cache.FileEffects(
+            content_hash=file_result.content_hash,
+            file_defines=extracted_variable_macros,
+            file_undefs=file_undefs,
+            file_function_params=extracted_function_params,
         )
+        return (active_magic_flags, magic_macros, effects)
 
     def _process_file_for_macros(self, fname: str, macro_key=None) -> None:
         """Process a single file to extract macros and active magic flags (mutates state).
@@ -1058,29 +1072,20 @@ class DirectMagicFlags(MagicFlagsBase):
         if cached_result is None:
             return
 
-        (
-            active_magic_flags,
-            extracted_variable_macros,
-            cppflags_macros,
-            cxxflags_macros,
-            file_undefs,
-            extracted_function_params,
-        ) = cached_result
+        active_magic_flags, magic_macros, effects = cached_result
 
         # Store active magic flags for this file to avoid redundant final pass
         self._stored_active_magic_flags[fname] = active_magic_flags
 
-        # Collect updates
-        # Apply extracted macros from magic flags to state
-        updates = dict(cppflags_macros + cxxflags_macros)
-
-        # Apply extracted variable macros to state
-        updates.update(extracted_variable_macros)
-
-        # Update state immutably
-        self.defined_macros = self.defined_macros.with_updates(updates, extracted_function_params)
-        if file_undefs:
-            self.defined_macros = self.defined_macros.without_keys(file_undefs)
+        # Layer the magic-flag-derived macros first, then the file's own
+        # directive effects through the shared apply() contract. Magic
+        # macros are a magicflags-only concern, so they stay outside
+        # FileEffects; applying them first means a file's #define overrides
+        # a magic -D of the same name (as the previous single merged update
+        # did) and a #undef still removes a magic macro the file never
+        # redefines (apply's undefs run after this).
+        self.defined_macros = self.defined_macros.with_updates(magic_macros)
+        self.defined_macros = effects.apply(self.defined_macros, self.context)
 
     def _extract_macros_from_file(self, filename):
         """Extract #define macros from a file (unconditionally, no preprocessor evaluation)."""
