@@ -1,4 +1,5 @@
 import os
+import tempfile
 
 import configargparse
 import pytest
@@ -151,27 +152,35 @@ def compare_direct_cpp_magic(test_case, relativepath, tempdir=None, expected_val
                 else:
                     raise
         else:
-            # Test direct parser with isolated context
-            with uth.ParserContext():
-                magicparser_direct = create_magic_parser(["--magic", "direct"], tempdir=os.getcwd(), context=context)
-                try:
-                    result_direct = magicparser_direct.parse(realpath)
-                except RuntimeError as e:
-                    if "No functional C++ compiler detected" in str(e):
-                        pytest.skip("No functional C++ compiler detected")
-                    else:
-                        raise
+            # The parsers' temp configs go in a dedicated directory, never
+            # the cwd: the conf reaches the parser via an explicit --config
+            # path, and writing it into cwd litters whatever directory the
+            # caller happened to pass as tempdir (a tracked fixture dir, in
+            # one committed instance).
+            with tempfile.TemporaryDirectory() as config_dir:
+                # Test direct parser with isolated context
+                with uth.ParserContext():
+                    magicparser_direct = create_magic_parser(["--magic", "direct"], tempdir=config_dir, context=context)
+                    try:
+                        result_direct = magicparser_direct.parse(realpath)
+                    except RuntimeError as e:
+                        if "No functional C++ compiler detected" in str(e):
+                            pytest.skip("No functional C++ compiler detected")
+                        else:
+                            raise
 
-            # Test cpp parser with fresh isolated context
-            with uth.ParserContext():
-                magicparser_cpp = create_magic_parser(["--magic", "cpp"], tempdir=os.getcwd(), context=BuildContext())
-                try:
-                    result_cpp = magicparser_cpp.parse(realpath)
-                except RuntimeError as e:
-                    if "No functional C++ compiler detected" in str(e):
-                        pytest.skip("No functional C++ compiler detected")
-                    else:
-                        raise
+                # Test cpp parser with fresh isolated context
+                with uth.ParserContext():
+                    magicparser_cpp = create_magic_parser(
+                        ["--magic", "cpp"], tempdir=config_dir, context=BuildContext()
+                    )
+                    try:
+                        result_cpp = magicparser_cpp.parse(realpath)
+                    except RuntimeError as e:
+                        if "No functional C++ compiler detected" in str(e):
+                            pytest.skip("No functional C++ compiler detected")
+                        else:
+                            raise
 
         # Results should be identical
         assert result_direct == result_cpp, (

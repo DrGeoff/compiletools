@@ -469,7 +469,10 @@ def create_temp_config(tempdir=None, filename=None, extralines=None):
     CC = compiletools.apptools.derive_c_compiler_from_cxx(CXX)
 
     if not filename:
-        _tf_handle, filename = tempfile.mkstemp(suffix=".conf", text=True, dir=tempdir)
+        tf_handle, filename = tempfile.mkstemp(suffix=".conf", text=True, dir=tempdir)
+        # The file is reopened by name below; keeping mkstemp's fd open
+        # leaks one descriptor per call across a suite of thousands.
+        os.close(tf_handle)
 
     with builtins.open(filename, "w") as ff:
         ff.write(f"CC={CC}\n")
