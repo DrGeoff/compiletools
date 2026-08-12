@@ -466,6 +466,12 @@ def test_a_different_stderr_for_the_same_package_and_option_is_not_suppressed(mo
         ]
     )
 
+    # The audit every successful query runs reaches the pc_path probe, whose
+    # memo clear_cache deliberately keeps. Priming it keeps that probe from
+    # consuming one of the four modelled responses, which is what made this
+    # test depend on a sibling having warmed the memo first.
+    monkeypatch.setattr(pkgconfig, "_pkg_config_default_search_dirs_cache", ())
+
     def succeeds_with_a_warning(cmd, **_kwargs):
         if "--exists" in cmd:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
