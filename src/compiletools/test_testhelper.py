@@ -113,3 +113,45 @@ def test_build_real_backend_extra_argv_overrides_win(tmp_path, monkeypatch):
         )
     finally:
         uth.reset()
+
+
+class TestCopyFileRangeProbe:
+    """``_copy_file_range_works_in`` detects the one filesystem gap that
+    makes every bazel test fail before any build step runs (GPFS returning
+    ENOTSUP since the 2026-07-25 kernel: bazel's repository extraction dies
+    with ``java.io.IOException: Operation not supported``). Only that errno
+    may report False -- any other probe failure must count as "works", or a
+    broken probe converts real test failures into silent skips.
+    """
+
+    def test_reports_false_on_enotsup(self, tmp_path, monkeypatch):
+        import errno as errno_mod
+
+        def raises_enotsup(*_args, **_kwargs):
+            raise OSError(errno_mod.ENOTSUP, "Operation not supported")
+
+        monkeypatch.setattr(os, "copy_file_range", raises_enotsup)
+        assert uth._copy_file_range_works_in(str(tmp_path)) is False
+
+    def test_reports_true_on_a_working_filesystem_or_other_errors(self, tmp_path, monkeypatch):
+        import errno as errno_mod
+
+        assert uth._copy_file_range_works_in(str(tmp_path)) is True
+
+        def raises_unrelated(*_args, **_kwargs):
+            raise OSError(errno_mod.EACCES, "Permission denied")
+
+        monkeypatch.setattr(os, "copy_file_range", raises_unrelated)
+        assert uth._copy_file_range_works_in(str(tmp_path)) is True
+
+    def test_bazel_backend_gate_reports_unavailable_when_output_root_lacks_the_syscall(self, monkeypatch):
+        """The full wiring: bazelisk on PATH but the cache-root probe False
+        must make ``_backend_tool_available('bazel')`` False, so every
+        bazel-parameterized test skips instead of failing on the fetch."""
+        import shutil as shutil_mod
+
+        monkeypatch.setattr(shutil_mod, "which", lambda _name: "/usr/bin/fake-bazelisk")
+        monkeypatch.setattr(uth, "_bazel_output_root_supports_copy_file_range", lambda: False)
+        assert uth._backend_tool_available("bazel") is False
+        monkeypatch.setattr(uth, "_bazel_output_root_supports_copy_file_range", lambda: True)
+        assert uth._backend_tool_available("bazel") is True

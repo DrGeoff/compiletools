@@ -1,5 +1,6 @@
 import builtins
 import contextlib
+import errno
 import functools
 import os
 import shlex
@@ -32,12 +33,67 @@ from compiletools.examples_registry import (
 # The abbreviation "uth" is often used for this "testhelper"
 
 
+def _copy_file_range_works_in(dirpath: str) -> bool:
+    """True unless ``copy_file_range`` returns ENOTSUP/EOPNOTSUPP in *dirpath*.
+
+    Any other outcome — the syscall missing, the directory unwritable, an
+    unrelated error — counts as "works": the probe exists to detect one
+    specific filesystem gap, and turning its own failures into skips would
+    hide real test failures behind a green suite.
+    """
+    if not hasattr(os, "copy_file_range"):
+        return True
+    try:
+        with tempfile.TemporaryDirectory(dir=dirpath) as tdir:
+            src = os.path.join(tdir, "src")
+            dst = os.path.join(tdir, "dst")
+            with open(src, "wb") as fh:
+                fh.write(b"probe")
+            with open(src, "rb") as sfh, open(dst, "wb") as dfh:
+                os.copy_file_range(sfh.fileno(), dfh.fileno(), 5)
+    except OSError as e:
+        if e.errno in (errno.ENOTSUP, errno.EOPNOTSUPP):
+            return False
+    except Exception:
+        pass
+    return True
+
+
+@functools.cache
+def _bazel_output_root_supports_copy_file_range() -> bool:
+    """Bazel's repository machinery extracts external deps (rules_cc etc.)
+    under its output user root — ``$XDG_CACHE_HOME/bazel`` or
+    ``~/.cache/bazel`` — with ``copy_file_range``. On filesystems where that
+    syscall returns ENOTSUP (GPFS under recent kernels), every fetch dies
+    with ``java.io.IOException: Operation not supported`` before any build
+    step runs, so no bazel test can pass regardless of the code under test.
+    Probing the syscall directly is cheap and names the actual gap; probing
+    "bazel binary present" cannot see it.
+
+    Probes ``<cache_home>/bazel`` itself when it exists: the documented
+    workaround for the GPFS gap is symlinking that directory to off-GPFS
+    storage, and probing the parent would ignore the symlink's target and
+    skip tests that would pass.
+    """
+    cache_home = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    for probe_dir in (os.path.join(cache_home, "bazel"), cache_home, tempfile.gettempdir()):
+        if os.path.isdir(probe_dir):
+            return _copy_file_range_works_in(probe_dir)
+    return True
+
+
 def _backend_tool_available(backend_name):
-    """Check if the build tool for a backend is on PATH."""
+    """Check if the build tool for a backend is on PATH and can function.
+
+    For bazel, "can function" includes the output-root filesystem supporting
+    ``copy_file_range`` — see ``_bazel_output_root_supports_copy_file_range``.
+    """
     if backend_name == "shake":
         return True  # Self-executing, no external tool needed
     if backend_name == "bazel":
-        return shutil.which("bazelisk") is not None or shutil.which("bazel") is not None
+        if shutil.which("bazelisk") is None and shutil.which("bazel") is None:
+            return False
+        return _bazel_output_root_supports_copy_file_range()
     if backend_name == "cmake":
         return shutil.which("cmake") is not None
     tool = {"make": "make", "ninja": "ninja"}.get(backend_name)
