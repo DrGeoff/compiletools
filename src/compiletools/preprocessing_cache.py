@@ -813,53 +813,37 @@ def get_or_compute_preprocessing(
 
     content_hash = file_result.content_hash
     invariant = is_macro_invariant(file_result, input_macros)
-    cache_key: tuple = ()
 
-    # Check appropriate cache
+    # One hit/miss sequence for both tiers, parameterised by cache dict and
+    # key; the invariant/variant statistics counters stay separate.
     if invariant:
         # Macro-invariant: cache key is content_hash only
-        if content_hash in inv_cache:
-            stats["hits"] += 1
-            stats["invariant_hits"] += 1
-            cached = inv_cache[content_hash]
-            # Reconstruct updated_macros from caller's input + the cached
-            # effects to prevent stale macro pollution from the first
-            # caller's context. apply() owns the undefs-before-defines
-            # ordering and the condition-occurrence replay.
-            return ProcessingResult(
-                active_lines=cached.active_lines,
-                active_includes=cached.active_includes,
-                active_magic_flags=cached.active_magic_flags,
-                active_defines=cached.active_defines,
-                updated_macros=cached.effects.apply(input_macros, context),
-                effects=cached.effects,
-            )
-
-        stats["misses"] += 1
-        stats["invariant_misses"] += 1
+        cache, cache_key, tier = inv_cache, content_hash, "invariant"
     else:
         # Macro-variant: cache key is (content_hash, file_specific_macro_key)
         # Use file-specific key: only macros that affect this file's conditionals
         macro_key = input_macros.get_relevant_key(file_result.conditional_macros)
-        cache_key = (content_hash, macro_key)
+        cache, cache_key, tier = var_cache, (content_hash, macro_key), "variant"
 
-        if cache_key in var_cache:
-            stats["hits"] += 1
-            stats["variant_hits"] += 1
-            cached = var_cache[cache_key]
-            # See the invariant-cache branch above: apply() owns the
-            # reconstruction contract.
-            return ProcessingResult(
-                active_lines=cached.active_lines,
-                active_includes=cached.active_includes,
-                active_magic_flags=cached.active_magic_flags,
-                active_defines=cached.active_defines,
-                updated_macros=cached.effects.apply(input_macros, context),
-                effects=cached.effects,
-            )
+    cached = cache.get(cache_key)
+    if cached is not None:
+        stats["hits"] += 1
+        stats[f"{tier}_hits"] += 1
+        # Reconstruct updated_macros from caller's input + the cached effects
+        # to prevent stale macro pollution from the first caller's context.
+        # apply() owns the undefs-before-defines ordering and the
+        # condition-occurrence replay.
+        return ProcessingResult(
+            active_lines=cached.active_lines,
+            active_includes=cached.active_includes,
+            active_magic_flags=cached.active_magic_flags,
+            active_defines=cached.active_defines,
+            updated_macros=cached.effects.apply(input_macros, context),
+            effects=cached.effects,
+        )
 
-        stats["misses"] += 1
-        stats["variant_misses"] += 1
+    stats["misses"] += 1
+    stats[f"{tier}_misses"] += 1
 
     # Compute result - pass all macros to preprocessor
     all_macros = input_macros.all_macros()
@@ -975,11 +959,8 @@ def get_or_compute_preprocessing(
         ),
     )
 
-    # Store in appropriate cache
-    if invariant:
-        inv_cache[content_hash] = result
-    else:
-        var_cache[cache_key] = result
+    # Store in the tier selected above
+    cache[cache_key] = result
 
     return result
 
