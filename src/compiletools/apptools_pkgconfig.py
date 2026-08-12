@@ -418,12 +418,13 @@ def _pc_required_packages(value: str) -> list[str]:
         name = _bare_package_name(token)
         if name:
             packages.append(name)
-        # An attached constraint (``foo>=1.2``) carries its own operand;
-        # a trailing bare operator takes the following token as the operand.
-        if name != token:
-            index += 1
-            continue
         index += 1
+        if name != token:
+            # A constraint attached to the name: ``foo>=1.2`` carries its own
+            # operand, but ``foo>=`` (operand spaced off) takes the next token.
+            if not token[len(name) :].rstrip("<>=!") and index < len(tokens):
+                index += 1
+            continue
         if index < len(tokens) and tokens[index][0] in "<>=!":
             operator = tokens[index]
             index += 2 if not operator.rstrip("<>=!") else 1

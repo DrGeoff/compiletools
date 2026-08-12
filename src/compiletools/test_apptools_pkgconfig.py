@@ -960,3 +960,34 @@ class TestDefaultSearchDirsSurvivesTransientFailure:
         second = pkgconfig._pkg_config_default_search_dirs()
         assert first == second == ("/opt/pkgconfig/default",)
         assert len(calls) == 1, "a successful probe must be cached across calls"
+
+
+class TestRequiresValueParsing:
+    """``_pc_required_packages`` must return only package names for every
+    constraint spelling pkgconf itself accepts. The sharp corner is the
+    operator attached to the name with the operand spaced off
+    (``zlib>= 1.2``): the name consumes one token, so a parser that does not
+    also consume the detached operand reads ``1.2`` as a package. Today the
+    phantom only widens the closure walk (``_locate_pc_file`` returns None),
+    but a real ``1.2.pc`` on the search path -- or any future consumer of
+    the closure -- turns it into a bogus dependency.
+    """
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("zlib", ["zlib"]),
+            ("zlib libpng", ["zlib", "libpng"]),
+            ("zlib >= 1.2", ["zlib"]),
+            ("zlib >=1.2", ["zlib"]),
+            ("zlib>=1.2", ["zlib"]),
+            ("zlib>= 1.2", ["zlib"]),
+            ("zlib= 1.2", ["zlib"]),
+            ("zlib!= 1.2", ["zlib"]),
+            ("zlib>= 1.2 libpng", ["zlib", "libpng"]),
+            ("zlib >= 1.2, libpng <= 3", ["zlib", "libpng"]),
+            ("zlib>=", ["zlib"]),
+        ],
+    )
+    def test_version_operands_never_become_package_names(self, value, expected):
+        assert pkgconfig._pc_required_packages(value) == expected
