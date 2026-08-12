@@ -16,7 +16,9 @@ The hash is deterministic across Python runs, enabling future disk caching suppo
 
 import os
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Optional
 
 import stringzilla as sz
@@ -27,6 +29,10 @@ MacroCacheKey = frozenset[tuple[sz.Str, sz.Str]]
 # Parameter lists of function-like macros, keyed by the same bare macro name
 # used in MacroDict. A name absent here is object-like.
 FunctionParamsDict = dict[sz.Str, tuple[sz.Str, ...]]
+# Read-only views of the same shapes, for values shared across cache
+# consumers (FileEffects fields are MappingProxyType at runtime).
+MacroMapping = Mapping[sz.Str, sz.Str]
+FunctionParamsMapping = Mapping[sz.Str, tuple[sz.Str, ...]]
 # Cache-key namespace for the parameter-list contribution. '#' cannot appear in
 # a C identifier, so a synthesized entry can never collide with a real macro's
 # (name, value) pair. A NUL prefix would also be collision-free but renders as
@@ -70,6 +76,10 @@ class FileEffects:
     tier, DirectHeaderDeps, forgot the replay entirely for a release);
     :meth:`apply` is the single implementation.
 
+    Instances are deeply immutable, not merely frozen: one FileEffects is
+    shared by identity with every ProcessingResult a warm tier serves, so
+    ``__post_init__`` snapshots the mapping fields behind read-only views.
+
     Attributes:
         content_hash: Hash of the producing file's content, used to resolve
             the file path for condition-occurrence replay.
@@ -92,10 +102,23 @@ class FileEffects:
     """
 
     content_hash: str
-    file_defines: MacroDict = field(default_factory=dict)
+    file_defines: MacroMapping = field(default_factory=dict)
     file_undefs: frozenset = field(default_factory=frozenset)
-    file_function_params: "FunctionParamsDict" = field(default_factory=dict)
+    file_function_params: FunctionParamsMapping = field(default_factory=dict)
     condition_occurrences: tuple = ()
+
+    def __post_init__(self):
+        # frozen=True only stops attribute REBINDING; a shared entry's dict
+        # fields would still be mutable in place, and one FileEffects is
+        # shared by identity with every ProcessingResult served from a warm
+        # tier. Deep-freeze: snapshot-copy (severing aliasing with whatever
+        # dict the producer built) behind a read-only view, and coerce the
+        # other two fields so a list/set argument cannot smuggle mutability
+        # in either.
+        object.__setattr__(self, "file_defines", MappingProxyType(dict(self.file_defines)))
+        object.__setattr__(self, "file_function_params", MappingProxyType(dict(self.file_function_params)))
+        object.__setattr__(self, "file_undefs", frozenset(self.file_undefs))
+        object.__setattr__(self, "condition_occurrences", tuple(self.condition_occurrences))
 
     def apply(self, macro_state: "MacroState", context) -> "MacroState":
         """Apply this file's recorded effects to `macro_state`; returns the new state.
@@ -144,7 +167,7 @@ class ProcessingResult:
     effects: FileEffects
 
     @property
-    def file_defines(self) -> MacroDict:
+    def file_defines(self) -> MacroMapping:
         return self.effects.file_defines
 
     @property
@@ -152,7 +175,7 @@ class ProcessingResult:
         return self.effects.file_undefs
 
     @property
-    def file_function_params(self) -> "FunctionParamsDict":
+    def file_function_params(self) -> FunctionParamsMapping:
         return self.effects.file_function_params
 
     @property
@@ -322,7 +345,7 @@ class MacroState:
         return result
 
     def with_updates(
-        self, new_macros: MacroDict, new_function_params: Optional[FunctionParamsDict] = None
+        self, new_macros: MacroMapping, new_function_params: Optional[FunctionParamsMapping] = None
     ) -> "MacroState":
         """Create new MacroState with additional macros merged into variable.
 

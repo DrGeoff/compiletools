@@ -693,6 +693,24 @@ class TestFileEffectsApply:
 
         assert result.variable[sz.Str("X")] == sz.Str("2")
 
+    def test_the_mapping_fields_reject_in_place_mutation(self):
+        """One FileEffects is shared by identity with every ProcessingResult
+        served from a warm tier, so in-place mutation of a dict field would
+        corrupt every past and future consumer of that cache entry. The
+        fields must be genuinely read-only, not just rebind-protected."""
+        source_defines = {sz.Str("X"): sz.Str("1")}
+        effects = FileEffects(content_hash="h", file_defines=source_defines)
+
+        with pytest.raises(TypeError):
+            effects.file_defines[sz.Str("Y")] = sz.Str("2")  # type: ignore[index]
+        with pytest.raises(TypeError):
+            effects.file_function_params[sz.Str("F")] = ()  # type: ignore[index]
+
+        # The snapshot also severs aliasing with the producer's dict: a
+        # later mutation of the original must not reach the shared entry.
+        source_defines[sz.Str("X")] = sz.Str("changed")
+        assert effects.file_defines[sz.Str("X")] == sz.Str("1")
+
     def test_a_redefinition_to_object_like_drops_the_old_parameter_list(self):
         """with_updates drops function_params for redefined names absent
         from the effects' own params, so a function-like macro redefined
