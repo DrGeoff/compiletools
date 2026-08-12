@@ -46,11 +46,10 @@ class UnsafeExpressionError(ValueError):
 
     It is a distinct type because a bare ``ValueError`` cannot carry that
     meaning: Python raises ``ValueError`` from ordinary integer arithmetic too
-    (a negative shift count), and while ``_safe_eval`` had a single
-    ``except ValueError`` those two channels were indistinguishable -- a
-    well-formed ``#if (1 >> (~0))`` was filed as dangerous input and its branch
-    dropped. Kept a ``ValueError`` subclass so callers written against the
-    older contract still catch it.
+    (a negative shift count), so a catch on the bare type cannot tell
+    dangerous input apart from a well-formed ``#if (1 >> (~0))`` whose branch
+    must not be dropped. A ``ValueError`` subclass so callers catching the
+    base type still catch it.
     """
 
 

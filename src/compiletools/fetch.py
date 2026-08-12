@@ -1624,9 +1624,7 @@ def _classify_blind_declaration(
 
     Shared verbatim by :func:`fetch_externals` and
     :func:`gather_external_status` so the two surfaces cannot silently
-    diverge on which declaration wins or on the warning wording -- this is
-    the ~40-line block that used to be duplicated between their two
-    ``_scan_round`` closures, previously kept in sync only by a comment.
+    diverge on which declaration wins or on the warning wording.
     Pure and side-effect free: callers own all state mutation (recording the
     new prior, clearing blind bookkeeping, mode-specific repairs) and their
     own verbosity/dedup gating around printing ``.warning``.
