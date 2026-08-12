@@ -59,6 +59,62 @@ def include_path_environment_snapshot() -> dict[str, str]:
     return {var: os.environ.get(var, "") for var in INCLUDE_PATH_ENV_VARS}
 
 
+@dataclass(frozen=True)
+class FileEffects:
+    """What processing one file did to the macro state, as one value.
+
+    Every warm cache tier must reproduce the same three steps a cold run
+    performed — remove the file's #undef targets, apply its #defines, replay
+    its condition occurrences against the deferred-warning stores. Carrying
+    the slots separately made each tier re-implement that sequence (and one
+    tier, DirectHeaderDeps, forgot the replay entirely for a release);
+    :meth:`apply` is the single implementation.
+
+    Attributes:
+        content_hash: Hash of the producing file's content, used to resolve
+            the file path for condition-occurrence replay.
+        file_defines: Macros this file actively #define's (final values).
+        file_undefs: Names this file actively #undef's, disjoint from
+            file_defines: a name both undef'd and redefined keeps only its
+            final #define here, so apply order between the two sets cannot
+            change the outcome.
+        file_function_params: Parameter lists of the function-like macros
+            among file_defines. Without them a replay restores a macro's
+            body but not its arity.
+        condition_occurrences: ``(kind, directive_type, condition, line_num)``
+            tuples for every condition this file's processing resolved or
+            found unreached (see :func:`replay_condition_occurrences`).
+    """
+
+    content_hash: str
+    file_defines: MacroDict = field(default_factory=dict)
+    file_undefs: frozenset = field(default_factory=frozenset)
+    file_function_params: "FunctionParamsDict" = field(default_factory=dict)
+    condition_occurrences: tuple = ()
+
+    def apply(self, macro_state: "MacroState", context) -> "MacroState":
+        """Apply this file's recorded effects to `macro_state`; returns the new state.
+
+        Undefs before defines: a name can be both undef'd and redefined
+        within the same file (#undef X / #define X 2), so the sets can share
+        a key at the boundary where the producer recorded them. Removing
+        first then reapplying the file's final value reproduces the file's
+        positional outcome; defines-first would let without_keys strip the
+        just-reapplied value back out.
+
+        Also replays the producer's condition occurrences so a warm hit
+        retracts pending "cannot evaluate" records exactly like the cold run
+        whose result it stands in for.
+        """
+        result = macro_state
+        if self.file_undefs:
+            result = result.without_keys(self.file_undefs)
+        if self.file_defines:
+            result = result.with_updates(self.file_defines, self.file_function_params)
+        _replay_condition_occurrences(self.condition_occurrences, self.content_hash, context)
+        return result
+
+
 @dataclass
 class ProcessingResult:
     """Result of preprocessing a file with conditional compilation.
@@ -666,6 +722,12 @@ def is_macro_invariant(file_result, input_macros: "MacroState") -> bool:
 # 3. We need full objects to compute results, not just hashes
 # 4. Provides enhanced debugging (dump_cache_keys with file path resolution)
 def replay_condition_occurrences(condition_occurrences, content_hash, context) -> None:
+    """Thin wrapper over the replay step of :meth:`FileEffects.apply`, for
+    callers that carry the occurrence tuple separately."""
+    _replay_condition_occurrences(condition_occurrences, content_hash, context)
+
+
+def _replay_condition_occurrences(condition_occurrences, content_hash, context) -> None:
     """Replay a cached compute's condition-resolution events on a cache HIT.
 
     A live SimplePreprocessor run never happens on a cache hit, so
