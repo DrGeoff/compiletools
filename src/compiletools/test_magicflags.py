@@ -1570,3 +1570,56 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         assert "missing/absent.hpp" in captured.err, (
             f"Expected an unresolvable-READMACROS warning on stderr, got: {captured.err!r}"
         )
+
+
+class TestUndefRedefineInTheConvergenceLoop(tb.BaseCompileToolsTestCase):
+    """DirectMagicFlags._process_file_for_macros applies a file's #define and
+    #undef effects to the converging macro state. A name can appear in both
+    sets, and which one wins is positional: '#undef X' then '#define X 2'
+    ends with X == 2, while '#define X 2' then '#undef X' ends with X gone.
+    The state update must respect the last active directive per name -- a
+    fixed application order (either one) gets one of the two directions
+    wrong for every downstream '#if' in the same convergence.
+    """
+
+    def setup_method(self):
+        super().setup_method()
+        compiletools.magicflags.MagicFlagsBase.clear_cache()
+        compiletools.headerdeps.HeaderDepsBase.clear_cache()
+
+    def _cxxflags(self, sources: dict) -> str:
+        files = uth.write_sources(sources, target_dir=self._tmpdir)
+        parser = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir, context=BuildContext())
+        parser.clear_cache()
+        result = parser.parse(str(files["main.cpp"]))
+        return " ".join(str(flag) for flag in result.get(sz.Str("CXXFLAGS"), []))
+
+    def test_an_undef_then_redefine_keeps_the_final_value(self):
+        cxxflags = self._cxxflags(
+            {
+                "target.h": "#pragma once\n#undef X\n#define X 2\n",
+                "gate.h": (
+                    "#pragma once\n#if X == 2\n//#CXXFLAGS=-DUSING_NEW_API\n"
+                    "#else\n//#CXXFLAGS=-DUSING_OLD_API\n#endif\n"
+                ),
+                "main.cpp": '#include "target.h"\n#include "gate.h"\nint main() { return 0; }\n',
+            }
+        )
+        assert "-DUSING_NEW_API" in cxxflags, cxxflags
+        assert "-DUSING_OLD_API" not in cxxflags, cxxflags
+
+    def test_a_define_then_undef_stays_undefined(self):
+        """The mirror direction, which a blanket undefs-first application
+        order would break: the last active directive is the #undef, so X
+        must not survive to the gate."""
+        cxxflags = self._cxxflags(
+            {
+                "target.h": "#pragma once\n#define X 2\n#undef X\n",
+                "gate.h": (
+                    "#pragma once\n#ifdef X\n//#CXXFLAGS=-DX_DEFINED\n#else\n//#CXXFLAGS=-DX_UNDEFINED\n#endif\n"
+                ),
+                "main.cpp": '#include "target.h"\n#include "gate.h"\nint main() { return 0; }\n',
+            }
+        )
+        assert "-DX_UNDEFINED" in cxxflags, cxxflags
+        assert "-DX_DEFINED" not in cxxflags, cxxflags

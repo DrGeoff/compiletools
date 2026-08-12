@@ -991,7 +991,15 @@ class DirectMagicFlags(MagicFlagsBase):
                         else:
                             cxxflags_macros.append((macro_name, macro_value))
 
-        # Extract variable macros from active #define directives
+        # Extract variable macros from active #define directives. A name can
+        # be both actively #define'd and actively #undef'd, and which wins is
+        # positional ('#undef X/#define X 2' keeps X, '#define X 2/#undef X'
+        # loses it) — information a consumer applying two flat sets in a fixed
+        # order cannot recover. The preprocessor's final state carries the
+        # verdict, so the two sets are made disjoint here: a define a later
+        # #undef killed is dropped, and an #undef a later #define superseded
+        # is dropped.
+        final_variable_macros = result.updated_macros.variable
         extracted_variable_macros = {}
         extracted_function_params = {}
         for define_info in file_result.defines:
@@ -999,16 +1007,20 @@ class DirectMagicFlags(MagicFlagsBase):
                 continue
 
             macro_name = define_info["name"]
+            if macro_name in result.file_undefs and macro_name not in final_variable_macros:
+                continue
             extracted_variable_macros[macro_name] = _define_body(define_info)
             if define_info["is_function_like"]:
                 extracted_function_params[macro_name] = tuple(define_info["params"])
+
+        file_undefs = frozenset(u for u in result.file_undefs if u not in extracted_variable_macros)
 
         return (
             active_magic_flags,
             extracted_variable_macros,
             cppflags_macros,
             cxxflags_macros,
-            result.file_undefs,
+            file_undefs,
             extracted_function_params,
         )
 
