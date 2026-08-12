@@ -125,19 +125,10 @@ class ProcessingResult:
         active_magic_flags: List of active magic flags with metadata
         active_defines: List of active #define directives with metadata
         updated_macros: Macro state after processing (input + defines - undefs)
-        file_defines: Macros defined BY this file only (for cache reconstruction)
-        file_function_params: Parameter lists of the function-like macros among
-            file_defines (for cache reconstruction)
-        condition_occurrences: ``(kind, directive_type, condition, line_num)``
-            tuples recording every ``_note_condition_resolved`` /
-            ``_note_condition_unreached`` call SimplePreprocessor made while
-            computing this result (kind is ``"resolved"`` or ``"unreached"``).
-            A cache HIT replays these against the caller's deferred-warning
-            stores so a pending "cannot evaluate" record from an earlier,
-            unevaluable pass gets retracted even though this pass never runs
-            SimplePreprocessor again -- without this, a warm hit at a macro
-            state that DID resolve the condition could never retract a
-            pending record an earlier pass left behind at a different state.
+        effects: What processing this file did to the macro state — the
+            defines/undefs/function-params/condition-occurrences bundle a
+            warm cache tier replays via :meth:`FileEffects.apply`. The
+            four legacy slot names remain readable as delegating properties.
     """
 
     active_lines: list[int]
@@ -145,10 +136,23 @@ class ProcessingResult:
     active_magic_flags: list[dict]
     active_defines: list[dict]
     updated_macros: "MacroState"  # Forward reference
-    file_defines: MacroDict = field(default_factory=dict)
-    file_undefs: frozenset = field(default_factory=frozenset)
-    file_function_params: "FunctionParamsDict" = field(default_factory=dict)
-    condition_occurrences: tuple = ()
+    effects: FileEffects = field(default_factory=lambda: FileEffects(content_hash=""))
+
+    @property
+    def file_defines(self) -> MacroDict:
+        return self.effects.file_defines
+
+    @property
+    def file_undefs(self) -> frozenset:
+        return self.effects.file_undefs
+
+    @property
+    def file_function_params(self) -> "FunctionParamsDict":
+        return self.effects.file_function_params
+
+    @property
+    def condition_occurrences(self) -> tuple:
+        return self.effects.condition_occurrences
 
 
 @dataclass
@@ -818,32 +822,17 @@ def get_or_compute_preprocessing(
             stats["hits"] += 1
             stats["invariant_hits"] += 1
             cached = inv_cache[content_hash]
-            # Reconstruct updated_macros from caller's input + file's defines
-            # to prevent stale macro pollution from first caller's context.
-            # Undefs must apply BEFORE defines: a name can be both undef'd and
-            # redefined within the same file (#undef X / #define X 2), so
-            # file_undefs and file_defines can share a key. Removing first
-            # then reapplying the file's final value reproduces that
-            # ordering; applying defines first would let without_keys strip
-            # the just-reapplied value back out.
-            reconstructed_macros = input_macros
-            if cached.file_undefs:
-                reconstructed_macros = reconstructed_macros.without_keys(cached.file_undefs)
-            if cached.file_defines:
-                reconstructed_macros = reconstructed_macros.with_updates(
-                    cached.file_defines, cached.file_function_params
-                )
-            replay_condition_occurrences(cached.condition_occurrences, content_hash, context)
+            # Reconstruct updated_macros from caller's input + the cached
+            # effects to prevent stale macro pollution from the first
+            # caller's context. apply() owns the undefs-before-defines
+            # ordering and the condition-occurrence replay.
             return ProcessingResult(
                 active_lines=cached.active_lines,
                 active_includes=cached.active_includes,
                 active_magic_flags=cached.active_magic_flags,
                 active_defines=cached.active_defines,
-                updated_macros=reconstructed_macros,
-                file_defines=cached.file_defines,
-                file_function_params=cached.file_function_params,
-                file_undefs=cached.file_undefs,
-                condition_occurrences=cached.condition_occurrences,
+                updated_macros=cached.effects.apply(input_macros, context),
+                effects=cached.effects,
             )
 
         stats["misses"] += 1
@@ -858,27 +847,15 @@ def get_or_compute_preprocessing(
             stats["hits"] += 1
             stats["variant_hits"] += 1
             cached = var_cache[cache_key]
-            # See the invariant-cache branch above: undefs must apply before
-            # defines so a name that is both undef'd and redefined within
-            # this file reconstructs to its final (redefined) value.
-            reconstructed_macros = input_macros
-            if cached.file_undefs:
-                reconstructed_macros = reconstructed_macros.without_keys(cached.file_undefs)
-            if cached.file_defines:
-                reconstructed_macros = reconstructed_macros.with_updates(
-                    cached.file_defines, cached.file_function_params
-                )
-            replay_condition_occurrences(cached.condition_occurrences, content_hash, context)
+            # See the invariant-cache branch above: apply() owns the
+            # reconstruction contract.
             return ProcessingResult(
                 active_lines=cached.active_lines,
                 active_includes=cached.active_includes,
                 active_magic_flags=cached.active_magic_flags,
                 active_defines=cached.active_defines,
-                updated_macros=reconstructed_macros,
-                file_defines=cached.file_defines,
-                file_function_params=cached.file_function_params,
-                file_undefs=cached.file_undefs,
-                condition_occurrences=cached.condition_occurrences,
+                updated_macros=cached.effects.apply(input_macros, context),
+                effects=cached.effects,
             )
 
         stats["misses"] += 1
@@ -989,10 +966,13 @@ def get_or_compute_preprocessing(
         active_magic_flags=active_magic_flags,
         active_defines=active_defines,
         updated_macros=updated_macro_state,
-        file_defines=file_defines,
-        file_undefs=file_undefs,
-        file_function_params=file_function_params,
-        condition_occurrences=tuple(preprocessor.condition_occurrences),
+        effects=FileEffects(
+            content_hash=content_hash,
+            file_defines=file_defines,
+            file_undefs=file_undefs,
+            file_function_params=file_function_params,
+            condition_occurrences=tuple(preprocessor.condition_occurrences),
+        ),
     )
 
     # Store in appropriate cache
