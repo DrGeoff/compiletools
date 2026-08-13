@@ -114,6 +114,10 @@ class FileEffects:
     file_function_params: FunctionParamsMapping = field(default_factory=dict)
     condition_occurrences: tuple = ()
 
+    # frozen=True would auto-generate a __hash__ that raises at runtime
+    # (mappingproxy fields are unhashable); declare unhashability instead.
+    __hash__ = None  # pyright: ignore[reportAssignmentType]
+
     def __post_init__(self):
         # frozen=True only stops attribute REBINDING; a shared entry's dict
         # fields would still be mutable in place, and one FileEffects is
@@ -150,6 +154,18 @@ class FileEffects:
         return result
 
 
+class _FrozenEntries(tuple):
+    """Marker type for a tuple this module fully froze itself.
+
+    The pass-through check in _frozen_directive_entries keys on this exact
+    type, so only tuples whose every entry went through the snapshot-copy
+    below can skip it — a hand-built tuple of proxies (or one mixing proxies
+    with plain dicts) is re-frozen rather than trusted.
+    """
+
+    __slots__ = ()
+
+
 def _frozen_directive_entries(entries) -> tuple[Mapping, ...]:
     """Snapshot directive dicts behind read-only views, as a tuple.
 
@@ -164,9 +180,9 @@ def _frozen_directive_entries(entries) -> tuple[Mapping, ...]:
     rebuilds a ProcessingResult around the cached one's own containers, so
     re-copying every entry there would put the snapshot cost on every hit.
     """
-    if type(entries) is tuple and (not entries or isinstance(entries[0], MappingProxyType)):
+    if type(entries) is _FrozenEntries:
         return entries
-    return tuple(MappingProxyType(dict(entry)) for entry in entries)
+    return _FrozenEntries(MappingProxyType(dict(entry)) for entry in entries)
 
 
 @dataclass(frozen=True)
@@ -197,6 +213,10 @@ class ProcessingResult:
     active_defines: Sequence[Mapping]
     updated_macros: "MacroState"  # Forward reference
     effects: FileEffects
+
+    # Same declared unhashability as FileEffects: the mappingproxy entries
+    # inside the active_* tuples would make the auto-generated hash raise.
+    __hash__ = None  # pyright: ignore[reportAssignmentType]
 
     def __post_init__(self):
         # frozen=True only stops attribute REBINDING; the list fields of a
