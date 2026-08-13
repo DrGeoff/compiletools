@@ -809,7 +809,7 @@ def find_header_in_paths(
         verbose: Verbosity level for debugging
         label: What to call the header in the verbose-9 not-found message
         paths_label: What to call the searched path list in the verbose-9
-            not-found message (e.g. "file-declared include paths")
+            not-found message (e.g. "magic-declared include paths")
         warn_on_empty: Whether to still print the verbose-9 not-found
             message when include_paths is empty
 

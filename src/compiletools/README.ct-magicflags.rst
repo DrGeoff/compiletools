@@ -319,8 +319,19 @@ depend on macros defined in system headers that aren't in the include path.
     //#CPPFLAGS=-DUSE_LEGACY_API
     #endif
 
-The file path is resolved relative to the source file containing the READMACROS
-flag, or as an absolute path if specified.
+An absolute path is used as-is. A relative path is searched for in this
+order:
+
+1. The global include directories (``-I`` / ``-isystem`` from the command
+   line and config files).
+2. The include directories declared by magic flags anywhere in the same
+   translation unit (``//#CPPFLAGS=-isystem ...``, ``//#INCLUDE=``,
+   ``//#PKG-CONFIG=`` cflags), the declaring file's own first. This mirrors
+   the real compile line, where magic flags from every file of the
+   translation unit are aggregated onto one command — so the ``-isystem``
+   that locates the file may live in a different header than the
+   ``READMACROS`` declaration itself.
+3. The directory of the source file containing the READMACROS flag.
 
 Using PCH (Precompiled Headers)
 ===============================
