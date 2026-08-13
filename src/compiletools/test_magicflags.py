@@ -7,6 +7,7 @@ import stringzilla as sz
 
 import compiletools.apptools
 import compiletools.apptools_pkgconfig as pkgconfig
+import compiletools.compilation_database
 import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.magicflags
@@ -1693,13 +1694,9 @@ class TestConvergenceCapExhaustion(tb.BaseCompileToolsTestCase):
         assert "-ldeep_high" in ldflags, ldflags
         assert "-ldeep_low" not in ldflags, ldflags
 
-    def test_the_error_escapes_hunters_broad_expansion_handler(self):
-        """Hunter.huntsource wraps source expansion in a broad
-        except-Exception that downgrades to a stderr warning and drops the
-        expansion — which would re-silence exactly the failure this error
-        exists to make loud (the dropped implied sources resurface as an
-        undefined reference at link, with no pointer back). The escape
-        hatch must re-raise it like the PkgConfigError one above it."""
+    def _deep_chain_hunter(self):
+        """Hunter (and its args/context) over the 30-deep chain, built the way
+        the standalone tools build theirs."""
         uth.write_sources(_reverse_order_chain_sources(30), target_dir=self._tmpdir)
         main_path = os.path.join(self._tmpdir, "main.cpp")
         temp_config = uth.create_temp_config(self._tmpdir)
@@ -1719,6 +1716,34 @@ class TestConvergenceCapExhaustion(tb.BaseCompileToolsTestCase):
         headerdeps = compiletools.headerdeps.create(args, context=ctx)
         magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
         hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
+        return hunter, args, ctx
+
+    def test_the_error_escapes_hunters_broad_expansion_handler(self):
+        """Hunter.huntsource wraps source expansion in a broad
+        except-Exception that downgrades to a stderr warning and drops the
+        expansion — which would re-silence exactly the failure this error
+        exists to make loud (the dropped implied sources resurface as an
+        undefined reference at link, with no pointer back). The escape
+        hatch must re-raise it like the PkgConfigError one above it."""
+        hunter, _args, _ctx = self._deep_chain_hunter()
 
         with pytest.raises(compiletools.magicflags.MacroConvergenceError, match="did not converge"):
             hunter.huntsource()
+
+    def test_the_error_escapes_the_compilation_database_hunt_handler(self):
+        """create_compilation_database wraps huntsource in the same broad
+        except-Exception shape as Hunter's, degrading a failed hunt to
+        source_files = []. Without its escape hatch, ct-compilation-database
+        over this chain writes an empty database and exits 0 — the silent
+        outcome ct-cake now refuses."""
+        hunter, args, ctx = self._deep_chain_hunter()
+        creator = compiletools.compilation_database.CompilationDatabaseCreator(
+            args,
+            headerdeps=hunter.headerdeps,
+            magicparser=hunter.magicparser,
+            hunter=hunter,
+            context=ctx,
+        )
+
+        with pytest.raises(compiletools.magicflags.MacroConvergenceError, match="did not converge"):
+            creator.create_compilation_database()

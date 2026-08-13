@@ -99,6 +99,10 @@ class CompilationDatabaseCreator:
             # it would emit a compile database whose entries are missing the
             # flags the failing package was asked for.
             raise
+        except compiletools.magicflags.MacroConvergenceError:
+            # See create_compilation_database: this error must stop the run,
+            # not degrade to an entry with silently wrong flags.
+            raise
         except Exception as e:
             # Magic flags parsing may fail for various reasons
             if self.args.verbose >= 2:
@@ -224,6 +228,11 @@ class CompilationDatabaseCreator:
             # raises SystemExit for the strict failures it converts itself,
             # which this handler already lets past; this covers a
             # PkgConfigError that reaches here unconverted.
+            raise
+        except compiletools.magicflags.MacroConvergenceError:
+            # This error exists to stop the build loudly instead of emitting
+            # flags from an unsettled macro state; absorbing it here would
+            # write an empty compile database and exit 0.
             raise
         except Exception as e:
             if self.args.verbose:

@@ -166,7 +166,7 @@ from compiletools.backend_registry import (
 )
 from compiletools.build_graph import BuildGraph, BuildRule, RuleType, render_shell_recipe
 from compiletools.locking import execute_compile_rule, execute_link_rule
-from compiletools.magicflags import _HARD_ORDERINGS_KEY
+from compiletools.magicflags import _HARD_ORDERINGS_KEY, MacroConvergenceError
 from compiletools.test_framework import TestFramework
 
 # Sentinel: read-only empty mapping used as the class-level default for the
@@ -1288,6 +1288,11 @@ class BuildBackend(abc.ABC):
             # compile will surface a clearer error.
             try:
                 mflags = self.hunter.magicflags(filename)
+            except MacroConvergenceError:
+                # Must stop the build: the fallback below would silently
+                # drop this source's system-include flags, the exact
+                # silent-wrong-flags outcome this error exists to prevent.
+                raise
             except Exception:
                 continue
             magic_cpp = [str(t) for t in mflags.get(sz.Str("CPPFLAGS"), [])]
