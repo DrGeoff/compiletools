@@ -390,11 +390,10 @@ def _isolate_pkg_config_error_policy():
     flips it to ``error`` leaks strict mode into every later test in the same
     xdist worker, where it surfaces as an order-dependent cross-file failure
     (a plain missing-package warning becomes a raised ``PkgConfigError``).
-    Isolation used to fall out of ``apptools_pkgconfig.clear_cache`` resetting
-    the policy to ``warn``, but a cache clear must not disarm an enforcement
-    policy — the same fan-out runs mid-process in production. Owning the
-    save/restore centrally here means no future strict-mode test has to
-    remember it.
+    ``apptools_pkgconfig.clear_cache`` deliberately leaves the policy alone: a
+    cache clear must not disarm an enforcement policy, since the same fan-out
+    runs mid-process in production. Owning the save/restore centrally here
+    means no future strict-mode test has to remember it.
     """
     import compiletools.apptools_pkgconfig as _pkgconfig
 

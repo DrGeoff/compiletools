@@ -100,11 +100,10 @@ def tokenize_pkg_config_specs(values: list[str], *, slot: str = "pkg-config", so
     surface: the CLI/conf ``pkg-config`` value (default) or a magic
     ``//#PKG-CONFIG=`` annotation (``slot="//#PKG-CONFIG"``, ``source`` the
     file it came from). Deliberately no ``fragment.split()`` fallback on a
-    shlex failure -- a malformed fragment used to silently degrade into an
-    invented package name that then queried pkg-config before the generic
-    magic-flag tokenizer's diagnostic could fire; raising here instead
-    means the caller (``magicflags._handle_pkg_config``) fails fast, before
-    any pkg-config subprocess runs for the malformed value.
+    shlex failure: raising here lets the caller
+    (``magicflags._handle_pkg_config``) fail fast with the generic magic-flag
+    tokenizer's diagnostic, rather than querying pkg-config with an invented
+    package name salvaged from the malformed fragment.
     """
     specs: list[str] = []
     for value in values:

@@ -26,13 +26,12 @@ class PreprocessorExpressionError(Exception):
     controlling expression -- as opposed to a merely malformed/garbage user
     expression, which is handled gracefully as false.
 
-    The distinction is load-bearing: the blanket ``except Exception: return 0``
-    that used to guard expression evaluation could not tell a real evaluation
-    failure (e.g. a ``RecursionError`` from a deeply-nested-but-VALID
-    expression) apart from "the expression is false", so a true ``#if`` branch
-    was silently dropped from compilation -- a silent-miscompile class bug.
-    This exception is deliberately NOT swallowed by the false-degrading paths so
-    such failures surface loudly instead of quietly excluding source.
+    The distinction is load-bearing: a real evaluation failure (e.g. a
+    ``RecursionError`` from a deeply-nested-but-VALID expression) must not
+    degrade to "the expression is false", which silently drops a true ``#if``
+    branch from compilation -- a silent-miscompile class bug. This exception is
+    deliberately NOT swallowed by the false-degrading paths so such failures
+    surface loudly instead of quietly excluding source.
     """
 
 

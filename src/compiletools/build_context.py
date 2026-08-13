@@ -1,9 +1,8 @@
 """Per-build-session state and caches.
 
-BuildContext replaces module-level singletons by holding all mutable
-state that was previously stored in module globals.  One BuildContext
+BuildContext holds all per-build-session mutable state.  One BuildContext
 is created per build invocation (by Cake or by tests) and threaded
-through the object graph.
+through the object graph, so each build gets full isolation.
 
 All per-build caches live here.  Creating a fresh BuildContext gives a
 clean slate — there is no separate ``clear_cache()`` step needed.

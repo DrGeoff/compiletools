@@ -1523,8 +1523,7 @@ def _fixpoint_scan(
     (:data:`_MAX_FIXPOINT_ROUNDS`) turns a hypothetical non-converging cycle
     into a clear error instead of an infinite loop.
 
-    The three callbacks carry the ONLY behaviour that differs between callers
-    (this is why the two loops were previously hand-synced duplicates):
+    The three callbacks carry the ONLY behaviour that differs between callers:
 
     * ``root_selector() -> list[str]`` — which already-known roots to widen the
       header search into. fetch widens into every resolved/cloned root; status
