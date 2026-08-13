@@ -122,6 +122,8 @@ class TestFindTargetsModule:
             "prebuild_script/version_banner.cpp",
             "project_pkgconfig_override/main.cpp",
             "project_version/version_banner.cpp",
+            "readmacros_declaration_site/declared_beside_gate/main.cpp",
+            "readmacros_declaration_site/declared_in_definer/main.cpp",
             "relative_cas_dir_bug/widget.cpp",
             "separate_cpp_cxx/main.cpp",
             "simple/helloworld_c.c",
