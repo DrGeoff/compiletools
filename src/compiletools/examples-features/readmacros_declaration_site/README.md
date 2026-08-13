@@ -27,6 +27,13 @@ as ordinary code so a real preprocessor can pin the expected branch:
 both trees — the compiler ignores `//#READMACROS=` entirely, so the two
 shapes differ only for compiletools.
 
+The files the two trees would otherwise share verbatim — `main.cpp`,
+`oracle.cpp` and `extlib/include/extlib/version.hpp` — each carry a comment
+naming their tree. Keep the bytes distinct: compiletools' global hash
+registry requires every file in the working tree to have unique content, and
+two identical copies abort any run that builds the registry (`ct-findtargets`
+among them).
+
 ## Tests
 
 `test_readmacros_declaration_site.py`.
