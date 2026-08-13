@@ -160,8 +160,7 @@ class MagicFlagsBase:
         # (global + per-file magic) so get_hash(include_core=True) captures everything.
         self._final_macro_states: dict = {}
 
-        # Populated by subclasses; declared here for type checkers and to
-        # avoid AttributeError if _handle_readmacros runs before subclass init.
+        # Populated by subclasses; declared here for type checkers.
         self._explicit_macro_files: set = set()
 
         # (source file, READMACROS value) pairs already warned about. PASS 1
@@ -460,8 +459,10 @@ class MagicFlagsBase:
         ``PKG-CONFIG`` annotation lists. Declaration order is preserved and
         duplicates dropped.
 
-        The result is only ever used to resolve the SAME file's ``READMACROS``
-        entries, which pins three limits worth stating:
+        The result feeds ``READMACROS`` resolution, both for this file's own
+        entries and, through ``_tu_declared_include_paths``, for the entries
+        of every other file in the same translation unit. Three limits are
+        worth stating:
 
         * Values are used unexpanded. READMACROS collection runs in PASS 1 of
           ``get_structured_data``, before any macro state converges, so a path
@@ -472,6 +473,11 @@ class MagicFlagsBase:
         * A relative directory is taken as written, i.e. relative to the
           invocation cwd, exactly as the compiler would read it -- not
           relative to the declaring file.
+
+        Repeat calls are cheap without a cache of their own: the pkg-config
+        queries behind them are memoised process-wide
+        (``apptools_pkgconfig.cached_pkg_config``) and so is the flag
+        tokenizer.
         """
         include_paths: list[str] = []
 
@@ -492,6 +498,30 @@ class MagicFlagsBase:
                 include_paths.append(value)
             elif key == "PKG-CONFIG":
                 include_paths.extend(self._pkg_config_include_paths(value))
+
+        return list(dict.fromkeys(include_paths))
+
+    def _tu_declared_include_paths(self, source_files: list[str]) -> list[str]:
+        """Include directories the whole translation unit declares.
+
+        The union of every file's ``_file_declared_include_paths``, in the
+        order the files are scanned, duplicates dropped. This is what the
+        compile line looks like: magic flags from every file of the TU are
+        aggregated onto one command, so a ``//#READMACROS=`` in one header
+        must be able to resolve through an ``-isystem`` declared in another.
+
+        A file that cannot be analysed contributes nothing;
+        ``_collect_explicit_macro_files`` reports that failure when it reaches
+        the file itself.
+        """
+        include_paths: list[str] = []
+
+        for source_file in source_files:
+            try:
+                analysis_result = self._get_file_analyzer_result(source_file)
+            except OSError:
+                continue
+            include_paths.extend(self._file_declared_include_paths(analysis_result))
 
         return list(dict.fromkeys(include_paths))
 
@@ -535,14 +565,17 @@ class MagicFlagsBase:
         1. An absolute value is taken as-is.
         2. The global ``-I`` / ``-isystem`` set (command line plus conf files)
            via ``apptools.find_system_header``.
-        3. ``extra_include_paths``, in declaration order -- the include
-           directories the declaring file contributes through its own magic
-           flags (see ``_file_declared_include_paths``).
+        3. ``extra_include_paths``, in the order given. From PASS 1 that is
+           the whole translation unit's declared include directories, the
+           declaring file's own first (see ``_tu_declared_include_paths``).
         4. The declaring file's own directory.
 
-        Global before file-declared mirrors the compiler's own search order:
+        Global before magic-declared mirrors the compiler's own search order:
         per-file magic flags are appended after the global flags on the real
-        command line.
+        command line. Step 3 beating step 4 is deliberate and observable: a
+        header reachable through some TU file's include path wins over a
+        same-named header sitting beside the declaring file, which is the
+        answer the compiler gives an ``#include <...>``.
 
         Args:
             flag: The flag value from READMACROS magic flag
@@ -570,7 +603,7 @@ class MagicFlagsBase:
                     extra_include_paths or [],
                     verbose=self._args.verbose,
                     label="READMACROS",
-                    paths_label="file-declared include paths",
+                    paths_label="magic-declared include paths",
                     warn_on_empty=False,
                 )
 
@@ -594,6 +627,12 @@ class MagicFlagsBase:
     def _collect_explicit_macro_files(self, source_files: list[str]) -> set:
         """Scan files for READMACROS flags and return set of explicit macro files.
 
+        A relative entry resolves against the include paths declared by the
+        WHOLE translation unit, not just the declaring file: the compile line
+        these flags land on aggregates every file's magic flags, so an
+        ``-isystem`` in one header has to reach a ``//#READMACROS=`` in
+        another. The declaring file's own paths are searched first.
+
         Each entry is resolved and reported independently: an unresolvable
         entry costs that entry alone, never the remaining entries of the same
         file. It is also warned about unconditionally, because the failure is
@@ -609,6 +648,11 @@ class MagicFlagsBase:
             set: Set of resolved paths (str) to files specified by READMACROS flags
         """
         explicit_files = set()
+
+        # The TU-wide harvest can run pkg-config, so it is deferred until the
+        # first relative READMACROS is seen and then reused for the rest of
+        # this call.
+        tu_include_paths: list[str] | None = None
 
         for source_file in source_files:
             try:
@@ -631,7 +675,10 @@ class MagicFlagsBase:
 
             for magic_flag in readmacros_flags:
                 if declared_include_paths is None and not compiletools.wrappedos.isabs_sz(magic_flag["value"]):
-                    declared_include_paths = self._file_declared_include_paths(analysis_result)
+                    if tu_include_paths is None:
+                        tu_include_paths = self._tu_declared_include_paths(source_files)
+                    own_include_paths = self._file_declared_include_paths(analysis_result)
+                    declared_include_paths = list(dict.fromkeys(own_include_paths + tu_include_paths))
 
                 try:
                     resolved_path = self._resolve_readmacros_path(
@@ -653,13 +700,6 @@ class MagicFlagsBase:
                     print(f"READMACROS: Will process '{resolved_path}' for macro extraction (from {source_file})")
 
         return explicit_files
-
-    def _handle_readmacros(self, flag, source_filename):
-        """Handle READMACROS magic flag by adding file to explicit macro processing list"""
-        resolved_flag = self._resolve_readmacros_path(flag, source_filename)
-
-        # Add to explicit macro files set (store as str for consistency with filename/headers)
-        self._explicit_macro_files.add(resolved_flag)
 
     def _parse(self, filename):
         if self._args.verbose >= 4:
