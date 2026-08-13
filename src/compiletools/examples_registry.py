@@ -99,6 +99,7 @@ EXAMPLES_FEATURES: frozenset[str] = frozenset(
         "pkgconfig",
         "pkgs",
         "project_pkgconfig_override",
+        "readmacros_declaration_site",
         "relative_cas_dir_bug",
         "serialise_tests",
         "static_link_order",

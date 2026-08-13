@@ -1,0 +1,4 @@
+#pragma once
+#define EXTLIB_VERSION_MAJOR 2
+#define EXTLIB_VERSION_MINOR 5
+#define EXTLIB_VERSION_PATCH 7
