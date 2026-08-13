@@ -1774,7 +1774,15 @@ def _flush_pending_conditions(context: Any) -> int:
     file, so the dedupe here drops the line number from the key. A file that
     spells the same unevaluable condition three times still gets one report,
     naming the first occurrence.
+
+    The resolved store is cleared even when nothing is pending, mirroring the
+    expansion flush: both stores describe one convergence, and a key surviving
+    into the next one would silence a report that convergence goes on to owe.
     """
+    resolved = getattr(context, "resolved_preprocessor_conditions", None)
+    if resolved is not None:
+        resolved.clear()
+
     pending = getattr(context, "pending_preprocessor_warnings", None)
     if not pending:
         return 0
@@ -1795,9 +1803,6 @@ def _flush_pending_conditions(context: Any) -> int:
         printed += 1
 
     pending.clear()
-    resolved = getattr(context, "resolved_preprocessor_conditions", None)
-    if resolved is not None:
-        resolved.clear()
     return printed
 
 

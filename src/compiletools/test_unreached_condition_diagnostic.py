@@ -401,13 +401,11 @@ class TestAWarmCacheHitStillRetractsAPendingRecord:
     The repro needs two *separate* ``converging`` regions sharing one
     ``BuildContext`` (mirroring two independent magicflags/headerdeps
     passes) plus a genuinely, permanently unevaluable condition in an
-    unrelated file: ``flush_pending_warnings`` short-circuits without
-    clearing the resolved store when its pending dict happens to be empty
-    (see its ``if not pending: return 0``), so a first convergence whose
-    only occurrence resolves cleanly would never exercise the clear. The
-    unrelated garbage condition forces a real flush, which is what "an
-    intervening flush of a real warning clears the resolved store" refers
-    to.
+    unrelated file: the first convergence's exit flush clears the resolved
+    store (unconditionally — both stores are per-convergence state), so the
+    second convergence cannot be rescued by a stale resolved key; the
+    garbage condition makes that flush observable, pinning that it really
+    ran between the two regions.
     """
 
     _GARBAGE_SOURCE = "#if 1 @ 2\nMARKER;\n#endif\n"
@@ -581,6 +579,42 @@ class TestAWarmCacheHitStillRetractsAPendingRecord:
         stderr = capsys.readouterr().err
         assert "cannot evaluate" in stderr, (
             f"the owed warning was suppressed by resolved-store pollution from a depth-0 warm hit: {stderr!r}"
+        )
+
+
+class TestTheResolvedStoreDiesWithItsConvergence:
+    """Both deferred-report stores describe ONE convergence, and the expansion
+    flush already clears its resolved store even when nothing is pending for
+    exactly that reason. The condition flush must do the same: a convergence
+    whose every occurrence resolved cleanly has an empty pending dict, and an
+    early return before the clear leaves the resolved keys behind — so the
+    NEXT convergence's early pass finds its occurrence pre-resolved and never
+    records the "cannot evaluate" report that convergence still owes.
+    """
+
+    def test_a_quiet_convergence_does_not_pre_resolve_the_next_one(self, tmp_path, capsys):
+        """Same file, same occurrence, two independent convergences.
+
+        Convergence 1 knows the gate macro, so the occurrence resolves and
+        nothing is pending at the flush. Convergence 2 never learns it — the
+        gate is genuinely unevaluable there, and the flush owes the report.
+        """
+        source = f"#if {_GATE}\nMARKER;\n#endif\n"
+        file_result, context = _analyze(source, str(tmp_path))
+        settled = {sz.Str("EXTLIB_AT_LEAST"): sz.Str("((maj) <= 2)")}
+        params = {sz.Str("EXTLIB_AT_LEAST"): (sz.Str("maj"), sz.Str("min"))}
+
+        with converging(context):
+            SimplePreprocessor(settled, verbose=1, function_params=params).process_structured(file_result, context)
+        assert capsys.readouterr().err == ""
+        assert not context.pending_preprocessor_warnings
+
+        with converging(context):
+            SimplePreprocessor({}, verbose=1).process_structured(file_result, context)
+
+        stderr = capsys.readouterr().err
+        assert "cannot evaluate" in stderr, (
+            f"a resolved key from the previous convergence silenced the owed report: {stderr!r}"
         )
 
 

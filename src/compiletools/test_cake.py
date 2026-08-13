@@ -14,6 +14,7 @@ import compiletools.cake
 import compiletools.compilation_database
 import compiletools.filelist
 import compiletools.findtargets
+import compiletools.magicflags
 import compiletools.namer
 import compiletools.testhelper as uth
 import compiletools.utils
@@ -1086,3 +1087,31 @@ def test_flag_tokenize_error_renders_without_double_prefix(capsys):
     assert "Error: ct: error:" not in output, f"double-prefixed rendering leaked through: {output!r}"
     assert output.startswith("ct: error:")
     assert "TESTPREFIX" in output
+
+
+def test_macro_convergence_error_renders_its_message_at_default_verbosity(capsys):
+    """A MacroConvergenceError that stops the build must reach the user as its
+    own message, not an unhandled traceback. It deliberately has no entry of
+    its own in _FATAL_ERROR_RENDERERS: the message raised by
+    ``_raise_if_not_converged`` is already complete end-user prose (what
+    happened, why it matters, how to fix it), so the generic ``Error: <msg>``
+    tail is the right rendering. This pins that the error keeps matching a
+    renderer — if it ever stops being dispatched (e.g. the generic tail is
+    removed or reordered), main() would re-raise and the user would get a raw
+    traceback at default verbosity.
+    """
+    err = compiletools.magicflags.MacroConvergenceError(
+        "Macro state for foo.cpp did not converge after 10 iterations. "
+        "A macro dependency chain deeper than the iteration bound would silently "
+        "resolve conditional magic flags from an unsettled intermediate state."
+    )
+    for exc_type, renderer in compiletools.cake._FATAL_ERROR_RENDERERS:
+        if isinstance(err, exc_type):
+            renderer(err)
+            break
+    else:  # pragma: no cover - defensive; a fall-through is exactly the regression
+        pytest.fail("no renderer matched MacroConvergenceError; main() would show a raw traceback")
+
+    output = capsys.readouterr().err
+    assert "did not converge" in output, f"the error's own message was lost in rendering: {output!r}"
+    assert "Traceback" not in output

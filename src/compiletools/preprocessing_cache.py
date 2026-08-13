@@ -189,11 +189,15 @@ def _frozen_directive_entries(entries) -> tuple[Mapping, ...]:
 class ProcessingResult:
     """Result of preprocessing a file with conditional compilation.
 
-    Instances are deeply immutable for the same reason FileEffects is: one
-    result is served by identity to every consumer of a warm cache entry,
-    so ``__post_init__`` coerces the four ``active_*`` containers to tuples
-    of read-only views. Their annotations stay at the read-only supertype
-    so a producer can pass the lists it built.
+    Instances are frozen to depth 2 for the same reason FileEffects is
+    deep-frozen: one result is served by identity to every consumer of a
+    warm cache entry, so ``__post_init__`` coerces the four ``active_*``
+    containers to tuples of read-only views. Their annotations stay at the
+    read-only supertype so a producer can pass the lists it built. The
+    freeze deliberately stops at the entry level — the list VALUES inside a
+    directive entry (``lines``, ``params``) stay mutable lists so the
+    entries keep comparing equal to plain dicts (see
+    :func:`_frozen_directive_entries`).
 
     Attributes:
         active_lines: Line numbers that are active after preprocessing (0-based)

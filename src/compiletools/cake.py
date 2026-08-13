@@ -1152,7 +1152,9 @@ def _render_flag_tokenize_error(err: compiletools.utils.FlagTokenizeError) -> No
 # generic tail for the same reason (see _render_flag_tokenize_error).
 # FetchError needs no entry of its own: its messages already name the
 # offending external and its URL, so the generic stderr print is the right
-# rendering.
+# rendering. MacroConvergenceError likewise rides the generic tail: the
+# message _raise_if_not_converged composes is complete end-user prose
+# (pinned by test_macro_convergence_error_renders_its_message_at_default_verbosity).
 _FATAL_ERROR_RENDERERS: list = [
     (subprocess.CalledProcessError, _render_called_process_error),
     (OSError, _render_os_error),
