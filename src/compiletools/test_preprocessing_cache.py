@@ -751,12 +751,24 @@ class TestFileEffectsApply:
         corrupt every past and future consumer of that cache entry. The
         fields must be genuinely read-only, not just rebind-protected."""
         source_defines = {sz.Str("X"): sz.Str("1")}
-        effects = FileEffects(content_hash="h", file_defines=source_defines)
+        smuggled_params = [sz.Str("a")]
+        effects = FileEffects(
+            content_hash="h",
+            file_defines=source_defines,
+            file_function_params={sz.Str("F"): smuggled_params},  # pyright: ignore[reportArgumentType]
+        )
 
         with pytest.raises(TypeError):
             effects.file_defines[sz.Str("Y")] = sz.Str("2")  # type: ignore[index]
         with pytest.raises(TypeError):
             effects.file_function_params[sz.Str("F")] = ()  # type: ignore[index]
+
+        # The param-list VALUES are coerced to tuples too: with_updates
+        # stores them by reference into every derived MacroState, so a
+        # list value would let one consumer mutate them all.
+        assert effects.file_function_params[sz.Str("F")] == (sz.Str("a"),)
+        smuggled_params.append(sz.Str("SMUGGLED"))
+        assert effects.file_function_params[sz.Str("F")] == (sz.Str("a"),)
 
         # The snapshot also severs aliasing with the producer's dict: a
         # later mutation of the original must not reach the shared entry.

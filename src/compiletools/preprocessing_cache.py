@@ -124,10 +124,15 @@ class FileEffects:
         # shared by identity with every ProcessingResult served from a warm
         # tier. Deep-freeze: snapshot-copy (severing aliasing with whatever
         # dict the producer built) behind a read-only view, and coerce the
-        # other two fields so a list/set argument cannot smuggle mutability
-        # in either.
+        # other two fields — and the param-list values, which with_updates
+        # stores by reference into every derived MacroState — so a list/set
+        # argument cannot smuggle mutability in either.
         object.__setattr__(self, "file_defines", MappingProxyType(dict(self.file_defines)))
-        object.__setattr__(self, "file_function_params", MappingProxyType(dict(self.file_function_params)))
+        object.__setattr__(
+            self,
+            "file_function_params",
+            MappingProxyType({k: tuple(v) for k, v in self.file_function_params.items()}),
+        )
         object.__setattr__(self, "file_undefs", frozenset(self.file_undefs))
         object.__setattr__(self, "condition_occurrences", tuple(self.condition_occurrences))
 
@@ -225,8 +230,9 @@ class ProcessingResult:
     def __post_init__(self):
         # frozen=True only stops attribute REBINDING; the list fields of a
         # cached result would still be mutable in place, and one result is
-        # handed by identity to every caller a warm tier serves. Deep-freeze
-        # so no consumer can corrupt the entry for all the others.
+        # handed by identity to every caller a warm tier serves. Freeze to
+        # depth 2 (see the class docstring for why not deeper) so no
+        # consumer can corrupt the entry for all the others.
         object.__setattr__(self, "active_lines", tuple(self.active_lines))
         object.__setattr__(self, "active_includes", _frozen_directive_entries(self.active_includes))
         object.__setattr__(self, "active_magic_flags", _frozen_directive_entries(self.active_magic_flags))
