@@ -98,7 +98,14 @@ class FileEffects:
             body but not its arity.
         condition_occurrences: ``(kind, directive_type, condition, line_num)``
             tuples for every condition this file's processing resolved or
-            found unreached (see :func:`_replay_condition_occurrences`).
+            found unreached, plus every macro expansion that reached a fixed
+            point under the iteration cap (see
+            :func:`_replay_condition_occurrences`). The four kinds are
+            ``resolved`` / ``unreached`` for conditions and ``expansion`` /
+            ``has_operand_expansion`` for the two expansion helpers; an
+            expansion tuple names its directive in ``directive_type`` /
+            ``line_num`` (or ``"<none>"`` / ``-1`` when it has none) and
+            carries the expansion's own input text in ``condition``.
     """
 
     content_hash: str
@@ -789,15 +796,17 @@ def is_macro_invariant(file_result, input_macros: "MacroState") -> bool:
 # 3. We need full objects to compute results, not just hashes
 # 4. Provides enhanced debugging (dump_cache_keys with file path resolution)
 def _replay_condition_occurrences(condition_occurrences, content_hash, context) -> None:
-    """Replay a cached compute's condition-resolution events on a cache HIT.
+    """Replay a cached compute's condition and expansion events on a cache HIT.
 
     A live SimplePreprocessor run never happens on a cache hit, so
-    ``_note_condition_resolved``/``_note_condition_unreached`` cannot fire
-    on their own -- without this, a pending "cannot evaluate" record left by
-    an earlier, unevaluable pass over this same file survives forever once a
-    later pass's result comes from the cache instead of a live rerun, even
-    though the cached entry is itself proof the condition resolves (or was
-    never reached) at this exact macro state.
+    ``_note_condition_resolved``/``_note_condition_unreached`` (and their
+    expansion counterpart ``_note_expansion_settled``) cannot fire on their
+    own -- without this, a pending "cannot evaluate" or "recursive macro
+    definition cycle" record left by an earlier pass over this same file
+    survives forever once a later pass's result comes from the cache instead
+    of a live rerun, even though the cached entry is itself proof the
+    condition resolves (or was never reached, or expands under the cap) at
+    this exact macro state.
 
     Reached only through :meth:`FileEffects.apply`, which every warm tier
     over a computed ProcessingResult uses: the two caches here, and
@@ -817,10 +826,13 @@ def _replay_condition_occurrences(condition_occurrences, content_hash, context) 
         return
     pending = getattr(context, "pending_preprocessor_warnings", None)
     resolved = getattr(context, "resolved_preprocessor_conditions", None)
-    if pending is None and resolved is None:
+    pending_expansions = getattr(context, "pending_preprocessor_expansion_warnings", None)
+    resolved_expansions = getattr(context, "resolved_preprocessor_expansions", None)
+    if pending is None and resolved is None and pending_expansions is None and resolved_expansions is None:
         return
 
     from compiletools.global_hash_registry import get_filepath_by_hash
+    from compiletools.simple_preprocessor import EXPANSION_OCCURRENCE_KINDS
 
     # Same fallback a live run uses (process_structured's `filepath or
     # "<unknown>"`): pending records for an unresolvable hash are keyed
@@ -828,6 +840,18 @@ def _replay_condition_occurrences(condition_occurrences, content_hash, context) 
     filepath = get_filepath_by_hash(content_hash, context) or "<unknown>"
 
     for kind, directive_type, condition, line_num in condition_occurrences:
+        # An expansion occurrence carries the expansion's input text in the
+        # condition slot and its helper in the kind slot, and addresses the
+        # expansion stores -- whose key shape differs so that a clean
+        # expansion of a #if's text cannot retract that #if's own pending
+        # "cannot evaluate" record, which is a different claim entirely.
+        if kind in EXPANSION_OCCURRENCE_KINDS:
+            expansion_key = (filepath, directive_type, line_num, kind, condition)
+            if resolved_expansions is not None:
+                resolved_expansions.add(expansion_key)
+            if pending_expansions is not None:
+                pending_expansions.pop(expansion_key, None)
+            continue
         key = (filepath, directive_type, condition, line_num)
         if kind == "resolved" and resolved is not None:
             resolved.add(key)

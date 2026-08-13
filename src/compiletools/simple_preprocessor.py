@@ -52,6 +52,19 @@ class UnsafeExpressionError(ValueError):
     """
 
 
+# (filepath, directive_type, line_num, expansion_kind, expression) -- one
+# expansion occurrence. See BuildContext.pending_preprocessor_expansion_warnings.
+ExpansionKey = tuple[str, str, int, str, str]
+
+# The two expansion helpers, as they appear in the ``kind`` slot of an
+# expansion key and of a recorded occurrence.
+EXPANSION_KIND = "expansion"
+HAS_OPERAND_EXPANSION_KIND = "has_operand_expansion"
+EXPANSION_OCCURRENCE_KINDS = frozenset({EXPANSION_KIND, HAS_OPERAND_EXPANSION_KIND})
+
+# Stands in for the directive an expansion belongs to when there is none.
+_NO_EXPANSION_SITE = ("<none>", -1)
+
 # Precompiled regex patterns for _safe_eval
 _RE_BACKSLASH_WHITESPACE = re.compile(r"\\\s*")
 _RE_MALFORMED_NUMBERS = re.compile(r"(\d+)\s*\(\s*(\d+)\s*\)")
@@ -499,11 +512,22 @@ class SimplePreprocessor:
         # diagnostic is printed the moment it is found.
         self._pending_warnings: dict[tuple[str, str, str, int], str] = {}
         self._resolved_conditions: set[tuple[str, str, str, int]] = set()
+        # The same pair for the expansion-cap reports, rebound the same way.
+        self._pending_expansion_warnings: dict[ExpansionKey, str] = {}
+        self._resolved_expansions: set[ExpansionKey] = set()
         self._defer_warnings: bool = False
         self._current_filepath: str = "<unknown>"
+        # The directive whose text the expansion helpers are working on, as
+        # (directive_type, line_num). Set around directive dispatch; the
+        # fallback stands in for an expansion with no directive to name (the
+        # computed-include resolver, and magicflags' settled-state expander,
+        # which runs outside process_structured entirely).
+        self._expansion_site: tuple[str, int] = _NO_EXPANSION_SITE
         # Occurrence-keyed record of every _note_condition_resolved /
-        # _note_condition_unreached call made during ONE process_structured
-        # call, reset at its start. preprocessing_cache attaches this to the
+        # _note_condition_unreached / _note_expansion_settled call made during
+        # ONE process_structured call, reset at its start. The kind slot says
+        # which store an entry addresses on replay.
+        # preprocessing_cache attaches this to the
         # cached ProcessingResult so a later cache HIT for the same file can
         # replay the same pending-store retractions a live rerun would have
         # made, without re-running the preprocessor. See
@@ -1010,10 +1034,11 @@ class SimplePreprocessor:
         caps depth to defeat cyclic ``#define`` pairs, mirroring the cap in
         _recursive_expand_macros_sz. When the cap is hit AND the operand is
         still changing on each pass — a genuine cycle rather than benign
-        convergence — a warning is emitted at ``verbose >= 1`` (matching the
+        convergence — a report is raised at ``verbose >= 1`` (matching the
         sibling), so a half-expanded token being handed to the __has_* probe is
         not silently truncated. The last seen expression is returned regardless.
         """
+        original_sz = expr_sz
         previous_expr = sz.Str("")
         iteration = 0
         while expr_sz != previous_expr and iteration < max_iterations:
@@ -1022,16 +1047,19 @@ class SimplePreprocessor:
             iteration += 1
 
         # If we hit the iteration cap AND the operand was still mutating on the
-        # last pass, the expansion was truncated — warn the user (mirrors
+        # last pass, the expansion was truncated — report it (mirrors
         # _recursive_expand_macros_sz, scoped to the __has_* operand context).
         if iteration == max_iterations and expr_sz != previous_expr:
-            if self.verbose >= 1:
-                print(
-                    f"WARNING: SimplePreprocessor._expand_object_macros_recursive_sz hit "
-                    f"max_iterations={max_iterations} while a __has_* operand was still "
-                    f"changing — likely a recursive macro definition cycle. "
-                    f"Truncated result: {expr_sz!r} (previous: {previous_expr!r})"
-                )
+            self._report_expansion_cycle(
+                HAS_OPERAND_EXPANSION_KIND,
+                original_sz,
+                f"WARNING: SimplePreprocessor._expand_object_macros_recursive_sz hit "
+                f"max_iterations={max_iterations} while a __has_* operand was still "
+                f"changing — likely a recursive macro definition cycle. "
+                f"Truncated result: {expr_sz!r} (previous: {previous_expr!r})",
+            )
+        else:
+            self._note_expansion_settled(HAS_OPERAND_EXPANSION_KIND, original_sz)
 
         return expr_sz
 
@@ -1042,11 +1070,12 @@ class SimplePreprocessor:
         pathological macro definitions that would otherwise loop forever
         (e.g. ``#define A B`` and ``#define B A``). When the cap is hit
         AND the expression is still changing on each pass — indicating a
-        genuine cycle rather than benign convergence — a warning is emitted
+        genuine cycle rather than benign convergence — a report is raised
         at ``verbose >= 1`` so the user knows their macro definitions are
         cyclic and the result was truncated. The last seen expression is
         returned regardless.
         """
+        original_sz = expr_sz
         previous_expr = sz.Str("")  # Initialize with empty StringZilla.Str instead of None
         iteration = 0
 
@@ -1056,15 +1085,18 @@ class SimplePreprocessor:
             iteration += 1
 
         # If we hit the iteration cap AND the expression was still mutating
-        # on the last pass, the expansion was truncated — warn the user.
+        # on the last pass, the expansion was truncated — report it.
         if iteration == max_iterations and expr_sz != previous_expr:
-            if self.verbose >= 1:
-                print(
-                    f"WARNING: SimplePreprocessor._recursive_expand_macros_sz hit "
-                    f"max_iterations={max_iterations} while expression was still "
-                    f"changing — likely a recursive macro definition cycle. "
-                    f"Truncated result: {expr_sz!r} (previous: {previous_expr!r})"
-                )
+            self._report_expansion_cycle(
+                EXPANSION_KIND,
+                original_sz,
+                f"WARNING: SimplePreprocessor._recursive_expand_macros_sz hit "
+                f"max_iterations={max_iterations} while expression was still "
+                f"changing — likely a recursive macro definition cycle. "
+                f"Truncated result: {expr_sz!r} (previous: {previous_expr!r})",
+            )
+        else:
+            self._note_expansion_settled(EXPANSION_KIND, original_sz)
 
         return expr_sz
 
@@ -1152,6 +1184,11 @@ class SimplePreprocessor:
         self._warned_conditions = getattr(context, "warned_preprocessor_conditions", self._warned_conditions)
         self._pending_warnings = getattr(context, "pending_preprocessor_warnings", self._pending_warnings)
         self._resolved_conditions = getattr(context, "resolved_preprocessor_conditions", self._resolved_conditions)
+        self._pending_expansion_warnings = getattr(
+            context, "pending_preprocessor_expansion_warnings", self._pending_expansion_warnings
+        )
+        self._resolved_expansions = getattr(context, "resolved_preprocessor_expansions", self._resolved_expansions)
+        self._expansion_site = _NO_EXPANSION_SITE
         self._defer_warnings = getattr(context, "preprocessor_convergence_depth", 0) > 0
 
         # Store include guard so _handle_define_structured can skip it
@@ -1184,8 +1221,12 @@ class SimplePreprocessor:
                 # Handle multiline directives - skip continuation lines
                 continuation_lines = directive.continuation_lines
 
-                # Handle the directive
+                # Handle the directive. The site names whichever directive the
+                # expansion helpers are working under, so an expansion the
+                # iteration cap truncates can be reported against a line.
+                self._expansion_site = (directive.directive_type, directive.line_num)
                 handled = self._handle_directive_structured(directive, condition_stack, i + 1)
+                self._expansion_site = _NO_EXPANSION_SITE
 
                 # Include #define and #undef lines in active_lines even when handled (for macro extraction)
                 # Also include unhandled directives (like #include) if in active context
@@ -1513,6 +1554,55 @@ class SimplePreprocessor:
         key = (self._current_filepath, directive.directive_type, str(directive.condition), directive.line_num)
         self._pending_warnings.pop(key, None)
 
+    def _expansion_key(self, kind: str, original_sz: "sz.Str") -> ExpansionKey:
+        """Address the expansion currently running: site plus kind plus input text."""
+        directive_type, line_num = self._expansion_site
+        return (self._current_filepath, directive_type, line_num, kind, str(original_sz))
+
+    def _report_expansion_cycle(self, kind: str, original_sz: "sz.Str", message: str) -> None:
+        """Report an expansion the iteration cap truncated.
+
+        Inside a magicflags convergence the report is recorded rather than
+        printed, for the same reason the unevaluable-condition report is: an
+        early pass expands under a macro state the build has not settled on,
+        where ``A`` and ``B`` can both be defined and mutually referential
+        while the settled state expands the same text cleanly. Printing from
+        that pass contradicts the flags the build goes on to emit.
+        ``_note_expansion_settled`` retracts the record when a later pass
+        expands the same occurrence under the cap, and
+        ``flush_pending_warnings`` prints whatever is still truncated once the
+        macro state has settled. The truncation itself is unaffected either
+        way — this changes what the user is told, not what is built.
+        """
+        if self.verbose < 1:
+            return
+        if not self._defer_warnings:
+            print(message)
+            return
+        key = self._expansion_key(kind, original_sz)
+        if key not in self._resolved_expansions:
+            self._pending_expansion_warnings.setdefault(key, message)
+
+    def _note_expansion_settled(self, kind: str, original_sz: "sz.Str") -> None:
+        """Record that this expansion reached a fixed point under the cap.
+
+        The occurrence is appended unconditionally, like
+        ``_note_condition_resolved``'s: it rides on the cached
+        ProcessingResult, whose key contains neither the verbosity nor the
+        convergence depth of the run that computed it, so a depth-0 seeding
+        pass must leave a later warm hit inside a convergence something to
+        replay.
+
+        Sticky, again like the conditions: a pass that hits the cap AFTER one
+        that expanded the same occurrence cleanly must not re-record it.
+        """
+        self.condition_occurrences.append((kind, self._expansion_site[0], str(original_sz), self._expansion_site[1]))
+        if not self._defer_warnings:
+            return
+        key = self._expansion_key(kind, original_sz)
+        self._resolved_expansions.add(key)
+        self._pending_expansion_warnings.pop(key, None)
+
     def _safe_eval(self, expr: str) -> int:
         """Safely evaluate a numeric expression"""
         # Clean up the expression
@@ -1663,6 +1753,16 @@ class SimplePreprocessor:
 
 
 def flush_pending_warnings(context: Any) -> int:
+    """Report the diagnostics still owed now the macro state has settled.
+
+    Two kinds are deferred through a convergence — conditions the evaluator
+    could not represent, and macro expansions the iteration cap truncated —
+    and both are flushed here. Returns the total number of lines printed.
+    """
+    return _flush_pending_conditions(context) + _flush_pending_expansions(context)
+
+
+def _flush_pending_conditions(context: Any) -> int:
     """Report the conditions still unevaluable now the macro state has settled.
 
     Returns the number of lines printed. Entries already reported are skipped
@@ -1701,14 +1801,41 @@ def flush_pending_warnings(context: Any) -> int:
     return printed
 
 
+def _flush_pending_expansions(context: Any) -> int:
+    """Report the expansions the cap truncated in the settled macro state.
+
+    One line per surviving occurrence, on stdout, matching the immediate path:
+    two truncations at two sites are two cycles for the user to fix, so unlike
+    the condition flush there is nothing to collapse.
+
+    The resolved store is cleared even when nothing is pending. Both stores
+    describe one convergence, and a key surviving into the next one would
+    silence a report that convergence goes on to owe.
+    """
+    resolved = getattr(context, "resolved_preprocessor_expansions", None)
+    if resolved is not None:
+        resolved.clear()
+
+    pending = getattr(context, "pending_preprocessor_expansion_warnings", None)
+    if not pending:
+        return 0
+
+    for message in pending.values():
+        print(message)
+    printed = len(pending)
+    pending.clear()
+    return printed
+
+
 @contextlib.contextmanager
 def converging(context: Any) -> "Iterator[None]":
-    """Defer unevaluable-condition reports for the duration of a convergence.
+    """Defer unevaluable-condition and expansion-cycle reports for a convergence.
 
     magicflags evaluates a file repeatedly, and an early pass runs before the
     macros controlling that file have been discovered, so its verdict is not
     the build's answer. Reports raised inside this region are held and only
-    printed on exit, minus any condition a later pass managed to evaluate.
+    printed on exit, minus any occurrence a later pass evaluated or expanded
+    cleanly.
 
     Re-entrant: only the outermost region flushes. Consumers that drive the
     preprocessor without a convergence never enter it and keep reporting

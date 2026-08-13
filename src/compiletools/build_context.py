@@ -103,6 +103,32 @@ class BuildContext:
         # flushes.
         self.resolved_preprocessor_conditions: set[tuple[str, str, str, int]] = set()
 
+        # Macro expansions the iteration cap truncated during a convergence,
+        # holding the "likely a recursive macro definition cycle" message.
+        # Deferred for the same reason the condition reports are: an early pass
+        # expands under a macro state the build has not settled on, where two
+        # macros can look mutually recursive that the settled state expands
+        # cleanly, and the printed warning then contradicts the build's own
+        # final answer. The truncation itself is unchanged; only the report is.
+        #
+        # Keyed (filepath, directive_type, line_num, expansion_kind, expression).
+        # Position identifies the occurrence, as it does for the conditions;
+        # the two extra fields are needed because ONE directive line drives
+        # several expansions — the controlling expression plus each __has_*
+        # operand inside it — and each can hit the cap independently. The
+        # expression is the helper's own input text, which is also what makes
+        # a retraction addressable: a later pass expanding the same input at
+        # the same site to a fixed point deletes the entry. Every occurrence
+        # is reported; unlike the conditions there is no collapse to one line
+        # per file, since two truncations are two cycles to fix.
+        self.pending_preprocessor_expansion_warnings: dict[tuple[str, str, int, str, str], str] = {}
+
+        # Occurrences some pass expanded to a fixed point under the cap.
+        # Sticky for the same interleaving reason as the conditions' resolved
+        # store: passes are not ordered best-last, so a pass that hits the cap
+        # AFTER one that did not must not re-record. Emptied at flush.
+        self.resolved_preprocessor_expansions: set[tuple[str, str, int, str, str]] = set()
+
         # Depth of the enclosing magicflags convergence. Zero means no pass will
         # follow, so a diagnostic is printed immediately and nothing is deferred;
         # every consumer that drives the preprocessor without magicflags
