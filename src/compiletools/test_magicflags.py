@@ -1474,37 +1474,41 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         cxxflags = [str(flag) for flag in result.get(sz.Str("CXXFLAGS"), [])]
         assert "-DPKG_MODERN" in cxxflags, f"pkg-config --cflags dir should resolve READMACROS: {cxxflags}"
 
-    def test_readmacros_file_declared_path_does_not_leak_to_other_files(self):
-        """The harvest is per-file: one file's -isystem must not resolve another's READMACROS.
+    def test_readmacros_uses_translation_unit_path_before_declaring_dir_fallback(self):
+        """A TU include path beats a same-named header beside the declaration.
 
-        PASS 1 collects READMACROS across the whole header set in one sweep,
-        so the contract has to be that each file only sees include paths it
-        declares itself. main.cpp declares the -isystem and is scanned first;
-        the header scanned after it declares the READMACROS and must still
-        fail to resolve.
+        The ``READMACROS`` sits in a header, while ``main.cpp`` contributes
+        the ``-isystem`` path.  The header's own directory deliberately holds
+        a different file at the same relative path: accepting that fallback
+        would appear to resolve successfully but select the wrong flag.
         """
-        incdir = os.path.join(self._tmpdir, "otherlib")
+        incdir = os.path.join(self._tmpdir, "tu_include")
         files = uth.write_sources(
             {
-                "otherlib/otherlib_version.hpp": "#pragma once\n#define OTHER_LEVEL 3\n",
-                "leaky/decl.hpp": (
+                "tu_include/version.hpp": "#pragma once\n#define PICK_TU_INCLUDE 1\n",
+                "declaring_dir/version.hpp": "#pragma once\n#define PICK_DECLARING_DIR 1\n",
+                "declaring_dir/decl.hpp": (
                     "#pragma once\n"
-                    "//#READMACROS=otherlib_version.hpp\n"
+                    "//#READMACROS=version.hpp\n"
                     "\n"
-                    "#if OTHER_LEVEL >= 3\n"
-                    "//#CXXFLAGS=-DOTHER_MODERN\n"
+                    "#if PICK_TU_INCLUDE\n"
+                    "//#CXXFLAGS=-DTU_INCLUDE_WINS\n"
+                    "#endif\n"
+                    "#if PICK_DECLARING_DIR\n"
+                    "//#CXXFLAGS=-DDECLARING_DIR_WON\n"
                     "#endif\n"
                 ),
-                "leaky/main.cpp": f'#include "decl.hpp"\n//#CXXFLAGS=-isystem {incdir}\n\nint main() {{ return 0; }}\n',
+                "app/main.cpp": f'#include "../declaring_dir/decl.hpp"\n//#CXXFLAGS=-isystem {incdir}\n\nint main() {{ return 0; }}\n',
             }
         )
 
-        result = self._parse_with_magic("direct", str(files["leaky/main.cpp"]))
+        result = self._parse_with_magic("direct", str(files["app/main.cpp"]))
 
         cxxflags = [str(flag) for flag in result.get(sz.Str("CXXFLAGS"), [])]
-        assert "-DOTHER_MODERN" not in cxxflags, (
-            f"Another file's -isystem must not resolve this file's READMACROS: {cxxflags}"
+        assert "-DTU_INCLUDE_WINS" in cxxflags, (
+            f"The translation unit's -isystem must resolve this READMACROS first: {cxxflags}"
         )
+        assert "-DDECLARING_DIR_WON" not in cxxflags, f"The declaring directory is only a fallback: {cxxflags}"
 
     def test_unresolvable_readmacros_does_not_discard_later_entries(self):
         """Defect 2: one bad READMACROS costs one entry, not the rest of the file."""
