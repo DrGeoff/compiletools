@@ -517,22 +517,22 @@ class TestFindHeaderInPaths:
 
     def test_readmacros_wording_is_silent_on_empty_include_paths(self, capsys):
         apptools.find_header_in_paths(
-            "h", [], verbose=9, label="READMACROS", paths_label="file-declared include paths", warn_on_empty=False
+            "h", [], verbose=9, label="READMACROS", paths_label="magic-declared include paths", warn_on_empty=False
         )
         captured = capsys.readouterr()
         assert captured.out == ""
 
-    def test_readmacros_wording_names_file_declared_paths(self, capsys):
+    def test_readmacros_wording_names_magic_declared_paths(self, capsys):
         apptools.find_header_in_paths(
             "h",
             ["/no/such"],
             verbose=9,
             label="READMACROS",
-            paths_label="file-declared include paths",
+            paths_label="magic-declared include paths",
             warn_on_empty=False,
         )
         captured = capsys.readouterr()
-        assert captured.out.strip() == "READMACROS 'h' not found in file-declared include paths: ['/no/such']"
+        assert captured.out.strip() == "READMACROS 'h' not found in magic-declared include paths: ['/no/such']"
 
 
 class TestFindSystemHeader:
