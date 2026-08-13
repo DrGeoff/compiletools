@@ -63,7 +63,11 @@ class TestReadmacrosDeclarationSite(tb.BaseCompileToolsTestCase):
         parser.clear_cache()
         result = parser.parse(os.path.join(self._tmpdir, "main.cpp"))
         cxxflags = " ".join(str(flag) for flag in result.get(sz.Str("CXXFLAGS"), []))
-        warnings = [line for line in capsys.readouterr().err.splitlines() if "cannot evaluate" in line]
+        warnings = [
+            line
+            for line in capsys.readouterr().err.splitlines()
+            if "cannot evaluate" in line or "could not resolve READMACROS" in line
+        ]
         return cxxflags, warnings
 
     def test_control_a_declaration_beside_the_gate_resolves_correctly(self, capsys):

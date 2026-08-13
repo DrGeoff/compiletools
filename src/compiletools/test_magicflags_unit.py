@@ -293,23 +293,6 @@ class TestFileDeclaredIncludePaths:
         assert obj._file_declared_include_paths(analysis) == ["/opt/good"]
 
 
-class TestHandleReadmacros:
-    """Test MagicFlagsBase._handle_readmacros()."""
-
-    def _make_base(self):
-        obj = _make_partial()
-        obj._explicit_macro_files = set()
-        return obj
-
-    def test_handle_readmacros_adds_to_set(self, tmp_path):
-        obj = self._make_base()
-        tmpfile = tmp_path / "x.hpp"
-        tmpfile.write_bytes(b"#define FOO 1")
-        tmppath = str(tmpfile)
-        obj._handle_readmacros(sz.Str(tmppath), "/some/source.cpp")
-        assert os.path.realpath(tmppath) in obj._explicit_macro_files
-
-
 class TestDirectMagicFlagsClearCache:
     """Test DirectMagicFlags.clear_cache() is a documented no-op.
 
