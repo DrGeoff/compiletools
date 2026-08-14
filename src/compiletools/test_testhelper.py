@@ -130,7 +130,9 @@ class TestCopyFileRangeProbe:
         def raises_enotsup(*_args, **_kwargs):
             raise OSError(errno_mod.ENOTSUP, "Operation not supported")
 
-        monkeypatch.setattr(os, "copy_file_range", raises_enotsup)
+        # raising=False: PyPy has no os.copy_file_range; installing it makes
+        # the probe exercise the same errno branches on both interpreters.
+        monkeypatch.setattr(os, "copy_file_range", raises_enotsup, raising=False)
         assert uth._copy_file_range_works_in(str(tmp_path)) is False
 
     def test_reports_true_on_a_working_filesystem_or_other_errors(self, tmp_path, monkeypatch):
@@ -141,7 +143,8 @@ class TestCopyFileRangeProbe:
         def raises_unrelated(*_args, **_kwargs):
             raise OSError(errno_mod.EACCES, "Permission denied")
 
-        monkeypatch.setattr(os, "copy_file_range", raises_unrelated)
+        # raising=False: PyPy has no os.copy_file_range (see above).
+        monkeypatch.setattr(os, "copy_file_range", raises_unrelated, raising=False)
         assert uth._copy_file_range_works_in(str(tmp_path)) is True
 
     def test_bazel_backend_gate_reports_unavailable_when_output_root_lacks_the_syscall(self, monkeypatch):
