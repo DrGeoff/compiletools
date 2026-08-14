@@ -67,6 +67,7 @@ class TestFindTargetsModule:
             "cppflags_macros/multi_flag_test.cpp",
             "cppflags_macros/nested_macros_test.cpp",
             "cross_file_macro_visibility/chain_main.cpp",
+            "cross_file_macro_visibility/funclike_main.cpp",
             "cross_file_macro_visibility/simple_main.cpp",
             "cxx_modules/main.cpp",
             "cxx_modules_header_units/main.cpp",

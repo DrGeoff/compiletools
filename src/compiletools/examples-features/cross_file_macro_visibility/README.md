@@ -6,10 +6,12 @@ would fall back to assume-false and take the wrong branch. What makes those
 conditions resolve correctly is the `DirectMagicFlags` convergence, which
 accumulates macro state across files and re-processes them until it settles.
 
-This fixture pins that behaviour. Both gates select a different `-l` library
-on their false branch, so a regression is a mislink rather than a warning.
+This fixture pins that behaviour. The object-like gates select a different
+`-l` library on their false branch, so a regression there is a mislink rather
+than a warning; the function-like gate emits no branch flags when unresolved,
+which its `static_assert` turns into a compile error.
 
-## Two properties, isolated
+## Three properties, isolated
 
 `simple_main.cpp` covers **cross-file visibility**. `platform_level.h` is
 included before `simple_gate.h`, so one accumulating pass is enough to resolve
@@ -21,11 +23,25 @@ from `CHAIN_BASE`, `chain_base.h` defines `CHAIN_BASE`) and are included in
 reverse order, top of chain first. Each is processed before the header that
 supplies the macro it needs, so no single pass resolves the chain.
 
-**The reverse include order in `chain_main.cpp` is load-bearing.** Sorting it
-into dependency order leaves the file compiling and the flags correct while
-removing the only coverage of the loop.
+`funclike_main.cpp` covers **function-like macros across both mechanisms**.
+`funclike_gate.h` calls `FUNCLIKE_AT_LEAST(2)`; its `#define` in
+`funclike_def.h` is guarded by `FUNCLIKE_LEVEL` from `funclike_level.h`, and
+the three are included top-of-chain first — so a single accumulating pass
+never records the function-like macro at all, and its body AND parameter list
+must survive into a later convergence round before the gate can expand it.
+The other two trees are object-like only, so this is the coverage that catches
+a regression dropping parameter lists between rounds. The gate sits under an
+`#ifdef FUNCLIKE_AT_LEAST` wrapper because a real compiler hard-errors on an
+undefined function-like macro inside `#if`; the observable ablation effect is
+therefore "no branch flags" rather than the legacy branch. An unconditional
+sentinel flag in `funclike_gate.h` lets the control distinguish "gate
+unresolved" from "gate header never scanned".
 
-## Why both are tested rather than assumed
+**The reverse include orders in `chain_main.cpp` and `funclike_main.cpp` are
+load-bearing.** Sorting either into dependency order leaves the file compiling
+and the flags correct while removing coverage of the loop.
+
+## Why these are tested rather than assumed
 
 Ablation over 172 bundled examples and a 500-source sample of a large external
 C++ codebase measured what each property is worth:
@@ -44,9 +60,9 @@ deletes.
 
 Each `main.cpp` carries a `static_assert` selecting on the macro its gate
 emits, so handing the computed flags to a real compiler proves both that the
-right branch was taken and that the flags are deliverable. Compiling either
-file **without** the computed flags is expected to fail; that is the check
-working, not a broken fixture.
+right branch was taken and that the flags are deliverable. Compiling any of
+the three files **without** the computed flags is expected to fail; that is
+the check working, not a broken fixture.
 
 ## Tests
 

@@ -6,8 +6,11 @@ falls back to assume-false. Only the ``DirectMagicFlags`` convergence, which
 accumulates macro state across files and re-processes them until it settles,
 makes those conditions resolve correctly.
 
-Both gates in the fixture pick a different ``-l`` library on their false
-branch, so a regression here is a mislink, not a warning.
+The object-like gates in the fixture pick a different ``-l`` library on their
+false branch, so a regression there is a mislink, not a warning. The
+function-like gate emits no flags at all when unresolved (its ``#ifdef``
+wrapper is what keeps the fixture compilable by a real compiler), which its
+``static_assert`` still turns into a compile error.
 
 Each property has a paired control that ablates the mechanism and asserts the
 computed flags change. Without the control, a fixture that stopped exercising
@@ -50,6 +53,32 @@ def _flags_for(source_name):
         parser.clear_cache()
         result = parser.parse(f"{sample_dir}/{source_name}")
     return {str(key): " ".join(str(v) for v in values) for key, values in result.items()}
+
+
+def _ablate_convergence_to_single_pass(monkeypatch):
+    """Replace the convergence loop with what deleting it would leave behind:
+    one accumulating pass that claims convergence — the real loop capped at
+    max_iterations=1 would raise MacroConvergenceError instead of producing
+    the ablated flags, and the exhaustion error must not mask the observable.
+    Returns the call log; an empty log means the ablation never ran.
+
+    Patching also fails loudly if ``_converge_macro_state`` is deleted
+    outright, since the patch target would no longer exist."""
+    calls = []
+
+    def single_pass(self, all_files):
+        calls.append(len(all_files))
+        macro_key = self.defined_macros.get_cache_key()
+        for fname in all_files:
+            self._process_file_for_macros(fname, macro_key)
+        return 1, True
+
+    monkeypatch.setattr(
+        compiletools.magicflags.DirectMagicFlags,
+        "_converge_macro_state",
+        single_pass,
+    )
+    return calls
 
 
 class TestCrossFileMacroVisibility:
@@ -114,30 +143,10 @@ class TestConvergenceIterationLoop:
         assert "-lchain_low" not in flags.get("LDFLAGS", ""), flags
 
     def test_control_replacing_the_loop_with_one_pass_changes_the_answer(self, monkeypatch):
-        """Proof the chain still needs the loop. The ablation is what deleting
-        the loop would leave behind: one accumulating pass that claims
-        convergence, so the exhaustion error cannot mask the wrong flags.
-        This fails if someone sorts chain_main.cpp's includes into dependency
-        order, which would leave the build correct while removing the loop's
-        only coverage.
-
-        It also fails loudly if ``_converge_macro_state`` is deleted outright,
-        since the patch target would no longer exist.
-        """
-        calls = []
-
-        def single_pass(self, all_files):
-            calls.append(len(all_files))
-            macro_key = self.defined_macros.get_cache_key()
-            for fname in all_files:
-                self._process_file_for_macros(fname, macro_key)
-            return 1, True
-
-        monkeypatch.setattr(
-            compiletools.magicflags.DirectMagicFlags,
-            "_converge_macro_state",
-            single_pass,
-        )
+        """Proof the chain still needs the loop. This fails if someone sorts
+        chain_main.cpp's includes into dependency order, which would leave the
+        build correct while removing the loop's only coverage."""
+        calls = _ablate_convergence_to_single_pass(monkeypatch)
         flags = _flags_for("chain_main.cpp")
 
         assert calls, "the ablation never ran, so this control proves nothing"
@@ -147,6 +156,42 @@ class TestConvergenceIterationLoop:
         assert "-lchain_low" in flags.get("LDFLAGS", ""), flags
 
 
+class TestFunctionLikeGateAcrossFiles:
+    """funclike_def.h defines the function-like macro funclike_gate.h calls,
+    behind a guard funclike_level.h unlocks, and the gate header is included
+    first. Neither simple_main.cpp nor chain_main.cpp covers this: their gates
+    are all object-like, so a regression that drops a macro's parameter list
+    between convergence rounds would leave both of them green."""
+
+    def test_a_function_like_gate_resolves_across_files_and_rounds(self):
+        flags = _flags_for("funclike_main.cpp")
+
+        assert "-DFUNCLIKE_GATE_SEEN=1" in flags.get("CXXFLAGS", ""), flags
+        assert "-DFUNCLIKE_MODERN=1" in flags.get("CXXFLAGS", ""), flags
+        assert "-DFUNCLIKE_LEGACY" not in flags.get("CXXFLAGS", ""), flags
+        assert "-lfunclike_modern" in flags.get("LDFLAGS", ""), flags
+        assert "-lfunclike_legacy" not in flags.get("LDFLAGS", ""), flags
+
+    def test_control_replacing_the_loop_with_one_pass_changes_the_answer(self, monkeypatch):
+        """One pass leaves the #ifdef wrapper false, so neither branch's flags
+        are emitted — the observable difference the settled run must show. The
+        unconditional sentinel proves the gate header was still reached and
+        scanned, so the branch-flag absence is the gate staying unresolved,
+        not the fixture silently dropping out of the walk."""
+        calls = _ablate_convergence_to_single_pass(monkeypatch)
+        flags = _flags_for("funclike_main.cpp")
+
+        assert calls, "the ablation never ran, so this control proves nothing"
+        assert "-DFUNCLIKE_GATE_SEEN=1" in flags.get("CXXFLAGS", ""), (
+            f"the gate header was never reached, so the absences below prove nothing: {flags}"
+        )
+        assert "-DFUNCLIKE_MODERN" not in flags.get("CXXFLAGS", ""), (
+            f"without the iteration loop the wrapped gate should have emitted no branch flags, got {flags}"
+        )
+        assert "-DFUNCLIKE_LEGACY" not in flags.get("CXXFLAGS", ""), flags
+        assert "funclike" not in flags.get("LDFLAGS", ""), flags
+
+
 class TestTheComputedFlagsSatisfyARealCompiler:
     """Each fixture TU static_asserts on the macro its gate emits, so feeding
     the computed flags to a compiler checks both that the right branch was
@@ -154,7 +199,11 @@ class TestTheComputedFlagsSatisfyARealCompiler:
 
     @pytest.mark.parametrize(
         ("source", "expected_define"),
-        [("simple_main.cpp", "-DSIMPLE_MODERN=1"), ("chain_main.cpp", "-DCHAIN_HIGH=1")],
+        [
+            ("simple_main.cpp", "-DSIMPLE_MODERN=1"),
+            ("chain_main.cpp", "-DCHAIN_HIGH=1"),
+            ("funclike_main.cpp", "-DFUNCLIKE_MODERN=1"),
+        ],
     )
     @uth.requires_functional_compiler
     def test_compiling_with_the_computed_flags_succeeds(self, source, expected_define):
@@ -200,4 +249,20 @@ def test_the_chain_headers_are_included_in_reverse_dependency_order():
     assert positions["chain_gate.h"] < positions["chain_mid.h"] < positions["chain_base.h"], (
         "chain_main.cpp must include the chain top-first; sorting it into dependency order "
         "removes the only coverage of the convergence iteration loop"
+    )
+
+
+def test_the_funclike_headers_are_included_in_reverse_dependency_order():
+    """Same shape guard for the function-like pair: the gate header must come
+    before the header defining the macro it calls."""
+    source = f"{example_path(_EXAMPLE)}/funclike_main.cpp"
+    with open(source) as fh:
+        text = fh.read()
+
+    positions = {
+        name: text.index(f'#include "{name}"') for name in ("funclike_gate.h", "funclike_def.h", "funclike_level.h")
+    }
+    assert positions["funclike_gate.h"] < positions["funclike_def.h"] < positions["funclike_level.h"], (
+        "funclike_main.cpp must include the chain top-first; sorting it into dependency order "
+        "removes the only function-like coverage of the convergence iteration loop"
     )
