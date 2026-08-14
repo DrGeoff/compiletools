@@ -315,10 +315,24 @@ class TestPreprocessingCache(_CacheTestBase):
         text = dedent("""
             #ifdef FOO
             #include "shared.h"
+            #define GATE(x) (x)
             #endif
         """).strip()
 
         file_result = self._create_simple_file_result(text, "hash_frozen_001")
+        # A function-like define on an active line, so the frozen result
+        # carries an entry with list-valued "lines"/"params" to deep-freeze.
+        file_result.defines.append(
+            {
+                "line_num": 2,
+                "byte_pos": 0,
+                "lines": [sz.Str("#define GATE(x) (x)")],
+                "name": sz.Str("GATE"),
+                "value": sz.Str("(x)"),
+                "is_function_like": True,
+                "params": [sz.Str("x")],
+            }
+        )
         macros = MacroState({}, {sz.Str("FOO"): sz.Str("1")}, anchor_root="")
 
         result1 = get_or_compute_preprocessing(file_result, macros, 0, context=self.ctx)
@@ -337,6 +351,15 @@ class TestPreprocessingCache(_CacheTestBase):
             result1.active_defines.append({})  # type: ignore[attr-defined]
         with pytest.raises(TypeError):
             result1.active_includes[0]["filename"] = sz.Str("hijacked.h")  # type: ignore[index]
+
+        # The freeze is deep: the list VALUES inside a define entry are
+        # tuples, or one consumer's append would corrupt the entry's params
+        # for every other consumer of the same cache tier.
+        gate_entry = next(d for d in result1.active_defines if str(d["name"]) == "GATE")
+        with pytest.raises(AttributeError):
+            gate_entry["params"].append(sz.Str("smuggled"))  # type: ignore[attr-defined]
+        with pytest.raises(AttributeError):
+            gate_entry["lines"].append(sz.Str("smuggled"))  # type: ignore[attr-defined]
 
         assert str(result2.active_includes[0]["filename"]) == "shared.h"
         assert 1 in result2.active_lines

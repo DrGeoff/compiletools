@@ -176,10 +176,11 @@ def _frozen_directive_entries(entries) -> tuple[Mapping, ...]:
 
     Each entry is snapshot-copied first, so the result also stops aliasing
     the producer's dicts (the cached FileAnalysisResult's own
-    includes/magic_flags/defines lists). A ``mappingproxy`` compares equal
-    to the dict it wraps, so consumers reading these entries see no change.
-    The list-valued keys a define entry carries (``lines``, ``params``) stay
-    lists: coercing them to tuples would break that equality.
+    includes/magic_flags/defines lists). The list-valued keys a define entry
+    carries (``lines``, ``params``) are coerced to tuples: a shallow copy
+    would leave those lists aliased to the producer's cached dicts, so one
+    consumer's in-place append would corrupt the entry for every other
+    consumer of the same cache tier.
 
     An already-frozen sequence passes through by identity. The warm-hit path
     rebuilds a ProcessingResult around the cached one's own containers, so
@@ -187,22 +188,23 @@ def _frozen_directive_entries(entries) -> tuple[Mapping, ...]:
     """
     if type(entries) is _FrozenEntries:
         return entries
-    return _FrozenEntries(MappingProxyType(dict(entry)) for entry in entries)
+    return _FrozenEntries(
+        MappingProxyType({k: tuple(v) if isinstance(v, list) else v for k, v in entry.items()}) for entry in entries
+    )
 
 
 @dataclass(frozen=True)
 class ProcessingResult:
     """Result of preprocessing a file with conditional compilation.
 
-    Instances are frozen to depth 2 for the same reason FileEffects is
-    deep-frozen: one result is served by identity to every consumer of a
-    warm cache entry, so ``__post_init__`` coerces the four ``active_*``
-    containers to tuples of read-only views. Their annotations stay at the
-    read-only supertype so a producer can pass the lists it built. The
-    freeze deliberately stops at the entry level — the list VALUES inside a
-    directive entry (``lines``, ``params``) stay mutable lists so the
-    entries keep comparing equal to plain dicts (see
-    :func:`_frozen_directive_entries`).
+    The four ``active_*`` containers are deep-frozen for the same reason
+    FileEffects is: one result is served by identity to every consumer of a
+    warm cache entry, so ``__post_init__`` coerces them to tuples of
+    read-only views with the list values inside each entry (``lines``,
+    ``params``) coerced to tuples (see :func:`_frozen_directive_entries`).
+    Their annotations stay at the read-only supertype so a producer can
+    pass the lists it built. ``updated_macros`` is exempt: it is a fresh
+    MacroState the warm-hit path rebuilds per caller, never shared.
 
     Attributes:
         active_lines: Line numbers that are active after preprocessing (0-based)
@@ -230,9 +232,8 @@ class ProcessingResult:
     def __post_init__(self):
         # frozen=True only stops attribute REBINDING; the list fields of a
         # cached result would still be mutable in place, and one result is
-        # handed by identity to every caller a warm tier serves. Freeze to
-        # depth 2 (see the class docstring for why not deeper) so no
-        # consumer can corrupt the entry for all the others.
+        # handed by identity to every caller a warm tier serves. Deep-freeze
+        # so no consumer can corrupt the entry for all the others.
         object.__setattr__(self, "active_lines", tuple(self.active_lines))
         object.__setattr__(self, "active_includes", _frozen_directive_entries(self.active_includes))
         object.__setattr__(self, "active_magic_flags", _frozen_directive_entries(self.active_magic_flags))
