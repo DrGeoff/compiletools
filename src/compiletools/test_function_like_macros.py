@@ -504,7 +504,8 @@ class TestMacroStateFunctionParams:
 
 
 class TestFunctionLikeMacroAcrossFiles(tb.BaseCompileToolsTestCase):
-    """The reported failure in its real shape: the gate lives in a header."""
+    """The reported failure in its real shape: the gating macro is defined in a
+    header, so evaluating the ``#if`` in main.cpp needs cross-file visibility."""
 
     def setup_method(self):
         super().setup_method()
@@ -877,10 +878,9 @@ class TestReadmacrosSuppliedFunctionLikeGate(tb.BaseCompileToolsTestCase):
 
     The gate macro lives in a header reachable only through the file's own
     ``//#CXXFLAGS=-isystem``, so READMACROS must resolve against per-file include
-    paths (defect 1, owned by the readmacros slice) before this slice's
-    function-like expansion has anything to expand. Neither branch alone produces
-    the flag; ``_require_readmacros_fix`` skips the test when defect 1's fix is
-    absent from the tree.
+    paths (defect 1) before this slice's function-like expansion (defect 3) has
+    anything to expand. Both fixes are on master; a regression in either one
+    fails these tests.
     """
 
     def setup_method(self):
@@ -915,15 +915,12 @@ class TestReadmacrosSuppliedFunctionLikeGate(tb.BaseCompileToolsTestCase):
         result = parser.parse(str(files[f"{subdir}/main.cpp"]))
         return " ".join(str(flag) for flag in result.get(sz.Str("CXXFLAGS"), []))
 
-    def _require_readmacros_fix(self):
-        """Probe the same scenario with an object-like gate, which needs defect 1 only."""
-        if "-DHAVE_NEW_EXTLIB" not in self._cxxflags("probe", "EXTLIB_VERSION_MAJOR >= 2"):
-            pytest.skip("needs the defect-1 READMACROS fix (branch gericksson/ct-magicflags-defects-readmacros)")
+    def test_an_object_like_gate_from_a_readmacros_header_selects_the_flag(self):
+        """Defect 1 alone: isolates a READMACROS regression from a defect-3 one."""
+        assert "-DHAVE_NEW_EXTLIB" in self._cxxflags("probe", "EXTLIB_VERSION_MAJOR >= 2")
 
     def test_a_function_like_gate_from_a_readmacros_header_selects_the_flag(self):
-        self._require_readmacros_fix()
         assert "-DHAVE_NEW_EXTLIB" in self._cxxflags("src", "EXTLIB_AT_LEAST(2, 0)")
 
     def test_a_function_like_gate_from_a_readmacros_header_can_still_be_false(self):
-        self._require_readmacros_fix()
         assert "-DHAVE_NEW_EXTLIB" not in self._cxxflags("src", "EXTLIB_AT_LEAST(3, 0)")
