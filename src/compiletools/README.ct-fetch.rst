@@ -8,7 +8,7 @@ Clone, update, or report the //#GIT= external repositories a build depends on
 
 :Author: drgeoffathome@gmail.com
 :Date:   2026-07-01
-:Version: 13.1.1
+:Version: 13.1.2
 :Manual section: 1
 :Manual group: developers
 
