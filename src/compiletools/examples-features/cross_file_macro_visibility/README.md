@@ -11,7 +11,7 @@ This fixture pins that behaviour. The object-like gates select a different
 than a warning; the function-like gate emits no branch flags when unresolved,
 which its `static_assert` turns into a compile error.
 
-## Three properties, isolated
+## Four properties, isolated
 
 `simple_main.cpp` covers **cross-file visibility**. `platform_level.h` is
 included before `simple_gate.h`, so one accumulating pass is enough to resolve
@@ -37,9 +37,24 @@ therefore "no branch flags" rather than the legacy branch. An unconditional
 sentinel flag in `funclike_gate.h` lets the control distinguish "gate
 unresolved" from "gate header never scanned".
 
+`bare_main.cpp` covers **what a provisional pass may say to the user**.
+`bare_gate.h` includes its own definer and then gates on
+`BARE_AT_LEAST(4, 0)` with no `#ifdef` wrapper, so every real compiler
+resolves it and so does the settled build. A pass that opens that header on
+its own, with an empty macro state, cannot — and `ct-cake` runs exactly such
+a pass before it builds, walking every target for `//#GIT=` declarations. Any
+report from it is contradicted by the flags the same run goes on to emit, so
+it must not reach stderr. `funclike_main.cpp` cannot catch this: its `#ifdef`
+wrapper is false under an empty state, so the inner `#if` is never reached.
+This is the one tree the tests build and link for real, which is why its gate
+carries no `//#LDFLAGS=`.
+
 **The reverse include orders in `chain_main.cpp` and `funclike_main.cpp` are
 load-bearing.** Sorting either into dependency order leaves the file compiling
-and the flags correct while removing coverage of the loop.
+and the flags correct while removing coverage of the loop. **The include
+inside `bare_gate.h` is load-bearing for the opposite reason:** moving it out
+to `bare_main.cpp` would leave the build correct and remove the only tree
+whose gate a standalone pass cannot evaluate.
 
 ## Why these are tested rather than assumed
 

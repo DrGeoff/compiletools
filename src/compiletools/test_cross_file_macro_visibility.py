@@ -20,7 +20,9 @@ nothing.
 """
 
 import subprocess
+import sys
 import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -265,4 +267,100 @@ def test_the_funclike_headers_are_included_in_reverse_dependency_order():
     assert positions["funclike_gate.h"] < positions["funclike_def.h"] < positions["funclike_level.h"], (
         "funclike_main.cpp must include the chain top-first; sorting it into dependency order "
         "removes the only function-like coverage of the convergence iteration loop"
+    )
+
+
+_CAKE_DRIVER = "import sys, compiletools.cake as c; sys.exit(c.main(sys.argv[1:]))"
+
+
+def _run_cake(workspace, source_name, *, compiler):
+    """Build one fixture source with ``ct-cake`` in a fresh interpreter.
+
+    ``ct-cake`` rather than ``ct-magicflags``, because only cake runs the
+    ``//#GIT=`` pre-fetch scan, and only a subprocess isolates the
+    session-wide report stores that make an in-process "nothing was printed"
+    assertion pass for the wrong reason (the same reasoning
+    ``test_implied_source_closure.run_filelist`` documents).
+    """
+    return subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _CAKE_DRIVER,
+            "-v",
+            f"--CXX={compiler}",
+            f"--CC={compiler}",
+            f"--bindir={workspace / 'bin'}",
+            source_name,
+        ],
+        cwd=str(workspace),
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+
+_unevaluable_lines = uth.unevaluable_lines
+
+
+class TestProvisionalScanDoesNotReportToTheUser:
+    """A pass that runs before the macro state settles must stay silent.
+
+    ``ct-cake`` scans every target for ``//#GIT=`` declarations before it
+    builds, and that scan walks headers with an empty macro state
+    (``fetch._reachable_sources`` -> ``headerdeps.process(target,
+    frozenset())``). ``bare_gate.h``'s function-like gate is unevaluable
+    there and evaluable once the build settles, so a report from the scan is
+    contradicted by the flags the same run goes on to emit.
+
+    Only ``ct-cake`` reaches that scan -- ``ct-magicflags``, ``ct-filelist``
+    and ``ct-headertree`` never fetch -- which is why this class drives cake
+    and the rest of the module does not.
+    """
+
+    @uth.requires_functional_compiler
+    def test_the_prefetch_scan_says_nothing_about_a_gate_the_build_resolves(self, tmp_path):
+        compiler = compiletools.apptools.get_functional_cxx_compiler()
+        assert compiler is not None
+        workspace = uth.copy_example_workspace(Path(example_path(_EXAMPLE)), tmp_path / "resolved")
+
+        proc = _run_cake(workspace, "bare_main.cpp", compiler=str(compiler))
+
+        assert proc.returncode == 0, proc.stderr
+        assert _unevaluable_lines(proc) == [], "the pre-fetch scan reported a condition the settled build resolves"
+
+    @uth.requires_functional_compiler
+    def test_a_condition_no_pass_can_resolve_is_still_reported(self, tmp_path):
+        """The armed control for the assertion above.
+
+        Deleting the ``#include`` leaves ``BARE_AT_LEAST`` defined nowhere in
+        the translation unit, so no amount of convergence makes the gate
+        evaluable and the report is the build's real answer. Without this,
+        "nothing was printed" would also be satisfied by a fix that silenced
+        the diagnostic wholesale instead of letting it settle first.
+        """
+        compiler = compiletools.apptools.get_functional_cxx_compiler()
+        assert compiler is not None
+        workspace = uth.copy_example_workspace(Path(example_path(_EXAMPLE)), tmp_path / "unresolvable")
+        gate = workspace / "bare_gate.h"
+        gate.write_text(gate.read_text().replace('#include "bare_def.h"\n', ""))
+
+        proc = _run_cake(workspace, "bare_main.cpp", compiler=str(compiler))
+
+        reported = _unevaluable_lines(proc)
+        assert len(reported) == 1, f"expected exactly one report, got {reported}\n{proc.stderr}"
+        assert "BARE_AT_LEAST" in reported[0]
+        assert "bare_gate.h" in reported[0]
+
+
+def test_the_bare_gate_header_includes_its_definer_itself():
+    """Guards the fixture's shape. bare_gate.h must pull in its own definer:
+    that is what keeps the tree compilable while leaving a standalone,
+    empty-macro-state pass unable to evaluate the gate. Moving the include
+    out to bare_main.cpp would leave the build correct and remove the only
+    coverage of a provisional pass reporting."""
+    text = (Path(example_path(_EXAMPLE)) / "bare_gate.h").read_text()
+
+    assert text.index('#include "bare_def.h"') < text.index("#if BARE_AT_LEAST"), (
+        "bare_gate.h must include bare_def.h above its own gate"
     )
