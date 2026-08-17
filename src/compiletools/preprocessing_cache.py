@@ -848,11 +848,11 @@ def _replay_condition_occurrences(condition_occurrences, content_hash, context) 
         return
     # Mirror the live path's deferral gate (_note_condition_resolved returns
     # before touching either store when no convergence is listening): a
-    # depth-0 warm hit — Hunter's headerdeps walks between TU parses — must
-    # not write the resolved store, or the key survives until the NEXT
-    # convergence's flush and silences a "cannot evaluate" report that
-    # convergence still owes. The stores are per-convergence state; only a
-    # replay inside one may touch them.
+    # depth-0 warm hit must not write any partition — the stores are
+    # convergence state, and only a replay inside one may touch them. Under
+    # ct-cake the whole of Cake.process is one converging region, so every
+    # walk it drives replays; a partition boundary (verdict_root), not the
+    # depth, is what keeps one target's verdicts out of another's.
     if getattr(context, "preprocessor_convergence_depth", 0) <= 0:
         return
     pending = getattr(context, "pending_preprocessor_warnings", None)
@@ -863,7 +863,14 @@ def _replay_condition_occurrences(condition_occurrences, content_hash, context) 
         return
 
     from compiletools.global_hash_registry import get_filepath_by_hash
-    from compiletools.simple_preprocessor import EXPANSION_OCCURRENCE_KINDS
+    from compiletools.simple_preprocessor import (
+        CONDITION_RESOLVED_FALSE,
+        CONDITION_RESOLVED_TRUE,
+        CONDITION_UNEVALUABLE,
+        EXPANSION_OCCURRENCE_KINDS,
+    )
+
+    verdict_messages = getattr(context, "verdict_messages", None)
 
     # Same fallback a live run uses (process_structured's `filepath or
     # "<unknown>"`): pending records for an unresolvable hash are keyed
@@ -884,8 +891,23 @@ def _replay_condition_occurrences(condition_occurrences, content_hash, context) 
                 pending_expansions.pop(expansion_key, None)
             continue
         key = (filepath, directive_type, condition, line_num)
-        if kind == "resolved" and resolved is not None:
-            resolved.add(key)
+        if kind == CONDITION_UNEVALUABLE:
+            # A warm hit is this partition's own assume-false verdict for the
+            # occurrence — the cached compute ran at the same macro state.
+            # Re-record it here (a live rerun would have), so a target whose
+            # every walk is warm still carries the verdict classification
+            # needs. The message rides the session-wide library because the
+            # occurrence tuple cannot reconstruct the evaluator's reason.
+            if pending is not None and resolved is not None and key not in resolved:
+                record = verdict_messages.get(key) if verdict_messages is not None else None
+                if record is not None:
+                    pending.setdefault(key, record)
+            continue
+        if resolved is not None:
+            if kind == CONDITION_RESOLVED_TRUE:
+                resolved[key] = True
+            elif kind == CONDITION_RESOLVED_FALSE:
+                resolved[key] = False
         if pending is not None:
             pending.pop(key, None)
 

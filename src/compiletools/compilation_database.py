@@ -14,6 +14,7 @@ import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.magicflags
 import compiletools.namer
+import compiletools.simple_preprocessor
 import compiletools.utils
 import compiletools.wrappedos
 from compiletools.locking import FileLock
@@ -456,11 +457,24 @@ def main(argv=None):
     # traceback, when this tool is invoked standalone (not via ct-cake,
     # which has its own top-level catch).
     try:
-        creator.write_compilation_database()
+        # Same session shape as ct-cake: a cross-target verdict conflict
+        # refuses the CDB the same way it refuses the build whose flags the
+        # CDB claims to describe.
+        with compiletools.simple_preprocessor.verdict_session(
+            context, mode=getattr(args, "macro_verdict_conflict", "error"), tool="ct-compilation-database"
+        ):
+            creator.write_compilation_database()
     except compiletools.utils.FlagTokenizeError as err:
         if args.verbose >= 2:
             raise
         print(str(err), file=sys.stderr)
+        return 1
+    except compiletools.simple_preprocessor.MacroVerdictConflictError as err:
+        # Complete end-user prose (remedies included); matching cake.main's
+        # rendering, not a traceback.
+        if args.verbose >= 2:
+            raise
+        print(f"Error: {err}", file=sys.stderr)
         return 1
 
     return 0

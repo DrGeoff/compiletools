@@ -29,6 +29,7 @@ from compiletools.build_backend import (
     register_backend_cli_arguments,
 )
 from compiletools.build_context import BuildContext
+from compiletools.simple_preprocessor import check_verdict_conflicts, verdict_session
 from compiletools.version import __version__, get_package_git_sha
 
 
@@ -723,6 +724,14 @@ class Cake:
 
         with timer.phase("build_graph"):
             graph = backend.build_graph()
+
+        # Every target's magicflags convergence has settled by now, so the
+        # verdict partitions are complete — and nothing has been compiled or
+        # linked yet, so a conflict (one target resolving a shared #if TRUE
+        # while another assumed it false) refuses the build instead of
+        # explaining a wrong binary after it shipped.
+        check_verdict_conflicts(self.context, mode=getattr(self.args, "macro_verdict_conflict", "error"))
+
         with timer.phase("generate"):
             backend.generate(graph)
 
@@ -889,15 +898,30 @@ class Cake:
                 if self.args.verbose > 4:
                     print("Early scanning. Cake determining targets and implied files")
 
-                with timer.phase("target_discovery"):
-                    self._discover_targets()
+                # Target discovery walks every target with an EMPTY macro
+                # state to find //#GIT= declarations, so it cannot evaluate a
+                # gate whose controlling macro lives in another file. Its
+                # verdicts are provisional; the convergence inside the build
+                # below is what settles them. Holding both inside one region
+                # lets the settled pass retract what the scan could not
+                # evaluate, so only conditions that survive the whole build
+                # reach the user (see simple_preprocessor.converging).
+                # Retraction is bounded per root target by verdict_root
+                # partitions; two targets' settled disagreements surface via
+                # check_verdict_conflicts — called in _call_backend between
+                # build_graph and execute (so a conflict refuses the build
+                # before anything compiles), and again harmlessly at this
+                # session's exit, which covers the --filelist path.
+                with verdict_session(self.context, mode=getattr(self.args, "macro_verdict_conflict", "error")):
+                    with timer.phase("target_discovery"):
+                        self._discover_targets()
 
-                compiletools.apptools.verboseprintconfig(self.args)
+                    compiletools.apptools.verboseprintconfig(self.args)
 
-                if self.args.filelist:
-                    self._callfilelist()
-                else:
-                    self._call_backend()
+                    if self.args.filelist:
+                        self._callfilelist()
+                    else:
+                        self._call_backend()
             finally:
                 # apptools.validate_otel_timing_pair (called from main()) flips
                 # args.timing = True when --otel-export is set without --timing,

@@ -37,6 +37,59 @@ if TYPE_CHECKING:
 IncludeCacheValue = tuple[tuple[sz.Str, ...], "FileEffects"]
 
 
+class VerdictPartition:
+    """Deferred condition/expansion verdicts for one root target's walks.
+
+    One partition per root target (plus the ``None`` partition for
+    unattributed walks). All four stores keep the shapes their former
+    context-level counterparts had, so the preprocessor binds them
+    unchanged:
+
+    - ``pending`` — occurrence-keyed unevaluable-condition records, each a
+      ``(message, audible, reason)`` triple (reason = the evaluator's error
+      text, carried separately so the conflict report never re-parses the
+      composed message), insertion-ordered so the flush prints in
+      discovery order. Keyed by (filepath, directive_type, condition,
+      line_num): reachability is position-dependent, and a position-free key
+      would let a dead occurrence's retraction delete a live one's report.
+      Recorded at EVERY verbosity — conflict classification must see the
+      assume-false verdict even when the warning itself is inaudible —
+      with ``audible`` carrying the verbose gate the flush honours.
+    - ``resolved`` — occurrences some pass evaluated successfully, mapped to
+      the truth value the evaluation produced. Sticky within the partition:
+      passes interleave, and a pass that fails AFTER one that succeeded must
+      not re-record. The truth value is what conflict classification needs —
+      a target that resolves a shared gate TRUE genuinely diverges from a
+      sibling that assumes it false, while a FALSE resolution merely
+      coincides with the assumption.
+    - ``pending_expansions`` / ``resolved_expansions`` — the expansion-cap
+      pair, keyed (filepath, directive_type, line_num, kind, expression).
+    """
+
+    def __init__(self) -> None:
+        self.pending: dict[tuple[str, str, str, int], tuple[str, bool, str]] = {}
+        self.resolved: dict[tuple[str, str, str, int], bool] = {}
+        self.pending_expansions: dict[tuple[str, str, int, str, str], str] = {}
+        self.resolved_expansions: set[tuple[str, str, int, str, str]] = set()
+
+
+def get_verdict_partition(context) -> VerdictPartition | None:
+    """The partition for the context's current verdict root, created on demand.
+
+    Returns None for a duck-typed context without ``verdict_partitions`` —
+    such consumers (direct preprocessor driving in tests) keep the
+    preprocessor's instance-local stores.
+    """
+    partitions = getattr(context, "verdict_partitions", None)
+    if partitions is None:
+        return None
+    root = getattr(context, "current_verdict_root", None)
+    partition = partitions.get(root)
+    if partition is None:
+        partition = partitions[root] = VerdictPartition()
+    return partition
+
+
 class BuildContext:
     """Holds all per-build-session state and caches.
 
@@ -75,63 +128,39 @@ class BuildContext:
         # -- simple_preprocessor diagnostics --
         # (filepath, directive_type, condition) already reported as unevaluable.
         # Shared across preprocessor instances because magicflags builds a fresh
-        # one per pass over the same file.
+        # one per pass over the same file. Session-wide, NOT partitioned: it is
+        # print-dedup, and the output contract is one line per condition per
+        # file per build session.
         self.warned_preprocessor_conditions: set[tuple[str, str, str]] = set()
 
-        # Unevaluable conditions recorded during a magicflags convergence,
-        # holding the message to print. A later pass that evaluates the same
-        # condition deletes its entry, so only conditions still unevaluable once
-        # the macro state settles are ever reported. Insertion-ordered, so the
-        # flush prints in discovery order.
-        #
-        # Keyed by (filepath, directive_type, condition, line_num) — one entry
-        # per OCCURRENCE, unlike the two sets either side of it. Reachability is
-        # position-dependent: the same condition text can appear twice in a file
-        # with one occurrence live and the other under a dead branch, and a
-        # position-free key lets the dead one's retraction delete the live one's
-        # report. The flush collapses back to one line per condition.
-        self.pending_preprocessor_warnings: dict[tuple[str, str, str, int], str] = {}
+        # Deferred-diagnostic stores, PARTITIONED BY ROOT TARGET. Each
+        # partition holds the verdicts recorded while walking one target's
+        # closure (pre-fetch scan and settled build alike — same target, same
+        # partition, so a scan's provisional record is retracted by that
+        # target's own settled walk). Retraction never crosses partitions:
+        # two targets' settled states are distinct final answers that coexist
+        # in the product, not approximations of each other, and one target
+        # resolving a shared header's gate must not silence another target's
+        # genuine "cannot evaluate". The None partition collects verdicts
+        # from walks with no target attribution (target discovery, direct
+        # driving); it is retractable by ANY settled partition at flush and
+        # never participates in conflict classification.
+        self.verdict_partitions: dict[str | None, VerdictPartition] = {}
+        self.current_verdict_root: str | None = None
 
-        # Occurrences some pass of the current convergence evaluated successfully.
-        # Retracting on success is not enough on its own: passes interleave, and
-        # a pass that fails AFTER the one that succeeded would otherwise re-record
-        # an occurrence already shown to be evaluable. Keyed per occurrence like
-        # the pending store: evaluability depends on the macro state, and the
-        # state can change between two textually identical occurrences (#undef
-        # plus a different-arity redefinition), so one spelling's success must
-        # not vouch for another's. Both stores are emptied when the convergence
-        # flushes.
-        self.resolved_preprocessor_conditions: set[tuple[str, str, str, int]] = set()
+        # Session-wide message library for unevaluable-condition records,
+        # keyed by occurrence. A warm cache hit replays an "unevaluable"
+        # occurrence into the CURRENT partition, and the replay needs the
+        # message text the live run composed (it carries the evaluator's
+        # reason, which cannot be reconstructed from the occurrence tuple).
+        # Write-once per key; the value carries the audible flag (verbose
+        # gate of the recording run) and the evaluator's reason alongside
+        # the message.
+        self.verdict_messages: dict[tuple[str, str, str, int], tuple[str, bool, str]] = {}
 
-        # Macro expansions the iteration cap truncated during a convergence,
-        # holding the "likely a recursive macro definition cycle" message.
-        # Deferred for the same reason the condition reports are: an early pass
-        # expands under a macro state the build has not settled on, where two
-        # macros can look mutually recursive that the settled state expands
-        # cleanly, and the printed warning then contradicts the build's own
-        # final answer. The truncation itself is unchanged; only the report is.
-        #
-        # Keyed (filepath, directive_type, line_num, expansion_kind, expression).
-        # Position identifies the occurrence, as it does for the conditions;
-        # the two extra fields are needed because ONE directive line drives
-        # several expansions — the controlling expression plus each __has_*
-        # operand inside it — and each can hit the cap independently. The
-        # expression is the helper's own input text, which is also what makes
-        # a retraction addressable: a later pass expanding the same input at
-        # the same site to a fixed point deletes the entry. Every occurrence
-        # is reported; unlike the conditions there is no collapse to one line
-        # per file, since two truncations are two cycles to fix.
-        self.pending_preprocessor_expansion_warnings: dict[tuple[str, str, int, str, str], str] = {}
-
-        # Occurrences some pass expanded to a fixed point under the cap.
-        # Sticky for the same interleaving reason as the conditions' resolved
-        # store: passes are not ordered best-last, so a pass that hits the cap
-        # AFTER one that did not must not re-record. Emptied at flush.
-        self.resolved_preprocessor_expansions: set[tuple[str, str, int, str, str]] = set()
-
-        # Depth of the enclosing magicflags convergence. Zero means no pass will
+        # Depth of the enclosing convergence region. Zero means no pass will
         # follow, so a diagnostic is printed immediately and nothing is deferred;
-        # every consumer that drives the preprocessor without magicflags
+        # every consumer that drives the preprocessor without one
         # (ct-headertree, ct-filelist) therefore keeps immediate reporting.
         self.preprocessor_convergence_depth: int = 0
 
@@ -203,3 +232,31 @@ class BuildContext:
             os.environ["PKG_CONFIG_PATH"] = self._original_pkg_config_path
         # else: nothing was applied; nothing to undo.
         self._original_pkg_config_path = None
+
+    # The four historical store names, now views onto the CURRENT verdict
+    # partition. Kept as properties so the preprocessor's duck-typed getattr
+    # binding and the existing diagnostic tests keep working; the partition
+    # boundary is what changed, not the store shapes' addressability.
+    @property
+    def pending_preprocessor_warnings(self) -> dict[tuple[str, str, str, int], tuple[str, bool, str]]:
+        partition = get_verdict_partition(self)
+        assert partition is not None
+        return partition.pending
+
+    @property
+    def resolved_preprocessor_conditions(self) -> dict[tuple[str, str, str, int], bool]:
+        partition = get_verdict_partition(self)
+        assert partition is not None
+        return partition.resolved
+
+    @property
+    def pending_preprocessor_expansion_warnings(self) -> dict[tuple[str, str, int, str, str], str]:
+        partition = get_verdict_partition(self)
+        assert partition is not None
+        return partition.pending_expansions
+
+    @property
+    def resolved_preprocessor_expansions(self) -> set[tuple[str, str, int, str, str]]:
+        partition = get_verdict_partition(self)
+        assert partition is not None
+        return partition.resolved_expansions

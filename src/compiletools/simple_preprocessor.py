@@ -52,9 +52,32 @@ class UnsafeExpressionError(ValueError):
     """
 
 
+class MacroVerdictConflictError(RuntimeError):
+    """Two targets' settled walks disagree about one ``#if`` occurrence.
+
+    Raised by :func:`check_verdict_conflicts` when a condition some target's
+    walk could not evaluate (and assumed false) resolves TRUE under another
+    target's settled macro state. The two verdicts both feed the final
+    product — the targets' objects are compiled under contradictory flags —
+    so this is a product inconsistency, not a diagnostic nicety. The message
+    is complete end-user prose including remedies, rendered as-is by cake's
+    generic fatal-error path.
+    """
+
+
 # (filepath, directive_type, line_num, expansion_kind, expression) -- one
-# expansion occurrence. See BuildContext.pending_preprocessor_expansion_warnings.
+# expansion occurrence. See VerdictPartition.pending_expansions.
 ExpansionKey = tuple[str, str, int, str, str]
+
+# Condition-occurrence kinds, as recorded in condition_occurrences and
+# replayed by preprocessing_cache._replay_condition_occurrences. The two
+# resolved kinds carry the truth value because conflict classification
+# distinguishes a gate another target resolved TRUE (the products genuinely
+# diverge) from one resolved FALSE (the assume-false merely coincides).
+CONDITION_RESOLVED_TRUE = "resolved_true"
+CONDITION_RESOLVED_FALSE = "resolved_false"
+CONDITION_UNREACHED = "unreached"
+CONDITION_UNEVALUABLE = "unevaluable"
 
 # The two expansion helpers, as they appear in the ``kind`` slot of an
 # expansion key and of a recorded occurrence.
@@ -507,14 +530,18 @@ class SimplePreprocessor:
         # Rebound to the BuildContext's set in process_structured; the instance
         # set only serves a preprocessor driven directly, without a context.
         self._warned_conditions: set[tuple[str, str, str]] = set()
-        # Same rebinding for the deferred-report store. Deferral is only armed
-        # when the context reports an enclosing convergence; otherwise a
-        # diagnostic is printed the moment it is found.
-        self._pending_warnings: dict[tuple[str, str, str, int], str] = {}
-        self._resolved_conditions: set[tuple[str, str, str, int]] = set()
+        # Same rebinding for the deferred-report stores, which live on the
+        # context's CURRENT VerdictPartition (one per root target). Deferral
+        # is only armed when the context reports an enclosing convergence;
+        # otherwise a diagnostic is printed the moment it is found.
+        self._pending_warnings: dict[tuple[str, str, str, int], tuple[str, bool, str]] = {}
+        self._resolved_conditions: dict[tuple[str, str, str, int], bool] = {}
         # The same pair for the expansion-cap reports, rebound the same way.
         self._pending_expansion_warnings: dict[ExpansionKey, str] = {}
         self._resolved_expansions: set[ExpansionKey] = set()
+        # Session-wide message library, rebound from the context; carries the
+        # composed message a warm-hit replay needs (see BuildContext).
+        self._verdict_messages: dict[tuple[str, str, str, int], tuple[str, bool, str]] = {}
         self._defer_warnings: bool = False
         self._current_filepath: str = "<unknown>"
         # The directive whose text the expansion helpers are working on, as
@@ -1188,6 +1215,7 @@ class SimplePreprocessor:
             context, "pending_preprocessor_expansion_warnings", self._pending_expansion_warnings
         )
         self._resolved_expansions = getattr(context, "resolved_preprocessor_expansions", self._resolved_expansions)
+        self._verdict_messages = getattr(context, "verdict_messages", self._verdict_messages)
         self._expansion_site = _NO_EXPANSION_SITE
         self._defer_warnings = getattr(context, "preprocessor_convergence_depth", 0) > 0
 
@@ -1371,7 +1399,7 @@ class SimplePreprocessor:
                 # Pass the raw condition: _evaluate_expression_sz strips comments
                 # internally as its first step, so no handler-level strip is needed.
                 result = self._evaluate_expression_sz(directive.condition)
-                self._note_condition_resolved(directive)
+                self._note_condition_resolved(directive, result)
                 is_active = bool(result) and condition_stack[-1][0]
                 condition_stack.append((is_active, False, is_active))
                 if self.verbose >= 9:
@@ -1410,7 +1438,7 @@ class SimplePreprocessor:
                 # Pass the raw condition: _evaluate_expression_sz strips comments
                 # internally as its first step, so no handler-level strip is needed.
                 result = self._evaluate_expression_sz(directive.condition)
-                self._note_condition_resolved(directive)
+                self._note_condition_resolved(directive, result)
                 new_active = bool(result) and parent_active
                 new_any_condition_met = any_condition_met or new_active
                 condition_stack.append((new_active, False, new_any_condition_met))
@@ -1445,22 +1473,29 @@ class SimplePreprocessor:
         session, not once per preprocessor instance: magicflags evaluates the
         same file under a fresh instance on every pass.
 
-        Inside a magicflags convergence the report is recorded rather than
-        printed. An early pass evaluates a file before the macros that control
-        it have been discovered, so a condition unevaluable there is routinely
+        Inside a convergence the report is recorded rather than printed. An
+        early pass evaluates a file before the macros that control it have
+        been discovered, so a condition unevaluable there is routinely
         resolved by a later pass; printing from that pass produces
         "assuming false" on a build whose final answer is the true branch.
-        ``_note_condition_resolved`` retracts the record when that happens and
+        ``_note_condition_resolved`` retracts the record when that happens
+        (within the same verdict partition — one root target's walks) and
         ``flush_pending_warnings`` reports whatever is still unevaluable once
         the macro state has settled.
-        """
-        if self.verbose < 1:
-            return
 
+        The DEFERRED record is written at every verbosity, with the verbose
+        gate carried as the record's ``audible`` flag: conflict
+        classification (``check_verdict_conflicts``) must see the
+        assume-false verdict even in a quiet build, because two targets
+        disagreeing about a shared gate is a product inconsistency, not a
+        log line. Only the immediate print keeps the verbose >= 1 gate.
+        """
         condition = str(directive.condition)
         seen_key = (self._current_filepath, directive.directive_type, condition)
-        if seen_key in self._warned_conditions:
-            return
+        occurrence_key = seen_key + (directive.line_num,)
+        self.condition_occurrences.append(
+            (CONDITION_UNEVALUABLE, directive.directive_type, condition, directive.line_num)
+        )
 
         detail = ""
         if self._last_expanded and self._last_expanded != condition:
@@ -1473,21 +1508,31 @@ class SimplePreprocessor:
             f"cannot evaluate '#{directive.directive_type} {condition}' ({error})"
             f"{detail} - assuming false"
         )
+        # The evaluator's reason rides the record as its own field: the
+        # conflict report needs it verbatim, and re-parsing the composed
+        # message would grab a function-like condition's own argument list.
+        record = (message, self.verbose >= 1, str(error))
+        # Write-once so the first (most contextful) composition wins; a warm
+        # hit replaying this occurrence into another partition reads it back.
+        self._verdict_messages.setdefault(occurrence_key, record)
 
         if self._defer_warnings:
             # Recorded per occurrence, not per condition: a file can spell the
             # same condition twice with only one of them reachable, and a
             # position-free key would let either one's fate decide the other's.
             # The flush collapses these back to one line per condition.
-            occurrence_key = seen_key + (directive.line_num,)
             if occurrence_key not in self._resolved_conditions:
-                self._pending_warnings.setdefault(occurrence_key, message)
+                self._pending_warnings.setdefault(occurrence_key, record)
             return
 
+        if self.verbose < 1:
+            return
+        if seen_key in self._warned_conditions:
+            return
         self._warned_conditions.add(seen_key)
         print(message, file=sys.stderr)
 
-    def _note_condition_resolved(self, directive: "PreprocessorDirective") -> None:
+    def _note_condition_resolved(self, directive: "PreprocessorDirective", result) -> None:
         """Record that this occurrence is evaluable, and drop its pending report.
 
         Marking is what makes the retraction stick. Passes are not ordered
@@ -1496,12 +1541,20 @@ class SimplePreprocessor:
         function-like macro's parameter list, say), and that later pass would
         re-record an occurrence already shown to be evaluable.
 
-        Retracts only THIS occurrence, like ``_note_condition_unreached``.
-        Evaluability is a property of the macro state, and the state is
-        positional too: an ``#undef`` plus a different-arity redefinition
-        between two textually identical occurrences makes one evaluable and
-        the other not, so a text-wide retraction would let the evaluable one
-        silence the report the other still owes.
+        Retracts only THIS occurrence, like ``_note_condition_unreached``, and
+        only within the current verdict partition — another target's walk
+        assuming the same occurrence false is a distinct settled verdict that
+        this one does not supersede (``check_verdict_conflicts`` is where the
+        two meet). Evaluability is a property of the macro state, and the
+        state is positional too: an ``#undef`` plus a different-arity
+        redefinition between two textually identical occurrences makes one
+        evaluable and the other not, so a text-wide retraction would let the
+        evaluable one silence the report the other still owes.
+
+        The recorded kind carries the truth value (*result*): classification
+        must tell a TRUE resolution (the sibling target's product genuinely
+        diverges from an assume-false) from a FALSE one (the outcomes
+        coincide today and the divergence is latent).
         """
         # Recorded UNCONDITIONALLY, before the deferral gate: evaluability is
         # a property of the run, not of whether a convergence is listening.
@@ -1511,13 +1564,18 @@ class SimplePreprocessor:
         # carry the occurrences a later warm hit inside a convergence needs
         # to replay; gating this on _defer_warnings left such entries empty
         # and stranded the early pass's pending record.
+        kind = CONDITION_RESOLVED_TRUE if result else CONDITION_RESOLVED_FALSE
         self.condition_occurrences.append(
-            ("resolved", directive.directive_type, str(directive.condition), directive.line_num)
+            (kind, directive.directive_type, str(directive.condition), directive.line_num)
         )
         if not self._defer_warnings:
             return
         key = (self._current_filepath, directive.directive_type, str(directive.condition), directive.line_num)
-        self._resolved_conditions.add(key)
+        # Membership is sticky (protects against a later failing pass
+        # re-recording), but the truth value is last-write-wins: successive
+        # passes refine the macro state, and classification wants the most
+        # settled answer, not the first.
+        self._resolved_conditions[key] = bool(result)
         self._pending_warnings.pop(key, None)
 
     def _note_condition_unreached(self, directive: "PreprocessorDirective") -> None:
@@ -1547,7 +1605,7 @@ class SimplePreprocessor:
         # Unconditional for the same reason as _note_condition_resolved's
         # record: a depth-0-seeded cache entry must carry its occurrences.
         self.condition_occurrences.append(
-            ("unreached", directive.directive_type, str(directive.condition), directive.line_num)
+            (CONDITION_UNREACHED, directive.directive_type, str(directive.condition), directive.line_num)
         )
         if not self._defer_warnings:
             return
@@ -1757,40 +1815,78 @@ def flush_pending_warnings(context: Any) -> int:
 
     Two kinds are deferred through a convergence — conditions the evaluator
     could not represent, and macro expansions the iteration cap truncated —
-    and both are flushed here. Returns the total number of lines printed.
+    and both are flushed here, across every verdict partition. Returns the
+    total number of lines printed.
     """
-    return _flush_pending_conditions(context) + _flush_pending_expansions(context)
+    partitions = getattr(context, "verdict_partitions", None)
+    if partitions is None:
+        # Duck-typed context carrying the flat stores directly (tests that
+        # drive the flush over a SimpleNamespace).
+        return _flush_one_partition_conditions(context, context) + _flush_one_partition_expansions(context)
+
+    # The None partition holds verdicts from walks with no target attribution
+    # (target discovery, direct driving). Any named partition's settled
+    # resolution retracts from it — conditions and cap-truncated expansions
+    # alike: an unattributed walk is by construction a provisional
+    # approximation, never a settled per-target answer.
+    unattributed = partitions.get(None)
+    if unattributed is not None and (unattributed.pending or unattributed.pending_expansions):
+        for partition_root, partition in partitions.items():
+            if partition_root is None:
+                continue
+            for key in partition.resolved:
+                unattributed.pending.pop(key, None)
+            for expansion_key in partition.resolved_expansions:
+                unattributed.pending_expansions.pop(expansion_key, None)
+
+    printed = 0
+    for partition in partitions.values():
+        printed += _flush_one_partition_conditions(partition, context)
+        printed += _flush_one_partition_expansions(partition)
+    partitions.clear()
+    return printed
 
 
-def _flush_pending_conditions(context: Any) -> int:
-    """Report the conditions still unevaluable now the macro state has settled.
+def _flush_one_partition_conditions(store_holder: Any, context: Any) -> int:
+    """Report one partition's still-unevaluable conditions.
 
     Returns the number of lines printed. Entries already reported are skipped
     and the store is emptied either way, so a second flush over the same
-    context prints nothing.
+    partition prints nothing.
 
     The store holds one entry per OCCURRENCE so that a retraction can name the
     occurrence it belongs to; the output contract is one line per condition per
-    file, so the dedupe here drops the line number from the key. A file that
-    spells the same unevaluable condition three times still gets one report,
-    naming the first occurrence.
+    file per build session, so the dedupe here drops the line number from the
+    key and the session memo collapses across partitions. A record's
+    ``audible`` flag carries the recording run's verbose gate: an inaudible
+    record exists only for conflict classification and is never printed.
 
-    The resolved store is cleared even when nothing is pending, mirroring the
-    expansion flush: both stores describe one convergence, and a key surviving
-    into the next one would silence a report that convergence goes on to owe.
+    The resolved store is cleared even when nothing is pending: both stores
+    describe one settled walk, and a key surviving into a later flush would
+    silence a report that walk goes on to owe.
     """
-    resolved = getattr(context, "resolved_preprocessor_conditions", None)
+    resolved = getattr(store_holder, "resolved_preprocessor_conditions", None)
+    if resolved is None:
+        resolved = getattr(store_holder, "resolved", None)
     if resolved is not None:
         resolved.clear()
 
-    pending = getattr(context, "pending_preprocessor_warnings", None)
+    pending = getattr(store_holder, "pending_preprocessor_warnings", None)
+    if pending is None:
+        pending = getattr(store_holder, "pending", None)
     if not pending:
         return 0
 
     reported = getattr(context, "warned_preprocessor_conditions", None)
     seen: set[tuple[str, str, str]] = set()
     printed = 0
-    for key, message in pending.items():
+    for key, record in pending.items():
+        if isinstance(record, tuple):
+            message, audible = record[0], record[1]
+        else:
+            message, audible = record, True
+        if not audible:
+            continue
         condition_key = key[:3]
         if condition_key in seen:
             continue
@@ -1806,22 +1902,25 @@ def _flush_pending_conditions(context: Any) -> int:
     return printed
 
 
-def _flush_pending_expansions(context: Any) -> int:
-    """Report the expansions the cap truncated in the settled macro state.
+def _flush_one_partition_expansions(store_holder: Any) -> int:
+    """Report one partition's cap-truncated expansions.
 
     One line per surviving occurrence, on stdout, matching the immediate path:
     two truncations at two sites are two cycles for the user to fix, so unlike
     the condition flush there is nothing to collapse.
 
-    The resolved store is cleared even when nothing is pending. Both stores
-    describe one convergence, and a key surviving into the next one would
-    silence a report that convergence goes on to owe.
+    The resolved store is cleared even when nothing is pending, for the same
+    one-settled-walk reason as the condition flush.
     """
-    resolved = getattr(context, "resolved_preprocessor_expansions", None)
+    resolved = getattr(store_holder, "resolved_preprocessor_expansions", None)
+    if resolved is None:
+        resolved = getattr(store_holder, "resolved_expansions", None)
     if resolved is not None:
         resolved.clear()
 
-    pending = getattr(context, "pending_preprocessor_expansion_warnings", None)
+    pending = getattr(store_holder, "pending_preprocessor_expansion_warnings", None)
+    if pending is None:
+        pending = getattr(store_holder, "pending_expansions", None)
     if not pending:
         return 0
 
@@ -1832,19 +1931,188 @@ def _flush_pending_expansions(context: Any) -> int:
     return printed
 
 
+def check_verdict_conflicts(context: Any, *, mode: str = "error", tool: str = "ct-cake") -> int:
+    """Cross-target verdict classification, run once all walks have settled.
+
+    A condition occurrence one target's settled walk could not evaluate
+    (assumed false) is compared against every other target's settled verdict
+    for the same occurrence:
+
+    - resolved TRUE elsewhere — the products genuinely diverge: the two
+      targets' objects compile the shared header's flags differently. Hard
+      :class:`MacroVerdictConflictError` (or a stderr warning under
+      ``mode="warn"``), at every verbosity: this is a product inconsistency,
+      not a log line.
+    - resolved only FALSE elsewhere — the outcomes coincide today, but the
+      gate is one macro bump away from diverging. Reported as a warning with
+      the same guidance, honouring the recording run's verbose gate.
+    - unevaluable everywhere (or nowhere else seen) — left for the ordinary
+      flush; not a conflict.
+
+    Must run BEFORE the backend executes: reporting after the link has
+    published a wrong binary is an apology, not a guard. The ``None``
+    partition (unattributed walks — target discovery, the pre-fetch scan
+    outside any per-target attribution) never participates: its verdicts are
+    provisional by construction.
+
+    A classified occurrence's pending record is dropped so the later flush
+    does not restate a condition this report already explained. *tool* is
+    the entry point's name and only prefixes the report — a refusal must be
+    attributed to the command the user actually ran. Returns the number of
+    conflicts found (both severities).
+    """
+    partitions = getattr(context, "verdict_partitions", None)
+    if not partitions:
+        return 0
+
+    named = {root: p for root, p in partitions.items() if root is not None}
+    conflicts = 0
+    for root, partition in named.items():
+        for key in list(partition.pending):
+            record = partition.pending[key]
+            audible = record[1]
+            reason = record[2] if len(record) > 2 else record[0]
+            true_roots = [r for r, p in named.items() if r != root and p.resolved.get(key) is True]
+            false_roots = [r for r, p in named.items() if r != root and p.resolved.get(key) is False]
+            if not true_roots and not false_roots:
+                continue
+
+            filepath, directive_type, condition, line_num = key
+            divergent = bool(true_roots)
+            other_root = true_roots[0] if divergent else false_roots[0]
+            verdict_word = "TRUE" if divergent else "FALSE"
+            severity = "error" if (divergent and mode == "error") else "warning"
+            report = (
+                f"{tool} {severity}: conflicting verdicts for '#{directive_type} {condition}' "
+                f"at {filepath}:{line_num + 1}\n"
+                f"  evaluates {verdict_word} under target {other_root}\n"
+                f"  cannot evaluate under target {root} ({reason}) - assumed false\n"
+                + (
+                    f"  These targets compile {filepath}'s conditional flags differently.\n"
+                    if divergent
+                    else "  The outcomes coincide today; the gate diverges when its macros change.\n"
+                )
+                + "Remedies:\n"
+                f"  - make the gate self-contained: #include the header defining its macros from {filepath} itself\n"
+                "  - or define the controlling macros project-wide (CPPFLAGS in ct.conf.d/) so every target agrees\n"
+                "  - or, if per-target divergence is intended, wrap the gate in #ifdef so the undefined arm is explicit"
+            )
+
+            partition.pending.pop(key, None)
+            conflicts += 1
+            if divergent:
+                if mode == "error":
+                    raise MacroVerdictConflictError(report)
+                print(report, file=sys.stderr)
+            elif audible:
+                print(report, file=sys.stderr)
+    return conflicts
+
+
+@contextlib.contextmanager
+def verdict_session(context: Any, *, mode: str = "error", tool: str = "ct-cake") -> "Iterator[None]":
+    """One tool invocation's deferral region plus conflict classification.
+
+    The shared shape for every entry point that walks more than one target
+    through magicflags (ct-cake, ct-filelist, ct-compilation-database,
+    ct-magicflags): a ``converging`` region spanning all walks, with
+    ``check_verdict_conflicts`` run once the body completes, BEFORE the
+    region's exit flush clears the partitions. One implementation so the
+    tools agree — a conflict ct-cake refuses must not pass silently through
+    ct-filelist over the same tree.
+
+    Classification is skipped when the body raises (the partitions are
+    incomplete, and the original error is the diagnostic); the region's
+    flush still runs. Cake additionally calls the classifier itself between
+    build_graph and execute — earlier than this exit — and that call pops
+    what it classifies, so the exit call here reports nothing twice.
+    """
+    with converging(context):
+        yield
+        check_verdict_conflicts(context, mode=mode, tool=tool)
+
+
+@contextlib.contextmanager
+def provisional_scan(context: Any) -> "Iterator[None]":
+    """Defer AND DISCARD: a region for scans with no settling pass at all.
+
+    ``ct-fetch`` walks targets with an empty macro state purely to find
+    ``//#GIT=`` declarations. Every one of its evaluation verdicts is
+    provisional by construction and the tool has no build to settle them
+    against, so printing "assuming false" from it contradicts the very next
+    ``ct-cake`` run — the cross-tool version of the contradiction
+    ``converging`` exists to remove. On outermost exit the partitions are
+    dropped unprinted instead of flushed; nested inside a real region (cake
+    driving the same scan) it only deepens the depth counter and the
+    enclosing session keeps ownership of the stores.
+    """
+    depth = getattr(context, "preprocessor_convergence_depth", None)
+    if depth is None:
+        yield
+        return
+    context.preprocessor_convergence_depth = depth + 1
+    try:
+        yield
+    finally:
+        context.preprocessor_convergence_depth -= 1
+        if context.preprocessor_convergence_depth == 0:
+            partitions = getattr(context, "verdict_partitions", None)
+            if partitions is not None:
+                partitions.clear()
+
+
+@contextlib.contextmanager
+def verdict_root(context: Any, root: "str | None") -> "Iterator[None]":
+    """Attribute the enclosed walks' verdicts to *root*'s partition.
+
+    Wrap the widest span in which every preprocessor pass serves ONE root
+    target — magicflags' per-target parse, or the per-target half of the
+    pre-fetch scan. Restores the previous attribution on exit, so nesting a
+    per-target span inside an unattributed region behaves.
+    """
+    if not hasattr(context, "current_verdict_root"):
+        yield
+        return
+    prior = context.current_verdict_root
+    context.current_verdict_root = root
+    try:
+        yield
+    finally:
+        context.current_verdict_root = prior
+
+
 @contextlib.contextmanager
 def converging(context: Any) -> "Iterator[None]":
-    """Defer unevaluable-condition and expansion-cycle reports for a convergence.
+    """Hold unevaluable-condition and expansion-cycle reports until the state settles.
 
-    magicflags evaluates a file repeatedly, and an early pass runs before the
-    macros controlling that file have been discovered, so its verdict is not
-    the build's answer. Reports raised inside this region are held and only
-    printed on exit, minus any occurrence a later pass evaluated or expanded
-    cleanly.
+    Inside this region a report is provisional, not the build's answer.
+    Reports raised here are held and only printed on exit, minus any
+    occurrence a later pass evaluated or expanded cleanly. Two callers need
+    that, for the same reason:
+
+    * magicflags evaluates a file repeatedly, and an early pass runs before
+      the macros controlling that file have been discovered;
+    * ``ct-cake`` walks every target with an empty macro state before it
+      builds, to find ``//#GIT=`` declarations (``fetch._reachable_sources``),
+      and that walk cannot evaluate a gate whose macro lives in another file.
+
+    Wrap the widest region in which a later pass can still supersede an
+    earlier verdict. For cake that is the whole of ``Cake.process``: the
+    pre-fetch scan and the convergence that settles it are both inside, so
+    the scan's verdicts reconcile against the build's own instead of racing
+    it to stderr. A region that ends before the settling pass runs would
+    flush the very reports it was opened to hold.
+
+    Supersession has a boundary: it is only legitimate between passes over
+    the SAME root target (approximations of one settled answer), never
+    between two targets' settled states (distinct final answers that
+    coexist in the product). ``verdict_root`` marks the target a walk
+    serves, the stores are partitioned by it, and retraction stays inside a
+    partition; ``check_verdict_conflicts`` is where two partitions'
+    disagreements become an error or warning, before the backend executes.
 
     Re-entrant: only the outermost region flushes. Consumers that drive the
-    preprocessor without a convergence never enter it and keep reporting
-    immediately.
+    preprocessor without one never enter it and keep reporting immediately.
     """
     depth = getattr(context, "preprocessor_convergence_depth", None)
     if depth is None:

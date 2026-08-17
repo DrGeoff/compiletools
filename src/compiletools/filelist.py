@@ -7,6 +7,7 @@ import compiletools.git_utils
 import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.magicflags
+import compiletools.simple_preprocessor
 import compiletools.utils
 import compiletools.wrappedos
 
@@ -233,7 +234,21 @@ def main(argv=None):
     magicparser = compiletools.magicflags.create(args, headerdeps, context=context)
     hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=context)
     filelist = Filelist(args, hunter)
-    filelist.process()
+    # Same session shape as ct-cake: per-target verdicts settle inside, and a
+    # cross-target conflict is classified on exit so this tool refuses (or
+    # warns about) exactly what a cake build over the same tree would.
+    try:
+        with compiletools.simple_preprocessor.verdict_session(
+            context, mode=getattr(args, "macro_verdict_conflict", "error"), tool="ct-filelist"
+        ):
+            filelist.process()
+    except compiletools.simple_preprocessor.MacroVerdictConflictError as err:
+        # Complete end-user prose (remedies included); matching cake.main's
+        # rendering, not a traceback.
+        if args.verbose >= 2:
+            raise
+        print(f"Error: {err}", file=sys.stderr)
+        return 1
 
     # For testing purposes, clear out the memcaches for the times when main is called more than once.
     compiletools.wrappedos.clear_cache()

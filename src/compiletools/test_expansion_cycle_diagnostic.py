@@ -26,6 +26,7 @@ from compiletools.simple_preprocessor import (
     HAS_OPERAND_EXPANSION_KIND,
     SimplePreprocessor,
     converging,
+    verdict_root,
 )
 
 # The cycle every arm shares. Under _CYCLIC the pair never settles; under
@@ -101,6 +102,28 @@ class TestACappedExpansionIsHeldUntilTheStateSettles:
 
         flushed = capsys.readouterr().out
         assert _CYCLE_TEXT not in flushed, f"a superseded pass's cycle report survived the flush: {flushed!r}"
+
+    def test_a_named_partitions_clean_expansion_retracts_the_unattributed_record(self, tmp_path, capsys):
+        """The cross-partition half, matching what the condition reports get.
+
+        An unattributed walk (cake's pre-fetch scan runs outside any
+        verdict_root span) hits the cap under a partial macro state; the
+        build's own settled pass expands the same site cleanly but records
+        into the target's NAMED partition. The unattributed record is a
+        provisional approximation by construction, so the settled resolution
+        must retract it -- otherwise the flush prints a cycle warning the
+        build's own flags contradict."""
+        file_result, context = _analyze(_GATE_SOURCE, str(tmp_path))
+        with converging(context):
+            SimplePreprocessor(_CYCLIC, verbose=1).process_structured(file_result, context)
+            assert context.pending_preprocessor_expansion_warnings, "the unattributed cap hit recorded nothing"
+            with verdict_root(context, "target.cpp"):
+                SimplePreprocessor(_SETTLED, verbose=1).process_structured(file_result, context)
+
+        flushed = capsys.readouterr().out
+        assert _CYCLE_TEXT not in flushed, (
+            f"an unattributed cap record survived a named partition's clean expansion: {flushed!r}"
+        )
 
     def test_a_pass_that_hits_the_cap_after_a_clean_one_does_not_re_record(self, tmp_path, capsys):
         """Passes are not ordered best-last. Once an occurrence has expanded to

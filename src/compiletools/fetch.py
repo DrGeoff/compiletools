@@ -2350,6 +2350,7 @@ def main(argv=None) -> int:
     import compiletools.apptools
     import compiletools.git_utils
     import compiletools.headerdeps
+    import compiletools.simple_preprocessor
     import compiletools.utils
     import compiletools.wrappedos
     from compiletools.build_context import BuildContext
@@ -2401,30 +2402,38 @@ def main(argv=None) -> int:
             externals_dir = resolve_externals_dir(getattr(args, "externals_dir", None), gitroot)
             overrides = parse_git_path_overrides(getattr(args, "git_paths", []) or [])
 
-            if getattr(args, "status", False):
-                # Report-only: never clones/updates, never raises on a missing external.
-                statuses = gather_external_status(
+            # The whole scan runs under provisional_scan: its empty-macro-state
+            # walks cannot evaluate cross-file gates BY DESIGN (the
+            # chicken-and-egg documented on _reachable_sources), and this tool
+            # has no build to settle them against — so its "assuming false"
+            # lines would contradict the very next ct-cake run over the same
+            # tree. Deferred and discarded, matching what cake's own session
+            # does to the same scan's verdicts.
+            with compiletools.simple_preprocessor.provisional_scan(context):
+                if getattr(args, "status", False):
+                    # Report-only: never clones/updates, never raises on a missing external.
+                    statuses = gather_external_status(
+                        target_files,
+                        args,
+                        context,
+                        externals_dir=externals_dir,
+                        overrides=overrides,
+                    )
+                    _print_status_report(statuses)
+                    return 0
+
+                resolved = fetch_externals(
                     target_files,
                     args,
                     context,
                     externals_dir=externals_dir,
                     overrides=overrides,
+                    no_fetch=getattr(args, "no_fetch", False),
+                    update=getattr(args, "update", False),
+                    verbose=args.verbose,
                 )
-                _print_status_report(statuses)
+                _print_resolved_summary(resolved)
                 return 0
-
-            resolved = fetch_externals(
-                target_files,
-                args,
-                context,
-                externals_dir=externals_dir,
-                overrides=overrides,
-                no_fetch=getattr(args, "no_fetch", False),
-                update=getattr(args, "update", False),
-                verbose=args.verbose,
-            )
-            _print_resolved_summary(resolved)
-            return 0
         except FetchError as err:
             # Match cake.main()'s FetchError handler: plain "Error:" prefix, stderr,
             # non-zero exit, no traceback. FetchError messages already name the

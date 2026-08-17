@@ -21,7 +21,13 @@ import compiletools.wrappedos
 from compiletools.file_analyzer import FileAnalysisResult
 from compiletools.global_hash_registry import get_file_hash, get_filepath_by_hash
 from compiletools.preprocessing_cache import MacroState, get_or_compute_preprocessing
-from compiletools.simple_preprocessor import SimplePreprocessor, converging
+from compiletools.simple_preprocessor import (
+    MacroVerdictConflictError,
+    SimplePreprocessor,
+    converging,
+    verdict_root,
+    verdict_session,
+)
 from compiletools.stringzilla_utils import strip_sz
 from compiletools.utils import instance_cache
 
@@ -103,6 +109,19 @@ def add_arguments(cap, variant=None):
             default=0,
             help="Maximum bytes to read from files (0 = entire file)",
         )
+    # Registered here rather than per-tool: every entry point that walks
+    # more than one target through magicflags classifies verdict conflicts
+    # (simple_preprocessor.verdict_session), and the knob must mean the same
+    # thing under all of them.
+    cap.add_argument(
+        "--macro-verdict-conflict",
+        dest="macro_verdict_conflict",
+        choices=["error", "warn"],
+        default="error",
+        help="What to do when one target resolves a shared #if TRUE while another target "
+        "cannot evaluate it and assumes false: refuse the run (error, default) or "
+        "report and continue (warn). The coinciding FALSE case always warns.",
+    )
 
 
 class MagicFlagsBase:
@@ -715,8 +734,12 @@ class MagicFlagsBase:
         # Both this walk and the convergence below evaluate the file before its
         # controlling macros are all known, so unevaluable-condition reports are
         # held until the macro state settles and retracted if a later pass
-        # resolves them (see simple_preprocessor.converging).
-        with converging(self.context):
+        # resolves them (see simple_preprocessor.converging). The verdict_root
+        # span attributes every verdict to THIS target's partition: retraction
+        # is legitimate between passes over one target (approximations of the
+        # same settled answer) and illegitimate between two targets' settled
+        # states (distinct final answers that coexist in the product).
+        with verdict_root(self.context, compiletools.wrappedos.realpath(filename)), converging(self.context):
             self._headerdeps.process(filename, frozenset())
 
             # Both DirectMagicFlags and CppMagicFlags now use structured data approach
@@ -1663,9 +1686,21 @@ def main(argv=None):
     styleclass = globals()[args.style.title() + "Style"]
     styleobject = styleclass(args)
 
-    for fname in args.filename:
-        realpath = compiletools.wrappedos.realpath(fname)
-        styleobject(realpath, magicparser.parse(realpath))
+    # Same session shape as ct-cake: with more than one filename this tool
+    # is a multi-target walk, and a cross-target verdict conflict must
+    # surface here exactly as a build over the same files would surface it.
+    try:
+        with verdict_session(context, mode=getattr(args, "macro_verdict_conflict", "error"), tool="ct-magicflags"):
+            for fname in args.filename:
+                realpath = compiletools.wrappedos.realpath(fname)
+                styleobject(realpath, magicparser.parse(realpath))
+    except MacroVerdictConflictError as err:
+        # The message is complete end-user prose (remedies included);
+        # matching cake.main's rendering, not a traceback.
+        if args.verbose >= 2:
+            raise
+        print(f"Error: {err}", file=sys.stderr)
+        return 1
 
     print()
     return 0
