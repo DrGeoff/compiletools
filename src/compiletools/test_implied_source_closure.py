@@ -63,7 +63,6 @@ _FUNCTION_LIKE_GUARD = "#if PUMPLIB_AT_LEAST(1, 2, 0)"
 _OBJECT_LIKE_GUARD = "#if PUMPLIB_VERSION_MAJOR >= 2"
 _NEVER_DEFINED_GUARD = "#if PUMPLIB_DEFINED_NOWHERE(1, 2, 0)"
 
-_UNEVALUABLE_MARKER = "cannot evaluate"
 
 _FILELIST_DRIVER = "import sys, compiletools.filelist as f; sys.exit(f.main(sys.argv[1:]))"
 
@@ -174,8 +173,7 @@ def _stdout_basenames(proc):
     return {os.path.basename(line.strip()) for line in proc.stdout.splitlines() if line.strip()}
 
 
-def _unevaluable_lines(proc):
-    return [line for line in proc.stderr.splitlines() if _UNEVALUABLE_MARKER in line]
+_unevaluable_lines = uth.unevaluable_lines
 
 
 class TestObjectLikeImpliedSourceGuard:

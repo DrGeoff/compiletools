@@ -1109,6 +1109,20 @@ def copy_example_workspace(src: Path, dst: Path) -> Path:
     return dst
 
 
+# The grep target for SimplePreprocessor's unevaluable-condition report.
+# Single source shared by every test that filters stderr for it, so a
+# wording change in _warn_unevaluable_condition cannot leave one module
+# filtering for a string that no longer occurs (a vacuous "nothing was
+# printed" assertion).
+UNEVALUABLE_MARKER = "cannot evaluate"
+
+
+def unevaluable_lines(proc):
+    """The stderr lines of a completed subprocess that carry the
+    unevaluable-condition report."""
+    return [line for line in proc.stderr.splitlines() if UNEVALUABLE_MARKER in line]
+
+
 # ---------------------------------------------------------------------------
 # Backend test helpers
 # ---------------------------------------------------------------------------
