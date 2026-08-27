@@ -628,7 +628,7 @@ def test_create_link_rule_returns_cas_link_plus_publish_pair(tmp_path):
     # rules reference).
     assert symlink_rule.output == backend.namer.executable_pathname("/src/main.cpp")
     # Symlink rule consumes the cas-exe as its only input.
-    assert symlink_rule.inputs == [link_rule.output]
+    assert symlink_rule.inputs == (link_rule.output,)
     # Publish recipe is now ``ct-cas-publish`` (I1/I2): a Python
     # helper that does atomic link+rename, falls back to symlink
     # ONLY on EXDEV, surfaces other errors visibly, and writes

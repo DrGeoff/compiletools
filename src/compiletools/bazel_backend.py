@@ -8,6 +8,7 @@ than Make/Ninja.
 from __future__ import annotations
 
 import collections
+import dataclasses
 import os
 import shutil
 import subprocess
@@ -987,12 +988,21 @@ class BazelBackend(BuildBackend):
             if rel is not None:
                 os.makedirs(os.path.dirname(os.path.join(base_dir, rel)), exist_ok=True)
         module_outputs = set(self._module_iface_obj.values()) | self._module_impl_obj
+        # rules_by_type returns a fresh list, so replacing rules via
+        # add_rule (same output key -> same dict slot) is iteration-safe;
+        # downstream consumers re-fetch from the graph after this runs.
         for rule in graph.rules_by_type(RuleType.COMPILE):
             if rule.output not in module_outputs or not rule.command:
                 continue
-            rule.command = [
-                f"-fmodule-mapper={bazel_mapper}" if tok.startswith("-fmodule-mapper=") else tok for tok in rule.command
-            ]
+            graph.add_rule(
+                dataclasses.replace(
+                    rule,
+                    command=tuple(
+                        f"-fmodule-mapper={bazel_mapper}" if tok.startswith("-fmodule-mapper=") else tok
+                        for tok in rule.command
+                    ),
+                )
+            )
 
     def _ensure_workspace(self, output_dir: str) -> None:
         """Create a minimal MODULE.bazel and .bazelversion if absent.

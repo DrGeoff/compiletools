@@ -52,16 +52,17 @@ from compiletools.trace_backend import ShakeBackend
 
 
 def _cmd(rule: BuildRule) -> list[str]:
-    """Return ``rule.command`` after asserting it is non-None.
+    """Return ``rule.command`` as a list after asserting it is non-None.
 
     Concrete rules (compile / link / test / mkdir / ar) always carry a
     command; only phony rules have ``command=None``. The asserts in this
     module exercise concrete rules, so the runtime check is structurally
-    always true — it exists to narrow ``list[str] | None`` to
-    ``list[str]`` for the type checker.
+    always true — it exists to narrow away the ``None`` for the type
+    checker; the list() copy gives callers list semantics over the
+    tuple-backed field.
     """
     assert rule.command is not None, f"rule {rule.output!r} has no command"
-    return rule.command
+    return list(rule.command)
 
 
 class TestBuildBackendContract:
@@ -776,10 +777,10 @@ class TestBuildGraphPopulation:
             f"test rule output must be sibling to the cas-exedir entry; got {rule.output}, "
             f"expected {cas_exe_path}.result"
         )
-        assert rule.inputs == [], (
+        assert rule.inputs == (), (
             f"test rule must not declare normal prereqs in CAS mode (the .result is content-keyed); got {rule.inputs}"
         )
-        assert rule.order_only_deps == [f"{bindir}/test_foo"], (
+        assert rule.order_only_deps == (f"{bindir}/test_foo",), (
             f"test rule must order on the published exe via order_only_deps; got {rule.order_only_deps}"
         )
         # The recipe must NOT self-delete its own output.
@@ -1804,7 +1805,7 @@ class TestTransitiveHeaderModuleImports:
             command=["g++", "-c", main, "-o", "/build/main.o"],
             rule_type=RuleType.COMPILE,
         )
-        backend._wire_module_inputs(rule, per_file[main], filename=main)
+        rule = backend._wire_module_inputs(rule, per_file[main], filename=main)
         assert "/cache/M.o" in rule.inputs, (
             f"main.o imports M only through wrap.h; the BMI producer must be wired "
             f"into rule.inputs to avoid a -j race. inputs={rule.inputs!r}"
@@ -1831,7 +1832,7 @@ class TestTransitiveHeaderModuleImports:
             command=["clang++", "-c", main, "-o", "/build/main.o"],
             rule_type=RuleType.COMPILE,
         )
-        backend._wire_module_inputs(rule, per_file[main], filename=main)
+        rule = backend._wire_module_inputs(rule, per_file[main], filename=main)
         assert "/cache/M.pcm" in rule.inputs, (
             f"main.o imports M only through wrap.h; the .pcm BMI must be wired "
             f"into rule.inputs to avoid a -j race. inputs={rule.inputs!r}"
@@ -1855,7 +1856,7 @@ class TestTransitiveHeaderModuleImports:
             command=["g++", "-c", main, "-o", "/build/main.o"],
             rule_type=RuleType.COMPILE,
         )
-        backend._wire_module_inputs(rule, per_file[main], filename=main)
+        rule = backend._wire_module_inputs(rule, per_file[main], filename=main)
         assert "/cache/M.o" not in rule.inputs, (
             f"no header imports M; the BMI must not be wired in. inputs={rule.inputs!r}"
         )
@@ -1881,7 +1882,7 @@ class TestTransitiveHeaderModuleImports:
             command=["g++", "-c", main, "-o", "/build/main.o"],
             rule_type=RuleType.COMPILE,
         )
-        backend._wire_module_inputs(rule, per_file[main], filename=main)
+        rule = backend._wire_module_inputs(rule, per_file[main], filename=main)
         assert "/cache/math-basic.o" not in rule.inputs, (
             f"bare :basic in a non-module header has no resolvable own_module; "
             f"the BMI must not be wired. inputs={rule.inputs!r}"
@@ -1915,7 +1916,7 @@ class TestTransitiveHeaderModuleImports:
             command=["g++", "-c", main, "-o", "/build/main.o"],
             rule_type=RuleType.COMPILE,
         )
-        backend._wire_module_inputs(rule, per_file[main], filename=main)
+        rule = backend._wire_module_inputs(rule, per_file[main], filename=main)
         ordering = ordering_inputs_for_compile(rule.inputs)
         assert "/cache/M.o" in ordering, (
             f"transitively-wired BMI must survive the CAS-only ordering filter "
@@ -3989,7 +3990,7 @@ class TestClangModuleInterfaceRules:
         # path-shaper does its own basename munging; check that the rule
         # uses the namer's output (i.e. doesn't shadow it with the pcm
         # path) and writes via -o.
-        assert obj_rule.inputs == [pcm_path]
+        assert obj_rule.inputs == (pcm_path,)
         obj_cmd = _cmd(obj_rule)
         assert pcm_path in obj_cmd
         assert obj_cmd[obj_cmd.index(pcm_path) - 1] == "-c"
@@ -4129,7 +4130,7 @@ class TestContentAddressedXmlRules:
 
         materialize = graph.get_rule(user_xml)
         assert materialize is not None and materialize.rule_type == "symlink"
-        assert materialize.inputs == [cas_exe + ".xml"]
+        assert materialize.inputs == (cas_exe + ".xml",)
         assert _cmd(materialize)[0] == "ct-cas-publish"
 
         runtests = graph.get_rule("runtests")

@@ -144,7 +144,7 @@ class TestBuildGraphStaticLibrary:
             symlinks = graph.rules_by_type("symlink")
             publish = next((r for r in symlinks if r.output == f"{args.bindir}/libmylib.a"), None)
             assert publish is not None, f"no publish-symlink rule produces {args.bindir}/libmylib.a"
-            assert publish.inputs == [producer.output]
+            assert publish.inputs == (producer.output,)
 
     def test_build_graph_shared_library_rule(self):
         with _library_backend_context(
@@ -162,7 +162,7 @@ class TestBuildGraphStaticLibrary:
             symlinks = graph.rules_by_type("symlink")
             publish = next((r for r in symlinks if r.output == f"{args.bindir}/libmylib.so"), None)
             assert publish is not None, f"no publish-symlink rule produces {args.bindir}/libmylib.so"
-            assert publish.inputs == [producer.output]
+            assert publish.inputs == (producer.output,)
 
     def test_build_graph_library_in_build_phony(self):
         with _library_backend_context(

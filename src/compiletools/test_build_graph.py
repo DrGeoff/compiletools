@@ -33,11 +33,16 @@ class TestBuildRule:
         assert rule.rule_type == "phony"
         assert rule.command is None
 
-    def test_rule_equality_by_output(self):
+    def test_rule_equality_is_structural(self):
+        """Rules compare field-wise. Output-keyed dedup is BuildGraph's job
+        (its dict keys on the output string), not the rule's."""
         r1 = BuildRule(output="foo.o", inputs=["foo.cpp"], command=["gcc", "-c", "foo.cpp"], rule_type="compile")
-        r2 = BuildRule(output="foo.o", inputs=["bar.cpp"], command=["gcc", "-c", "bar.cpp"], rule_type="compile")
-        assert r1 == r2
-        assert hash(r1) == hash(r2)
+        same = BuildRule(output="foo.o", inputs=["foo.cpp"], command=["gcc", "-c", "foo.cpp"], rule_type="compile")
+        different = BuildRule(output="foo.o", inputs=["bar.cpp"], command=["gcc", "-c", "bar.cpp"], rule_type="compile")
+        assert r1 == same
+        assert hash(r1) == hash(same)
+        assert r1 != different
+        assert len({r1, same, different}) == 2
 
     def test_rule_order_only_deps(self):
         rule = BuildRule(
@@ -47,7 +52,7 @@ class TestBuildRule:
             rule_type="compile",
             order_only_deps=["/tmp/obj/"],
         )
-        assert rule.order_only_deps == ["/tmp/obj/"]
+        assert rule.order_only_deps == ("/tmp/obj/",)
 
     def test_success_marker_defaults_to_none(self):
         rule = BuildRule(
@@ -246,7 +251,7 @@ class TestFilterToChanged:
         assert non_phony == []
         # Phony rules survive but with empty inputs
         for r in phony:
-            assert r.inputs == []
+            assert r.inputs == ()
 
     def test_phony_rule_inputs_pruned_to_only_affected(self):
         """phony.inputs is pruned to those targets actually being rebuilt;

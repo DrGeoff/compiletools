@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import hashlib
 import shlex
-from dataclasses import dataclass, field
+from collections.abc import Sequence
+from dataclasses import dataclass
 
 
 class RuleType:
@@ -70,17 +71,23 @@ VALID_RULE_TYPES = frozenset(
 )
 
 
-@dataclass
+@dataclass(frozen=True)
 class BuildRule:
     """A single build action: produce `output` from `inputs` by running `command`.
+
+    Immutable value object: the sequence fields are coerced to tuples in
+    ``__post_init__`` and instances are frozen, so a rule is complete at
+    its construction site and safe to share, hash, and snapshot. To
+    "edit" a rule, build a new one with ``dataclasses.replace(rule, ...)``
+    and re-``add_rule`` it — ``BuildGraph.add_rule`` is last-write-wins
+    keyed by ``output``, and a dict overwrite keeps the rule's original
+    insertion position, so regenerated build files stay byte-stable.
 
     Invariant: **one output -> one command.** ``BuildGraph.add_rule`` is
     keyed by ``output`` and last-write-wins, so two rules producing the
     same path collapse into one. Callers that build up a graph
     incrementally are expected to honour that invariant — emit a
-    consistent command for any given output. Equality and hash below
-    enforce the same shape: rules with the same output collide in
-    dict/set containers.
+    consistent command for any given output.
 
     Attributes:
         output: The file this rule produces (or a phony target name).
@@ -130,42 +137,32 @@ class BuildRule:
             consumer (including bob on a shared cas-pchdir) inherits those
             paths into their .o files.
 
-    Equality and hash are by ``output`` only — deliberate so that
-    BuildGraph._rules (a dict keyed by output) deduplicates rules. Rules
-    with the same output but different inputs/commands compare equal; use
-    explicit field comparison if structural equality is needed.
+    Equality and hash are structural (dataclass-generated, field-wise):
+    two rules are equal iff every field matches. Output-keyed dedup is
+    the graph's job (its dict keys on the ``output`` string), not the
+    rule's.
     """
 
     output: str
-    inputs: list[str]
-    command: list[str] | None
+    inputs: Sequence[str]
+    command: Sequence[str] | None
     rule_type: str
-    order_only_deps: list[str] = field(default_factory=list)
+    order_only_deps: Sequence[str] = ()
     success_marker: str | None = None
     cwd: str | None = None
     success_copies: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self):
+        # Coerce here, not in add_rule, so callers keep object identity
+        # across registration (tests pin ``graph.get_rule(out) is rule``).
+        # tuple() on an existing tuple returns the same object, so
+        # dataclasses.replace round-trips are copy-free.
+        object.__setattr__(self, "inputs", tuple(self.inputs))
+        object.__setattr__(self, "order_only_deps", tuple(self.order_only_deps))
+        if self.command is not None:
+            object.__setattr__(self, "command", tuple(self.command))
         if self.rule_type not in VALID_RULE_TYPES:
             raise ValueError(f"Invalid rule_type {self.rule_type!r}; must be one of {sorted(VALID_RULE_TYPES)}")
-
-    def __eq__(self, other):
-        """Rules compare equal when their ``output`` paths match.
-
-        This is **deliberately surprising**: two rules with the same
-        output but different inputs or commands are considered equal so
-        that BuildGraph (a dict keyed by output) can dedupe them with
-        last-write-wins semantics. The "one output -> one command"
-        invariant in the class docstring is what makes this safe in
-        practice. If you need structural equality (all fields match),
-        compare the dataclass fields explicitly.
-        """
-        if not isinstance(other, BuildRule):
-            return NotImplemented
-        return self.output == other.output
-
-    def __hash__(self):
-        return hash(self.output)
 
 
 class BuildGraph:

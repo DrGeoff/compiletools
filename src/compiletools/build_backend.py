@@ -15,6 +15,7 @@ backend-specific CLI arguments (see MakefileBackend for an example).
 from __future__ import annotations
 
 import abc
+import dataclasses
 import hashlib
 import itertools
 import json
@@ -1421,9 +1422,9 @@ class BuildBackend(abc.ABC):
                 # primary, or `import :P;` in another partition). Without
                 # this edge clang fails the precompile with "module file
                 # not found" since the partition .pcm hasn't been built.
-                self._wire_module_inputs(pcm_rule, file_result, filename=filename)
+                pcm_rule = self._wire_module_inputs(pcm_rule, file_result, filename=filename)
                 graph.add_rule(pcm_rule)
-                self._wire_module_inputs(obj_rule, file_result, filename=filename)
+                obj_rule = self._wire_module_inputs(obj_rule, file_result, filename=filename)
                 graph.add_rule(obj_rule)
                 if obj_rule.order_only_deps:
                     compile_bucket_dirs.add(obj_rule.order_only_deps[0])
@@ -1439,7 +1440,7 @@ class BuildBackend(abc.ABC):
                 )
 
             rule = self._create_compile_rule(filename)
-            self._wire_module_inputs(rule, file_result, filename=filename)
+            rule = self._wire_module_inputs(rule, file_result, filename=filename)
             graph.add_rule(rule)
             if rule.order_only_deps:
                 compile_bucket_dirs.add(rule.order_only_deps[0])
@@ -1741,10 +1742,19 @@ class BuildBackend(abc.ABC):
             if getattr(self.args, "serialisetests", False) and len(test_rules) > 1:
                 use_mtime = getattr(self.args, "use_mtime", False)
                 chained = sorted(test_rules, key=lambda sr: sr[0])
+                # Rules are immutable: rebuild with the chain dep and re-add
+                # (last-write-wins on output; a dict overwrite keeps the
+                # rule's insertion position, so build-file bytes are stable).
+                # Only prev_rule.output is read, which replace never changes,
+                # so iterating the pre-replace pairs is safe.
                 for (_prev_src, prev_rule), (_src, rule) in itertools.pairwise(chained):
-                    dep_list = rule.inputs if use_mtime else rule.order_only_deps
-                    if prev_rule.output not in dep_list:
-                        dep_list.append(prev_rule.output)
+                    if use_mtime:
+                        if prev_rule.output not in rule.inputs:
+                            graph.add_rule(dataclasses.replace(rule, inputs=(*rule.inputs, prev_rule.output)))
+                    elif prev_rule.output not in rule.order_only_deps:
+                        graph.add_rule(
+                            dataclasses.replace(rule, order_only_deps=(*rule.order_only_deps, prev_rule.output))
+                        )
 
             graph.add_rule(BuildRule(output="runtests", inputs=test_result_paths, command=None, rule_type="phony"))
             all_deps.append("runtests")
@@ -2479,10 +2489,14 @@ class BuildBackend(abc.ABC):
             if cache_active or ":" in name
         ]
 
-    def _wire_module_inputs(self, rule: BuildRule, file_result, filename: str | None = None) -> None:
-        """Append BMI/stamp inputs from `rule` to its module dependencies.
+    def _wire_module_inputs(self, rule: BuildRule, file_result, filename: str | None = None) -> BuildRule:
+        """Return *rule* with BMI/stamp inputs for its module dependencies appended.
 
-        Mutates ``rule.inputs`` in place. The artefact a downstream TU
+        Pure: never mutates *rule*. Returns a new BuildRule (via
+        ``dataclasses.replace``) when edges were added, or *rule* itself
+        unchanged when there was nothing to wire; callers rebind
+        (``rule = self._wire_module_inputs(rule, ...)``) before
+        ``graph.add_rule``. The artefact a downstream TU
         waits on differs by compiler:
 
         - GCC: the interface unit's object file. Building it under
@@ -2508,7 +2522,7 @@ class BuildBackend(abc.ABC):
         files must exist when the importer compiles, since the primary
         ``.pcm`` references them.
 
-        All BMI / .o / .stamp targets join ``rule.inputs`` uniformly.
+        All BMI / .o / .stamp targets join the rule's ``inputs`` uniformly.
         ``order_only_deps`` stays reserved for *bucket directories*
         the prebuild loop / trace backend will ``mkdir``; putting an
         artefact path there would silently clobber the artefact into
@@ -2525,7 +2539,7 @@ class BuildBackend(abc.ABC):
         BMI mtime changes).
         """
         if file_result is None:
-            return
+            return rule
         own_module = self.hunter._own_module_name(file_result)
         kind = self._module_compiler_kind
         # Target selection for named modules. The target must be a
@@ -2546,8 +2560,11 @@ class BuildBackend(abc.ABC):
         #   (existence implies the .gcm is on disk).
         target_map: Mapping[str, str] = self._module_iface_pcm if kind == "clang" else self._module_iface_obj
 
+        seen: set[str] = set(rule.inputs)
+        added: list[str] = []
+
         def _add_dep(target: str | None) -> None:
-            """Append *target* to ``rule.inputs`` (deduped, skipping self).
+            """Record *target* as a new input (deduped, skipping self).
 
             All module dep targets land in ``inputs``: the CAS-only
             filter (``ordering_inputs_for_compile``) preserves every
@@ -2556,10 +2573,10 @@ class BuildBackend(abc.ABC):
             ``inputs`` via ``_build_async`` to build the producer
             before the consumer compiles.
             """
-            if target is None or target == rule.output:
+            if target is None or target == rule.output or target in seen:
                 return
-            if target not in rule.inputs:
-                rule.inputs.append(target)
+            seen.add(target)
+            added.append(target)
 
         def _wire_for(src_result, src_own_module: str | None) -> None:
             """Wire imports + header-unit deps of one analysis result.
@@ -2596,16 +2613,19 @@ class BuildBackend(abc.ABC):
         # declares one, so bare `:P` from a non-module header resolves
         # to None and is skipped -- matching the plan's decision to
         # ignore bare-partition imports in transitive headers.
-        if filename is None:
-            return
-        for dep in self.hunter.header_dependencies(filename):
-            dep_str = str(dep)
-            if dep_str == filename:
-                continue
-            dep_result = self.hunter._file_analysis_result(dep_str)
-            if dep_result is None:
-                continue
-            _wire_for(dep_result, self.hunter._own_module_name(dep_result))
+        if filename is not None:
+            for dep in self.hunter.header_dependencies(filename):
+                dep_str = str(dep)
+                if dep_str == filename:
+                    continue
+                dep_result = self.hunter._file_analysis_result(dep_str)
+                if dep_result is None:
+                    continue
+                _wire_for(dep_result, self.hunter._own_module_name(dep_result))
+
+        if not added:
+            return rule
+        return dataclasses.replace(rule, inputs=(*rule.inputs, *added))
 
     def _header_unit_destination(self, token: str, flat_dir: str) -> tuple[str, str]:
         """Resolve the per-token artefact path and its parent dir.

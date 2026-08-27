@@ -636,7 +636,7 @@ class ShakeBackend(BuildBackend):
         else:
             self._test_failures.append(f"{rule.output} (exit {returncode}): {' '.join(flat_cmd)}")
 
-    def _inputs_to_walk(self, target: str, rule: BuildRule) -> list[str]:
+    def _inputs_to_walk(self, target: str, rule: BuildRule) -> Sequence[str]:
         """The rule's inputs worth recursing into (M2 leaf-skip).
 
         Leaf inputs (source/header files with no producing rule) return False

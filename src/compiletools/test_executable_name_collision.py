@@ -76,7 +76,7 @@ def test_control_build_graph_add_rule_last_write_wins():
     assert len(graph) == 1, "same-output rules collapse into one"
     survivor = graph.get_rule("bin/gcc.debug/main")
     assert survivor is not None
-    assert survivor.inputs == ["/repo/appbeta/main.o"], "last writer wins"
+    assert survivor.inputs == ("/repo/appbeta/main.o",), "last writer wins"
 
 
 def test_force_flat_exe_layout_collision_raises_naming_both_sources():
@@ -249,7 +249,7 @@ def test_publish_rule_order_only_dep_is_the_output_dir(tmp_path):
     user_path = os.path.join(bindir, "appalpha", "main")
     rule = backend._build_publish_rule("/cas/ab/main_abcd.exe", user_path)
 
-    assert rule.order_only_deps == [os.path.join(bindir, "appalpha")]
+    assert rule.order_only_deps == (os.path.join(bindir, "appalpha"),)
 
 
 def test_link_rule_emits_per_library_search_dirs(tmp_path):
