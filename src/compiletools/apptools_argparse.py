@@ -636,6 +636,16 @@ def resolve_cas_directory_arguments(args):
     through ``apptools.parseargs`` rely on the
     ``set_allow_fake_git`` propagation at the top of this function:
     without it, the flag would be a silent no-op for them.
+
+    This function is one of the two production writers that DERIVE
+    ``args.variant`` / ``args.cas_*dir`` (the other is
+    ``build_apply.populate_args``; ``apptools._strip_quotes`` also
+    rewrites the stored strings in place -- a cosmetic namespace-wide
+    unquote pass that derives nothing). A third guard beside
+    ``test_cas_dir_resolution_parity.py`` and
+    ``test_cas_dir_resolver_contract.py`` --
+    ``test_single_writer_lints.py::test_variant_and_cas_dirs_have_exactly_two_writers``
+    -- pins the deriving-writer set by AST so a new write site fails loudly.
     """
     # Deferred imports: ``unsupplied_replacement`` and the ``_UNSUPPLIED_*``
     # sentinels stay in the apptools core, and build_state pulls in

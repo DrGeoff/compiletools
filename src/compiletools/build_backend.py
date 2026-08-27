@@ -304,6 +304,18 @@ class BuildBackend(abc.ABC):
         # Captured at __init__: a mid-build os.chdir won't update this; every
         # production path constructs the backend with the build's cwd already set.
         self._anchor_root: str = compiletools.git_utils.find_git_root() or ""
+        # Writer set for _graph and the six module/header-unit planning
+        # attrs (_module_iface_obj/_pcm/_gcm, _module_impl_obj,
+        # _header_unit_artefact, _gcc_header_unit_resolved -- NOT
+        # _gcc_module_mapper_path/_build_imports_std_cached/
+        # _compile_used_libcxx, which are single-file plumbing) is pinned
+        # by test_single_writer_lints.py::
+        # test_backend_plan_channels_have_pinned_writers: this __init__,
+        # _plan_module_prepass, _plan_header_unit_prepass,
+        # _create_header_unit_precompile_rule, _apply_build_only_changed,
+        # ShakeBackend.generate (trace_backend.py), and the class-scope
+        # MappingProxyType/frozenset totality defaults above. testhelper's
+        # ShakeBackendTestContext plants a pre-built graph for tests.
         self._graph: BuildGraph | None = None
         self._dynamic_sources: set[str] = set()
         # Cross-phase state declared here so every read site is total (plain
@@ -332,6 +344,10 @@ class BuildBackend(abc.ABC):
         # TypeError instead of silently aliasing one dict across instances.
         # Production callers (_create_compile_rule, the bazel/ninja paths,
         # and test fixtures) write through the instance dict bound here.
+        # Writer set (this __init__ plus _plan_module_prepass /
+        # _plan_header_unit_prepass / _create_header_unit_precompile_rule)
+        # is pinned by test_single_writer_lints.py::
+        # test_backend_plan_channels_have_pinned_writers.
         self._module_iface_obj = {}
         self._module_iface_pcm = {}
         self._module_iface_gcm = {}

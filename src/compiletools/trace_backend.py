@@ -211,7 +211,6 @@ class ShakeBackend(BuildBackend):
                 "is the plain bindir pathname and a stale archive would be silently "
                 "accepted."
             )
-        self._graph: BuildGraph | None = None
         # Test rules run in-process during the build phase. A failing test
         # appends here instead of raising from inside the rule executor --
         # raising mid-flight would abort sibling rules that asyncio.gather

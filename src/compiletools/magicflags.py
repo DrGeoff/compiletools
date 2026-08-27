@@ -173,7 +173,15 @@ class MagicFlagsBase:
 
         set_analyzer_args(args, context)
 
-        # Store final converged MacroState objects by filename.
+        # Store final converged MacroState objects by filename. Instance-owned
+        # (category (b) owned-accumulator per the purity convention in
+        # src/compiletools/CLAUDE.md): __init__ declares it, _parse rebuilds
+        # it per convergence pass, _finalize_and_cache_result and
+        # CppMagicFlags.get_structured_data cache the settled/initial state.
+        # Read outside this file only through get_final_macro_state_key /
+        # get_final_macro_state_hash; nothing else may touch it directly --
+        # enforced by test_single_writer_lints.py::
+        # test_final_macro_states_is_owned_by_magicflags.
         # After _parse() runs, the MacroState carries effective compile flags
         # (global + per-file magic) so get_hash(include_core=True) captures everything.
         self._final_macro_states: dict = {}

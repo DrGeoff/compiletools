@@ -98,6 +98,16 @@ def populate_args(args, state: BuildState) -> None:
 
     The stash is refreshed on EVERY call so consumers always see the
     current pass's state after a re-run.
+
+    This function is one of the two production writers that DERIVE
+    ``args.variant`` / ``args.cas_*dir`` (the other is
+    ``apptools_argparse.resolve_cas_directory_arguments``;
+    ``apptools._strip_quotes`` also rewrites the stored strings in place
+    -- a cosmetic namespace-wide unquote pass that derives nothing). A
+    third guard beside ``test_cas_dir_resolution_parity.py`` and
+    ``test_cas_dir_resolver_contract.py`` --
+    ``test_single_writer_lints.py::test_variant_and_cas_dirs_have_exactly_two_writers``
+    -- pins the deriving-writer set by AST so a new write site fails loudly.
     """
     args._build_state = state
     args.variant = state.names.variant

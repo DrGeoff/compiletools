@@ -789,6 +789,21 @@ def set_analyzer_args(args, context: "BuildContext"):
     Args:
         args: Args object containing max_read_size, verbose, exemarkers, testmarkers, librarymarkers
         context: BuildContext where state is stored
+
+    Sanctioned callers: ``HeaderDepsBase.__init__``, ``MagicFlagsBase.__init__``,
+    ``FindTargets.__init__`` and ``_warn_about_executables_in_library_slots``,
+    ``fetch.py``'s ``extract_git_externals`` / ``extract_git_allow_protocols``,
+    and ``hunter.py``'s two lazy sites (``_file_analysis_result`` /
+    ``_module_interface_registry``, both guarded by
+    ``context.analyzer_args is None``). Two production writers of
+    ``context.analyzer_args`` bypass this function:
+    ``BuildContext.__init__`` (the ``None`` declaration) and ``fetch.py``'s
+    ``_fixpoint_scan`` save/restore ``finally`` block (see "Why
+    ``_augmented_headerdeps`` no longer deep-copies args" in
+    src/compiletools/CLAUDE.md). Both the writer set and the caller set
+    are pinned by
+    ``test_single_writer_lints.py::
+    test_analyzer_args_channel_has_pinned_writers_and_callers``.
     """
     context.analyzer_args = args
     context.file_reading_strategy = None
