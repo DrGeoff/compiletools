@@ -20,9 +20,9 @@ def test_auto_discovery_creates_analysis_objects_once_after_targets_are_known():
         def __init__(self, args, *, context):
             events.append("find-init")
 
-        def process(self, args):
+        def process(self, path=None):
             events.append("find-process")
-            args.filename.append("main.cpp")
+            return ["main.cpp"], []
 
     with CakeTestContext("make", auto=True) as (cake, _tmpdir):
         cake.args.filename = []
