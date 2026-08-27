@@ -1,7 +1,6 @@
 import argparse
 import sys
 from collections import defaultdict
-from types import SimpleNamespace
 from typing import Optional, Union
 
 import stringzilla as sz
@@ -178,9 +177,6 @@ class MagicFlagsBase:
         # After _parse() runs, the MacroState carries effective compile flags
         # (global + per-file magic) so get_hash(include_core=True) captures everything.
         self._final_macro_states: dict = {}
-
-        # Populated by subclasses; declared here for type checkers.
-        self._explicit_macro_files: set = set()
 
         # (source file, READMACROS value) pairs already warned about. PASS 1
         # and PASS 2 of get_structured_data each re-collect the same file, so
@@ -982,26 +978,10 @@ class DirectMagicFlags(MagicFlagsBase):
         self._initial_macro_state = self._initialize_macro_state()
         # Track defined macros with values during processing (MacroState with core + variable)
         self.defined_macros = self._initial_macro_state
-        # Track files specified by READMACROS magic flags
-        self._explicit_macro_files = set()
         # Cache structured data results by (file_hash, input_macro_key, deps_hash) to avoid redundant convergence
         # deps_hash: XOR of dependency file content hashes (headers + READMACROS)
         # Cached result stores content_hash (not filepath) - current paths resolved via global hash registry
         self._structured_data_cache = {}
-
-    def _extract_macros_from_magic_flags(self, magic_flags_result):
-        """Extract -D macros from magic flag CPPFLAGS and CXXFLAGS."""
-        # Create minimal args object with magic flag values
-        flag_sources = [sz.Str("CPPFLAGS"), sz.Str("CXXFLAGS")]
-        temp_args = SimpleNamespace(
-            CPPFLAGS=magic_flags_result.get(flag_sources[0], []), CXXFLAGS=magic_flags_result.get(flag_sources[1], [])
-        )
-        macros = compiletools.apptools.extract_command_line_macros_sz(
-            temp_args, flag_sources_sz=flag_sources, verbose=self._args.verbose
-        )
-
-        # Update macro state immutably (use empty core since these are variable macros)
-        self.defined_macros = self.defined_macros.with_updates(macros)
 
     @instance_cache
     def _compute_file_processing_result(self, fname: str, macro_key):
@@ -1010,8 +990,13 @@ class DirectMagicFlags(MagicFlagsBase):
         Cacheable by (fname, macro_key) to avoid reprocessing shared headers.
         Uses frozenset macro_key as cache key since it's hashable and more efficient.
 
-        NOTE: This method accesses self.defined_macros to get the actual MacroState.
-        The macro_key parameter is only used as a cache key for lru_cache.
+        NOTE: This method accesses self.defined_macros to get the actual MacroState;
+        the macro_key parameter exists only as the @instance_cache key. The contract
+        is DELIBERATELY loose: within one convergence round, macro_key stays the
+        ROUND-START key while self.defined_macros advances file-by-file (the binder
+        is _converge_macro_state), so two calls with the same (fname, macro_key) may
+        observe different states — the convergence loop's re-processing of changed
+        keys on the next round is what makes that sound.
 
         Args:
             fname: File path to process
@@ -1113,17 +1098,15 @@ class DirectMagicFlags(MagicFlagsBase):
         )
         return (active_magic_flags, magic_macros, effects)
 
-    def _process_file_for_macros(self, fname: str, macro_key=None) -> None:
-        """Process a single file to extract macros and active magic flags (mutates state).
-
-        Updates self.defined_macros and self._stored_active_magic_flags based on
-        conditional compilation with current macro state. Uses caching to avoid
-        reprocessing the same file with the same macro state.
-
-        Args:
-            fname: File path to process
-            macro_key: Optional pre-computed cache key for current macro state.
-                      If None, will compute from self.defined_macros.
+    def _process_file_for_macros(self, fname: str, macro_key=None) -> tuple[MacroState, Optional[list]]:
+        """Process a single file against the CURRENT self.defined_macros and return
+        (new_state, active_magic_flags) without writing either back —
+        _converge_macro_state is the binder. active_magic_flags is None when the
+        file could not be processed (soft-fail). The input state is read from
+        self.defined_macros rather than a parameter because
+        _compute_file_processing_result's per-instance cache is keyed
+        (fname, macro_key) with macro_key a version proxy for that attribute —
+        see its NOTE.
         """
         # Get cache key (frozenset) - reuse if provided to avoid redundant computation
         if macro_key is None:
@@ -1133,12 +1116,9 @@ class DirectMagicFlags(MagicFlagsBase):
         cached_result = self._compute_file_processing_result(fname, macro_key)
 
         if cached_result is None:
-            return
+            return (self.defined_macros, None)
 
         active_magic_flags, magic_macros, effects = cached_result
-
-        # Store active magic flags for this file to avoid redundant final pass
-        self._stored_active_magic_flags[fname] = active_magic_flags
 
         # Layer the magic-flag-derived macros first, then the file's own
         # directive effects through the shared apply() contract. Magic
@@ -1147,11 +1127,15 @@ class DirectMagicFlags(MagicFlagsBase):
         # a magic -D of the same name (as the previous single merged update
         # did) and a #undef still removes a magic macro the file never
         # redefines (apply's undefs run after this).
-        self.defined_macros = self.defined_macros.with_updates(magic_macros)
-        self.defined_macros = effects.apply(self.defined_macros, self.context)
+        new_state = effects.apply(self.defined_macros.with_updates(magic_macros), self.context)
+        return (new_state, active_magic_flags)
 
-    def _extract_macros_from_file(self, filename):
-        """Extract #define macros from a file (unconditionally, no preprocessor evaluation)."""
+    def _extract_macros_from_file(self, filename) -> Optional[tuple[dict, dict]]:
+        """Extract #define macros from a file (unconditionally, no preprocessor evaluation).
+
+        Returns (updates, function_params) for the caller to fold, or None when
+        the file could not be read (soft-fail, breadcrumb printed).
+        """
         try:
             file_result = self._get_file_analyzer_result(filename)
         except OSError as e:
@@ -1162,7 +1146,7 @@ class DirectMagicFlags(MagicFlagsBase):
                     f"DirectMagicFlags warning: could not extract macros from {filename}: {e}",
                     file=sys.stderr,
                 )
-            return
+            return None
 
         updates = {}
         function_params = {}
@@ -1173,20 +1157,16 @@ class DirectMagicFlags(MagicFlagsBase):
             if define_info["is_function_like"]:
                 function_params[macro_name] = tuple(define_info["params"])
 
-        if updates:
-            self.defined_macros = self.defined_macros.with_updates(updates, function_params)
+        return (updates, function_params)
 
-    def _build_all_files_list(self, filename, headers):
-        """Build deduplicated list of all files to process (explicit macros + main + headers)."""
+    def _build_all_files_list(self, filename, headers, explicit_macro_files):
+        """Build deduplicated list of all files to process (explicit READMACROS files + main + headers).
+
+        Pure: reads only its arguments.
+        """
         return compiletools.utils.ordered_unique(
-            list(self._explicit_macro_files) + [filename] + [h for h in headers if h != filename]
+            list(explicit_macro_files) + [filename] + [h for h in headers if h != filename]
         )
-
-    def _reset_state(self):
-        """Reset state for new file processing."""
-        self.defined_macros = self._initial_macro_state
-        self._explicit_macro_files = set()
-        self._stored_active_magic_flags = {}
 
     def _check_cache(self, filename, cache_key):
         """Check cache and restore state if hit. Returns cached result or None."""
@@ -1203,28 +1183,12 @@ class DirectMagicFlags(MagicFlagsBase):
                 f"This indicates a bug in the caching logic."
             )
 
-        # Restore the converged macro state
+        # Cache-hit binding site: leave self.defined_macros consistent with the returned result.
         self.defined_macros = self._final_macro_states[abs_filename]
-
-        # Verify state consistency in debug mode
-        if __debug__:
-            expected_key = self._final_macro_states[abs_filename].get_cache_key()
-            actual_key = self.defined_macros.get_cache_key()
-            assert expected_key == actual_key, (
-                f"Macro state restoration failed for {filename}: expected key {expected_key}, got {actual_key}"
-            )
 
         return self._structured_data_cache[cache_key]
 
-    def _setup_explicit_macro_files(self, all_source_files):
-        """Collect and process READMACROS files."""
-        self._explicit_macro_files = self._collect_explicit_macro_files(all_source_files)
-
-        # Extract macros from explicitly specified files BEFORE processing conditional compilation
-        for macro_file in self._explicit_macro_files:
-            self._extract_macros_from_file(macro_file)
-
-    def _converge_macro_state(self, all_files, max_iterations=5):
+    def _converge_macro_state(self, all_files, stored_flags: dict, max_iterations=5):
         """Iteratively process files until macro state converges.
 
         Returns: (iterations taken, converged). converged is False when the
@@ -1242,6 +1206,11 @@ class DirectMagicFlags(MagicFlagsBase):
         one, it does not remove it: a chain exactly one deeper still raises
         even when its flags happen to land right, the conservative side of
         the trade.
+
+        The single per-file binding site for `self.defined_macros` during
+        convergence; helpers return values and never write it. Fills
+        *stored_flags* (caller-owned) with each successfully processed file's
+        active magic flags.
         """
         file_last_macro_version = {}
         iteration = 0
@@ -1266,7 +1235,10 @@ class DirectMagicFlags(MagicFlagsBase):
 
             # Process files that need reprocessing
             for fname in files_to_process:
-                self._process_file_for_macros(fname, current_macro_key)
+                new_state, active = self._process_file_for_macros(fname, current_macro_key)
+                self.defined_macros = new_state
+                if active is not None:
+                    stored_flags[fname] = active
                 # Record current key to avoid reprocessing in next iteration
                 # (files that mutate macros are already cached by their input state)
                 file_last_macro_version[fname] = current_macro_key
@@ -1301,8 +1273,13 @@ class DirectMagicFlags(MagicFlagsBase):
             f"closer to dependency order so each pass resolves more of it."
         )
 
-    def _finalize_and_cache_result(self, filename, headers, cache_key):
-        """Store final macro state and build cached result."""
+    def _finalize_and_cache_result(self, filename, headers, cache_key, explicit_macro_files, stored_flags):
+        """Store final macro state and build cached result.
+
+        *explicit_macro_files* and *stored_flags* are the convergence pass's
+        locals (READMACROS set, per-file active flags dict) — owned by
+        get_structured_data, threaded here rather than read off instance state.
+        """
         # Store final converged MacroState (for both cache key and full hash)
         abs_filename = compiletools.wrappedos.realpath(filename)
         self._final_macro_states[abs_filename] = self.defined_macros
@@ -1312,17 +1289,27 @@ class DirectMagicFlags(MagicFlagsBase):
             print(f"DirectMagicFlags: Final converged macro key for {filename}: {final_macro_key}")
 
         # Build result from stored data
-        all_files = self._build_all_files_list(filename, headers)
-        result = self._build_structured_result(all_files, self._stored_active_magic_flags)
-
-        # Verify macro state integrity
-        if __debug__:
-            self._verify_macro_state_unchanged("get_structured_data() completion", filename)
+        all_files = self._build_all_files_list(filename, headers, explicit_macro_files)
+        result = self._build_structured_result(all_files, stored_flags)
 
         # Cache result
         self._structured_data_cache[cache_key] = result
 
         return result
+
+    def _state_with_explicit_macros(self, state, explicit_macro_files):
+        """Return *state* plus every macro extracted from *explicit_macro_files*.
+
+        Fold: no attribute writes (the extraction reads files and may note
+        unreadable ones on stderr); an unreadable file contributes nothing.
+        """
+        for macro_file in explicit_macro_files:
+            extracted = self._extract_macros_from_file(macro_file)
+            if extracted is not None:
+                updates, function_params = extracted
+                if updates:
+                    state = state.with_updates(updates, function_params)
+        return state
 
     def get_structured_data(
         self, filename: str
@@ -1347,8 +1334,9 @@ class DirectMagicFlags(MagicFlagsBase):
         if self._args.verbose >= 4:
             print("DirectMagicFlags: Setting up structured data with macro processing")
 
-        # Reset state to initial (core) macros
-        self._reset_state()
+        # Reset binding: each get_structured_data starts from the initial (core) state.
+        self.defined_macros = self._initial_macro_state
+        stored_flags: dict = {}
 
         # Get file hash and initial macro state
         file_hash = get_file_hash(filename, self.context)
@@ -1365,9 +1353,6 @@ class DirectMagicFlags(MagicFlagsBase):
         # Collect READMACROS file paths from Pass 1 headers
         explicit_macro_files = self._collect_explicit_macro_files(all_source_files)
 
-        # CRITICAL: Store to instance var - _build_all_files_list() reads from self._explicit_macro_files
-        self._explicit_macro_files = explicit_macro_files
-
         # Check cache with initial deps (optimistic - may be incomplete if Pass 2 needed)
         all_deps = sorted(set(headers) | explicit_macro_files)
         deps_hash = self._namer.compute_dep_hash(all_deps)
@@ -1381,12 +1366,11 @@ class DirectMagicFlags(MagicFlagsBase):
             return cached_result
 
         # Cache miss - extract macros from READMACROS files
-        for macro_file in explicit_macro_files:
-            self._extract_macros_from_file(macro_file)
+        self.defined_macros = self._state_with_explicit_macros(self.defined_macros, explicit_macro_files)
 
         # Converge macro state with Pass 1 file set
-        all_files = self._build_all_files_list(filename, headers)
-        iterations, converged = self._converge_macro_state(all_files)
+        all_files = self._build_all_files_list(filename, headers, explicit_macro_files)
+        iterations, converged = self._converge_macro_state(all_files, stored_flags)
 
         # PASS 2: Re-discover if macros changed during convergence
         pass1_macro_key = self.defined_macros.get_cache_key()
@@ -1417,16 +1401,12 @@ class DirectMagicFlags(MagicFlagsBase):
             # Re-collect READMACROS with expanded header set
             explicit_macro_files = self._collect_explicit_macro_files(all_source_files)
 
-            # CRITICAL: Update instance var with expanded READMACROS set
-            self._explicit_macro_files = explicit_macro_files
-
             # Re-extract macros from any new READMACROS files
-            for macro_file in explicit_macro_files:
-                self._extract_macros_from_file(macro_file)
+            self.defined_macros = self._state_with_explicit_macros(self.defined_macros, explicit_macro_files)
 
             # Re-converge with expanded file set
-            all_files = self._build_all_files_list(filename, headers)
-            iterations, converged = self._converge_macro_state(all_files)
+            all_files = self._build_all_files_list(filename, headers, explicit_macro_files)
+            iterations, converged = self._converge_macro_state(all_files, stored_flags)
 
         # Only the FINAL convergence must be enforced. When Pass 2 runs, its
         # verdict (fresh budget over the pass-1 state) supersedes pass-1
@@ -1436,14 +1416,14 @@ class DirectMagicFlags(MagicFlagsBase):
         self._raise_if_not_converged(converged, iterations, filename)
 
         # Finalize with FINAL dependency list
-        final_all_deps = sorted(set(headers) | self._explicit_macro_files)
+        final_all_deps = sorted(set(headers) | explicit_macro_files)
         final_deps_hash = self._namer.compute_dep_hash(final_all_deps)
         final_cache_key = (file_hash, input_macro_key, final_deps_hash)
 
         if self._args.verbose >= 5:
             print(f"DirectMagicFlags: Final deps_hash={final_deps_hash} from {len(final_all_deps)} dependency files")
 
-        return self._finalize_and_cache_result(filename, headers, final_cache_key)
+        return self._finalize_and_cache_result(filename, headers, final_cache_key, explicit_macro_files, stored_flags)
 
     def _build_structured_result(self, all_files: list[str], stored_active_flags: dict) -> list:
         """Build final structured result from stored active magic flags (pure data transformation).
@@ -1478,31 +1458,8 @@ class DirectMagicFlags(MagicFlagsBase):
     # DirectMagicFlags doesn't implement readfile() - it uses structured data processing only
     # All processing goes through get_structured_data() -> FileAnalysisResult
 
-    def _verify_macro_state_unchanged(self, context, filename):
-        """Verify that the macro state hasn't changed after convergence for a specific file."""
-        if __debug__:
-            abs_filename = compiletools.wrappedos.realpath(filename)
-            if abs_filename in self._final_macro_states:
-                current_key = self.defined_macros.get_cache_key()
-                converged_macro_state = self._final_macro_states[abs_filename]
-                converged_key = converged_macro_state.get_cache_key()
-                assert current_key == converged_key, (
-                    f"MACRO STATE CORRUPTION DETECTED in {context} for file {filename}!\n"
-                    f"Converged key: {converged_key}\n"
-                    f"Current key:   {current_key}\n"
-                    f"Converged macros: {set(converged_macro_state.variable.keys())}\n"
-                    f"Current macros:   {set(self.defined_macros.variable.keys())}"
-                )
-
     def parse(self, filename):
-        # Leverage file_analyzer data for optimization and validation
-        result = self._parse(filename)
-
-        # Verify macro state hasn't been corrupted during parsing
-        if __debug__:
-            self._verify_macro_state_unchanged("parse() completion", filename)
-
-        return result
+        return self._parse(filename)
 
     @staticmethod
     def clear_cache():

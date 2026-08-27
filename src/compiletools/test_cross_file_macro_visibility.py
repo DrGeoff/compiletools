@@ -68,11 +68,14 @@ def _ablate_convergence_to_single_pass(monkeypatch):
     outright, since the patch target would no longer exist."""
     calls = []
 
-    def single_pass(self, all_files):
+    def single_pass(self, all_files, stored_flags):
         calls.append(len(all_files))
         macro_key = self.defined_macros.get_cache_key()
         for fname in all_files:
-            self._process_file_for_macros(fname, macro_key)
+            new_state, active = self._process_file_for_macros(fname, macro_key)
+            self.defined_macros = new_state
+            if active is not None:
+                stored_flags[fname] = active
         return 1, True
 
     monkeypatch.setattr(

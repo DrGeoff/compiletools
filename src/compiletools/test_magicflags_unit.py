@@ -77,30 +77,6 @@ class TestHandleSource:
             obj._handle_source(sz.Str("/nonexistent/file.cpp"), magic_flag_data, "/some/main.cpp", sz.Str("SOURCE"))
 
 
-class TestExtractMacrosFromMagicFlags:
-    """Test DirectMagicFlags._extract_macros_from_magic_flags()."""
-
-    def test_extract_macros_from_cppflags(self):
-        from compiletools.preprocessing_cache import MacroState
-
-        obj = _make_partial("DirectMagicFlags")
-        # Start from a real, empty MacroState so we can assert the ACTUAL
-        # parsed macros end up in the resulting variable dict (not merely
-        # that some method was invoked on a mock).
-        obj.defined_macros = MacroState(core={}, variable={}, anchor_root="")
-
-        magic_flags_result = {
-            sz.Str("CPPFLAGS"): [sz.Str("-DFOO=1"), sz.Str("-DBAR=2")],
-        }
-        obj._extract_macros_from_magic_flags(magic_flags_result)
-
-        variable = obj.defined_macros.variable
-        assert sz.Str("FOO") in variable
-        assert sz.Str("BAR") in variable
-        assert str(variable[sz.Str("FOO")]) == "1"
-        assert str(variable[sz.Str("BAR")]) == "2"
-
-
 class TestGetFinalMacroStateKey:
     """Test MagicFlagsBase.get_final_macro_state_key() and get_final_macro_state_hash()."""
 
@@ -377,16 +353,14 @@ class TestConvergeMacroState:
     """Test DirectMagicFlags._converge_macro_state()."""
 
     def _make_direct(self):
-        obj = _make_partial("DirectMagicFlags")
-        obj._stored_active_magic_flags = {}
-        return obj
+        return _make_partial("DirectMagicFlags")
 
     def test_converges_with_no_files(self):
         obj = self._make_direct()
         mock_state = MagicMock()
         mock_state.get_cache_key.return_value = frozenset()
         obj.defined_macros = mock_state
-        iterations, converged = obj._converge_macro_state([])
+        iterations, converged = obj._converge_macro_state([], {})
         assert iterations == 1
         assert converged
 
