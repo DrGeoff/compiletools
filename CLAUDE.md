@@ -67,6 +67,7 @@ Variants compose O(N+M+K) axis confs on-the-fly. `extends = ...` is DFS-resolved
 
 ### Module notes (only what filenames don't tell you)
 - `flags.py` — frozen `Flags` dataclass, built once inside `compute_build_state` and reached via `get_build_state(args).flags`; `hash_relevant`, `existing_include_paths`, `append_include`.
+- `build_graph.py` — frozen, tuple-backed `BuildRule` value objects (structural equality) inside the mutable `BuildGraph` builder; editing a rule is `dataclasses.replace` + re-`add_rule` (last-write-wins by output, insertion position preserved). The project-wide purity convention (pure by default; mutation only as a named exception) lives in `src/compiletools/CLAUDE.md`.
 - `build_backend.py` — `BuildBackend` ABC + registry; `build_graph()`, PCH/PCM/link-key hashing, `_self_manages_exe_placement` dispatch (formerly `_has_native_cas_exe` — the predicate gates whether to wrap a backend in compiletools' cas-exedir layer; cmake's incremental tree isn't actually a CAS).
 - `debug_pcm_hash_inputs.py` — `ct-debug-pcm-hash-inputs` diagnostic: dumps the seven `_pcm_command_hash` inputs for a `.cppm` so two cold runs can be `diff`ed to localise a cmd_hash drift. Drift-guarded against the production path by `test_diagnostic_matches_what_ct_cake_writes_to_disk` — the diagnostic's `cmd_hash` is compared to the `<cas-pcmdir>/<variant>/<cmd_hash>/` subdir name ct-cake actually creates, not to an in-process replica.
 - `trace_backend.py` — the Shake backend (self-executing verifying traces).
