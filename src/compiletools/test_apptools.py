@@ -1164,6 +1164,21 @@ class TestAddArguments:
         assert args.prepend_cppflags == []
         assert args.append_cflags == []
 
+    def test_compose_xxpend_list_dedup_and_place(self):
+        """The pure composition core: prepend leftmost, append rightmost,
+        extras dedup against the list accumulated so far (append sees base
+        plus prepend contributions) but NOT against their own group —
+        within-group duplicates survive, matching stage_xxpend."""
+        base = ["b1", "b2"]
+        composed = apptools._compose_xxpend_list(
+            base,
+            ["p1", "b1", "p1"],  # b1 already in base; p1 duplicated in-group
+            ["a1", "p1", "b2"],  # p1 now present via prepend; b2 via base
+        )
+        assert composed == ["p1", "p1", "b1", "b2", "a1"]
+        assert base == ["b1", "b2"], "inputs must not be mutated"
+        assert apptools._compose_xxpend_list(None, None, None) == []
+
     def test_add_xxpend_with_destname(self):
         cap = configargparse.ArgParser(default_config_files=[])
         _add_xxpend_argument(cap, "linkflags", destname="ldflags", extrahelp="Synonym.")

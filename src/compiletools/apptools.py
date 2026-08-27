@@ -1099,14 +1099,10 @@ _PROJECT_MACRO_DEPRECATION_MESSAGE = (
 )
 
 
-def _do_xxpend_list(args, name, destname=None):
-    """List-typed sibling of ``build_state.stage_xxpend`` for attrs whose
-    canonical form is a Python list (e.g. ct-cake's hook-script lists),
-    not a flag string. The base attr is read from
-    ``args.<destname or name.replace('-','_')>``, and the prepend/append
-    sources from ``args.{prepend,append}_<destname or name.replace('-','_')>``.
+def _compose_xxpend_list(base, prepends, appends) -> list:
+    """Pure dedup-and-place composition for list-typed xxpend attrs.
 
-    Mirrors the stage's dedup-and-place rule (prepend leftmost,
+    Mirrors ``build_state.stage_xxpend``'s rule (prepend leftmost,
     append rightmost, skip duplicates already present in the list
     accumulated so far — prepend extras merge into the base before the
     append pass, so append entries dedup against base *plus* prepend
@@ -1115,22 +1111,39 @@ def _do_xxpend_list(args, name, destname=None):
     get the same composition semantics that compiler-flag slots have.
 
     Dedup compares elements verbatim, so a caller whose conf surface can
-    spell one logical entry more than one way normalises the three attrs
-    before calling (see the pkg-config call site).
+    spell one logical entry more than one way normalises the three inputs
+    before calling (see the pkg-config call site). None inputs read as
+    empty; no argument is mutated.
+    """
+    composed = list(base or [])
+    prepend_extras = [v for v in (prepends or []) if v not in composed]
+    if prepend_extras:
+        composed = prepend_extras + composed
+    append_extras = [v for v in (appends or []) if v not in composed]
+    if append_extras:
+        composed = composed + append_extras
+    return composed
+
+
+def _do_xxpend_list(args, name, destname=None):
+    """List-typed sibling of ``build_state.stage_xxpend`` for attrs whose
+    canonical form is a Python list (e.g. ct-cake's hook-script lists),
+    not a flag string. Reads the base attr from
+    ``args.<destname or name.replace('-','_')>`` and the prepend/append
+    sources from ``args.{prepend,append}_<same>``, then writes the
+    :func:`_compose_xxpend_list` composition back to the base attr — the
+    one namespace write in this pair.
     """
     dest = (destname or name).lower().replace("-", "_")
-    base = list(getattr(args, dest, []) or [])
-    for xx in ("prepend", "append"):
-        xxpendname = f"{xx}_{dest}"
-        xxpendattr = getattr(args, xxpendname, None) or []
-        extras = [v for v in xxpendattr if v not in base]
-        if not extras:
-            continue
-        if xx == "prepend":
-            base = extras + base
-        else:
-            base = base + extras
-    setattr(args, dest, base)
+    setattr(
+        args,
+        dest,
+        _compose_xxpend_list(
+            getattr(args, dest, []),
+            getattr(args, f"prepend_{dest}", None),
+            getattr(args, f"append_{dest}", None),
+        ),
+    )
 
 
 def _note_shadowed_bare_values(args, name, dest):
