@@ -337,9 +337,13 @@ class TestCompilationDatabase:
                         context=BuildContext(),
                     )
 
-                    # Use FindTargets to discover source files (following cake.py pattern)
+                    # Use FindTargets to discover source files (following the
+                    # discover_targets_and_reanchor merge pattern)
                     findtargets = compiletools.findtargets.FindTargets(args, context=BuildContext())
-                    findtargets.process(args)
+                    executabletargets, testtargets = findtargets.process()
+                    args.filename += executabletargets
+                    if testtargets:
+                        args.tests = (args.tests or []) + testtargets
 
                     # Verify that targets were found
                     assert hasattr(args, "filename") and args.filename, (

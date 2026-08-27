@@ -309,16 +309,20 @@ class TestFindTargetsStyles:
 class TestFindTargetsProcess:
     """Test FindTargets.process method."""
 
-    def test_process_populates_args(self):
-        """Test that process() adds targets to args.filename and args.tests."""
+    def test_process_returns_discovered_targets(self):
+        """process() returns the discovered pair and leaves args untouched —
+        merging into a namespace is the caller's job
+        (discover_targets_and_reanchor)."""
         args, findtargets = _make_findtargets("TestFindTargetsProcess")
         args.filename = []
         args.tests = None
-        findtargets.process(args, path=uth.cakedir())
+        executabletargets, testtargets = findtargets.process(path=uth.cakedir())
         # Should have found some executables and tests
-        assert len(args.filename) > 0
-        assert args.tests is not None
-        assert len(args.tests) > 0
+        assert len(executabletargets) > 0
+        assert len(testtargets) > 0
+        # No namespace writes from process() itself.
+        assert args.filename == []
+        assert args.tests is None
 
     def test_process_verbose(self):
         """Test that process() with verbose >= 2 prints style output."""
@@ -327,7 +331,7 @@ class TestFindTargetsProcess:
         args.filename = []
         args.tests = None
         # Should not raise
-        findtargets.process(args, path=uth.cakedir())
+        findtargets.process(path=uth.cakedir())
 
 
 class TestFindTargetsNoExemarkers:

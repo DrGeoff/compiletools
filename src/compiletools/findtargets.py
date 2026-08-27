@@ -326,20 +326,22 @@ class FindTargets:
         set_analyzer_args(args, context)
         self.namer = compiletools.namer.Namer(self._args, argv=argv, variant=variant, exedir=exedir, context=context)
 
-    def process(self, args, path=None):
-        """Put the output of __call__ into the args"""
-        executabletargets, testtargets = self(path)
-        args.filename += executabletargets
-        if testtargets:
-            if not args.tests:
-                args.tests = []
-            args.tests += testtargets
+    def process(self, path=None):
+        """Run discovery and return ``(executabletargets, testtargets)``.
 
-        if args.verbose >= 2:
+        Pure with respect to the caller: nothing is written onto any args
+        namespace here — the one production merge site is
+        ``discover_targets_and_reanchor``, which folds the returned pair
+        into its own namespace before re-anchoring.
+        """
+        executabletargets, testtargets = self(path)
+
+        if self._args.verbose >= 2:
             styleobj = IndentStyle()
             # Discovery classifies into these two buckets only; the library
             # slots reach the report from the conf tiers, not from here.
             styleobj(executabletargets, testtargets, [], [])
+        return executabletargets, testtargets
 
     def __call__(self, path=None):
         """Do the file system search and
@@ -495,7 +497,10 @@ def discover_targets_and_reanchor(args, context):
     rather than returning a half-anchored namespace.
     """
     for _round in range(_MAX_DISCOVERY_REANCHOR_ROUNDS):
-        FindTargets(args, context=context).process(args)
+        executabletargets, testtargets = FindTargets(args, context=context).process()
+        args.filename += executabletargets
+        if testtargets:
+            args.tests = (args.tests or []) + testtargets
         for attr in ("filename", "tests"):
             value = getattr(args, attr, None)
             if value:
