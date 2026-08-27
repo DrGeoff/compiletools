@@ -44,9 +44,9 @@ if TYPE_CHECKING:
 # ---- internal helpers ----
 
 
-def _compute_external_file_hash(filepath: str, hash_ops: dict[str, int]) -> str | None:
-    """Compute git blob hash for a file using git's algorithm."""
-    hash_ops["computed_hashes"] += 1
+def _compute_external_file_hash(filepath: str) -> str | None:
+    """Compute git blob hash for a file using git's algorithm. Pure IO read;
+    the diagnostics counter is credited by ``get_file_hash``."""
     try:
         with open(filepath, "rb") as f:
             content = f.read()
@@ -96,17 +96,25 @@ def _get_file_hash_impl(
     filepath: str,
     hashes: dict[str, str],
     reverse_hashes: dict[str, list[str]],
-    hash_ops: dict[str, int],
-) -> str:
-    """Core hash-lookup logic."""
+) -> tuple[str, str | None]:
+    """Core hash-lookup logic.
+
+    Returns ``(hash, counted_op)`` where ``counted_op`` names the
+    diagnostics counter this lookup should credit (``"registry_hits"``
+    for a direct registry hit, ``"computed_hashes"`` for an on-demand
+    compute, ``None`` for the git-root-relative fallback hit, which has
+    never been counted). The caller owns the counter dict; growing the
+    ``hashes``/``reverse_hashes`` registry on a computed miss is the
+    sanctioned memo behaviour and stays here.
+    """
     abs_path = wrappedos.realpath(filepath)
     result = hashes.get(abs_path)
 
     if result is not None:
-        hash_ops["registry_hits"] += 1
+        return result, "registry_hits"
 
     # If not found and path was relative, try relative to git root
-    if result is None and not os.path.isabs(filepath):
+    if not os.path.isabs(filepath):
         try:
             from compiletools.git_utils import find_git_root
 
@@ -115,21 +123,20 @@ def _get_file_hash_impl(
             result = hashes.get(abs_git_path)
         except Exception:
             pass
+        if result is not None:
+            return result, None
 
-    # If still not found, compute hash on-demand
-    if result is None:
-        if not os.path.exists(abs_path):
-            raise FileNotFoundError(f"global_hash_registry encountered File not found: {filepath}")
+    # Still not found: compute hash on-demand
+    if not os.path.exists(abs_path):
+        raise FileNotFoundError(f"global_hash_registry encountered File not found: {filepath}")
 
-        result = _compute_external_file_hash(abs_path, hash_ops)
-        if result:
-            hashes[abs_path] = result
-            if result not in reverse_hashes:
-                reverse_hashes[result] = [abs_path]
-        else:
-            raise FileNotFoundError(f"global_hash_registry encountered Failed to compute hash for file: {filepath}")
-
-    return result
+    result = _compute_external_file_hash(abs_path)
+    if not result:
+        raise FileNotFoundError(f"global_hash_registry encountered Failed to compute hash for file: {filepath}")
+    hashes[abs_path] = result
+    if result not in reverse_hashes:
+        reverse_hashes[result] = [abs_path]
+    return result, "computed_hashes"
 
 
 def _get_filepath_by_hash_impl(
@@ -170,7 +177,10 @@ def get_file_hash(filepath: str, context: BuildContext) -> str:
     if context.file_hashes is None:
         load_hashes(context=context)
     assert context.file_hashes is not None and context.reverse_hashes is not None
-    return _get_file_hash_impl(filepath, context.file_hashes, context.reverse_hashes, context.hash_ops)
+    result, counted_op = _get_file_hash_impl(filepath, context.file_hashes, context.reverse_hashes)
+    if counted_op is not None:
+        context.hash_ops[counted_op] += 1
+    return result
 
 
 def get_tracked_files(context: BuildContext) -> dict[str, str]:
