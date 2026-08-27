@@ -67,6 +67,21 @@ class BazelBackend(BuildBackend):
     _RULES_CC_VERSION = "0.1.5"
     _BAZELRC_FILENAME = ".bazelrc"
 
+    def __init__(self, args, hunter, *, context=None):
+        super().__init__(args, hunter, context=context)
+        # Workspace staging plans: reset by generate() (each call re-walks
+        # the graph and may produce a different pair set) and consumed by
+        # the _materialise_* passes during _execute_build. The pch/obj
+        # plans are populated at generate() time; the pcm plan is ALSO
+        # appended to during _execute_build itself (the gcc module-mapper
+        # paths run before _materialise_pcm_stagings). Declared here so a
+        # run that populates none of them sees empty plans instead of
+        # needing defensive getattr. Owned-accumulator exception per the
+        # purity convention.
+        self._pch_staging_pairs: list[tuple[str, str]] = []
+        self._pcm_staging_pairs: list[tuple[str, str]] = []
+        self._obj_staging_pairs: list[tuple[str, str]] = []
+
     @classmethod
     def _self_manages_exe_placement(cls) -> bool:
         # Bazel has its own content-addressable action cache and emits
@@ -133,18 +148,18 @@ class BazelBackend(BuildBackend):
         # re-walks the graph and may produce a different set of
         # cas-pchdir → workspace pairs (a PCH source change shifts the
         # cmd_hash and therefore the rel-under-cache path).
-        self._pch_staging_pairs: list[tuple[str, str]] = []
+        self._pch_staging_pairs = []
         # Same for PCM (.gcm/.pcm) artefacts: when cas-pcmdir lives
         # outside the workspace, every .gcm path is outside too and
         # bazel's `additional_compiler_inputs` validation rejects it.
         # _bazel_pcm_workspace_relative records cas → workspace pairs
         # here for _materialise_pcm_stagings to hardlink at execute time.
-        self._pcm_staging_pairs: list[tuple[str, str]] = []
+        self._pcm_staging_pairs = []
         # Same for cas-objdir interface .o artefacts: bazel cc_binary
         # srcs validation rejects absolute .o paths outside the
         # workspace, so an external cas-objdir must be staged before
         # named-module interface .o files can be linked.
-        self._obj_staging_pairs: list[tuple[str, str]] = []
+        self._obj_staging_pairs = []
 
         if output is not None:
             # When writing to a file handle, try to determine the base directory
@@ -669,11 +684,14 @@ class BazelBackend(BuildBackend):
         Idempotent and safe under concurrent ct-cake invocations
         targeting the same workspace.
 
-        ``_pcm_staging_pairs`` is populated during ``generate()``;
-        unit tests that drive ``_execute_build`` directly without
-        going through generate first get a no-op via ``getattr``.
+        ``_pcm_staging_pairs`` is populated during ``generate()`` and,
+        for the gcc module-mapper paths, during ``_execute_build`` itself
+        (``_write_bazel_module_mapper`` /
+        ``_route_module_prebuild_through_bazel_mapper`` /
+        ``_module_iface_bmi_path`` all run before this). Declared empty
+        at construction, so a run that populates neither is a no-op.
         """
-        for src, dst in getattr(self, "_pcm_staging_pairs", ()):
+        for src, dst in self._pcm_staging_pairs:
             self._stage_into_bazel_workspace(src, dst)
 
     def _materialise_obj_stagings(self) -> None:
@@ -681,8 +699,12 @@ class BazelBackend(BuildBackend):
         ``_bazel_obj_workspace_relative``. Mirror of
         ``_materialise_pcm_stagings`` for cas-objdir interface .o
         artefacts. Called from ``_execute_build`` AFTER
-        ``_prebuild_aux_artefacts`` has populated cas-objdir."""
-        for src, dst in getattr(self, "_obj_staging_pairs", ()):
+        ``_prebuild_aux_artefacts`` has populated cas-objdir.
+
+        ``_obj_staging_pairs`` is populated during ``generate()``.
+        Declared empty at construction, so a direct ``_execute_build``
+        (unit tests, warm-cache short circuits) is a no-op."""
+        for src, dst in self._obj_staging_pairs:
             self._stage_into_bazel_workspace(src, dst)
 
     def _bazel_pch_inputs_and_copts(
@@ -767,11 +789,11 @@ class BazelBackend(BuildBackend):
         the ``.gch`` source files now exist. Idempotent and safe under
         concurrent ct-cake invocations targeting the same workspace.
 
-        ``_pch_staging_pairs`` is populated by ``generate()``; unit
-        tests that call ``_execute_build`` directly (without going
-        through generate first) get a no-op via ``getattr``.
+        ``_pch_staging_pairs`` is populated by ``generate()``.
+        Declared empty at construction, so a direct ``_execute_build``
+        (unit tests, warm-cache short circuits) is a no-op.
         """
-        for src, dst in getattr(self, "_pch_staging_pairs", ()):
+        for src, dst in self._pch_staging_pairs:
             self._stage_into_bazel_workspace(src, dst)
 
     @staticmethod
