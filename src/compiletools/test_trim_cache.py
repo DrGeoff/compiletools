@@ -4211,7 +4211,9 @@ class TestReclaimOrphanTemps:
         assert stats["orphan_temp_bytes_freed"] == 0
         assert stats["failed"] == 0
         assert len(trimmer._retry) == 1
-        assert trimmer._retry[0].removed_key == "orphan_temps_removed"
+        queued_item, queued_stats = trimmer._retry[0]
+        assert queued_item.removed_key == "orphan_temps_removed"
+        assert queued_stats is stats, "the retry credit must target the pass's own stats dict"
 
         trimmer.retry_failed()
 

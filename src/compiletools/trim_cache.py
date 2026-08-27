@@ -111,7 +111,7 @@ _CAS_EXE_SUFFIXES: tuple[str, ...] = (".exe", ".a", ".so")
 # The sidecar families deposited beside each cas-exedir entry: the
 # source-identity manifest (``ct-cas-publish``), the content-keyed
 # test-success marker, and the content-addressed JUnit report. Evicted
-# with their artefact (``_RetryItem.credit_success``) and orphan-swept
+# with their artefact (``_RetryItem.remove_sidecars``) and orphan-swept
 # once the artefact is gone (``_reap_sidecars_in``).
 _EXE_SIDECAR_SUFFIXES: tuple[str, ...] = (".manifest", ".result", ".xml")
 
@@ -241,26 +241,26 @@ _load_pch_manifest = _load_cmd_hash_manifest
 _load_pcm_manifest = _load_cmd_hash_manifest
 
 
-@dataclass
+@dataclass(frozen=True)
 class _RetryItem:
-    """One removal attempt's bookkeeping, shared by the first pass and the
+    """One removal attempt, as a value: shared by the first pass and the
     single retry pass (``retry_failed``).
 
-    ``stats`` is held by reference: crediting mutates the same per-cache dict
-    that ``main()`` later prints, whether the credit lands on the first
-    attempt or on retry. ``removed_key`` names the per-cache success counter
-    (``removed`` for objdir/exedir, ``dirs_removed`` for pchdir/pcmdir,
-    category counters for the orphan/budget passes). ``bytes_key`` optionally
-    names a per-category byte counter credited alongside ``bytes_freed``.
-    ``unmet_key`` (budget pass only) names the counter to reconcile on RETRY
-    success — a failed budget eviction is conservatively left in the unmet
-    tally at queue time, so a later successful retry must subtract it.
+    Carries no reference to any stats dict — the pool's counter dict is
+    passed explicitly wherever a credit is applied (``_credit_success``),
+    and travels beside the item in the retry queue. ``removed_key`` names
+    the per-cache success counter (``removed`` for objdir/exedir,
+    ``dirs_removed`` for pchdir/pcmdir, category counters for the
+    orphan/budget passes). ``bytes_key`` optionally names a per-category
+    byte counter credited alongside ``bytes_freed``. ``unmet_key`` (budget
+    pass only) names the counter to reconcile on RETRY success — a failed
+    budget eviction is conservatively left in the unmet tally at queue
+    time, so a later successful retry must subtract it.
     """
 
     path: str
     is_dir: bool
     size: int
-    stats: dict
     removed_key: str
     unlink_kwargs: dict = field(default_factory=dict)
     bytes_key: str | None = None
@@ -273,24 +273,35 @@ class _RetryItem:
             return _safe_locked_rmtree(self.path)
         return _safe_locked_unlink(self.path, **self.unlink_kwargs)
 
-    def credit_success(self, *, dry_run: bool = False) -> None:
-        """Apply the success bookkeeping: counters, bytes, exe sidecars.
-
-        ``dry_run`` credits the counters (a would-be removal) without the
-        sidecar unlinks — dry-run must never touch disk.
-        """
-        self.stats[self.removed_key] += 1
-        self.stats["bytes_freed"] += self.size
+    def success_delta(self) -> dict[str, int]:
+        """Pure counter delta for one successful (or would-be) removal."""
+        delta = {self.removed_key: 1, "bytes_freed": self.size}
         if self.bytes_key:
-            self.stats[self.bytes_key] += self.size
-        if self.cleanup_sidecars and not dry_run:
-            # Sidecar files are best-effort cleanup — don't count towards
-            # bytes_freed (small, ignore failure).
-            for sidecar_suffix in _EXE_SIDECAR_SUFFIXES:
-                try:
-                    os.remove(self.path + sidecar_suffix)
-                except OSError:
-                    pass
+            delta[self.bytes_key] = self.size
+        return delta
+
+    def remove_sidecars(self) -> None:
+        """Best-effort exe sidecar cleanup — the IO half of a success.
+
+        Not counted towards ``bytes_freed`` (small, ignore failure).
+        """
+        for sidecar_suffix in _EXE_SIDECAR_SUFFIXES:
+            try:
+                os.remove(self.path + sidecar_suffix)
+            except OSError:
+                pass
+
+
+def _credit_success(stats: dict, item: _RetryItem, *, dry_run: bool = False) -> None:
+    """Apply *item*'s success delta to the caller's *stats* dict.
+
+    ``dry_run`` credits the counters (a would-be removal) without the
+    sidecar unlinks — dry-run must never touch disk.
+    """
+    for key, increment in item.success_delta().items():
+        stats[key] += increment
+    if item.cleanup_sidecars and not dry_run:
+        item.remove_sidecars()
 
 
 def _entry_mtime_size(entry):
@@ -575,10 +586,12 @@ class CacheTrimmer:
         # When --json is set, human/progress text goes to stderr so stdout
         # stays pure JSON. Default: stdout (non-JSON human mode).
         self._human = sys.stderr if getattr(args, "json", False) else sys.stdout
-        # Retry list: _RetryItem entries that failed their first removal
-        # attempt are queued here and retried once in retry_failed() after all
-        # caches have been trimmed. See _RetryItem for field semantics.
-        self._retry: list[_RetryItem] = []
+        # Retry queue: (item, pool_stats) pairs that failed their first
+        # removal attempt, retried once in retry_failed() after all caches
+        # have been trimmed. The pool's stats dict rides beside the item so
+        # a retry credit lands in the same counters the first pass used —
+        # _RetryItem itself is a pure value. See _RetryItem for semantics.
+        self._retry: list[tuple[_RetryItem, dict]] = []
 
     def _workers_for(self, path):
         """Worker-thread count for scanning ``path``.
@@ -597,20 +610,22 @@ class CacheTrimmer:
             return self.parallel
         return 1
 
-    def _remove_or_queue_retry(self, item: _RetryItem, *, fail_noun: str = "") -> bool:
+    def _remove_or_queue_retry(self, item: _RetryItem, stats: dict, *, fail_noun: str = "") -> bool:
         """Attempt one lock-safe removal; on failure queue for the single
         post-pass retry (``retry_failed``).
 
-        On success the item's stats are credited immediately. ``fail_noun``
-        is spliced into the failure message (e.g. ``"orphan temp "``) so the
-        per-pass wording is preserved. Returns True on first-pass success.
+        On success the caller's *stats* dict is credited immediately; on
+        failure the pair is queued so the retry credit lands in the same
+        dict. ``fail_noun`` is spliced into the failure message (e.g.
+        ``"orphan temp "``) so the per-pass wording is preserved. Returns
+        True on first-pass success.
         """
         if item.attempt():
-            item.credit_success()
+            _credit_success(stats, item)
             return True
         if self.verbose >= 1:
             print(f"  Failed to remove {fail_noun}{item.path} (will retry)", file=self._human)
-        self._retry.append(item)
+        self._retry.append((item, stats))
         return False
 
     # ------------------------------------------------------------------
@@ -754,11 +769,11 @@ class CacheTrimmer:
             if self.verbose >= 1:
                 action = "Would remove" if self.dry_run else "Removing"
                 print(f"  {action}: {path} ({_format_bytes(size)})", file=self._human)
-            item = _RetryItem(path=path, is_dir=False, size=size, stats=stats, removed_key="removed")
+            item = _RetryItem(path=path, is_dir=False, size=size, removed_key="removed")
             if self.dry_run:
-                item.credit_success(dry_run=True)
+                _credit_success(stats, item, dry_run=True)
             else:
-                self._remove_or_queue_retry(item)
+                self._remove_or_queue_retry(item, stats)
 
     # ------------------------------------------------------------------
     # PCH directory trimming
@@ -999,11 +1014,11 @@ class CacheTrimmer:
                 action = "Would remove" if self.dry_run else "Removing"
                 print(f"  {action}: {path} ({_format_bytes(total_size)})", file=self._human)
 
-            item = _RetryItem(path=path, is_dir=True, size=total_size, stats=stats, removed_key="dirs_removed")
+            item = _RetryItem(path=path, is_dir=True, size=total_size, removed_key="dirs_removed")
             if self.dry_run:
-                item.credit_success(dry_run=True)
+                _credit_success(stats, item, dry_run=True)
             else:
-                self._remove_or_queue_retry(item)
+                self._remove_or_queue_retry(item, stats)
 
         return stats
 
@@ -1105,11 +1120,11 @@ class CacheTrimmer:
                     path=path,
                     is_dir=False,
                     size=0,
-                    stats=stats,
                     removed_key="ca_siblings_removed",
                     unlink_kwargs={"require_same_inode_as": real},
                     cleanup_sidecars=True,
-                )
+                ),
+                stats,
             )
             if removed:
                 # The scan recorded the real entry's nlink WITH the sibling
@@ -1281,11 +1296,11 @@ class CacheTrimmer:
                     path=path,
                     is_dir=False,
                     size=size,
-                    stats=stats,
                     removed_key="removed",
                     unlink_kwargs={"skip_if_nlink_above": 1},
                     cleanup_sidecars=True,
-                )
+                ),
+                stats,
             )
 
         return stats
@@ -1301,8 +1316,9 @@ class CacheTrimmer:
         is printed, so reported numbers reflect the final post-retry state.
 
         On retry success: increment ``removed`` (or the entry's ``removed_key``)
-        and ``bytes_freed`` in the per-cache stats dict (stored by reference in
-        each retry entry).  When the entry carries an optional ``"bytes_key"``
+        and ``bytes_freed`` in the per-cache stats dict queued beside the
+        entry — the same dict the first-pass credit would have used.  When the
+        entry carries an optional ``"bytes_key"``
         (e.g. ``"orphan_temp_bytes_freed"`` for orphan-temp retries), that
         per-category counter is also incremented so it stays consistent with the
         direct-success path.  For exedir entries (``"cleanup_sidecars": True``)
@@ -1315,19 +1331,19 @@ class CacheTrimmer:
         At ``verbose >= 1`` a one-line note per retry outcome is written to
         ``self._human``.
         """
-        for item in self._retry:
+        for item, stats in self._retry:
             if item.attempt():
-                item.credit_success()
+                _credit_success(stats, item)
                 # Reconcile budget_unmet_bytes: a failed budget removal was
                 # conservatively left in the unmet tally.  On retry success the
                 # bytes are gone, so reduce the unmet counter by the entry's
                 # size (floor at 0 to guard against double-crediting).
                 if item.unmet_key:
-                    item.stats[item.unmet_key] = max(0, item.stats[item.unmet_key] - item.size)
+                    stats[item.unmet_key] = max(0, stats[item.unmet_key] - item.size)
                 if self.verbose >= 1:
                     print(f"  Retry succeeded: {item.path}", file=self._human)
             else:
-                item.stats["failed"] += 1
+                stats["failed"] += 1
                 if self.verbose >= 1:
                     print(f"  Retry failed (leaving in place): {item.path}", file=self._human)
 
@@ -1420,14 +1436,13 @@ class CacheTrimmer:
                     path=path,
                     is_dir=False,
                     size=size,
-                    stats=stats,
                     removed_key="orphan_temps_removed",
                     bytes_key="orphan_temp_bytes_freed",
                 )
                 if self.dry_run:
-                    item.credit_success(dry_run=True)
+                    _credit_success(stats, item, dry_run=True)
                 else:
-                    self._remove_or_queue_retry(item, fail_noun="orphan temp ")
+                    self._remove_or_queue_retry(item, stats, fail_noun="orphan temp ")
 
     def reclaim_orphan_sidecars(self, cache_root: str, stats: dict) -> None:
         """Remove orphaned sidecar files whose primary artefact is gone.
@@ -1697,14 +1712,13 @@ class CacheTrimmer:
                 path=dir_path,
                 is_dir=True,
                 size=total_size,
-                stats=stats,
                 removed_key="cmd_hash_dirs_removed",
                 bytes_key="cmd_hash_dir_bytes_freed",
             )
             if self.dry_run:
-                item.credit_success(dry_run=True)
+                _credit_success(stats, item, dry_run=True)
             else:
-                self._remove_or_queue_retry(item, fail_noun="orphan cmd_hash dir ")
+                self._remove_or_queue_retry(item, stats, fail_noun="orphan cmd_hash dir ")
 
     def _reap_empty_buckets(self, cache_root: str, stats: dict) -> None:
         """Best-effort removal of emptied 2-hex bucket dirs in an obj/exe CAS root.
@@ -1860,14 +1874,13 @@ class CacheTrimmer:
                 path=path,
                 is_dir=is_dir,
                 size=size,
-                stats=stats,
                 removed_key="budget_removed",
                 bytes_key="budget_bytes_freed",
                 unmet_key="budget_unmet_bytes",
                 unlink_kwargs=unlink_kwargs,
                 cleanup_sidecars=cleanup_sidecars,
             )
-            if self._remove_or_queue_retry(item):
+            if self._remove_or_queue_retry(item, stats):
                 total -= size
             # else: do NOT decrement total — for the unmet calc we
             # conservatively assume the entry stays (it may be reclaimed on
