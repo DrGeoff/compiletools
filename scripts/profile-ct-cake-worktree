@@ -42,9 +42,11 @@ def profile_ct_cake_in_worktree(
     stats_data = {}
 
     try:
-        sample_path = worktree_path / "src" / "compiletools" / "samples" / sample_dir
-        if not sample_path.exists():
-            print(f"    Sample directory not found: {sample_path}")
+        pkg_root = worktree_path / "src" / "compiletools"
+        candidates = [pkg_root / d / sample_dir for d in ("examples-end-to-end", "examples-features", "samples")]
+        sample_path = next((p for p in candidates if p.exists()), None)
+        if sample_path is None:
+            print(f"    Sample directory not found in any of: {[str(p) for p in candidates]}")
             return {}, False
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -57,6 +59,10 @@ def profile_ct_cake_in_worktree(
             # Set up environment for the worktree
             env = os.environ.copy()
             env["PYTHONPATH"] = str(worktree_path / "src")
+            env["PATH"] = str(worktree_path / ".venv" / "bin") + os.pathsep + env.get("PATH", "")
+            pkgs_dir = worktree_path / "src" / "compiletools" / "examples-features" / "pkgs"
+            if pkgs_dir.exists():
+                env["PKG_CONFIG_PATH"] = str(pkgs_dir)
 
             # PERFORMANCE OPTIMIZATION: Detect functional compiler once and set CXX
             # This eliminates expensive compiler detection (60%+ performance regression)
