@@ -441,7 +441,11 @@ class BuildBackend(abc.ABC):
             return cmd, None
 
         headers = [str(h) for h in self.hunter.header_dependencies(source)]
-        framework = compiletools.test_framework.detect_framework(headers, source)
+        framework = compiletools.test_framework.detect_framework(
+            headers + self._raw_include_tokens([source, *headers]),
+            source,
+            pkgconfig_packages=self._pkg_config_packages(source),
+        )
         if framework is None:
             if getattr(self.args, "verbose", 0) >= 1:
                 print(
@@ -452,6 +456,39 @@ class BuildBackend(abc.ABC):
 
         cmd.extend(framework.xml_argv(self._xml_path_for(exe_path)))
         return cmd, framework
+
+    def _raw_include_tokens(self, files: list[str]) -> list[str]:
+        """Union of raw ``#include`` operand tokens across *files*.
+
+        Framework detection is a property of the source text, so it must
+        see the tokens as written (``gtest/gtest.h``) — the resolved
+        header walk drops anything DirectHeaderDeps cannot find (system
+        and ``-isystem`` headers, exactly where test frameworks live).
+        Conditional-blind, matching the ``//#GIT=`` scan policy: a
+        framework include in a dead ``#if`` branch of a reached file is
+        honoured. ``analyze_file`` is content-hash cached, so the walk's
+        own analysis is reused. Files that don't exist are skipped — the
+        set comes from an already-completed dependency walk, so a miss
+        is a deleted-mid-build race, not an error worth failing on.
+        """
+        from compiletools.file_analyzer import analyze_file
+        from compiletools.global_hash_registry import get_file_hash
+
+        context = self.hunter.context
+        tokens: list[str] = []
+        for path in files:
+            if not compiletools.wrappedos.isfile(path):
+                continue
+            analysis = analyze_file(get_file_hash(path, context), context)
+            tokens.extend(str(inc["filename"]) for inc in analysis.includes)
+        return tokens
+
+    def _pkg_config_packages(self, source: str) -> list[str]:
+        """Package names from *source*'s ``//#PKG-CONFIG`` magic flags."""
+        import stringzilla as sz
+
+        magic = self.hunter.magicflags(source)
+        return [token for value in magic.get(sz.Str("PKG-CONFIG"), []) for token in str(value).split()]
 
     def _touch_result_marker(self, result_path: str) -> None:
         """Touch a test's success marker. No-op (without error) if result_path

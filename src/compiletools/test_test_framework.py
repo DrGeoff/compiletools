@@ -128,6 +128,59 @@ def test_xml_argv_path_with_spaces_is_passed_through_intact():
         assert any(weird in token for token in argv), (fw.id, argv)
 
 
+# --- detect_framework: pkg-config package channel -------------------------
+
+
+@pytest.mark.parametrize(
+    "package, expected_id",
+    [
+        ("gtest", "gtest"),
+        ("gtest_main", "gtest"),
+        ("doctest", "doctest"),
+        # Site-local wrapper packages embed the upstream name; substring
+        # matching is what catches them (the motivating downstream case).
+        ("cpp_doctest", "doctest"),
+        ("catch2", "catch2"),
+        ("catch2-with-main", "catch2"),
+    ],
+)
+def test_detect_framework_matches_pkgconfig_package(package, expected_id):
+    """A ``//#PKG-CONFIG`` package name alone identifies the framework —
+    no framework header needs to appear in the header channel."""
+    framework = detect_framework([], test_source="t.cpp", pkgconfig_packages=[package])
+    assert framework is not None
+    assert framework.id == expected_id
+
+
+def test_detect_framework_pkgconfig_unrelated_package_no_match():
+    framework = detect_framework([], test_source="t.cpp", pkgconfig_packages=["zlib"])
+    assert framework is None
+
+
+def test_detect_framework_header_and_pkgconfig_agreeing_is_single_match():
+    """Both channels naming the SAME framework must not trip the
+    multi-match error."""
+    framework = detect_framework(
+        ["/usr/include/gtest/gtest.h"],
+        test_source="t.cpp",
+        pkgconfig_packages=["gtest_main"],
+    )
+    assert framework is not None
+    assert framework.id == "gtest"
+
+
+def test_detect_framework_conflicting_channels_raise():
+    """Header channel says gtest, pkg-config channel says catch2: that is
+    a genuine two-framework signal and must raise like a two-header
+    conflict does."""
+    with pytest.raises(ValueError, match="multiple test frameworks"):
+        detect_framework(
+            ["/usr/include/gtest/gtest.h"],
+            test_source="t.cpp",
+            pkgconfig_packages=["catch2"],
+        )
+
+
 # --- TestFramework dataclass invariants -----------------------------------
 
 

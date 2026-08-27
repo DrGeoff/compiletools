@@ -20,10 +20,17 @@ from compiletools.testhelper import (
 )
 
 
-def _make_backend(tmpdir, *, source, headers, **arg_overrides):
+def _make_backend(tmpdir, *, source, headers, magicflags_map=None, **arg_overrides):
     """Wire a stub BuildBackend with one test source and a fixed header set."""
+    import compiletools.file_analyzer
+
     args = make_backend_args(tmpdir, tests=[source], **arg_overrides)
-    hunter = make_mock_hunter(sources=[source], headers=headers)
+    hunter = make_mock_hunter(sources=[source], headers=headers, magicflags_map=magicflags_map)
+    # Production contexts get analyzer args in HeaderDepsBase.__init__;
+    # the mock hunter's fresh BuildContext needs the same so
+    # _test_command_for's raw-include-token harvest can analyze real
+    # source files the tests write to disk.
+    compiletools.file_analyzer.set_analyzer_args(args, hunter.context)
     backend = make_stub_backend_class()(args=args, hunter=hunter)
     backend.namer = make_mock_namer(args)
     return backend, args
@@ -167,3 +174,79 @@ def test_returns_none_framework_when_unknown(tmp_path):
     cmd, exe, _, framework = _xml_cmd(str(tmp_path), "/src/test_plain.cpp", ["/usr/include/something_else.h"])
     assert framework is None
     assert cmd == [exe]
+
+
+# --- detection from source text (raw #include tokens) ----------------------
+#
+# Which framework a test uses is a property of the source text; include
+# RESOLUTION is irrelevant to it. DirectHeaderDeps only walks -I/CPATH
+# dirs, so a framework installed behind -isystem (or a plain system
+# include dir) never appears in header_dependencies() — detection must
+# still fire from the raw ``#include`` operand tokens.
+
+
+def _write(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(text)
+    return path
+
+
+def test_gtest_detected_from_unresolved_source_include_token(tmp_path):
+    """The source's own ``#include <gtest/gtest.h>`` must trigger gtest
+    detection even when the header never resolved (empty transitive
+    header set — the system-installed-gtest shape)."""
+    tmpdir = str(tmp_path)
+    source = _write(
+        os.path.join(tmpdir, "src", "test_foo.cpp"),
+        "#include <gtest/gtest.h>\nTEST(a, b) {}\n",
+    )
+    cmd, exe, expected_xml, framework = _xml_cmd(tmpdir, source, headers=[])
+    assert framework is not None and framework.id == "gtest"
+    assert cmd == [exe, f"--gtest_output=xml:{expected_xml}"]
+
+
+def test_framework_detected_from_walked_headers_raw_tokens(tmp_path):
+    """A framework include may live in a project header the walk DID
+    resolve (test -> helper.hpp -> <doctest/doctest.h>): the helper's raw
+    tokens must be scanned even though the doctest header itself never
+    resolved."""
+    tmpdir = str(tmp_path)
+    source = _write(
+        os.path.join(tmpdir, "src", "test_bar.cpp"),
+        '#include "helper_for_tests.hpp"\n',
+    )
+    helper = _write(
+        os.path.join(tmpdir, "src", "helper_for_tests.hpp"),
+        "#include <doctest/doctest.h>\n",
+    )
+    cmd, exe, expected_xml, framework = _xml_cmd(tmpdir, source, headers=[helper])
+    assert framework is not None and framework.id == "doctest"
+    assert cmd == [exe, "--reporters=junit", f"--out={expected_xml}"]
+
+
+def test_sitelocal_pkgconfig_package_detects_framework(tmp_path):
+    """A ``//#PKG-CONFIG=cpp_doctest`` magic flag identifies doctest even
+    when neither the source nor any walked header names a doctest
+    header (the downstream site-local wrapper-package shape)."""
+    import stringzilla as sz
+
+    tmpdir = str(tmp_path)
+    source = _write(
+        os.path.join(tmpdir, "src", "test_baz.cpp"),
+        "//#PKG-CONFIG=cpp_doctest\nint main() { return 0; }\n",
+    )
+    xml_dir = os.path.join(tmpdir, "xml")
+    backend, _ = _make_backend(
+        tmpdir,
+        source=source,
+        headers=[],
+        test_xml_dir=xml_dir,
+        variant="gcc.debug",
+        magicflags_map={sz.Str("PKG-CONFIG"): [sz.Str("cpp_doctest")]},
+    )
+    exe = _exe_path(backend, source)
+    cmd, framework = backend._test_command_for(source, exe)
+    assert framework is not None and framework.id == "doctest"
+    expected_xml = os.path.join(xml_dir, "gcc.debug", os.path.basename(exe) + ".xml")
+    assert cmd == [exe, "--reporters=junit", f"--out={expected_xml}"]

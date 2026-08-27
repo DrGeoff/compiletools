@@ -14,7 +14,13 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class TestFramework:
-    """A unit-test framework recognisable by its transitive headers.
+    """A unit-test framework recognisable by its include text or packages.
+
+    ``header_substrings`` match against header *texts*: raw ``#include``
+    operand tokens and resolved transitive header paths (both spellings
+    of the same source-text property). ``pkgconfig_substrings`` match
+    against ``//#PKG-CONFIG`` package names, catching site-local wrapper
+    packages (e.g. a ``cpp_doctest`` package that vendors doctest).
 
     ``xml_argv_template`` tokens may contain the literal substring
     ``{path}``; ``xml_argv()`` formats it with the per-test XML output
@@ -29,9 +35,15 @@ class TestFramework:
     id: str
     header_substrings: tuple[str, ...]
     xml_argv_template: tuple[str, ...]
+    pkgconfig_substrings: tuple[str, ...] = ()
 
     def xml_argv(self, path: str) -> list[str]:
         return [token.format(path=path) for token in self.xml_argv_template]
+
+    def matches(self, header_texts: list[str], pkgconfig_packages: list[str]) -> bool:
+        return any(sub in text for sub in self.header_substrings for text in header_texts) or any(
+            sub in pkg for sub in self.pkgconfig_substrings for pkg in pkgconfig_packages
+        )
 
 
 KNOWN_FRAMEWORKS: tuple[TestFramework, ...] = (
@@ -39,36 +51,46 @@ KNOWN_FRAMEWORKS: tuple[TestFramework, ...] = (
         id="gtest",
         header_substrings=("gtest/gtest.h",),
         xml_argv_template=("--gtest_output=xml:{path}",),
+        pkgconfig_substrings=("gtest",),
     ),
     TestFramework(
         id="doctest",
         header_substrings=("doctest/doctest.h", "doctest.h"),
         xml_argv_template=("--reporters=junit", "--out={path}"),
+        pkgconfig_substrings=("doctest",),
     ),
     TestFramework(
         id="catch2",
         header_substrings=("catch2/catch_all.hpp", "catch2/catch.hpp", "catch.hpp"),
         xml_argv_template=("--reporter", "junit", "--out", "{path}"),
+        pkgconfig_substrings=("catch2",),
     ),
 )
 
 
 def detect_framework(
-    transitive_headers: Iterable[str],
+    header_texts: Iterable[str],
     test_source: str,
+    pkgconfig_packages: Iterable[str] = (),
 ) -> TestFramework | None:
-    """Return the unique ``TestFramework`` matching this test's headers.
+    """Return the unique ``TestFramework`` this test's source text names.
 
-    A framework matches when *any* of its ``header_substrings`` appears
-    as a substring of *any* path in ``transitive_headers``.
+    A framework matches when any of its ``header_substrings`` appears as
+    a substring of any string in ``header_texts`` (raw ``#include``
+    operand tokens and/or resolved header paths -- which framework a
+    test uses is a property of the source text, so callers should feed
+    the raw tokens rather than only the resolved subset), or when any of
+    its ``pkgconfig_substrings`` appears in any ``pkgconfig_packages``
+    name.
 
     Returns ``None`` when no framework matches; raises ``ValueError``
-    on multi-match (the test transitively pulls in two frameworks at
-    once -- silently picking one would lose data, so callers must
-    disambiguate, typically by fixing include paths).
+    on multi-match (the signals name two frameworks at once -- silently
+    picking one would lose data, so callers must disambiguate, typically
+    by fixing include paths or magic flags).
     """
-    headers = list(transitive_headers)
-    matched = [fw for fw in KNOWN_FRAMEWORKS if any(any(sub in h for sub in fw.header_substrings) for h in headers)]
+    texts = list(header_texts)
+    packages = list(pkgconfig_packages)
+    matched = [fw for fw in KNOWN_FRAMEWORKS if fw.matches(texts, packages)]
     if len(matched) > 1:
         ids = ", ".join(fw.id for fw in matched)
         raise ValueError(f"{test_source}: multiple test frameworks detected ({ids}); disambiguate include paths")

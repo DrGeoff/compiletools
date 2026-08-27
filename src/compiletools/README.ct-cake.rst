@@ -1157,12 +1157,21 @@ doctest     ``--reporters=junit --out=PATH``
 Catch2      ``--reporter junit --out PATH``
 ==========  ===================================================
 
-Detection trips on whether ``gtest/gtest.h``, ``doctest/doctest.h``
-(or bare ``doctest.h``), or ``catch2/catch_all.hpp`` /
-``catch2/catch.hpp`` / ``catch.hpp`` appears in each test's
-transitive header set. A test that pulls in two framework headers
-at once is rejected with an error naming both — disambiguate by
-fixing the include paths. A test that matches none runs normally
+Which framework a test uses is a property of its source text, so
+detection reads the raw ``#include`` operand tokens of the test
+source and every header it transitively includes — a framework
+installed as a system package (reachable only via ``-isystem`` or the
+default system include dirs) is detected even though the dependency
+walk never resolves its headers. Detection trips on whether
+``gtest/gtest.h``, ``doctest/doctest.h`` (or bare ``doctest.h``), or
+``catch2/catch_all.hpp`` / ``catch2/catch.hpp`` / ``catch.hpp``
+appears among those tokens or among the resolved header paths. A
+``//#PKG-CONFIG`` package whose name contains ``gtest``, ``doctest``
+or ``catch2`` is a second, independent signal, catching site-local
+wrapper packages (e.g. a ``cpp_doctest`` package that vendors
+doctest). A test whose signals name two different frameworks at once
+is rejected with an error naming both — disambiguate by fixing the
+include paths or magic flags. A test that matches none runs normally
 and produces no XML; a warning is emitted at ``-v`` and above.
 
 The XML argv is appended *after* the exe_path so prefix tools like

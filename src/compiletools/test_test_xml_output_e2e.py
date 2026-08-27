@@ -58,7 +58,7 @@ def _make_config(tmpdir):
     return config_name
 
 
-def _run_cake(source, config_name, xml_dir):
+def _run_cake(source, config_name, xml_dir, extra_argv=()):
     """Drive ct-cake on a single test source with ``--test-xml-dir``.
 
     ``--no-file-locking`` is set because ct-cake's link rule shells out to
@@ -76,6 +76,7 @@ def _run_cake(source, config_name, xml_dir):
             f"--test-xml-dir={xml_dir}",
             "--no-auto",
             "--no-file-locking",
+            *extra_argv,
         ]
     )
 
@@ -130,6 +131,32 @@ def test_doctest_fixture_emits_xml_with_doctest_argv():
 
 
 @uth.requires_functional_compiler
+def test_catch2_fixture_emits_xml_with_catch2_argv():
+    """Same as gtest/doctest, but for Catch2's four-token argv shape
+    (``--reporter junit --out PATH``)."""
+    with uth.TempDirContext():
+        tmpdir = os.getcwd()
+        source = _setup_sample(tmpdir, "test_stub_catch2.cpp")
+        # The registry keeps the stub header under a vendor-root extra
+        # level (catch2/catch2/catch_all.hpp); stage it so the stub's
+        # #include "catch2/catch_all.hpp" resolves from the source dir.
+        os.makedirs(os.path.join(tmpdir, "catch2"), exist_ok=True)
+        shutil.copy2(
+            os.path.join(uth.example_path("test_xml_output"), "catch2", "catch2", "catch_all.hpp"),
+            os.path.join(tmpdir, "catch2", "catch_all.hpp"),
+        )
+        config_name = _make_config(tmpdir)
+        xml_dir = os.path.join(tmpdir, "junit")
+
+        _run_cake(source, config_name, xml_dir)
+
+        expected_xml = os.path.join(xml_dir, _variant_for(config_name), "test_stub_catch2.xml")
+        assert os.path.exists(expected_xml), f"missing {expected_xml}"
+        with open(expected_xml) as f:
+            assert "<testsuites>" in f.read()
+
+
+@uth.requires_functional_compiler
 def test_unknown_framework_runs_without_xml_or_error():
     """A test source that includes nothing the detector recognises
     must run normally, produce no XML file, and not raise."""
@@ -143,6 +170,35 @@ def test_unknown_framework_runs_without_xml_or_error():
 
         unexpected_xml = os.path.join(xml_dir, _variant_for(config_name), "test_unknown_framework.xml")
         assert not os.path.exists(unexpected_xml), "unknown-framework test must NOT write XML"
+
+
+@uth.requires_functional_compiler
+def test_gtest_reachable_only_via_isystem_is_detected():
+    """The downstream "inert in this repo" shape: gtest lives behind
+    ``-isystem`` (a system package), so DirectHeaderDeps -- which only
+    walks ``-I``/CPATH dirs -- never resolves ``gtest/gtest.h`` and the
+    resolved transitive header set carries no framework signal. Detection
+    must fire from the source's raw ``#include`` token instead, and the
+    XML must be emitted."""
+    with uth.TempDirContext():
+        tmpdir = os.getcwd()
+        source = _setup_sample(tmpdir, "test_stub_gtest.cpp")
+        sysinc = os.path.join(tmpdir, "sysinc")
+        os.makedirs(os.path.join(sysinc, "gtest"))
+        shutil.copy2(
+            os.path.join(uth.example_path("test_xml_output"), "gtest", "gtest.h"),
+            os.path.join(sysinc, "gtest", "gtest.h"),
+        )
+        config_name = _make_config(tmpdir)
+        xml_dir = os.path.join(tmpdir, "junit")
+
+        _run_cake(source, config_name, xml_dir, extra_argv=[f"--append-CXXFLAGS=-isystem {sysinc}"])
+
+        expected_xml = os.path.join(xml_dir, _variant_for(config_name), "test_stub_gtest.xml")
+        assert os.path.exists(expected_xml), (
+            f"missing {expected_xml}; detection ignored the raw #include token "
+            f"and the -isystem-only gtest went undetected"
+        )
 
 
 @uth.requires_functional_compiler
