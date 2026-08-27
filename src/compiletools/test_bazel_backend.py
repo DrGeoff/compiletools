@@ -1365,3 +1365,92 @@ class TestBazelNamedModuleHandling:
             "-Mno-modules must not be injected into .bazelrc when there are no "
             "named-module GCC artefacts (_module_iface_gcm is empty)"
         )
+
+
+class TestRouteModulePrebuildThroughBazelMapper:
+    """Pin _route_module_prebuild_through_bazel_mapper's graph rewrite.
+
+    Previously covered only by the environment-gated cross-backend e2e
+    matrix (needs bazel on PATH + gcc); this pins the fast-suite contract:
+    the module compile rule STORED IN THE GRAPH gets its -fmodule-mapper=
+    token repointed at the workspace mapper, and non-module compile rules
+    are left alone. Asserts through graph.get_rule so it stays valid
+    whether the rewrite mutates in place or replaces the rule.
+    """
+
+    def _make_backend(self):
+        args = MagicMock()
+        args.bindir = "bin"
+        backend = BazelBackend(args=args, hunter=MagicMock())
+        backend._module_compiler_kind = "gcc"
+        backend._module_pcm_cache_root = "/cas/pcm"
+        backend._module_iface_obj = {"math": "obj/math.o"}
+        backend._module_iface_gcm = {}  # empty: the .gcm makedirs pre-create loop is a no-op
+        return backend
+
+    def test_module_compile_mapper_flag_is_rewritten_in_the_stored_graph_rule(self, tmp_path):
+        backend = self._make_backend()
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="obj/math.o",
+                inputs=["math.cppm"],
+                command=[
+                    "g++",
+                    "-fmodules-ts",
+                    "-fmodule-mapper=/abs/.module-mapper.txt",
+                    "-c",
+                    "math.cppm",
+                    "-o",
+                    "obj/math.o",
+                ],
+                rule_type="compile",
+            )
+        )
+        graph.add_rule(
+            BuildRule(
+                output="obj/main.o",
+                inputs=["main.cpp"],
+                command=[
+                    "g++",
+                    "-fmodule-mapper=/abs/.module-mapper.txt",
+                    "-c",
+                    "main.cpp",
+                    "-o",
+                    "obj/main.o",
+                ],
+                rule_type="compile",
+            )
+        )
+        backend._graph = graph
+
+        backend._route_module_prebuild_through_bazel_mapper(str(tmp_path))
+
+        expected = os.path.join(str(tmp_path), backend._BAZEL_MODULE_MAPPER_BASENAME)
+        stored = graph.get_rule("obj/math.o")
+        assert stored is not None and stored.command is not None
+        assert f"-fmodule-mapper={expected}" in stored.command
+        assert "-fmodule-mapper=/abs/.module-mapper.txt" not in stored.command
+        untouched = graph.get_rule("obj/main.o")
+        assert untouched is not None and untouched.command is not None
+        assert "-fmodule-mapper=/abs/.module-mapper.txt" in untouched.command
+
+    def test_rewrite_skipped_entirely_for_non_gcc_module_state(self, tmp_path):
+        backend = self._make_backend()
+        backend._module_compiler_kind = "clang"
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="obj/math.o",
+                inputs=["math.cppm"],
+                command=["g++", "-fmodule-mapper=/abs/.module-mapper.txt", "-c", "math.cppm", "-o", "obj/math.o"],
+                rule_type="compile",
+            )
+        )
+        backend._graph = graph
+
+        backend._route_module_prebuild_through_bazel_mapper(str(tmp_path))
+
+        stored = graph.get_rule("obj/math.o")
+        assert stored is not None and stored.command is not None
+        assert "-fmodule-mapper=/abs/.module-mapper.txt" in stored.command

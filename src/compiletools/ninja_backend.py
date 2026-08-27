@@ -162,7 +162,7 @@ class NinjaBackend(BuildBackend):
                 # test_ninja_framework_test_failure_preserves_xml.
                 compile_command = None
                 if rule.rule_type == RuleType.COMPILE and not is_module_iface:
-                    compile_command = rule.command + ["-MMD", "-MF", rule.output + ".d"]
+                    compile_command = [*rule.command, "-MMD", "-MF", rule.output + ".d"]
                 cmd_str = self._recipe_command_str(rule, compile_command=compile_command)
                 f.write(f"  cmd = {cmd_str}\n")
             f.write("\n")

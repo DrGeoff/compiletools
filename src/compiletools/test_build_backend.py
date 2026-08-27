@@ -2712,6 +2712,19 @@ class TestComputeLinkSignature:
         )
         assert compute_link_signature(rule1) != compute_link_signature(rule2)
 
+    def test_signature_bytes_are_pinned_so_field_type_changes_cannot_mass_relink(self):
+        """The signature feeds the persisted .ct-sig files: any byte change
+        re-keys every cached link artefact (a fleet-wide mass re-link).
+        json.dumps renders list- and tuple-backed rule fields identically,
+        so this digest must survive BuildRule sequence-type changes."""
+        rule = BuildRule(
+            output="bin/main",
+            inputs=["obj/b.o", "obj/a.o"],
+            command=["g++", "-o", "bin/main", "obj/a.o", "obj/b.o"],
+            rule_type="link",
+        )
+        assert compute_link_signature(rule) == "dfbb8a03d6c2d5c39d6493dc06c3ccf30e55f907"  # pragma: allowlist secret
+
 
 class TestDefaultClean:
     """Test the default clean() method on BuildBackend."""

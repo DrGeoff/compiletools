@@ -36,6 +36,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 
 import compiletools.apptools
@@ -121,7 +122,7 @@ class TraceStore:
             json.dump(data, f, indent=2, sort_keys=True)
 
 
-def _canonicalize_cmd_for_hash(cmd: list[str], anchor_root: str) -> list[str]:
+def _canonicalize_cmd_for_hash(cmd: Sequence[str], anchor_root: str) -> list[str]:
     """Anchor-relative every path token in *cmd* for stable cross-workspace hashing.
 
     Two passes are needed because path-bearing flags appear in two forms:

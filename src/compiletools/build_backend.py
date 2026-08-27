@@ -23,7 +23,7 @@ import shlex
 import shutil
 import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from types import MappingProxyType
 
 import stringzilla as sz
@@ -660,7 +660,9 @@ class BuildBackend(abc.ABC):
                 # latent today because affected scenarios have matching
                 # cwds, but a real defect once cas-pchdir/pcmdir is shared
                 # across workspaces with subdir invocations.
-                execute_compile_rule(rule.output, rule.command, self.args, skip_if_exists=skip_if_exists, cwd=rule.cwd)
+                execute_compile_rule(
+                    rule.output, list(rule.command), self.args, skip_if_exists=skip_if_exists, cwd=rule.cwd
+                )
             else:
                 # gcc's shell-pipeline header-unit form does its own producer-side
                 # rename inside the pipeline; atomic_link's outer rewrite no-ops
@@ -1955,7 +1957,7 @@ class BuildBackend(abc.ABC):
         self._graph = graph
         return graph
 
-    def _wrap_compile_cmd(self, command: list[str], cwd: str | None = None) -> str:
+    def _wrap_compile_cmd(self, command: Sequence[str], cwd: str | None = None) -> str:
         """Return the command string for a compile rule, lock-wrapped if needed.
 
         Locates ``-o target`` in the command by index (not position) so a
@@ -1985,12 +1987,12 @@ class BuildBackend(abc.ABC):
         if not getattr(self.args, "file_locking", False) or self._filesystem_type is None:
             return cd_prefix + shlex.join(command)
 
-        compile_part = command[:o_idx] + command[o_idx + 2 :]
+        compile_part = [*command[:o_idx], *command[o_idx + 2 :]]
         target = command[o_idx + 1]
 
         return wrap_compile_with_lock(cd_prefix + shlex.join(compile_part), target, self.args, self._filesystem_type)
 
-    def _wrap_link_cmd(self, command: list[str]) -> str:
+    def _wrap_link_cmd(self, command: Sequence[str]) -> str:
         """Return the command string for a link rule, lock-wrapped if needed.
 
         Unlike _wrap_compile_cmd, the command is passed through as-is

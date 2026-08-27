@@ -21,6 +21,7 @@ import hashlib
 import json
 import os
 from collections import deque
+from collections.abc import Sequence
 from typing import NamedTuple
 
 import compiletools.wrappedos
@@ -58,7 +59,7 @@ class ObjInfo(NamedTuple):
 _COMPILE_ORDERING_INPUT_EXTS = (".gch", ".pcm", ".gcm", ".o", ".stamp")
 
 
-def ordering_inputs_for_compile(inputs: list[str]) -> list[str]:
+def ordering_inputs_for_compile(inputs: Sequence[str]) -> list[str]:
     """Return inputs that must remain as ordering deps in CAS-only mode.
 
     See ``_COMPILE_ORDERING_INPUT_EXTS`` for the complete list of artefact
@@ -158,7 +159,7 @@ def _write_link_sig(output: str, sig: str) -> None:
         f.write(sig)
 
 
-def split_compound_args(args: list[str]) -> list[str]:
+def split_compound_args(args: Sequence[str]) -> list[str]:
     """Split compound space-separated arguments (e.g. CXXFLAGS as one string).
 
     Uses shlex (via ``tokenize_flags_or_raise``) to correctly handle quoted
@@ -188,7 +189,7 @@ gcc consuming cmake's downstream ``-MD`` as the missing file argument
 to ``-include``)."""
 
 
-def extract_copts(command: list[str], *, strip_includes: bool = False) -> list[str]:
+def extract_copts(command: Sequence[str], *, strip_includes: bool = False) -> list[str]:
     """Extract compiler flags from a compile command.
 
     Strips the compiler binary, -c, source file, -o, and output file.
@@ -244,7 +245,7 @@ def extract_copts(command: list[str], *, strip_includes: bool = False) -> list[s
     return copts
 
 
-def extract_include_paths(command: list[str]) -> list[str]:
+def extract_include_paths(command: Sequence[str]) -> list[str]:
     """Extract include-path arguments from a compile command.
 
     Recognized forms (path is returned, flag is dropped):
@@ -302,7 +303,7 @@ def extract_include_paths(command: list[str]) -> list[str]:
     return paths
 
 
-def extract_linkopts(command: list[str], object_files: set[str]) -> list[str]:
+def extract_linkopts(command: Sequence[str], object_files: set[str]) -> list[str]:
     """Extract linker flags from a link command.
 
     Strips the linker binary, -o, output executable, and object file paths.
