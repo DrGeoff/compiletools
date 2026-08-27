@@ -26,8 +26,11 @@ import time
 from collections.abc import Mapping
 from types import MappingProxyType
 
+import stringzilla as sz
+
 import compiletools.apptools
 import compiletools.build_apply
+import compiletools.build_timer
 import compiletools.cas_publish
 import compiletools.diagnostics
 import compiletools.file_analyzer
@@ -347,9 +350,7 @@ class BuildBackend(abc.ABC):
     @property
     def _timer(self):
         """Return the enabled BuildTimer from context, or None."""
-        from compiletools.build_timer import get_timer
-
-        return get_timer(self.context)
+        return compiletools.build_timer.get_timer(self.context)
 
     @property
     def _build_state(self):
@@ -471,22 +472,18 @@ class BuildBackend(abc.ABC):
         set comes from an already-completed dependency walk, so a miss
         is a deleted-mid-build race, not an error worth failing on.
         """
-        from compiletools.file_analyzer import analyze_file
-        from compiletools.global_hash_registry import get_file_hash
-
         context = self.hunter.context
         tokens: list[str] = []
         for path in files:
             if not compiletools.wrappedos.isfile(path):
                 continue
-            analysis = analyze_file(get_file_hash(path, context), context)
+            file_hash = compiletools.global_hash_registry.get_file_hash(path, context)
+            analysis = compiletools.file_analyzer.analyze_file(file_hash, context)
             tokens.extend(str(inc["filename"]) for inc in analysis.includes)
-        return tokens
+        return list(dict.fromkeys(tokens))
 
     def _pkg_config_packages(self, source: str) -> list[str]:
         """Package names from *source*'s ``//#PKG-CONFIG`` magic flags."""
-        import stringzilla as sz
-
         magic = self.hunter.magicflags(source)
         return [token for value in magic.get(sz.Str("PKG-CONFIG"), []) for token in str(value).split()]
 
@@ -971,8 +968,6 @@ class BuildBackend(abc.ABC):
         # Discover PCH headers from magic flags and create PCH compile rules.
         # When pchdir is configured, .gch files are placed in a shared
         # content-addressable cache: <pchdir>/<command_hash>/<header>.gch
-        import stringzilla as sz
-
         pchdir = getattr(self.args, "cas_pchdir", None)
         self._pch_gch_paths: dict[str, str] = {}  # header_abs -> gch_output
         self._pch_include_dirs: dict[str, str] = {}  # header_abs -> -I dir
@@ -1296,8 +1291,6 @@ class BuildBackend(abc.ABC):
         # ``-isystem`` immutability contract still applies (see
         # ``_extract_system_include_path_flags``). Order-preserving
         # dedup so the precompile probe sees a stable flag list.
-        import stringzilla as sz
-
         magic_system_includes: list[str] = []
         _seen_magic_si: set[str] = set()
 
@@ -1706,21 +1699,20 @@ class BuildBackend(abc.ABC):
                 # only happens on rc==0, so a cas .xml always corresponds to
                 # a .result-worthy run). A separate ct-cas-publish rule
                 # materialises the workspace copy on cache-hit builds.
-                rule_output = result_path
+                user_xml = None
+                cas_xml = None
                 success_copies: tuple[tuple[str, str], ...] = ()
+                if xml_bucket_dir and framework is not None:
+                    user_xml = self._xml_path_for(exe_path)
+                    if cas_exe_path is not None and cas_exe_path != exe_path:
+                        cas_xml = cas_exe_path + ".xml"
+                        success_copies = ((user_xml, cas_xml),)
+                        graph.add_rule(self._build_publish_rule(cas_xml, user_xml))
+                rule_output = cas_xml or user_xml or result_path
                 # runtests aggregates the user-facing artefact: the
                 # materialised workspace XML when one exists, else the
                 # rule's own output.
-                runtests_dep = rule_output
-                if xml_bucket_dir and framework is not None:
-                    user_xml = self._xml_path_for(exe_path)
-                    rule_output = user_xml
-                    runtests_dep = user_xml
-                    if cas_exe_path is not None and cas_exe_path != exe_path:
-                        cas_xml = cas_exe_path + ".xml"
-                        rule_output = cas_xml
-                        success_copies = ((user_xml, cas_xml),)
-                        graph.add_rule(self._build_publish_rule(cas_xml, user_xml))
+                runtests_dep = user_xml or result_path
                 test_rule = BuildRule(
                     output=rule_output,
                     inputs=rule_inputs,
@@ -3036,8 +3028,6 @@ class BuildBackend(abc.ABC):
         verification at consume time as the safety net for the rare
         hash-collision case (see ``_pcm_command_hash`` docstring).
         """
-        import stringzilla as sz
-
         deplist = self.hunter.header_dependencies(source_filename)
         dep_hash = self.namer.compute_dep_hash(deplist)
         try:
@@ -3076,8 +3066,6 @@ class BuildBackend(abc.ABC):
         same path it would for a non-module clang TU; this keeps cache
         addressing consistent across compiler swaps.
         """
-        import stringzilla as sz
-
         deplist = self.hunter.header_dependencies(filename)
         prerequisites = [filename] + sorted([str(dep) for dep in deplist])
         magicflags = self.hunter.magicflags(filename)
@@ -3179,8 +3167,6 @@ class BuildBackend(abc.ABC):
         """Create a compile BuildRule for a single source file."""
         deplist = self.hunter.header_dependencies(filename)
         prerequisites = [filename] + sorted([str(dep) for dep in deplist])
-
-        import stringzilla as sz
 
         magicflags = self.hunter.magicflags(filename)
 
@@ -3308,8 +3294,6 @@ class BuildBackend(abc.ABC):
           uses these source paths in cycle-error messages so the user
           can find the contradictory ``//#PKG-CONFIG=`` annotations.
         """
-        import stringzilla as sz
-
         per_file_ldflags = []
         ldflags_source_files = []
         hard_orderings = []

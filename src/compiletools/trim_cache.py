@@ -108,6 +108,13 @@ class _CmdHashPoolSpec:
 # must never be enumerated as trim or report candidates.
 _CAS_EXE_SUFFIXES: tuple[str, ...] = (".exe", ".a", ".so")
 
+# The sidecar families deposited beside each cas-exedir entry: the
+# source-identity manifest (``ct-cas-publish``), the content-keyed
+# test-success marker, and the content-addressed JUnit report. Evicted
+# with their artefact (``_RetryItem.credit_success``) and orphan-swept
+# once the artefact is gone (``_reap_sidecars_in``).
+_EXE_SIDECAR_SUFFIXES: tuple[str, ...] = (".manifest", ".result", ".xml")
+
 # Matchers that identify orphaned producer temp files inside CAS bucket / cmd_hash
 # dirs. Two sources:
 #   • ``build_backend`` PCH/PCM precompile temp: ``<artefact>.compiletools.tmp.<pid>``
@@ -278,11 +285,8 @@ class _RetryItem:
             self.stats[self.bytes_key] += self.size
         if self.cleanup_sidecars and not dry_run:
             # Sidecar files are best-effort cleanup — don't count towards
-            # bytes_freed (small, ignore failure). The ``.result`` sidecar is
-            # the per-CAS-entry test-success marker touched by the in-build
-            # test rules in CAS-only mode; ``.xml`` is the content-addressed
-            # JUnit report the test rule deposits beside it.
-            for sidecar_suffix in (".manifest", ".result", ".xml"):
+            # bytes_freed (small, ignore failure).
+            for sidecar_suffix in _EXE_SIDECAR_SUFFIXES:
                 try:
                     os.remove(self.path + sidecar_suffix)
                 except OSError:
@@ -333,7 +337,7 @@ def _split_exe_leaf_name(name):
     underscore so basenames containing underscores stay intact. Returns
     ``(basename, link_key, suffix)`` with ``suffix`` drawn from
     ``_CAS_EXE_SUFFIXES``, or ``None`` for non-artefact files (lock sidecars,
-    ``.manifest`` / ``.result``, unparseable names).
+    the ``_EXE_SIDECAR_SUFFIXES`` families, unparseable names).
     """
     matched_suffix = next((s for s in _CAS_EXE_SUFFIXES if name.endswith(s)), None)
     if matched_suffix is None:
@@ -1269,11 +1273,9 @@ class CacheTrimmer:
                 continue
             # I4: re-stat under the lock and skip if a peer publish elevated
             # nlink between the initial scan and this unlink.
-            # cleanup_sidecars: the ``.manifest``/``.result`` sidecars are
+            # cleanup_sidecars: the ``_EXE_SIDECAR_SUFFIXES`` sidecars are
             # best-effort cleanup on success — not counted towards
-            # bytes_freed (small, ignore failure). The ``.result`` sidecar
-            # is the per-CAS-entry test-success marker touched by the
-            # in-build test rules in CAS-only mode.
+            # bytes_freed (small, ignore failure).
             self._remove_or_queue_retry(
                 _RetryItem(
                     path=path,
@@ -1304,7 +1306,7 @@ class CacheTrimmer:
         (e.g. ``"orphan_temp_bytes_freed"`` for orphan-temp retries), that
         per-category counter is also incremented so it stays consistent with the
         direct-success path.  For exedir entries (``"cleanup_sidecars": True``)
-        also best-effort-remove the ``.manifest``/``.result`` sidecars.
+        also best-effort-remove the ``_EXE_SIDECAR_SUFFIXES`` sidecars.
 
         On retry failure: increment ``failed`` — the path is intentionally left
         in place (a peer build is holding it; it will be retried on the next
@@ -1458,16 +1460,17 @@ class CacheTrimmer:
 
         * **Primary-gone gate**: only a sidecar whose artefact is absent is
           reaped — nothing the cache still serves loses a sidecar.
-        * **Age floor** (1 day): for ``.manifest`` / ``.result`` this defends
-          against a concurrent republish — ``cas_publish`` rewrites the manifest
-          with ``open("w")`` (mtime=now), so a freshly written sidecar fails the
-          floor and is kept. (A ``.lock`` mtime is unreliable for liveness, so
-          there the floor is only defence-in-depth — see below.)
+        * **Age floor** (1 day): for the ``_EXE_SIDECAR_SUFFIXES`` families
+          this defends against a concurrent republish — ``cas_publish``
+          rewrites the manifest with ``open("w")`` (mtime=now), so a freshly
+          written sidecar fails the floor and is kept. (A ``.lock`` mtime is
+          unreliable for liveness, so there the floor is only
+          defence-in-depth — see below.)
         * **Live-holder probe for ``.lock``**: a ``.lock``'s mtime is set at
           creation, not on acquisition, so age cannot prove "no holder".
           ``_lock_unheld`` takes the lock non-blocking; only an unheld lock is
-          reaped. ``.manifest`` / ``.result`` carry no lock semantics and are
-          unlinked directly.
+          reaped. The ``_EXE_SIDECAR_SUFFIXES`` families carry no lock
+          semantics and are unlinked directly.
         * **Live-local-holder probe for ``.lockdir``**: ``_lockdir_unheld``
           reads the recorded holder and keeps the lockdir only if a *local*
           process with that pid is still alive — never SSH-ing a remote holder
@@ -1501,7 +1504,7 @@ class CacheTrimmer:
 
         # Variant-root level (level 0): stray sidecars sitting directly under
         # cache_root — orphan ``.lock`` / ``.lock.lock`` doubles / ``.lockdir`` /
-        # ``.manifest`` / ``.result`` — were previously never scanned (A4). The
+        # the ``_EXE_SIDECAR_SUFFIXES`` families — were previously never scanned (A4). The
         # live per-variant ``.ct-traces.json`` TraceStore is inherently safe: its
         # ``.json`` suffix matches no sidecar family, so it is never selected.
         self._reap_sidecars_in(top_entries, stats, cutoff)
@@ -1538,14 +1541,10 @@ class CacheTrimmer:
                 suffix = ".lockdir"
             elif name.endswith(".lock"):
                 suffix = ".lock"
-            elif name.endswith(".manifest"):
-                suffix = ".manifest"
-            elif name.endswith(".result"):
-                suffix = ".result"
-            elif name.endswith(".xml"):
-                suffix = ".xml"
             else:
-                continue
+                suffix = next((s for s in _EXE_SIDECAR_SUFFIXES if name.endswith(s)), None)
+                if suffix is None:
+                    continue
 
             primary = entry.path[: -len(suffix)]
             if os.path.exists(primary):
@@ -1914,8 +1913,8 @@ class CacheTrimmer:
 
         Returns ``[(path, mtime, size, protected), ...]`` where ``protected`` is
         ``True`` when ``st_nlink > 1`` (a published / hard-linked reference is
-        still live). Non-artefact files (lock sidecars, ``.manifest``/``.result``)
-        are skipped via the suffix match.
+        still live). Non-artefact files (lock sidecars, the
+        ``_EXE_SIDECAR_SUFFIXES`` families) are skipped via the suffix match.
         """
         units: list[tuple[str, float, int, bool]] = []
         try:

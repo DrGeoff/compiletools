@@ -5,6 +5,7 @@ multiple modules for efficient string processing and preprocessor analysis.
 """
 
 import stringzilla
+from stringzilla import Str
 
 
 def strip_sz(sz_str: "stringzilla.Str", chars: str = " \t\r\n") -> "stringzilla.Str":
@@ -79,8 +80,6 @@ def join_lines_strip_backslash_sz(lines: list["stringzilla.Str"]) -> "stringzill
     2. Python's str.join() is dramatically faster than StringZilla concatenation
     3. The single conversion at the end minimizes overhead
     """
-    from stringzilla import Str
-
     if not lines:
         return Str("")
 
@@ -107,8 +106,6 @@ def concat_sz(*parts) -> "stringzilla.Str":
     Performance note: Uses Python's optimized string joining then converts once
     to StringZilla.Str to minimize conversion overhead while maintaining SIMD benefits.
     """
-    from stringzilla import Str
-
     return Str("".join(str(p) for p in parts))
 
 
@@ -127,8 +124,6 @@ def replace_sz(sz_str: "stringzilla.Str", old: str, new: str) -> "stringzilla.St
     Uses StringZilla's find() for SIMD-accelerated searching and concatenation
     to build the result efficiently.
     """
-    from stringzilla import Str
-
     if not old:
         return sz_str
 
@@ -154,8 +149,6 @@ def parse_d_flags_sz(sz_str: "stringzilla.Str") -> list[tuple["stringzilla.Str",
     Extracts macro definitions in format: -D MACRONAME or -D MACRONAME=VALUE
     Returns list of (macro_name, macro_value) tuples.
     """
-    from stringzilla import Str
-
     macros = []
     pos = 0
 

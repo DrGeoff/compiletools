@@ -3,6 +3,8 @@ import os
 import sys
 from collections.abc import Callable
 
+import stringzilla as sz
+
 import compiletools.apptools
 import compiletools.apptools_pkgconfig
 import compiletools.diagnostics
@@ -82,8 +84,6 @@ class Hunter:
 
     @instance_cache
     def _extractSOURCE(self, realpath):
-        import stringzilla as sz
-
         # Use magicflags() (which goes through _parse_magic cache) so that
         # _parse() runs for every file during dependency expansion.  This
         # ensures _final_macro_states carries the effective compile flags

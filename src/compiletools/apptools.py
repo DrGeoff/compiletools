@@ -911,8 +911,6 @@ def extract_command_line_macros_sz(args, flag_sources_sz, verbose=0):
     Returns:
         Dict[sz.Str, sz.Str]: macro_name -> macro_value mapping
     """
-    import stringzilla as sz
-
     macros = {}
 
     for flag_name_sz in flag_sources_sz:

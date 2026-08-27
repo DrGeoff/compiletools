@@ -16,6 +16,8 @@ import tempfile
 from collections.abc import Callable
 from functools import lru_cache
 
+from stringzilla import Str
+
 
 def _umask_default_file_mode() -> int:
     """Return the file mode a normal ``open(path, 'w')`` would create now.
@@ -454,8 +456,6 @@ def safe_read_text_file(filepath, encoding="utf-8", force_no_mmap=False, respect
         OSError: If file cannot be read
         FileNotFoundError: If file doesn't exist
     """
-    from stringzilla import Str
-
     # Optional lock barrier - wait for any active writers
     if respect_locks and lock_args:
         from compiletools.locking import FileLock

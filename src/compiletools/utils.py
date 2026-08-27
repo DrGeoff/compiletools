@@ -12,6 +12,8 @@ from itertools import chain
 from pathlib import Path
 from typing import Any, Union
 
+import stringzilla as sz
+
 import compiletools.wrappedos
 
 # Sentinel env_var value stamped on a configargparse action to suppress
@@ -138,8 +140,6 @@ def split_command_cached(command_line: str) -> list[str]:
 @functools.cache
 def split_command_cached_sz(command_line_sz) -> list:
     """StringZilla-aware version returning StringZilla.Str list"""
-    import stringzilla as sz
-
     str_results = shlex.split(command_line_sz.decode("utf-8"))
     return [sz.Str(s) for s in str_results]
 

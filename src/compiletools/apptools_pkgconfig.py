@@ -1,9 +1,10 @@
 """pkg-config helpers (leaf module).
 
 Extracted from :mod:`compiletools.apptools` as a behavior-preserving facade
-split. This module is an import-time leaf: at module scope it imports only stdlib
-plus :mod:`compiletools.wrappedos` and :mod:`compiletools.utils` (themselves
-leaves). It MUST NOT import ``compiletools.apptools`` -- doing so would
+split. This module is an import-time leaf: at module scope it imports only
+stdlib and third-party libs plus :mod:`compiletools.wrappedos` and
+:mod:`compiletools.utils` (themselves leaves). It MUST NOT import
+``compiletools.apptools`` -- doing so would
 reintroduce the very cycle this split removes.
 
 :mod:`compiletools.git_utils` is off limits at module scope for the same
@@ -67,6 +68,8 @@ import subprocess
 import sys
 import warnings
 from typing import Literal
+
+import stringzilla as sz
 
 import compiletools.wrappedos
 from compiletools.utils import split_command_cached, split_command_cached_sz, tokenize_flags_or_raise
@@ -670,8 +673,6 @@ def tokenize_pkg_config_output_sz(text_sz, *, package: str, option: str, verbose
         return split_command_cached_sz(text_sz)
     except ValueError as exc:
         _warn_pkg_config_tokenize_degraded(package, option, str(exc), verbose)
-        import stringzilla as sz
-
         return [sz.Str(s) for s in str(text_sz).split()]
 
 

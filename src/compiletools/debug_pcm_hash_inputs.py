@@ -38,6 +38,8 @@ from __future__ import annotations
 import json
 import sys
 
+import stringzilla as sz
+
 import compiletools.apptools
 import compiletools.headerdeps
 import compiletools.hunter
@@ -71,8 +73,6 @@ def _gather_inputs(args, hunter, source_filename: str, stage: str) -> dict:
     here too. ``test_debug_pcm_hash_inputs_matches_production_path``
     is the drift guard.
     """
-    import stringzilla as sz
-
     import compiletools.global_hash_registry as ghr
     import compiletools.namer
     from compiletools.apptools import (
