@@ -81,6 +81,12 @@ class Hunter:
         self.headerdeps = headerdeps
         self.magicparser = magicparser
         self.context = context
+        # Source-discovery memos served by getsources()/gettestsources().
+        # None = not computed; [] is a valid computed result. huntsource()
+        # recomputes unconditionally, refreshing _hunted_sources and
+        # invalidating _test_sources.
+        self._hunted_sources: list[str] | None = None
+        self._test_sources: list[str] | None = None
 
     @instance_cache
     def _extractSOURCE(self, realpath):
@@ -535,11 +541,9 @@ class Hunter:
             # runtime. Cast through ``__func__`` so the type checker sees the
             # function object directly rather than the MethodType wrapper.
             self.__dict__.pop(method.__func__.cache_attr, None)  # type: ignore[attr-defined]
-        # Clear project-level source discovery caches (these are set dynamically)
-        if hasattr(self, "_hunted_sources"):
-            del self._hunted_sources
-        if hasattr(self, "_test_sources"):
-            del self._test_sources
+        # Clear project-level source discovery memos.
+        self._hunted_sources = None
+        self._test_sources = None
         # Clear the lazily-built CmdlineMacroIndex so it picks up any
         # subsequent change to magicparser._initial_macro_state.cmdline_origin
         # (e.g. when args are reparsed mid-test).
@@ -722,19 +726,21 @@ class Hunter:
 
         return headers
 
-    def huntsource(self):
-        """Discover all source files from command line arguments and their dependencies.
+    def huntsource(self) -> list[str]:
+        """Recompute the project source list, refresh the memo ``getsources()``
+        serves, invalidate the ``gettestsources()`` memo, and return the sorted
+        list. ``getsources()`` is the memoising facade; call this directly to
+        force a re-hunt.
 
         This method analyzes the files specified in args.filename, args.static,
         args.dynamic, and args.tests, then expands each to include all source
-        files it depends on. Results are cached for subsequent getsources() calls.
+        files it depends on.
         """
-        # For simplicity and test reliability, always recompute
-        # This prevents test isolation issues while maintaining functionality
-        if hasattr(self, "_hunted_sources"):
-            del self._hunted_sources
-        if hasattr(self, "_test_sources"):
-            del self._test_sources
+        # Invalidate both memos up front so a mid-hunt raise leaves the
+        # "not computed" state, never a stale pre-failure answer (fail-safe,
+        # not fail-stale, for any caller that catches and reads afterwards).
+        self._hunted_sources = None
+        self._test_sources = None
 
         if self.args.verbose >= 5:
             print("Hunter::huntsource - Discovering all project sources")
@@ -754,7 +760,7 @@ class Hunter:
             self._hunted_sources = []
             if self.args.verbose >= 5:
                 print("Hunter::huntsource - No initial sources found")
-            return
+            return self._hunted_sources
 
         initial_sources = compiletools.utils.ordered_unique(initial_sources)
         if self.args.verbose >= 6:
@@ -798,11 +804,14 @@ class Hunter:
 
         # Cache the results as sorted absolute paths
         self._hunted_sources = sorted(all_sources)  # all_sources already contains realpaths
+        self._test_sources = None
 
         if self.args.verbose >= 5:
             print(f"Hunter::huntsource - Discovered {len(self._hunted_sources)} total sources")
 
-    def getsources(self):
+        return self._hunted_sources
+
+    def getsources(self) -> list[str]:
         """Get all discovered source files.
 
         Returns the list of source files discovered by huntsource().
@@ -811,20 +820,22 @@ class Hunter:
         Returns:
             List of absolute paths to all source files
         """
-        if not hasattr(self, "_hunted_sources"):
+        if self._hunted_sources is None:
             self.huntsource()
+        assert self._hunted_sources is not None  # huntsource() always populates it
         return self._hunted_sources
 
-    def gettestsources(self):
+    def gettestsources(self) -> list[str]:
         """Get test source files specifically.
 
         Returns only the source files that came from args.tests expansion.
-        Calls huntsource() automatically if not already called.
+        Expands args.tests on first call and memoises; huntsource()
+        invalidates the memo.
 
         Returns:
             List of absolute paths to test source files
         """
-        if not hasattr(self, "_test_sources"):
+        if self._test_sources is None:
             # Expand only test sources
             test_sources = set()
             if getattr(self.args, "tests", None):

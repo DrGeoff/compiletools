@@ -162,20 +162,20 @@ class TestHunterClearCache:
         assert compiletools.utils.split_command_cached_sz.cache_info().currsize == 0
 
     def test_clear_instance_cache(self, hunter_factory):
-        """Test clear_instance_cache clears functools.cache and dynamic attrs (lines 167-175)."""
+        """Test clear_instance_cache clears functools.cache and the source-discovery memos."""
         hntr, _args = hunter_factory()
 
-        # Set dynamic attributes that clear_instance_cache should remove
+        # Set the memos to computed values that clear_instance_cache should reset
         hntr._hunted_sources = ["fake.cpp"]
         hntr._test_sources = ["fake_test.cpp"]
 
         hntr.clear_instance_cache()
 
-        assert not hasattr(hntr, "_hunted_sources")
-        assert not hasattr(hntr, "_test_sources")
+        assert hntr._hunted_sources is None
+        assert hntr._test_sources is None
 
     def test_clear_instance_cache_without_dynamic_attrs(self, hunter_factory):
-        """Test clear_instance_cache when dynamic attrs don't exist (lines 172-174 else branches)."""
+        """clear_instance_cache on a freshly constructed Hunter (memos still None) must not raise."""
         hntr, _args = hunter_factory()
         # Should not raise even without _hunted_sources/_test_sources
         hntr.clear_instance_cache()
@@ -295,11 +295,13 @@ class TestHunterHuntSource:
         assert len(hntr._hunted_sources) >= 1
 
     def test_huntsource_clears_previous_results(self, hunter_factory):
-        """Test huntsource clears cached results on re-call (lines 234-237)."""
+        """huntsource() replaces both memos on re-call: the source memo is
+        recomputed and the test-sources memo is invalidated to None."""
         hntr, _args = hunter_factory()
         hntr._hunted_sources = ["old.cpp"]
         hntr._test_sources = ["old_test.cpp"]
         hntr.huntsource()
+        assert hntr._test_sources is None
         assert "old.cpp" not in hntr._hunted_sources
 
     def test_gettestsources_no_tests(self, hunter_factory):
@@ -340,6 +342,46 @@ class TestHunterHuntSource:
         hntr.huntsource()
         # Should still work without duplicates
         assert len(hntr._hunted_sources) >= 1
+
+    def test_getsources_reuses_the_memo_from_an_explicit_huntsource(self, hunter_factory, monkeypatch):
+        """getsources() must not re-expand when huntsource() already populated the memo."""
+        hntr, args = hunter_factory()
+        realpath = uth.example_file("simple/helloworld_cpp.cpp")
+        args.filename = [realpath]
+
+        calls = []
+        original = hntr.required_source_files
+
+        def counting_delegate(filename):
+            calls.append(filename)
+            return original(filename)
+
+        monkeypatch.setattr(hntr, "required_source_files", counting_delegate)
+
+        hunted = hntr.huntsource()
+        count_after_huntsource = len(calls)
+
+        sourced = hntr.getsources()
+
+        assert len(calls) == count_after_huntsource, "getsources() must not re-expand after an explicit huntsource()"
+        assert sourced == hunted
+
+    def test_huntsource_invalidates_the_test_sources_memo(self, hunter_factory):
+        """A later huntsource() must invalidate a gettestsources() memo taken
+        under a stale args.tests, not leave the first hunt's answer in place."""
+        hntr, args = hunter_factory()
+        old_test = uth.example_file("simple/helloworld_cpp.cpp")
+        new_test = uth.example_file("simple/helloworld_c.c")
+        args.tests = [old_test]
+        old_result = hntr.gettestsources()
+        assert any("helloworld_cpp.cpp" in s for s in old_result)
+
+        args.tests = [new_test]
+        hntr.huntsource()
+
+        new_result = hntr.gettestsources()
+        assert any("helloworld_c.c" in s for s in new_result)
+        assert not any("helloworld_cpp.cpp" in s for s in new_result)
 
 
 class TestHunterVerbose:
