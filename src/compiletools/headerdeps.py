@@ -243,9 +243,6 @@ class DirectHeaderDeps(HeaderDepsBase):
     def __init__(self, args, context, *, extra_include_dirs=None):
         HeaderDepsBase.__init__(self, args, context=context, extra_include_dirs=extra_include_dirs)
 
-        # Keep track of ancestor paths so that we can do header cycle detection
-        self.ancestor_paths = []
-
         # Cache core macros and gitroot anchor (computed once, reused
         # for all files). Both are seeded here so their lifecycles are
         # visibly co-managed -- _initialize_includes_and_macros only
@@ -323,6 +320,17 @@ class DirectHeaderDeps(HeaderDepsBase):
         # nothing to scope here.  ``compiler_identity=""`` is passed
         # explicitly so the constructor call enumerates every build-context
         # field deliberately.
+        #
+        # Walk-scoped owned binding -- category (b) exception (owned
+        # accumulator) per the purity convention in src/compiletools/CLAUDE.md:
+        # exactly three writers -- this re-init (run by the constructor,
+        # process(), and generatetree given a TRUTHY macro_cache_key), and
+        # _create_include_list's hit/miss updates. Nothing outside this class
+        # reads or writes it (the magicflags seam passes frozenset keys only).
+        # One reader of a post-walk value exists: generatetree with a falsy
+        # key skips the re-init and walks under whatever binding the
+        # preceding process() left. A _process_impl cache hit skips the
+        # evolution entirely, which is sound for the same reason.
         self.includes = self._includes
         self.defined_macros = MacroState(
             self._core_macros,
@@ -469,6 +477,9 @@ class DirectHeaderDeps(HeaderDepsBase):
         - Variant cache: For files with conditionals, keyed by (content_hash, macro_key)
 
         This dramatically improves cache hit rate since most files are invariant.
+
+        Advances ``self.defined_macros`` on both the hit path (effects replay) and
+        the miss path; see the writer-set note in ``_initialize_includes_and_macros``.
         """
         ctx = self.context
         content_hash = get_file_hash(realpath, ctx)
@@ -520,10 +531,13 @@ class DirectHeaderDeps(HeaderDepsBase):
 
         return include_list
 
-    def _generate_tree_impl(self, realpath, node=None):
+    def _generate_tree_impl(self, realpath, node=None, ancestor_paths=None):
         """Return a tree that describes the header includes
         The node is passed recursively, however the original caller
         does not need to pass it in.
+
+        ``ancestor_paths`` is the cycle-detection stack, threaded through the
+        recursion; the root call allocates it.
         """
 
         if self.args.verbose >= 4:
@@ -531,16 +545,18 @@ class DirectHeaderDeps(HeaderDepsBase):
 
         if node is None:
             node = tree.tree()
+        if ancestor_paths is None:
+            ancestor_paths = []
 
         # Stop cycles
-        if realpath in self.ancestor_paths:
+        if realpath in ancestor_paths:
             if self.args.verbose >= 7:
                 print(
                     "DirectHeaderDeps::_generate_tree_impl is breaking the cycle on ",
                     realpath,
                 )
             return node
-        self.ancestor_paths.append(realpath)
+        ancestor_paths.append(realpath)
 
         # This next line is how you create the node in the tree
         node[realpath]
@@ -553,17 +569,16 @@ class DirectHeaderDeps(HeaderDepsBase):
         for include in self._create_include_list(realpath):
             trialpath = self._find_include(include, cwd)
             if trialpath:
-                self._generate_tree_impl(trialpath, node[realpath])
+                self._generate_tree_impl(trialpath, node[realpath], ancestor_paths)
                 if self.args.verbose >= 5:
                     print("DirectHeaderDeps building tree: ")
                     pprint(tree.dicts(node))
 
-        self.ancestor_paths.pop()
+        ancestor_paths.pop()
         return node
 
     def generatetree(self, filename, macro_cache_key=None):
         """Returns the tree of include files"""
-        self.ancestor_paths = []
         if macro_cache_key:
             variable_macros, function_params = decode_macro_cache_key(macro_cache_key)
             self._initialize_includes_and_macros(variable_macros, function_params)

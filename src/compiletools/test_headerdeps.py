@@ -8,6 +8,7 @@ import compiletools.apptools
 import compiletools.headerdeps
 import compiletools.test_base as tb
 import compiletools.testhelper as uth
+import compiletools.tree as tree
 import compiletools.utils
 import compiletools.wrappedos
 from compiletools.build_context import BuildContext
@@ -757,8 +758,9 @@ class TestConditionalBlindWalk(tb.BaseCompileToolsTestCase):
     """DirectHeaderDeps.process_conditional_blind: every branch, no evaluation.
 
     The declaration-harvesting walk fetch's ``//#GIT=`` scan uses. Its whole
-    point is to disagree with ``process`` on conditionals, so every test here
-    contrasts the two.
+    point is to disagree with ``process`` on conditionals, so the tests here
+    contrast the two (plus one ``generatetree`` cycle-termination test that
+    lives here for the ``_write``/``_make_deps`` fixture helpers).
     """
 
     def _make_args(self, tmpdir, verbose=0):
@@ -832,6 +834,22 @@ class TestConditionalBlindWalk(tb.BaseCompileToolsTestCase):
 
             assert set(blind) == {a, b}
             assert len(blind) == 2, f"each file must appear once, got {blind}"
+
+    def test_generatetree_terminates_on_a_guardless_include_cycle(self):
+        """a.h and b.h include each other WITHOUT guards, so no conditional ever
+        breaks the cycle -- the threaded ancestor stack is the only terminator.
+        (The visited-set test above covers the blind walk; this covers the
+        evaluated tree walk, whose stack was previously untested.)"""
+        with uth.TempDirContextNoChange() as tmpdir:
+            self._write(tmpdir, "a.h", '#include "b.h"\n')
+            self._write(tmpdir, "b.h", '#include "a.h"\n')
+            main = self._write(tmpdir, "main.cpp", '#include "a.h"\nint main() { return 0; }\n')
+
+            deps = self._make_deps(tmpdir)
+            tree_result = deps.generatetree(main)
+            flat = str(tree.dicts(tree_result))
+
+            assert "a.h" in flat and "b.h" in flat
 
     def test_the_walk_excludes_the_starting_file_and_unresolvable_includes(self):
         """Contract parity with process: the target itself is not in its own
