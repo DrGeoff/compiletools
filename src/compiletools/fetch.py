@@ -1398,9 +1398,7 @@ def _blind_scanner(args, context, headerdeps, *, externals_dir: str, resolved_ro
     )
 
 
-def _reachable_sources(
-    target_files: list[str], headerdeps, args, blind_headerdeps=None, blind_reported: set[str] | None = None
-) -> tuple[list[str], set[str]]:
+def _reachable_sources(target_files: list[str], headerdeps, args, blind_headerdeps=None) -> tuple[list[str], list[str]]:
     """Enumerate the on-disk source set to scan for ``//#GIT=`` declarations.
 
     For each target, collect the file itself, every header headerdeps can
@@ -1430,7 +1428,9 @@ def _reachable_sources(
 
     Returns ``(ordered, blind_only)``: the de-duplicated file list in stable
     discovery order, and the subset of it reachable ONLY through a conditional
-    this scan could not evaluate.
+    this scan could not evaluate — also in discovery order, so the caller's
+    ``verbose >= 2`` per-file note (owned by the fixpoint driver, which holds
+    the across-rounds already-reported set) prints deterministically.
 
     Why the caller needs the boundary: declarations are additive, conflicts are
     not. A ``//#GIT=`` conflict (same external, differing url/ref) is a hard
@@ -1443,12 +1443,6 @@ def _reachable_sources(
     nothing else declared, but they never win, and never lose, a conflict.
     Passing *blind_headerdeps* as None restores the old evaluate-only behaviour
     and an empty *blind_only*.
-
-    *blind_reported* is the caller's across-rounds set of files already named by
-    the ``verbose >= 2`` note. The fixpoint driver re-scans every round, so
-    without it each blind-only file is announced once per round — noise that
-    reads like repeated discovery of the same thing. The driver owns the set so
-    one run reports each file exactly once; None disables the suppression.
     """
     seen: set[str] = set()
     ordered: list[str] = []
@@ -1471,11 +1465,11 @@ def _reachable_sources(
             _add(header)
 
     if blind_headerdeps is None:
-        return ordered, set()
+        return ordered, []
 
     # Second phase, after EVERY target's evaluated walk: whatever is still
     # unseen here is reachable only through a branch this scan cannot evaluate.
-    blind_only: set[str] = set()
+    blind_only: list[str] = []
     for target in target_files:
         try:
             blind_headers = blind_headerdeps.process_conditional_blind(target)
@@ -1489,15 +1483,7 @@ def _reachable_sources(
         for header in blind_headers:
             if header in seen:
                 continue
-            if verbose >= 2 and (blind_reported is None or header not in blind_reported):
-                print(
-                    f"ct-fetch: scanning '{header}' for //#GIT= declarations: "
-                    "reached only through a conditional branch this scan cannot evaluate",
-                    file=sys.stderr,
-                )
-                if blind_reported is not None:
-                    blind_reported.add(header)
-            blind_only.add(header)
+            blind_only.append(header)
             _add(header)
     return ordered, blind_only
 
@@ -1566,8 +1552,17 @@ def _fixpoint_scan(
                 externals_dir=externals_dir,
                 resolved_roots=resolved_roots,
             )
-            reachable, blind_only = _reachable_sources(target_files, headerdeps, args, blind_headerdeps, blind_reported)
-            if not scan_round(reachable, blind_only):
+            reachable, blind_only_ordered = _reachable_sources(target_files, headerdeps, args, blind_headerdeps)
+            if getattr(args, "verbose", 0) >= 2:
+                for header in blind_only_ordered:
+                    if header not in blind_reported:
+                        blind_reported.add(header)
+                        print(
+                            f"ct-fetch: scanning '{header}' for //#GIT= declarations: "
+                            "reached only through a conditional branch this scan cannot evaluate",
+                            file=sys.stderr,
+                        )
+            if not scan_round(reachable, set(blind_only_ordered)):
                 break
 
             # Fetching (or merely declaring a possibly-present external) can
