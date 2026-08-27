@@ -268,21 +268,28 @@ class Cake:
         """
         assert self.hunter is not None
         if static_lib_seed is not None:
-            self._merge_new_sources(self.args.static, self.hunter.required_source_files(static_lib_seed))
+            self.args.static = self._merge_new_sources(
+                self.args.static, self.hunter.required_source_files(static_lib_seed)
+            )
         if dynamic_lib_seed is not None:
-            self._merge_new_sources(self.args.dynamic, self.hunter.required_source_files(dynamic_lib_seed))
+            self.args.dynamic = self._merge_new_sources(
+                self.args.dynamic, self.hunter.required_source_files(dynamic_lib_seed)
+            )
 
     @staticmethod
     def _merge_new_sources(target_list, discovered):
-        """Append entries of *discovered* not already present in *target_list*
-        (preserving order, deduping on realpath so a differently-spelled path
-        for an already-listed source is not added twice)."""
-        existing = {compiletools.wrappedos.realpath(p) for p in target_list}
+        """Return *target_list* plus the entries of *discovered* not already
+        present (preserving order, deduping on realpath so a
+        differently-spelled path for an already-listed source is not added
+        twice). Pure: neither argument is mutated."""
+        merged = list(target_list)
+        existing = {compiletools.wrappedos.realpath(p) for p in merged}
         for src in discovered:
             real = compiletools.wrappedos.realpath(src)
             if real not in existing:
                 existing.add(real)
-                target_list.append(src)
+                merged.append(src)
+        return merged
 
     def _createctobjs(self):
         """Has to be separate because --auto fiddles with the args"""
