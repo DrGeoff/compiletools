@@ -989,7 +989,7 @@ def clear_cache():
     """Clear LRU caches for testing"""
     default_config_directories.cache_clear()
     _parse_conf_file_cached.cache_clear()
-    _extends_order_warnings_emitted.clear()
+    _emit_extends_order_warning_once.cache_clear()
 
 
 # ---------------------------------------------------------------------------
@@ -1086,61 +1086,66 @@ def _parse_extends_directive(conf_path, verbose=0):
     return split_variant(str(raw))
 
 
-# Tracks conf paths we've already warned about so repeated resolve_variant
-# calls within the same process don't emit the same warning multiple times.
-#
-# TEST AUTHORS: this is process-global mutable state. The first occurrence of
-# a given conf_path within a process emits the warning; subsequent occurrences
-# are skipped. Tests that exercise the warning path (caplog assertions on the
-# "not in canonical order" message) MUST call ``clear_cache()`` before the
-# resolve_variant call, or a prior test in the same process can swallow the
-# warning. The existing test (test_user_conf_with_out_of_order_extends_emits_warning)
-# does this; new tests must follow suit.
-_extends_order_warnings_emitted: set = set()
+def _extends_order_warning(conf_path, extends, canonical_order) -> str | None:
+    """Return the out-of-canonical-order warning text, or None when in order.
 
+    Pure: no logging, no state. The resolver walks ``extends`` in declared
+    order; configargparse layers scalar keys last-writer-wins and
+    accumulates ``append-*`` form in load order. So ``extends = werror,
+    gcc`` produces different flag layering than the equivalent
+    ``--variant=gcc,werror`` CLI form. The message surfaces the
+    inconsistency at parseargs time, naming the file and showing the fix.
 
-def _check_extends_canonical_order(conf_path, extends, canonical_order):
-    """Emit a logger warning if ``extends`` parents are out of canonical order.
-
-    The resolver walks ``extends`` in declared order; configargparse layers
-    scalar keys last-writer-wins and accumulates ``append-*`` form in load
-    order. So ``extends = werror, gcc`` produces different flag layering
-    than the equivalent ``--variant=gcc,werror`` CLI form. This warning
-    surfaces the inconsistency at parseargs time, naming the file and
-    showing the fix.
-
-    Tokens not in canonical_order are skipped (the resolver itself surfaces
-    truly-unknown axes via "missing axis" errors elsewhere). Emitted via
-    ``logging.getLogger(__name__).warning(...)`` so users can suppress
-    per-module via ``logging.getLogger('compiletools.configutils').setLevel(logging.ERROR)``.
-    One warning per process per offending path — repeated resolve_variant
-    calls within one process don't repeat the message.
+    Tokens not in canonical_order skip the check entirely (the resolver
+    itself surfaces truly-unknown axes via "missing axis" errors elsewhere).
     """
-    if not canonical_order or conf_path in _extends_order_warnings_emitted:
-        return
+    if not canonical_order:
+        return None
     position = {tok: i for i, tok in enumerate(canonical_order)}
     positions: list[int] = []
     for tok in extends:
         pos = position.get(tok)
         if pos is None:
-            return  # unknown axis: skip the order check entirely
+            return None  # unknown axis: skip the order check entirely
         positions.append(pos)
-    if positions != sorted(positions):
-        expected = sorted(extends, key=lambda t: position[t])
-        _extends_order_warnings_emitted.add(conf_path)
-        logger.warning(
-            "%s: `extends = ...` is not in canonical order.\n"
-            "  got:      extends = %s\n"
-            "  expected: extends = %s\n"
-            "  Out-of-order extends produces different flag layering than\n"
-            "  the equivalent --variant=%s CLI form\n"
-            "  (the resolver walks extends in declared order, configargparse\n"
-            "  layers in load order). Reorder for parity.",
-            conf_path,
-            ", ".join(extends),
-            ", ".join(expected),
-            ",".join(expected),
-        )
+    if positions == sorted(positions):
+        return None
+    expected = sorted(extends, key=lambda t: position[t])
+    return (
+        f"{conf_path}: `extends = ...` is not in canonical order.\n"
+        f"  got:      extends = {', '.join(extends)}\n"
+        f"  expected: extends = {', '.join(expected)}\n"
+        f"  Out-of-order extends produces different flag layering than\n"
+        f"  the equivalent --variant={','.join(expected)} CLI form\n"
+        f"  (the resolver walks extends in declared order, configargparse\n"
+        f"  layers in load order). Reorder for parity."
+    )
+
+
+@cache
+def _emit_extends_order_warning_once(conf_path: str, message: str) -> None:
+    """Warn once per process per (path, message) — the memo IS the dedup.
+
+    Emitted via ``logging.getLogger(__name__).warning(...)`` so users can
+    suppress per-module via
+    ``logging.getLogger('compiletools.configutils').setLevel(logging.ERROR)``.
+
+    TEST AUTHORS: this is a process-wide cache like the parse cache beside
+    it. Tests that exercise the warning path (caplog assertions on the
+    "not in canonical order" message) MUST call ``clear_cache()`` before
+    the resolve_variant call, or a prior test in the same process can
+    swallow the warning. The existing test
+    (test_user_conf_with_out_of_order_extends_emits_warning) does this;
+    new tests must follow suit.
+    """
+    logger.warning(message)
+
+
+def _check_extends_canonical_order(conf_path, extends, canonical_order):
+    """Warn (once per process) if ``extends`` parents are out of canonical order."""
+    message = _extends_order_warning(conf_path, extends, canonical_order)
+    if message is not None:
+        _emit_extends_order_warning_once(conf_path, message)
 
 
 def _find_axis_confs(name, **kwargs):
