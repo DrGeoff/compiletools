@@ -280,8 +280,9 @@ class _RetryItem:
             # Sidecar files are best-effort cleanup — don't count towards
             # bytes_freed (small, ignore failure). The ``.result`` sidecar is
             # the per-CAS-entry test-success marker touched by the in-build
-            # test rules in CAS-only mode.
-            for sidecar_suffix in (".manifest", ".result"):
+            # test rules in CAS-only mode; ``.xml`` is the content-addressed
+            # JUnit report the test rule deposits beside it.
+            for sidecar_suffix in (".manifest", ".result", ".xml"):
                 try:
                     os.remove(self.path + sidecar_suffix)
                 except OSError:
@@ -1437,10 +1438,12 @@ class CacheTrimmer:
           the *file* persists, so one survives per target ever built. Neither
           ``ct-cleanup-locks`` (``.lockdir`` dirs only) nor the artefact scanner
           (``.o``/``.exe``/``.a``/``.so`` only) ever removes them.
-        * ``<cas>.manifest`` / ``<cas>.result`` — exe-pool sidecars. These are
-          removed alongside their artefact by ``cleanup_sidecars`` when trim
-          evicts the artefact, but one whose artefact was *already* gone is
-          invisible to the bucket scanner and stranded forever.
+        * ``<cas>.manifest`` / ``<cas>.result`` / ``<cas>.xml`` — exe-pool
+          sidecars (``.xml`` is the content-addressed JUnit report the
+          in-build test rules deposit). These are removed alongside their
+          artefact by ``cleanup_sidecars`` when trim evicts the artefact,
+          but one whose artefact was *already* gone is invisible to the
+          bucket scanner and stranded forever.
         * ``<target>.lockdir`` — the NFS/Lustre lock primitive (a directory
           holding a ``pid`` file), the analogue of ``.lock`` for those
           filesystems. Reaped whole via ``shutil.rmtree`` once orphaned, old,
@@ -1539,6 +1542,8 @@ class CacheTrimmer:
                 suffix = ".manifest"
             elif name.endswith(".result"):
                 suffix = ".result"
+            elif name.endswith(".xml"):
+                suffix = ".xml"
             else:
                 continue
 

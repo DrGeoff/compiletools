@@ -125,6 +125,28 @@ def atomic_copy(src: str, dst: str) -> None:
     atomic_replace(dst, populate)
 
 
+def atomic_copy_bytes(src: str, dst: str) -> None:
+    """Byte-copy ``src`` to ``dst`` atomically — never a hardlink.
+
+    The counterpart to :func:`atomic_copy` for sources that ARE
+    rewritten in place on later runs (a test framework truncating its
+    JUnit XML output path each execution): a hardlinked ``dst`` would be
+    corrupted through the shared inode, so this always materialises
+    fresh bytes. The ``.publish.tmp`` suffix keeps interrupted copies
+    reclaimable by ``trim_cache.reclaim_orphan_temps``.
+    """
+
+    def populate(tmp_path: str) -> None:
+        shutil.copyfile(src, tmp_path)
+
+    atomic_replace(
+        dst,
+        populate,
+        tmp_prefix=os.path.basename(dst) + ".",
+        tmp_suffix=".publish.tmp",
+    )
+
+
 _OCTAL_ESCAPE_RE = re.compile(r"\\([0-7]{3})")
 
 

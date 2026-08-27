@@ -1122,16 +1122,17 @@ class TestMakeRunsTestsInBuildPhase:
 
     @uth.requires_functional_compiler
     def test_make_framework_test_failure_preserves_xml(self, tmp_path):
-        """A failing framework-detected test writes its JUnit XML report and
-        *then* exits non-zero. Because the test rule's ``output`` is the XML
-        path, ``.DELETE_ON_ERROR`` would delete that just-written report --
-        contradicting the spec contract that a failed test still leaves its
-        report behind. The XML target must be ``.PRECIOUS`` so it survives.
+        """A failing framework-detected test writes its JUnit report to the
+        workspace path and *then* exits non-zero. The report must survive
+        the failed build, and NOTHING may land in the CAS: the rule's
+        output is the content-addressed ``<cas_exe>.xml``, deposited only
+        on rc==0, so a cas ``.xml`` always implies a passing run.
 
         Asserts:
           - execute("build") raises CalledProcessError (test failure halts),
           - the failing test's ``.result`` marker is NOT created,
-          - the JUnit XML file DOES still exist after the failed build.
+          - the workspace JUnit report DOES still exist after the failed build,
+          - the cas-side ``.xml`` was NOT deposited.
         """
         test_src = uth.write_failing_gtest_fixture(tmp_path)
 
@@ -1140,21 +1141,22 @@ class TestMakeRunsTestsInBuildPhase:
             MakefileBackend, tmp_path, [], tests=[test_src], extra_argv=["--test-xml-dir=" + str(xml_dir)]
         )
 
-        # The framework test rule's output must be the XML path (not the
-        # .result marker) for the .PRECIOUS protection to be exercised.
         test_rules = [r for r in graph.rules if r.rule_type == "test"]
         assert len(test_rules) == 1
         xml_rule = test_rules[0]
         assert xml_rule.output != xml_rule.success_marker, (
             "framework was not detected -- test rule output is still the .result marker"
         )
-        assert xml_rule.output.endswith(".xml")
-        xml_path = xml_rule.output
+        assert xml_rule.output.endswith(".exe.xml")
+        assert xml_rule.success_copies, "framework test rule lost its CAS deposit"
+        workspace_xml = xml_rule.success_copies[0][0]
 
         makefile = _write_makefile(backend, graph, tmp_path)
-        # The makefile must mark the XML target .PRECIOUS.
-        assert f".PRECIOUS: {xml_path}" in makefile.read_text() or any(
-            xml_path in line for line in makefile.read_text().splitlines() if line.startswith(".PRECIOUS:")
+        # The makefile still marks the rule output .PRECIOUS (shared
+        # emission with the --use-mtime shape, where the workspace report
+        # IS the output and needs protection from .DELETE_ON_ERROR).
+        assert f".PRECIOUS: {xml_rule.output}" in makefile.read_text() or any(
+            xml_rule.output in line for line in makefile.read_text().splitlines() if line.startswith(".PRECIOUS:")
         ), "framework-test XML output is not .PRECIOUS in the generated makefile"
 
         with pytest.raises(subprocess.CalledProcessError):
@@ -1162,21 +1164,23 @@ class TestMakeRunsTestsInBuildPhase:
 
         results = uth.find_result_markers(tmp_path)
         assert not results, f"failing test left a .result marker (touch ran despite rc!=0): {results}"
-        assert os.path.exists(xml_path), (
-            f"JUnit XML at {xml_path} was deleted by .DELETE_ON_ERROR -- "
-            f".PRECIOUS did not protect it. tmp_path contents: "
+        assert os.path.exists(workspace_xml), (
+            f"failing test's JUnit report missing at {workspace_xml}. tmp_path contents: "
             f"{[os.path.join(dp, fn) for dp, _, files in os.walk(tmp_path) for fn in files]}"
         )
-        with open(xml_path) as xf:
+        with open(workspace_xml) as xf:
             assert "<testsuites>" in xf.read()
+        assert not os.path.exists(xml_rule.output), (
+            "failure artefact was deposited into the CAS -- a cas .xml must imply a passing run"
+        )
 
     @uth.requires_functional_compiler
     def test_make_framework_test_failure_reruns_when_only_failed_xml_exists(self, tmp_path):
-        """A preserved failed JUnit XML file is not a passing test marker.
+        """A preserved failed JUnit report is not a passing test marker.
 
-        The framework XML target is intentionally ``.PRECIOUS`` so the report
-        survives a failing test. A later build must still re-run that test when
-        the XML exists but the ``.result`` success marker does not.
+        The failing run leaves the workspace report behind but deposits
+        neither the cas-side ``.xml`` (the rule's output) nor the
+        ``.result`` stamp, so a later build must re-run the test.
         """
         test_src = uth.write_failing_gtest_fixture(tmp_path)
 
@@ -1192,13 +1196,16 @@ class TestMakeRunsTestsInBuildPhase:
         test_rule = next(r for r in graph.rules if r.rule_type == "test")
         assert test_rule.output != test_rule.success_marker
         assert test_rule.success_marker is not None
+        assert test_rule.success_copies
+        workspace_xml = test_rule.success_copies[0][0]
 
         _write_makefile(backend, graph, tmp_path)
 
         with pytest.raises(subprocess.CalledProcessError):
             backend.execute("build")
 
-        assert os.path.exists(test_rule.output)
+        assert os.path.exists(workspace_xml)
+        assert not os.path.exists(test_rule.output)
         assert not os.path.exists(test_rule.success_marker)
 
         with pytest.raises(subprocess.CalledProcessError):

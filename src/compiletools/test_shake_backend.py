@@ -1895,13 +1895,15 @@ class TestShakeRunsTestsInBuildPhase:
 
     @uth.requires_functional_compiler
     def test_shake_framework_test_failure_preserves_xml(self, tmp_path):
-        """A failing framework-detected test writes its JUnit XML report and
-        *then* exits non-zero. The test rule's ``output`` is the XML path, but
-        shake never feeds a test rule to _make_trace_entry, and nothing deletes
-        the XML on failure (shake has no .DELETE_ON_ERROR analogue). Asserts:
-          - execute("build") raises,
+        """A failing framework-detected test writes its JUnit report to the
+        workspace path and *then* exits non-zero. The failure must surface
+        as the ordinary test-failure aggregate — NOT as a crash of the
+        downstream ct-cas-publish materialise rule, which must quietly
+        skip when its cas-side input was never deposited. Asserts:
+          - execute("build") raises the test-failure aggregate,
           - the failing test's ``.result`` marker is NOT created,
-          - the JUnit XML file DOES still exist after the failed build.
+          - the workspace JUnit report DOES still exist after the failed build,
+          - the cas-side ``.xml`` (the rule's output) was NOT deposited.
         """
         test_src = uth.write_failing_gtest_fixture(tmp_path)
 
@@ -1910,16 +1912,15 @@ class TestShakeRunsTestsInBuildPhase:
             ShakeBackend, tmp_path, [], tests=[test_src], extra_argv=["--test-xml-dir=" + str(xml_dir)]
         )
 
-        # The framework test rule's output must be the XML path (not the
-        # .result marker) for this test to exercise the dual-output shape.
         test_rules = [r for r in graph.rules if r.rule_type == "test"]
         assert len(test_rules) == 1
         xml_rule = test_rules[0]
         assert xml_rule.output != xml_rule.success_marker, (
             "framework was not detected -- test rule output is still the .result marker"
         )
-        assert xml_rule.output.endswith(".xml")
-        xml_path = xml_rule.output
+        assert xml_rule.output.endswith(".exe.xml")
+        assert xml_rule.success_copies, "framework test rule lost its CAS deposit"
+        workspace_xml = xml_rule.success_copies[0][0]
 
         backend.generate(graph)
         with pytest.raises(RuntimeError, match="test execution failed"):
@@ -1928,9 +1929,12 @@ class TestShakeRunsTestsInBuildPhase:
         assert not uth.find_result_markers(tmp_path), (
             "failing test left a .result marker (marker touched despite rc!=0)"
         )
-        assert os.path.exists(xml_path), (
-            f"JUnit XML at {xml_path} was deleted after the failed shake build -- "
+        assert os.path.exists(workspace_xml), (
+            f"workspace JUnit report at {workspace_xml} missing after the failed shake build -- "
             "a failed framework test must still leave its report behind"
+        )
+        assert not os.path.exists(xml_rule.output), (
+            "failure artefact was deposited into the CAS -- a cas .xml must imply a passing run"
         )
 
 
@@ -2065,3 +2069,88 @@ class TestSigtermAbortsShakeBuild:
             if child_pid is not None:
                 with contextlib.suppress(OSError, ProcessLookupError):
                     os.killpg(child_pid, _signal.SIGKILL)
+
+
+class TestShakeSuccessCopiesAndSkipPredicate:
+    """Shake-side halves of the content-addressed XML contract: a test
+    rule's ``success_copies`` deposit happens in-process on rc==0 (and
+    only then), and the rerun-skip predicate requires the success marker
+    alongside the rule output — a cas ``.xml`` without its ``.result``
+    (or vice versa) must re-run."""
+
+    def _test_rule(self, tmp_path, *, command, success_copies=()):
+        marker = str(tmp_path / "cas" / "e.result")
+        output = str(tmp_path / "cas" / "e.xml")
+        os.makedirs(tmp_path / "cas", exist_ok=True)
+        return BuildRule(
+            output=output,
+            inputs=[],
+            command=command,
+            rule_type="test",
+            success_marker=marker,
+            success_copies=success_copies,
+        )
+
+    def _run(self, tmp_path, rule):
+        graph = BuildGraph()
+        graph.add_rule(rule)
+        with ShakeBackendTestContext(graph) as (backend, _tmpdir):
+            traces = TraceStore(str(tmp_path / ".ct-traces.json"))
+            memo: dict[str, asyncio.Task[bool]] = {}
+            asyncio.run(backend._build_async(rule.output, graph, traces, memo, PriorityGate(1), {}))
+            return backend
+
+    def test_success_copies_deposited_on_success(self, tmp_path):
+        src = tmp_path / "junit" / "user.xml"
+        src.parent.mkdir()
+        src.write_text("<testsuites/>\n")
+        rule = self._test_rule(
+            tmp_path,
+            command=["/bin/true"],
+            success_copies=((str(src), str(tmp_path / "cas" / "e.xml")),),
+        )
+        backend = self._run(tmp_path, rule)
+        assert not backend._test_failures
+        dst = tmp_path / "cas" / "e.xml"
+        assert dst.read_text() == "<testsuites/>\n"
+        assert os.path.exists(tmp_path / "cas" / "e.result")
+        # Never a hardlink: the framework rewrites the workspace path in
+        # place on the next run, which would corrupt a shared inode.
+        assert os.stat(src).st_ino != os.stat(dst).st_ino
+
+    def test_success_copies_skipped_on_failure(self, tmp_path):
+        src = tmp_path / "junit" / "user.xml"
+        src.parent.mkdir()
+        src.write_text("<testsuites><failure/></testsuites>\n")
+        rule = self._test_rule(
+            tmp_path,
+            command=["/bin/false"],
+            success_copies=((str(src), str(tmp_path / "cas" / "e.xml")),),
+        )
+        backend = self._run(tmp_path, rule)
+        assert backend._test_failures
+        assert not os.path.exists(tmp_path / "cas" / "e.xml"), "failure artefact deposited into the CAS"
+        assert not os.path.exists(tmp_path / "cas" / "e.result")
+
+    def test_output_without_marker_reruns(self, tmp_path):
+        """cas .xml present but .result missing: the skip predicate must
+        NOT fire (a failed or interrupted earlier run can leave exactly
+        this state)."""
+        rule = self._test_rule(tmp_path, command=["/bin/true"])
+        with open(rule.output, "w") as f:
+            f.write("<testsuites/>\n")
+        self._run(tmp_path, rule)
+        assert os.path.exists(tmp_path / "cas" / "e.result"), (
+            "test rule was skipped on output existence alone; marker was never recreated"
+        )
+
+    def test_output_and_marker_present_skips(self, tmp_path):
+        """Both artefacts present: the run must be skipped (the canary
+        command would recreate the canary file if executed)."""
+        canary = tmp_path / "ran.canary"
+        rule = self._test_rule(tmp_path, command=["touch", str(canary)])
+        for path in (rule.output, str(tmp_path / "cas" / "e.result")):
+            with open(path, "w") as f:
+                f.write("x")
+        self._run(tmp_path, rule)
+        assert not canary.exists(), "test rule re-ran despite output AND marker being present"

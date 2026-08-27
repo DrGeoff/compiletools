@@ -4481,6 +4481,36 @@ class TestReclaimOrphanSidecars:
         assert not os.path.exists(res), "orphan .result must be removed"
         assert stats["orphan_sidecars_removed"] == 1
 
+    def test_orphan_xml_removed(self, tmp_path):
+        """The content-addressed JUnit report (``<cas_exe>.xml``) is the
+        third exe-pool sidecar family; one whose artefact is gone must be
+        reaped like an orphan .manifest/.result."""
+        cache_root = str(tmp_path / "exedir")
+        bucket = os.path.join(cache_root, "aa")
+        xml = _touch_temp(bucket, "main_deadbeef.exe.xml", age_seconds=2 * 86400, size=300)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _sidecar_stats()
+        trimmer.reclaim_orphan_sidecars(cache_root, stats)
+
+        assert not os.path.exists(xml), "orphan .xml must be removed"
+        assert stats["orphan_sidecars_removed"] == 1
+
+    def test_paired_xml_kept(self, tmp_path):
+        """A .xml whose .exe still exists must be kept — it is the source
+        of truth the materialise rule copies from."""
+        cache_root = str(tmp_path / "exedir")
+        bucket = os.path.join(cache_root, "aa")
+        exe = _touch_temp(bucket, "main_deadbeef.exe", age_seconds=2 * 86400, size=4096)
+        xml = _touch_temp(bucket, "main_deadbeef.exe.xml", age_seconds=2 * 86400, size=300)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _sidecar_stats()
+        trimmer.reclaim_orphan_sidecars(cache_root, stats)
+
+        assert os.path.exists(exe) and os.path.exists(xml)
+        assert stats["orphan_sidecars_removed"] == 0
+
     # ── paired sidecar (primary present) is kept ────────────────────────────
 
     def test_paired_manifest_kept(self, tmp_path):
@@ -5170,6 +5200,28 @@ class TestEnforceBudgetExe:
         assert not os.path.exists(old)
         assert not os.path.exists(old + ".manifest")
         assert not os.path.exists(old + ".result")
+
+    def test_xml_sidecar_removed_on_budget_eviction(self, tmp_path):
+        """Evicting an exe entry must also drop its content-addressed
+        JUnit report — a stranded ``<cas_exe>.xml`` would otherwise sit
+        until the orphan sweep's age floor passes."""
+        exedir = str(tmp_path / "cas-exe")
+        old = _touch_exe(exedir, "main", "aa11" * 16, age_seconds=3 * 86400, size=1024)
+        _touch_exe(exedir, "main", "bb22" * 16, age_seconds=0, size=1024)
+        with open(old + ".xml", "w") as f:
+            f.write("<testsuites/>")
+
+        trimmer = CacheTrimmer(_make_args(max_size_bytes=1024))
+        stats = {
+            "bytes_freed": 0,
+            "budget_removed": 0,
+            "budget_bytes_freed": 0,
+            "budget_unmet_bytes": 0,
+        }
+        trimmer.enforce_budget(exedir, stats, kind="exe")
+
+        assert not os.path.exists(old)
+        assert not os.path.exists(old + ".xml")
 
 
 class TestEnforceBudgetCmdHashDirs:

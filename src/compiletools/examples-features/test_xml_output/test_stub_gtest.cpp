@@ -11,12 +11,24 @@
 #include "gtest/gtest.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 int main(int argc, char** argv)
 {
     static const char prefix[] = "--gtest_output=xml:";
     const size_t prefix_len = sizeof(prefix) - 1;
+
+    // Execution-count observability for rerun-vs-skip e2e assertions:
+    // append one line per run when CT_STUB_RUN_LOG names a file.
+    if (const char* run_log = std::getenv("CT_STUB_RUN_LOG"))
+    {
+        if (FILE* log = std::fopen(run_log, "a"))
+        {
+            std::fputs("run\n", log);
+            std::fclose(log);
+        }
+    }
 
     for (int i = 1; i < argc; ++i)
     {

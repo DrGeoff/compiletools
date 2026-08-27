@@ -1670,6 +1670,7 @@ class BuildBackend(abc.ABC):
                 # mtime-vs-published-exe race (the published exe inherits
                 # the cached entry's old mtime via os.link) is sidestepped
                 # entirely.
+                cas_exe_path = None
                 if cas_only_results:
                     publish_rule = graph.get_rule(exe_path)
                     if publish_rule and publish_rule.rule_type == RuleType.SYMLINK:
@@ -1689,14 +1690,37 @@ class BuildBackend(abc.ABC):
                     rule_order_only = rule_order_only + [xml_bucket_dir]
                 test_cmd, framework = self._test_command_for(source, exe_path)
                 # When a framework is detected and --test-xml-dir is set the
-                # test recipe emits a JUnit XML file as a side effect. Make
-                # the XML path the rule's *output* (rather than the .result
-                # marker) so the native scheduler re-runs the test if the XML
+                # test recipe emits a JUnit XML file as a side effect, and the
+                # XML (rather than the .result marker) becomes the rule's
+                # *output* so the native scheduler re-runs the test if the XML
                 # is deleted out from under it. The .result marker stays the
                 # success_marker (touched on rc==0) regardless.
+                #
+                # In CAS-only mode the output is the content-addressed
+                # ``<cas_exe>.xml`` sibling, deposited on success via
+                # success_copies -- keying staleness on the workspace path
+                # would make every fresh workspace re-run every test against
+                # a 100% cas-exedir hit. The argv still writes the workspace
+                # path: a FAILING run's report must land in test-xml-dir for
+                # CI to collect, and must never enter the CAS (the deposit
+                # only happens on rc==0, so a cas .xml always corresponds to
+                # a .result-worthy run). A separate ct-cas-publish rule
+                # materialises the workspace copy on cache-hit builds.
                 rule_output = result_path
+                success_copies: tuple[tuple[str, str], ...] = ()
+                # runtests aggregates the user-facing artefact: the
+                # materialised workspace XML when one exists, else the
+                # rule's own output.
+                runtests_dep = rule_output
                 if xml_bucket_dir and framework is not None:
-                    rule_output = self._xml_path_for(exe_path)
+                    user_xml = self._xml_path_for(exe_path)
+                    rule_output = user_xml
+                    runtests_dep = user_xml
+                    if cas_exe_path is not None and cas_exe_path != exe_path:
+                        cas_xml = cas_exe_path + ".xml"
+                        rule_output = cas_xml
+                        success_copies = ((user_xml, cas_xml),)
+                        graph.add_rule(self._build_publish_rule(cas_xml, user_xml))
                 test_rule = BuildRule(
                     output=rule_output,
                     inputs=rule_inputs,
@@ -1704,9 +1728,10 @@ class BuildBackend(abc.ABC):
                     rule_type="test",
                     order_only_deps=rule_order_only,
                     success_marker=result_path,
+                    success_copies=success_copies,
                 )
                 graph.add_rule(test_rule)
-                test_result_paths.append(rule_output)
+                test_result_paths.append(runtests_dep)
                 test_rules.append((source, test_rule))
 
             # --serialise-tests: chain the test rules so only one runs at a

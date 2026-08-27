@@ -1,4 +1,4 @@
-from compiletools.build_graph import BuildGraph, BuildRule
+from compiletools.build_graph import BuildGraph, BuildRule, render_shell_recipe
 
 
 class TestBuildRule:
@@ -67,6 +67,43 @@ class TestBuildRule:
             success_marker="/tmp/bin/foo.result",
         )
         assert rule.success_marker == "/tmp/bin/foo.result"
+
+    def test_success_copies_default_empty(self):
+        rule = BuildRule(
+            output="/tmp/obj/foo.o",
+            inputs=["/src/foo.cpp"],
+            command=["g++", "-c", "/src/foo.cpp"],
+            rule_type="compile",
+        )
+        assert rule.success_copies == ()
+
+    def test_render_shell_recipe_success_copies_before_marker_touch(self):
+        """``success_copies`` render as atomic ``cp`` + ``mv -f`` pairs
+        between the command and the success-marker touch: the deposit
+        into the CAS must complete before the marker asserts success,
+        and the temp name must be deterministic (build files are
+        regenerated and compared byte-for-byte) yet unique per source
+        path (concurrent peer workspaces deposit under distinct temps).
+        """
+        import re
+
+        rule = BuildRule(
+            output="/cas/ab/e.xml",
+            inputs=[],
+            command=["/ws/bin/test_foo", "--gtest_output=xml:/ws/junit/test_foo.xml"],
+            rule_type="test",
+            success_marker="/cas/ab/e.result",
+            success_copies=(("/ws/junit/test_foo.xml", "/cas/ab/e.xml"),),
+        )
+        rendered = render_shell_recipe(rule)
+        pattern = (
+            r"^/ws/bin/test_foo --gtest_output=xml:/ws/junit/test_foo\.xml"
+            r" && cp /ws/junit/test_foo\.xml (/cas/ab/e\.xml\.[0-9a-f]{12}\.publish\.tmp)"
+            r" && mv -f \1 /cas/ab/e\.xml"
+            r" && touch /cas/ab/e\.result$"
+        )
+        assert re.match(pattern, rendered), rendered
+        assert render_shell_recipe(rule) == rendered
 
 
 class TestBuildGraph:

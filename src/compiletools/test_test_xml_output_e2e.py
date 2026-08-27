@@ -201,13 +201,29 @@ def test_gtest_reachable_only_via_isystem_is_detected():
         )
 
 
+# --- content-addressed XML: the CAS ``<cas_exe>.xml`` is the source of
+# --- truth; the test-xml-dir path is a materialisation target. The stub
+# --- appends a line to $CT_STUB_RUN_LOG per execution, giving these
+# --- tests a run-count observable that separates "re-ran the test" from
+# --- "re-materialised the report".
+
+
+def _run_count(run_log):
+    if not os.path.exists(run_log):
+        return 0
+    with open(run_log) as f:
+        return sum(1 for _ in f)
+
+
 @uth.requires_functional_compiler
-def test_rerun_when_xml_deleted_between_runs():
-    """Running ct-cake twice with --test-xml-dir set, deleting the XML
-    file between runs, must re-emit the XML on the second run even
-    though the .result marker is current."""
+def test_deleted_workspace_xml_rematerialized_without_rerun(monkeypatch):
+    """Deleting the test-xml-dir report between runs must bring it back
+    on the next build — via a copy from the content-addressed
+    ``<cas_exe>.xml``, NOT by re-executing the test."""
     with uth.TempDirContext():
         tmpdir = os.getcwd()
+        run_log = os.path.join(tmpdir, "stub-run.log")
+        monkeypatch.setenv("CT_STUB_RUN_LOG", run_log)
         source = _setup_sample(tmpdir, "test_stub_gtest.cpp", extra_files=("gtest/gtest.h",))
         config_name = _make_config(tmpdir)
         xml_dir = os.path.join(tmpdir, "junit")
@@ -215,14 +231,87 @@ def test_rerun_when_xml_deleted_between_runs():
 
         _run_cake(source, config_name, xml_dir)
         assert os.path.exists(expected_xml)
+        assert _run_count(run_log) == 1
 
-        # Delete the XML file but leave the .result marker. A second
-        # invocation must re-run the test (per the design's "Rerun-Skip
-        # Integration" predicate) so the XML reappears.
         os.unlink(expected_xml)
 
         _run_cake(source, config_name, xml_dir)
-        assert os.path.exists(expected_xml), (
-            "deleting the XML file between runs must trigger a re-run "
-            "to regenerate it; .result alone is no longer enough"
+        assert os.path.exists(expected_xml), "deleted report was not re-materialised"
+        assert _run_count(run_log) == 1, (
+            "re-materialising a deleted report re-executed the test; the cas-side XML should have satisfied the rule"
+        )
+
+
+@uth.requires_functional_compiler
+def test_missing_cas_xml_forces_rerun(monkeypatch):
+    """The content-addressed XML is the rule's staleness key: evicting it
+    (e.g. a cache trim) must re-run the test even though the .result
+    marker AND the workspace report still exist."""
+    import glob
+
+    with uth.TempDirContext():
+        tmpdir = os.getcwd()
+        run_log = os.path.join(tmpdir, "stub-run.log")
+        monkeypatch.setenv("CT_STUB_RUN_LOG", run_log)
+        source = _setup_sample(tmpdir, "test_stub_gtest.cpp", extra_files=("gtest/gtest.h",))
+        config_name = _make_config(tmpdir)
+        xml_dir = os.path.join(tmpdir, "junit")
+
+        _run_cake(source, config_name, xml_dir)
+        assert _run_count(run_log) == 1
+
+        cas_xmls = glob.glob(os.path.join(tmpdir, "cas-exedir", "**", "*.xml"), recursive=True)
+        assert cas_xmls, "no content-addressed XML found under cas-exedir"
+        for path in cas_xmls:
+            os.unlink(path)
+
+        _run_cake(source, config_name, xml_dir)
+        assert _run_count(run_log) == 2, "missing cas-side XML did not force a re-run"
+        assert glob.glob(os.path.join(tmpdir, "cas-exedir", "**", "*.xml"), recursive=True), (
+            "re-run did not re-deposit the cas-side XML"
+        )
+
+
+@uth.requires_functional_compiler
+def test_fresh_workspace_with_warm_cas_skips_test_run(monkeypatch):
+    """The headline CI contract: workspace B, byte-identical to workspace
+    A and sharing its cas dirs, must materialise the JUnit report from
+    the CAS without re-running the test — before content-addressing,
+    every fresh workspace re-ran every test against a 100% CAS hit."""
+    with uth.TempDirContext():
+        root = os.getcwd()
+        shared = os.path.join(root, "shared-cas")
+        run_log = os.path.join(root, "stub-run.log")
+        monkeypatch.setenv("CT_STUB_RUN_LOG", run_log)
+        extra = [
+            f"--cas-exedir={os.path.join(shared, 'exe')}",
+            f"--cas-objdir={os.path.join(shared, 'obj')}",
+        ]
+        src_root = uth.example_path("test_xml_output")
+        for name in ("wsA", "wsB"):
+            ws = os.path.join(root, name)
+            os.makedirs(os.path.join(ws, "gtest"))
+            shutil.copy2(os.path.join(src_root, "test_stub_gtest.cpp"), os.path.join(ws, "test_stub_gtest.cpp"))
+            shutil.copy2(os.path.join(src_root, "gtest", "gtest.h"), os.path.join(ws, "gtest", "gtest.h"))
+            # Both workspaces must resolve the SAME variant name (the
+            # variant is folded into every cas cell path), so the config
+            # filename is fixed rather than mkstemp-random.
+            config_name = uth.create_temp_config(ws, filename=os.path.join(ws, "sharedvariant.conf"))
+            uth.create_temp_ct_conf(tempdir=ws, defaultvariant="sharedvariant")
+            xml_dir = os.path.join(ws, "junit")
+
+            # Scoped chdir: the restore must happen while the tmp tree
+            # still exists (TempDirContext deletes it before the
+            # function-level monkeypatch teardown would run).
+            with monkeypatch.context() as ws_ctx:
+                ws_ctx.chdir(ws)
+                _run_cake(os.path.join(ws, "test_stub_gtest.cpp"), config_name, xml_dir, extra_argv=extra)
+
+            ws_xml = os.path.join(xml_dir, "sharedvariant", "test_stub_gtest.xml")
+            assert os.path.exists(ws_xml), f"{name}: report not materialised"
+            with open(ws_xml) as f:
+                assert "<testsuites>" in f.read()
+
+        assert _run_count(run_log) == 1, (
+            "fresh workspace with a warm shared cas-exedir re-ran the test instead of materialising the cas-side XML"
         )

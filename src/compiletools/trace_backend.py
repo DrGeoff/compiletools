@@ -458,14 +458,21 @@ class ShakeBackend(BuildBackend):
                 else:
                     os.makedirs(dep, exist_ok=True)
             # Rerun-skip predicate (CAS-only mode): a test rule's ``output`` is
-            # the JUnit XML path (framework tests) or the ``.result`` marker
-            # (no-framework tests). When it already exists on disk the test's
-            # exe bytes were tested before -- skip the re-run, mirroring the
-            # make/ninja ``<output>: | <exe>`` order-only-prereq rule and the
-            # ``_all_outputs_current`` RuleType.TEST branch. In ``--use-mtime``
-            # mode the exe path is a real input, so always re-run (the user
-            # opted into "touch to force rebuild" semantics).
-            if not getattr(self.args, "use_mtime", False) and os.path.exists(rule.output):
+            # the content-addressed ``<cas_exe>.xml`` (framework tests) or the
+            # ``.result`` marker (no-framework tests). When it exists on disk
+            # AND the success marker does too, the test's exe bytes were
+            # tested before -- skip the re-run, mirroring make/ninja's grouped
+            # ``<xml> <result> &: | <exe>`` rule and the
+            # ``_all_outputs_current`` RuleType.TEST branch. Output alone is
+            # not enough: an interrupted or failed earlier run can leave one
+            # artefact without the other, and only the marker asserts rc==0.
+            # In ``--use-mtime`` mode the exe path is a real input, so always
+            # re-run (the user opted into "touch to force rebuild" semantics).
+            if (
+                not getattr(self.args, "use_mtime", False)
+                and os.path.exists(rule.output)
+                and (not rule.success_marker or os.path.exists(rule.success_marker))
+            ):
                 return False
             assert rule.command is not None, "test rules always carry a command"
             queued_at = time.monotonic()
@@ -544,6 +551,18 @@ class ShakeBackend(BuildBackend):
         )
         any_input_rebuilt = any(results)
 
+        # A SYMLINK rule publishing a TEST rule's output (the
+        # content-addressed JUnit ``<cas_exe>.xml``) must quietly skip
+        # when the input is absent: the deposit only happens on rc==0, so
+        # a missing input means the test just failed (already aggregated
+        # into _test_failures). Make/ninja get this for free from
+        # dependency-chain semantics; running ct-cas-publish here would
+        # bury the test failure under a ConcurrentTrimError crash.
+        if rule.rule_type == RuleType.SYMLINK and rule.inputs and not os.path.exists(rule.inputs[0]):
+            producer = graph.get_rule(rule.inputs[0])
+            if producer is not None and producer.rule_type == RuleType.TEST:
+                return False
+
         # VERIFY TRACE (non-CA rules only)
         if not _is_build_artifact(rule) and not any_input_rebuilt:
             trace = traces.get(target)
@@ -598,12 +617,20 @@ class ShakeBackend(BuildBackend):
         self._record_test_outcome(rule, result.returncode, flat_cmd)
 
     def _record_test_outcome(self, rule: BuildRule, returncode: int, flat_cmd: list[str]) -> None:
-        """Record a TEST rule's result. On success touch the success marker
-        (always ``success_marker``, even for framework tests); on failure append
-        to ``_test_failures`` so sibling rules already in flight can finish and
-        ``execute()`` raises the aggregate once the traversal returns. Shared by
-        the sync ``_run_test_rule`` and the async ``_execute_rule_async``."""
+        """Record a TEST rule's result. On success perform the rule's
+        ``success_copies`` deposits (workspace JUnit XML into its
+        content-addressed ``<cas_exe>.xml`` home — byte-copy, never
+        hardlink, since the framework rewrites the workspace path in
+        place next run) and then touch the success marker (always
+        ``success_marker``, even for framework tests) — deposit before
+        marker, so the marker asserts the copies landed. On failure
+        append to ``_test_failures`` so sibling rules already in flight
+        can finish and ``execute()`` raises the aggregate once the
+        traversal returns. Shared by the sync ``_run_test_rule`` and the
+        async ``_execute_rule_async``."""
         if returncode == 0:
+            for src, dst in rule.success_copies:
+                compiletools.filesystem_utils.atomic_copy_bytes(src, dst)
             self._touch_result_marker(rule.success_marker or "")
         else:
             self._test_failures.append(f"{rule.output} (exit {returncode}): {' '.join(flat_cmd)}")

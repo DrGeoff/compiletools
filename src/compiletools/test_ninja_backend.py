@@ -763,16 +763,19 @@ class TestNinjaRunsTestsInBuildPhase:
             NinjaBackend, tmp_path, [], tests=[test_src], extra_argv=["--test-xml-dir=" + str(xml_dir)]
         )
 
-        # The framework test rule's output must be the XML path (not the
-        # .result marker) for the no-delete-on-failure behaviour to matter.
+        # Framework detected: the rule's output is the content-addressed
+        # ``<cas_exe>.xml``; the argv writes the workspace report named in
+        # success_copies. Failure must preserve the workspace report and
+        # deposit NOTHING in the CAS.
         test_rules = [r for r in graph.rules if r.rule_type == "test"]
         assert len(test_rules) == 1
         xml_rule = test_rules[0]
         assert xml_rule.output != xml_rule.success_marker, (
             "framework was not detected -- test rule output is still the .result marker"
         )
-        assert xml_rule.output.endswith(".xml")
-        xml_path = xml_rule.output
+        assert xml_rule.output.endswith(".exe.xml")
+        assert xml_rule.success_copies, "framework test rule lost its CAS deposit"
+        workspace_xml = xml_rule.success_copies[0][0]
 
         with open(tmp_path / "build.ninja", "w") as f:
             backend.generate(graph, output=f)
@@ -782,23 +785,24 @@ class TestNinjaRunsTestsInBuildPhase:
 
         results = uth.find_result_markers(tmp_path)
         assert not results, f"failing test left a .result marker (touch ran despite rc!=0): {results}"
-        assert os.path.exists(xml_path), (
-            f"JUnit XML at {xml_path} was deleted by ninja on rule failure -- "
-            f"ninja unexpectedly deletes failed-rule outputs. tmp_path contents: "
+        assert os.path.exists(workspace_xml), (
+            f"failing test's JUnit report missing at {workspace_xml}. tmp_path contents: "
             f"{[os.path.join(dp, fn) for dp, _, files in os.walk(tmp_path) for fn in files]}"
         )
-        with open(xml_path) as xf:
+        with open(workspace_xml) as xf:
             assert "<testsuites>" in xf.read()
+        assert not os.path.exists(xml_rule.output), (
+            "failure artefact was deposited into the CAS -- a cas .xml must imply a passing run"
+        )
 
     @uth.requires_functional_compiler
     def test_ninja_framework_test_failure_reruns_when_only_failed_xml_exists(self, tmp_path):
-        """A preserved failed JUnit XML file must not satisfy ninja's up-to-date check.
+        """A preserved failed JUnit report must not satisfy ninja's up-to-date check.
 
-        The framework XML output survives a failing test (ninja does not
-        delete failed-rule outputs). A later ``ninja runtests`` must still
-        re-run that test when the XML exists but the ``.result`` success
-        marker does not — which means the rule must declare both files as
-        outputs so ninja's existence check considers the missing stamp.
+        The failing run leaves the workspace report behind but deposits
+        neither the cas-side ``.xml`` (the rule's output) nor the
+        ``.result`` stamp, so a later ``ninja runtests`` must re-run the
+        test.
         """
         test_src = uth.write_failing_gtest_fixture(tmp_path)
 
@@ -814,6 +818,8 @@ class TestNinjaRunsTestsInBuildPhase:
         test_rule = next(r for r in graph.rules if r.rule_type == "test")
         assert test_rule.output != test_rule.success_marker
         assert test_rule.success_marker is not None
+        assert test_rule.success_copies
+        workspace_xml = test_rule.success_copies[0][0]
 
         with open(tmp_path / "build.ninja", "w") as f:
             backend.generate(graph, output=f)
@@ -821,7 +827,8 @@ class TestNinjaRunsTestsInBuildPhase:
         with pytest.raises(subprocess.CalledProcessError):
             backend.execute("build")
 
-        assert os.path.exists(test_rule.output)
+        assert os.path.exists(workspace_xml)
+        assert not os.path.exists(test_rule.output)
         assert not os.path.exists(test_rule.success_marker)
 
         with pytest.raises(subprocess.CalledProcessError):

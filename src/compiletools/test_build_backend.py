@@ -4048,3 +4048,91 @@ class TestEmptyBindirModuleMapper:
         backend._write_gcc_module_mapper()
 
         assert (tmp_path / ".module-mapper.txt").read_text().startswith("M ")
+
+
+class TestContentAddressedXmlRules:
+    """--test-xml-dir under CAS-only mode: the JUnit XML's source of truth
+    is the content-addressed ``<cas_exe>.xml`` sibling, and the
+    workspace path under ``<test-xml-dir>/`` is a materialisation target
+    (a ct-cas-publish rule), so a fresh workspace with a warm cas-exedir
+    skips the test run instead of re-running every test."""
+
+    def _framework_backend(self, tmp_path, **arg_overrides):
+        StubClass = make_stub_backend_class()
+        if arg_overrides.get("use_mtime"):
+            # The generic stub rejects --use-mtime at construction (only
+            # make/ninja honor it); claim support so the legacy-shape
+            # branch of _plan_test_rules is reachable in isolation.
+            StubClass._honors_use_mtime = lambda self: True
+        args = make_backend_args(
+            tmp_path,
+            filename=[],
+            tests=["/src/test_foo.cpp"],
+            test_xml_dir=str(tmp_path / "junit"),
+            variant="gcc.debug",
+            **arg_overrides,
+        )
+        hunter = make_mock_hunter(
+            sources=["/src/test_foo.cpp"],
+            headers=["/usr/include/gtest/gtest.h"],
+        )
+        backend = StubClass(args=args, hunter=hunter)
+        backend.namer = make_mock_namer(args)
+        return backend, args
+
+    def _paths(self, backend, graph, args):
+        exe = backend.namer.executable_pathname("/src/test_foo.cpp")
+        publish = graph.get_rule(exe)
+        assert publish is not None and publish.rule_type == "symlink"
+        cas_exe = publish.inputs[0]
+        user_xml = os.path.join(args.test_xml_dir, "gcc.debug", os.path.basename(exe) + ".xml")
+        return exe, cas_exe, user_xml
+
+    def test_cas_mode_test_rule_targets_cas_xml(self, tmp_path):
+        """The test rule's output (= its staleness key) must be the
+        content-addressed ``<cas_exe>.xml``, deposited on success via
+        ``success_copies``; the argv still writes the workspace path so
+        a FAILING run's report lands in test-xml-dir and never in the
+        CAS."""
+        backend, args = self._framework_backend(tmp_path)
+        graph = backend.build_graph()
+        _exe, cas_exe, user_xml = self._paths(backend, graph, args)
+
+        rule = graph.rules_by_type("test")[0]
+        assert rule.output == cas_exe + ".xml"
+        assert rule.success_marker == cas_exe + ".result"
+        assert rule.success_copies == ((user_xml, cas_exe + ".xml"),)
+        # argv writes the workspace path, stays shell-naive
+        assert f"--gtest_output=xml:{user_xml}" in _cmd(rule)
+        assert "&&" not in _cmd(rule) and "cp" not in _cmd(rule)
+
+    def test_cas_mode_emits_xml_materialize_publish_rule(self, tmp_path):
+        """A ct-cas-publish rule materialises ``<cas_exe>.xml`` at the
+        workspace path, and runtests aggregates the workspace path (so
+        a build with a warm CAS still populates test-xml-dir)."""
+        backend, args = self._framework_backend(tmp_path)
+        graph = backend.build_graph()
+        _exe, cas_exe, user_xml = self._paths(backend, graph, args)
+
+        materialize = graph.get_rule(user_xml)
+        assert materialize is not None and materialize.rule_type == "symlink"
+        assert materialize.inputs == [cas_exe + ".xml"]
+        assert _cmd(materialize)[0] == "ct-cas-publish"
+
+        runtests = graph.get_rule("runtests")
+        assert runtests is not None
+        assert user_xml in runtests.inputs
+        assert cas_exe + ".xml" not in runtests.inputs
+
+    def test_use_mtime_keeps_legacy_xml_rule_shape(self, tmp_path):
+        """--use-mtime opts out: the workspace XML stays the test rule's
+        own output (mtime semantics), no CAS deposit, no materialise
+        rule."""
+        backend, args = self._framework_backend(tmp_path, use_mtime=True)
+        graph = backend.build_graph()
+        exe = backend.namer.executable_pathname("/src/test_foo.cpp")
+        user_xml = os.path.join(args.test_xml_dir, "gcc.debug", os.path.basename(exe) + ".xml")
+
+        rule = graph.get_rule(user_xml)
+        assert rule is not None and rule.rule_type == "test"
+        assert rule.success_copies == ()

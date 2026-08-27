@@ -7,6 +7,7 @@ Backends consume a BuildGraph to produce their native output format.
 
 from __future__ import annotations
 
+import hashlib
 import shlex
 from dataclasses import dataclass, field
 
@@ -104,6 +105,18 @@ class BuildRule:
             call ``Path(marker).touch()`` after the subprocess returns 0.
             Backends that own their own pass/fail bookkeeping (CMake CTest,
             Bazel cc_test) ignore this field.
+        success_copies: ``(src, dst)`` pairs atomically copied (temp +
+            rename, never hardlink -- src is rewritten in place on later
+            runs) after the command succeeds and BEFORE the
+            success_marker touch, so the marker asserts the copies
+            landed. Used by framework test rules to deposit the
+            workspace-written JUnit XML at its content-addressed
+            ``<cas_exe>.xml`` home; a failing run performs no copy, so
+            failure artefacts never enter the CAS. Rendered by shell
+            backends as ``&& cp src tmp && mv -f tmp dst`` with a temp
+            name deterministic per src (regenerated build files stay
+            byte-identical) and distinct across peer workspaces; argv
+            backends copy in-process.
         cwd: Optional working directory the command must execute from. ``None``
             (default) means "no cwd constraint" — the recipe runs from
             wherever the backend's invocation happens to be. When set, shell
@@ -130,6 +143,7 @@ class BuildRule:
     order_only_deps: list[str] = field(default_factory=list)
     success_marker: str | None = None
     cwd: str | None = None
+    success_copies: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self):
         if self.rule_type not in VALID_RULE_TYPES:
@@ -257,6 +271,23 @@ def render_shell_recipe(rule: BuildRule) -> str:
     if rule.command is None:
         raise ValueError(f"render_shell_recipe called on rule {rule.output!r} with no command")
     cmd_str = shlex.join(rule.command)
+    for src, dst in rule.success_copies:
+        tmp = success_copy_tmp_path(src, dst)
+        cmd_str += f" && cp {shlex.quote(src)} {shlex.quote(tmp)} && mv -f {shlex.quote(tmp)} {shlex.quote(dst)}"
     if rule.success_marker:
         cmd_str += f" && touch {shlex.quote(rule.success_marker)}"
     return cmd_str
+
+
+def success_copy_tmp_path(src: str, dst: str) -> str:
+    """Temp path for a ``success_copies`` deposit of *src* at *dst*.
+
+    Deterministic (recipes are static text; regenerated build files must
+    stay byte-identical) yet unique per depositing workspace: *src* is a
+    workspace-absolute path, so peer workspaces depositing at the same
+    *dst* get distinct temps and the final ``mv -f`` is the only write
+    that touches the shared name. The ``.publish.tmp`` suffix keeps
+    orphans (a build killed mid-copy) reclaimable by
+    ``trim_cache.reclaim_orphan_temps``.
+    """
+    return f"{dst}.{hashlib.sha1(src.encode()).hexdigest()[:12]}.publish.tmp"

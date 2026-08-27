@@ -1178,13 +1178,26 @@ The XML argv is appended *after* the exe_path so prefix tools like
 ``valgrind --quiet`` (passed via ``--TESTPREFIX``) forward the XML
 flag to the child process correctly.
 
-A test whose ``.result`` marker is current but whose XML file has
-been deleted (someone ``rm -rf``'d the output dir, or asked for a
-different one) is re-run to regenerate the XML. ct-cake does NOT
-clean ``DIR/<variant>/`` before running, so stale XML from a removed
-test will linger; run ``rm -rf test-results/<variant>/`` for a clean
-slate. Most CI systems publish from a fresh checkout, so staleness
-doesn't accumulate there in practice.
+In CAS-only mode (the default) the XML's source of truth is
+content-addressed: a passing run deposits the report at
+``<cas-exedir>/.../<exe>.xml`` next to the ``.result`` marker, and
+the ``DIR/<variant>/<exe>.xml`` the CI system reads is materialised
+from it by the same publish machinery that places executables. A
+fresh workspace sharing a warm ``--cas-exedir`` therefore skips the
+test run AND still gets its XML — before this, every fresh CI
+workspace re-ran every test against a 100% cache hit. Deleting the
+workspace XML re-materialises it without a re-run; evicting the
+cas-side ``.xml`` (e.g. ``ct-trim-cache``) forces a re-run. A
+FAILING test still writes its report to ``DIR/<variant>/`` (CI needs
+the failure detail) but deposits nothing in the CAS, so a cas-side
+``.xml`` always corresponds to a passing run. Under ``--use-mtime``
+the workspace XML is the rule output with classical mtime semantics.
+
+ct-cake does NOT clean ``DIR/<variant>/`` before running, so stale
+XML from a removed test will linger; run
+``rm -rf test-results/<variant>/`` for a clean slate. Most CI
+systems publish from a fresh checkout, so staleness doesn't
+accumulate there in practice.
 
 GitHub Actions usage::
 
