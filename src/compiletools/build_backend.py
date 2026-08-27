@@ -306,6 +306,19 @@ class BuildBackend(abc.ABC):
         self._anchor_root: str = compiletools.git_utils.find_git_root() or ""
         self._graph: BuildGraph | None = None
         self._dynamic_sources: set[str] = set()
+        # Cross-phase state declared here so every read site is total (plain
+        # attribute access, no defensive getattr). Owned-accumulator
+        # exception per the purity convention in src/compiletools/CLAUDE.md.
+        # Per-pass group — the writer resets its entries on every pass:
+        # _plan_pch_rules writes the two PCH dicts, and _setup_file_locking
+        # (make/ninja generate) assigns _filesystem_type on both branches.
+        self._pch_gch_paths: dict[str, str] = {}  # header_abs -> gch_output
+        self._pch_include_dirs: dict[str, str] = {}  # header_abs -> -I dir
+        self._filesystem_type: str | None = None  # set by _setup_file_locking; None = locking off
+        # Cumulative for the instance lifetime, never reset: alias detection
+        # in _target_name_for compares every mangled native name ever issued
+        # (generate()-time writers plus post-build _copy_built_executables).
+        self._target_names_registry: dict[str, str] = {}  # native name -> output path
         # C++20 modules state. Set here so every read site can use
         # plain attribute access without defensive ``getattr``;
         # ``_create_compile_rules`` populates them with their final
@@ -327,6 +340,9 @@ class BuildBackend(abc.ABC):
         self._gcc_module_mapper_path: str | None = None
         self._gcc_header_unit_resolved: dict[str, list[str]] = {}
         self._build_imports_std_cached: bool | None = None
+        # Per-instance latch: compile-rule creation sets it,
+        # _link_libcxx_extras_if_needed reads it in the same build_graph()
+        # pass — owned accumulator, kept mutable by convention.
         self._compile_used_libcxx = False
 
         # Hard-fail if the user explicitly opted into legacy mtime semantics
@@ -965,15 +981,16 @@ class BuildBackend(abc.ABC):
         rule per header (CAS-keyed .gch when cas-pchdir is active), and the
         per-hash pchdir mkdir rules.
 
-        Sets ``self._pch_gch_paths`` and ``self._pch_include_dirs`` (read by
-        the compile phase). Mutates *graph* in place.
+        Resets and populates ``self._pch_gch_paths`` / ``self._pch_include_dirs``
+        (declared in ``__init__``, read by the compile phase). Mutates *graph*
+        in place.
         """
         # Discover PCH headers from magic flags and create PCH compile rules.
         # When pchdir is configured, .gch files are placed in a shared
         # content-addressable cache: <pchdir>/<command_hash>/<header>.gch
         pchdir = getattr(self.args, "cas_pchdir", None)
-        self._pch_gch_paths: dict[str, str] = {}  # header_abs -> gch_output
-        self._pch_include_dirs: dict[str, str] = {}  # header_abs -> -I dir
+        self._pch_gch_paths = {}  # header_abs -> gch_output
+        self._pch_include_dirs = {}  # header_abs -> -I dir
 
         if pchdir:
             _warn_if_pchdir_not_cross_user_safe(pchdir, getattr(self.args, "verbose", 0))
@@ -1531,10 +1548,7 @@ class BuildBackend(abc.ABC):
             # basename matches what the native tool would use anyway.
             rel = os.path.basename(output_path)
         name = mangle_target_name(rel.replace(os.sep, "__"))
-        registry = getattr(self, "_target_names_registry", None)
-        if registry is None:
-            registry = {}
-            self._target_names_registry = registry
+        registry = self._target_names_registry
         prior = registry.get(name)
         if prior is not None and prior != output_path:
             raise ValueError(

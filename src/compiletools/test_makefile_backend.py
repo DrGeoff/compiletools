@@ -593,6 +593,27 @@ class TestWrapCompileCmdRobust:
         with pytest.raises(AssertionError, match="missing -o"):
             backend._wrap_compile_cmd(["g++", "-c", "foo.cpp"])
 
+    def test_wrap_compile_cmd_is_total_on_a_freshly_constructed_backend(self):
+        """_filesystem_type is declared at construction (None = locking off), so
+        the recipe wrappers must work before any generate()/_setup_file_locking
+        call — previously this raised AttributeError, which is why older tests
+        assign backend._filesystem_type manually.
+
+        file_locking=True (not False) is required to actually exercise the
+        read: ``_wrap_compile_cmd``'s guard is
+        ``not getattr(args, "file_locking", False) or self._filesystem_type is None``,
+        so with file_locking=False the left operand short-circuits the ``or``
+        and self._filesystem_type is never touched — the attribute stays
+        unread and the test would pass vacuously regardless of whether it is
+        declared. With file_locking=True the declared ``None`` default still
+        takes the "locking not active" branch, so the expected recipe string
+        is unchanged; only the attribute-read path differs.
+        """
+        args = SimpleNamespace(file_locking=True)
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        cmd = ["g++", "-c", "foo.cpp", "-o", "foo.o"]
+        assert backend._wrap_compile_cmd(cmd) == "g++ -c foo.cpp -o foo.o"
+
 
 class TestMakeRuntestsIncremental:
     """Fix 2: `make runtests` must skip up-to-date tests."""

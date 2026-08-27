@@ -19,7 +19,6 @@ import pytest
 
 import compiletools.testhelper as uth
 from compiletools.build_backend import BuildBackend
-from compiletools.build_context import BuildContext
 from compiletools.build_graph import BuildGraph, BuildRule
 from compiletools.test_namer import _make_namer
 
@@ -141,17 +140,17 @@ class _ConcreteBackend(BuildBackend):
 
 
 def _make_backend(tmpdir, **arg_overrides):
+    """Construct normally (real __init__) so the __init__-declared planning
+    state (e.g. _target_names_registry) is present at the read sites these
+    tests exercise; only the namer and anchor root are then swapped out."""
     args = uth.make_backend_args(tmpdir, **arg_overrides)
     sources = list(args.filename or []) + list(args.tests or [])
     hunter = uth.make_mock_hunter(
         sources=sources,
         per_file_magicflags={s: {} for s in sources},
     )
-    backend = _ConcreteBackend.__new__(_ConcreteBackend)
-    backend.args = args
-    backend.hunter = hunter
+    backend = _ConcreteBackend(args, hunter)
     backend.namer = uth.make_mock_namer(args)
-    backend.context = BuildContext()
     backend._anchor_root = ""
     return backend
 
