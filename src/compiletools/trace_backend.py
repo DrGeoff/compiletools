@@ -544,6 +544,19 @@ class ShakeBackend(BuildBackend):
                     return False
             except OSError:
                 pass  # target missing or cas input not yet built; fall through
+        # COPY (currently: the <cas_exe>.xml JUnit report published at a
+        # user-facing path via an INDEPENDENT byte copy, never a hardlink --
+        # see BuildBackend._build_copy_publish_rule for why) deliberately
+        # gets NO pre-recursion existence short-circuit here, unlike SYMLINK.
+        # SYMLINK's cas-side input is a build artefact (immutable once
+        # content-addressed), so target existence alone proves it is still
+        # correct. COPY's input is a TEST rule's output, whose trustworthiness
+        # depends on a `.result` marker that can be deleted out from under an
+        # otherwise-warm workspace xml -- an early exit here would skip
+        # walking into the TEST rule and miss that untrusted state. Falling
+        # through to the generic input-walk + VERIFY TRACE path below lets
+        # the TEST rule's own rerun-skip predicate decide, and the trace
+        # store still skips a genuinely no-op re-copy.
 
         # SUSPEND: build all inputs concurrently via gather.
         results = await asyncio.gather(
@@ -551,14 +564,15 @@ class ShakeBackend(BuildBackend):
         )
         any_input_rebuilt = any(results)
 
-        # A SYMLINK rule publishing a TEST rule's output (the
+        # A SYMLINK or COPY rule publishing a TEST rule's output (the
         # content-addressed JUnit ``<cas_exe>.xml``) must quietly skip
         # when the input is absent: the deposit only happens on rc==0, so
         # a missing input means the test just failed (already aggregated
         # into _test_failures). Make/ninja get this for free from
-        # dependency-chain semantics; running ct-cas-publish here would
-        # bury the test failure under a ConcurrentTrimError crash.
-        if rule.rule_type == RuleType.SYMLINK and rule.inputs and not os.path.exists(rule.inputs[0]):
+        # dependency-chain semantics; running ct-cas-publish (SYMLINK) or
+        # the inline copy (COPY) here would instead raise a raw
+        # FileNotFoundError and bury the test failure under it.
+        if rule.rule_type in (RuleType.SYMLINK, RuleType.COPY) and rule.inputs and not os.path.exists(rule.inputs[0]):
             producer = graph.get_rule(rule.inputs[0])
             if producer is not None and producer.rule_type == RuleType.TEST:
                 return False

@@ -2,6 +2,8 @@ import io
 import json
 import os
 import shutil
+import subprocess
+import sys
 import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -4194,9 +4196,12 @@ class TestContentAddressedXmlRules:
         assert "&&" not in _cmd(rule) and "cp" not in _cmd(rule)
 
     def test_cas_mode_emits_xml_materialize_publish_rule(self, tmp_path):
-        """A ct-cas-publish rule materialises ``<cas_exe>.xml`` at the
-        workspace path, and runtests aggregates the workspace path (so
-        a build with a warm CAS still populates test-xml-dir)."""
+        """A COPY rule materialises ``<cas_exe>.xml`` at the workspace path
+        via an independent byte copy (never a hardlink -- the framework
+        rewrites the workspace path in place on every run, and hardlinking
+        would let that rewrite truncate the shared CAS-side inode), and
+        runtests aggregates the workspace path (so a build with a warm CAS
+        still populates test-xml-dir)."""
         backend, args = self._framework_backend(tmp_path)
         graph = backend.build_graph()
         _exe, cas_exe, user_xml = self._paths(backend, graph, args)
@@ -4206,9 +4211,9 @@ class TestContentAddressedXmlRules:
         )
 
         materialize = graph.get_rule(user_xml)
-        assert materialize is not None and materialize.rule_type == "symlink"
+        assert materialize is not None and materialize.rule_type == "copy"
         assert materialize.inputs == (cas_xml,)
-        assert _cmd(materialize)[0] == "ct-cas-publish"
+        assert _cmd(materialize)[0] == sys.executable
 
         runtests = graph.get_rule("runtests")
         assert runtests is not None
@@ -4227,3 +4232,106 @@ class TestContentAddressedXmlRules:
         rule = graph.get_rule(user_xml)
         assert rule is not None and rule.rule_type == "test"
         assert rule.success_copies == ()
+
+
+class TestXmlCopyPublishIsByteCopyNotHardlink:
+    """The XML publish rule (RuleType.COPY, ``_build_copy_publish_rule``)
+    must be an independent byte copy: rewriting the workspace XML in place
+    (the framework's own behaviour on every subsequent run) must NEVER
+    corrupt the CAS-side sibling. A hardlink (the old, buggy SYMLINK
+    publish) fails this test because both paths share one inode."""
+
+    def test_workspace_and_cas_copies_are_independent_inodes(self, tmp_path):
+        backend = make_stub_backend_class()(args=MagicMock(), hunter=MagicMock())
+        cas_xml = str(tmp_path / "cas-exe" / "aa" / "foo_abc.exe.xml")
+        user_xml = str(tmp_path / "junit" / "gcc.debug" / "foo.xml")
+        os.makedirs(os.path.dirname(cas_xml))
+        os.makedirs(os.path.dirname(user_xml))
+        with open(cas_xml, "w") as f:
+            f.write("<testsuite passed=1/>")
+
+        rule = backend._build_copy_publish_rule(cas_xml, user_xml)
+        assert rule.rule_type == "copy"
+        assert rule.command is not None
+        subprocess.run(list(rule.command), check=True)
+
+        assert not os.path.samefile(cas_xml, user_xml), (
+            "workspace XML and CAS XML share an inode -- a later in-place rewrite of one would corrupt the other"
+        )
+
+        # The framework's next run truncates and rewrites the workspace
+        # path in place -- must NOT touch the CAS-side content.
+        with open(user_xml, "w") as f:
+            f.write("<testsuite passed=0/>")
+
+        with open(cas_xml) as f:
+            assert f.read() == "<testsuite passed=1/>", (
+                "rewriting the workspace XML altered the CAS-side copy -- the publish rule is still sharing an inode"
+            )
+
+
+class TestXmlCopyAllOutputsCurrent:
+    """``_all_outputs_current``'s COPY arm: a deleted workspace XML on an
+    otherwise-warm build must be noticed (not short-circuited past)."""
+
+    def _make_backend(self):
+        StubClass = make_stub_backend_class()
+        args = MagicMock()
+        args.use_mtime = False
+        return StubClass(args=args, hunter=MagicMock())
+
+    def test_returns_false_when_copy_output_missing(self, tmp_path):
+        backend = self._make_backend()
+        cas_xml = str(tmp_path / "cas_exe.xml")
+        user_xml = str(tmp_path / "junit" / "foo.xml")
+        with open(cas_xml, "w") as f:
+            f.write("<testsuite/>")
+        # user_xml deliberately not created
+
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(output=user_xml, inputs=[cas_xml], command=[sys.executable, "-c", "pass"], rule_type="copy")
+        )
+        assert backend._all_outputs_current(graph) is False
+
+    def test_returns_true_when_copy_output_present(self, tmp_path):
+        backend = self._make_backend()
+        cas_xml = str(tmp_path / "cas_exe.xml")
+        user_xml = str(tmp_path / "junit" / "foo.xml")
+        os.makedirs(os.path.dirname(user_xml))
+        with open(cas_xml, "w") as f:
+            f.write("<testsuite/>")
+        with open(user_xml, "w") as f:
+            f.write("<testsuite/>")
+
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(output=user_xml, inputs=[cas_xml], command=[sys.executable, "-c", "pass"], rule_type="copy")
+        )
+        assert backend._all_outputs_current(graph) is True
+
+    def test_deleted_workspace_xml_is_rematerialised_on_generate_execute(self, tmp_path, monkeypatch):
+        """End-to-end (no real compiler needed): a warm CAS xml plus a
+        deleted workspace copy must NOT let ``_all_outputs_current`` claim
+        the build is current, and the COPY rule's own recipe (invoked
+        directly) must rematerialise the file."""
+        monkeypatch.chdir(tmp_path)
+        backend = self._make_backend()
+        cas_xml = str(tmp_path / "cas_exe.xml")
+        user_xml = str(tmp_path / "junit" / "foo.xml")
+        os.makedirs(os.path.dirname(user_xml))
+        with open(cas_xml, "w") as f:
+            f.write("<testsuite/>")
+
+        rule = backend._build_copy_publish_rule(cas_xml, user_xml)
+        graph = BuildGraph()
+        graph.add_rule(rule)
+
+        assert backend._all_outputs_current(graph) is False, "missing workspace xml must not be reported current"
+
+        assert rule.command is not None
+        subprocess.run(list(rule.command), check=True)
+        assert os.path.exists(user_xml)
+        with open(user_xml) as f:
+            assert f.read() == "<testsuite/>"
+        assert backend._all_outputs_current(graph) is True

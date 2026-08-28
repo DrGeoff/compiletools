@@ -1763,8 +1763,12 @@ class BuildBackend(abc.ABC):
                 # path: a FAILING run's report must land in test-xml-dir for
                 # CI to collect, and must never enter the CAS (the deposit
                 # only happens on rc==0, so a cas .xml always corresponds to
-                # a .result-worthy run). A separate ct-cas-publish rule
-                # materialises the workspace copy on cache-hit builds.
+                # a .result-worthy run). A separate COPY rule materialises
+                # the workspace copy on cache-hit builds -- deliberately a
+                # byte copy, not a SYMLINK/hardlink publish: the framework
+                # rewrites the workspace path in place on every subsequent
+                # run, and a hardlink would let that rewrite truncate the
+                # shared CAS-side inode (see _build_copy_publish_rule).
                 user_xml = None
                 cas_xml = None
                 success_copies: tuple[tuple[str, str], ...] = ()
@@ -1775,7 +1779,7 @@ class BuildBackend(abc.ABC):
                             cas_exe_path, sidecar_key, compiletools.filesystem_utils.EXE_XML_SUFFIX
                         )
                         success_copies = ((user_xml, cas_xml),)
-                        graph.add_rule(self._build_publish_rule(cas_xml, user_xml))
+                        graph.add_rule(self._build_copy_publish_rule(cas_xml, user_xml))
                 rule_output = cas_xml or user_xml or result_path
                 # runtests aggregates the user-facing artefact: the
                 # materialised workspace XML when one exists, else the
@@ -2213,6 +2217,18 @@ class BuildBackend(abc.ABC):
                 has_build_rules = True
                 if not os.path.exists(rule.output):
                     return False
+            elif rule.rule_type == RuleType.COPY:
+                # Byte-copy publish (currently: the content-addressed
+                # ``<cas_exe>.xml`` -> the workspace test-xml-dir path).
+                # Independent inodes -- see _build_copy_publish_rule -- so
+                # there is no samefile/hardlink invariant to lean on, but
+                # the same "must exist for the build to count as current"
+                # reasoning as the SYMLINK arm above applies: an interactive
+                # ``rm`` of the workspace XML must not let a warm cas-exedir
+                # short-circuit the rebuild and leave it missing.
+                has_build_rules = True
+                if not os.path.exists(rule.output):
+                    return False
             elif rule.rule_type == RuleType.TEST:
                 # Tests run in the build phase. A framework-detected test with
                 # --test-xml-dir has two observable success conditions: the XML
@@ -2234,6 +2250,18 @@ class BuildBackend(abc.ABC):
         exposes at a user-facing path. Shared by the execute-side freshening
         pass and by ``MakefileBackend``'s in-Makefile freshening, so both name
         the same set of entries.
+
+        Deliberately SYMLINK-only -- COPY publish rules (currently just the
+        ``<cas_exe>.xml`` materialisation) are NOT included. ``.xml`` is an
+        exe-pool sidecar (``trim_cache._EXE_SIDECAR_SUFFIXES``) evicted
+        alongside its parent exe, never independently, so freshening it here
+        would buy no eviction protection. Worse, a COPY entry is an
+        independent byte copy (see ``_build_copy_publish_rule``): bumping
+        its mtime would make the cas-side file strictly newer than the
+        workspace copy, and because COPY's input is a genuine make/ninja
+        mtime dependency (unlike a CAS producer's demoted-to-order-only
+        inputs), that would make every freshen pass re-fire the copy on the
+        very next build.
         """
         return [rule.inputs[0] for rule in graph.rules_by_type(RuleType.SYMLINK) if rule.inputs]
 
@@ -2279,8 +2307,15 @@ class BuildBackend(abc.ABC):
         build republish every artefact, forever. The age floor bounds that to
         one republish per artefact per hour while keeping an entry in daily
         use within an hour of current, far inside any ``--max-age`` a sweep
-        expresses in days. Make is unaffected either way: it compares the
-        published path against the entry live, and they share an inode.
+        expresses in days. Make is unaffected either way for the entries
+        this pass actually touches: it compares the published path against
+        the entry live, and (SYMLINK-only, see ``_published_cas_entries``)
+        they share an inode via hardlink, so bumping the entry's mtime
+        moves the published path's mtime too. This does NOT generalise to
+        every publish kind -- a COPY entry (the ``<cas_exe>.xml`` case) is
+        an independent byte copy with its own inode, which is exactly why
+        ``_published_cas_entries`` excludes COPY rules from this pass
+        entirely rather than freshening them under the same reasoning.
         """
         if getattr(self.args, "use_mtime", False):
             return
@@ -3575,6 +3610,76 @@ class BuildBackend(abc.ABC):
             inputs=[cas_path],
             command=publish_cmd,
             rule_type="symlink",
+            order_only_deps=[os.path.dirname(user_path)],
+        )
+
+    def _build_copy_publish_rule(self, cas_path: str, user_path: str) -> BuildRule:
+        """Construct the ``copy`` rule that publishes a CAS artefact at its
+        user-facing path via an INDEPENDENT BYTE COPY, never a hardlink.
+
+        This exists alongside ``_build_publish_rule`` (SYMLINK, hardlink by
+        default) rather than reusing it because the two publish targets have
+        opposite mutability contracts. An exe/library CAS entry is written
+        once and never rewritten in place, so sharing its inode with the
+        published ``bin/<name>`` path is safe and is exactly what makes
+        trim's hard-link protection work (``nlink >= 2``). A JUnit XML
+        report is different: the test framework overwrites the WORKSPACE
+        path in place on every subsequent run. Publishing it as a hardlink
+        would mean that in-place rewrite truncates the shared CAS-side
+        inode -- the framework's next open("w") corrupts the very entry a
+        warm-CAS peer build is about to trust (a `.result` marker vouching
+        for a report that no longer exists). See
+        ``src/compiletools/CLAUDE.md`` "Test-rerun skip semantics" and this
+        rule's regression tests for the measured failure mode.
+
+        Recipe: a bare ``python -c`` invocation doing
+        ``shutil.copyfile(src, tmp); os.replace(tmp, dst)`` -- a real,
+        independent-inode, temp+rename atomic copy. Deliberately NOT routed
+        through ``ct-cas-publish``/``cas_publish.py``: that helper's
+        contract is the hardlink-by-default publish this method's sibling
+        already covers, and widening it to a second, weaker byte-copy mode
+        would blur the one invariant (`nlink>=2` protects the entry from
+        trim) that ``_build_publish_rule`` exists to guarantee. A separate,
+        SECURE deposit helper for the opposite direction (workspace -> CAS,
+        the ``success_copies`` side of a test rule) is being hardened in
+        ``cas_publish.py`` independently (O_EXCL, retained-FD,
+        symlink-implantation-proof); if that work grows a general
+        ``--mode=copy`` flag (or a dedicated new entry point) taking
+        ``--src``/``--dst``, this recipe should delegate to it instead of
+        the inline python below, to share the hardening rather than
+        duplicate a weaker copy.
+
+        No lock coordination beyond the standard target-keyed ``FileLock``
+        every ``execute_link_rule`` call already takes (this rule is
+        dispatched through the same generic path as SYMLINK) -- sufficient
+        because the copy is self-contained temp+rename, with no read-side
+        lock needed on ``cas_path`` (mirrors the ``.o`` link-read contract
+        in ``locking.py``).
+
+        A missing ``cas_path`` is a silent no-op, not a build failure --
+        the symmetric case of the deposit side's "missing report is a
+        warning, not an error" (``filesystem_utils.secure_publish_copy``):
+        a test the deposit skipped (framework misdetection: rc==0 but the
+        test never wrote its report) or a genuinely failed test both leave
+        no cas-side ``.xml``, and this materialisation is best-effort
+        either way. Shake's in-process equivalent already skips its
+        SYMLINK/COPY branch when the input is absent
+        (``trace_backend.py`` around ``_all_outputs_current``); this
+        mirrors that for the shell-rendered recipe. The deposit side
+        already warned once, so this stays quiet.
+        """
+        copy_snippet = (
+            "import os,shutil,sys;"
+            "src,dst=sys.argv[1],sys.argv[2];"
+            "tmp=dst+'.'+str(os.getpid())+'.copytmp';"
+            "shutil.copyfile(src,tmp);"
+            "os.replace(tmp,dst)"
+        )
+        return BuildRule(
+            output=user_path,
+            inputs=[cas_path],
+            command=[sys.executable, "-c", copy_snippet, cas_path, user_path],
+            rule_type=RuleType.COPY,
             order_only_deps=[os.path.dirname(user_path)],
         )
 

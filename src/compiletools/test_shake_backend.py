@@ -2158,3 +2158,209 @@ class TestShakeSuccessCopiesAndSkipPredicate:
                 f.write("x")
         self._run(tmp_path, rule)
         assert not canary.exists(), "test rule re-ran despite output AND marker being present"
+
+
+class TestCopyPublishFailedTestGuard:
+    """A COPY rule publishing a TEST rule's output (the content-addressed
+    JUnit ``<cas_exe>.xml``) must quietly skip -- returning False, never
+    raising -- when its cas-side input was never deposited (the test just
+    failed, so success_copies never ran). Mirrors
+    TestSymlinkPublishShortCircuit but for the byte-copy publish kind."""
+
+    @staticmethod
+    def _make_copy_publish_graph(cas_xml: str, user_xml: str, test_output: str) -> BuildGraph:
+        test_rule = BuildRule(
+            output=test_output,
+            inputs=[],
+            command=["sh", "-c", "exit 1"],
+            rule_type="test",
+            success_marker=test_output + ".result",
+        )
+        copy_rule = BuildRule(
+            output=user_xml,
+            inputs=[cas_xml],
+            command=[
+                "python3",
+                "-c",
+                "import shutil,sys; shutil.copyfile(sys.argv[1], sys.argv[2])",
+                cas_xml,
+                user_xml,
+            ],
+            rule_type="copy",
+        )
+        graph = BuildGraph()
+        graph.add_rule(test_rule)
+        graph.add_rule(copy_rule)
+        graph.add_rule(BuildRule(output="build", inputs=[user_xml], command=None, rule_type="phony"))
+        return graph
+
+    def test_copy_publish_skips_quietly_when_cas_xml_absent(self, monkeypatch, tmp_path):
+        """cas_xml (the copy rule's sole input) was never deposited because
+        its producing TEST rule failed. Building the COPY target directly
+        must return False without raising FileNotFoundError -- the failure
+        guard keys off the producer being a TEST rule, mirroring the
+        pre-existing SYMLINK guard."""
+        cas_xml = str(tmp_path / "cas_exe.xml")  # never created: producer fails
+        user_xml = str(tmp_path / "junit" / "foo.xml")
+        os.makedirs(os.path.dirname(user_xml))
+        test_output = cas_xml  # the failing TEST rule's output IS cas_xml
+        graph = self._make_copy_publish_graph(cas_xml, user_xml, test_output)
+
+        with ShakeBackendTestContext(graph) as (backend, _):
+            monkeypatch.chdir(tmp_path)
+            traces = TraceStore(str(tmp_path / ".ct-traces.json"))
+            memo: dict = {}
+            gate = PriorityGate(1)
+            # The producer rule for cas_xml is the failing TEST rule --
+            # its command exits 1, so cas_xml is never written.
+            result = asyncio.run(backend._build_async(user_xml, graph, traces, memo, gate, {}))
+            assert result is False
+            assert not os.path.exists(user_xml), "copy must not fabricate an xml from a missing cas input"
+
+    def test_copy_publish_skips_when_producing_test_failed(self, monkeypatch, tmp_path):
+        """End-to-end: the copy rule's input is produced by a TEST rule
+        that fails. Walking the copy target through the real dependency
+        edge must surface as a test failure, never a raw filesystem
+        error from the copy."""
+        cas_xml = str(tmp_path / "cas_exe.xml")
+        user_xml = str(tmp_path / "junit" / "foo.xml")
+        os.makedirs(os.path.dirname(user_xml))
+        test_rule = BuildRule(
+            output=cas_xml,
+            inputs=[],
+            command=["sh", "-c", "exit 1"],
+            rule_type="test",
+            success_marker=cas_xml + ".result",
+        )
+        copy_rule = BuildRule(
+            output=user_xml,
+            inputs=[cas_xml],
+            command=[
+                "python3",
+                "-c",
+                "import shutil,sys; shutil.copyfile(sys.argv[1], sys.argv[2])",
+                cas_xml,
+                user_xml,
+            ],
+            rule_type="copy",
+        )
+        graph = BuildGraph()
+        graph.add_rule(test_rule)
+        graph.add_rule(copy_rule)
+        graph.add_rule(BuildRule(output="build", inputs=[user_xml], command=None, rule_type="phony"))
+
+        with ShakeBackendTestContext(graph) as (backend, _):
+            monkeypatch.chdir(tmp_path)
+            with pytest.raises(RuntimeError, match="test execution failed"):
+                backend.execute("build")
+            assert not os.path.exists(user_xml), "no fabricated xml after the producing test failed"
+
+
+class TestShakeCopyPublishReachability:
+    """SHAKE REACHABILITY: a warm-CAS build with a deleted ``.result``
+    sidecar must actually re-run the test (not silently skip it), and the
+    COPY publish rule downstream must re-materialise. Uses a REAL
+    executable script (never mocks subprocess) whose only observable is an
+    append to a log file -- the async dispatch path can route around a
+    mocked subprocess.Popen/run, producing a vacuous pass.
+
+    The cold-workspace control arm (exactly 1 run) proves the observable
+    actually detects execution; without it a probe that always reports "1
+    run" regardless of cache state would pass vacuously too.
+    """
+
+    @staticmethod
+    def _script(log_path: Path, xml_path: Path) -> Path:
+        script = log_path.parent / "run_test.sh"
+        script.write_text(f'#!/bin/sh\necho ran >> "{log_path}"\necho "<testsuite/>" > "{xml_path}"\nexit 0\n')
+        script.chmod(0o755)
+        return script
+
+    def _graph(self, tmp_path: Path, script: Path):
+        cas_exe = str(tmp_path / "cas_exe")
+        cas_xml = cas_exe + ".xml"
+        cas_result = cas_exe + ".result"
+        user_xml = str(tmp_path / "junit" / "foo.xml")
+        test_rule = BuildRule(
+            output=cas_xml,
+            inputs=[],
+            command=[str(script)],
+            rule_type="test",
+            success_marker=cas_result,
+        )
+        copy_rule = BuildRule(
+            output=user_xml,
+            inputs=[cas_xml],
+            command=[
+                "python3",
+                "-c",
+                "import shutil,sys; shutil.copyfile(sys.argv[1], sys.argv[2])",
+                cas_xml,
+                user_xml,
+            ],
+            rule_type="copy",
+        )
+        graph = BuildGraph()
+        graph.add_rule(test_rule)
+        graph.add_rule(copy_rule)
+        graph.add_rule(BuildRule(output="runtests", inputs=[user_xml], command=None, rule_type="phony"))
+        graph.add_rule(BuildRule(output="build", inputs=["runtests"], command=None, rule_type="phony"))
+        return graph, cas_xml, cas_result, user_xml
+
+    def _run_count(self, log_path: Path) -> int:
+        if not log_path.exists():
+            return 0
+        return len(log_path.read_text().splitlines())
+
+    def test_cold_workspace_runs_exactly_once(self, monkeypatch, tmp_path):
+        """CONTROL ARM: a cold workspace (nothing pre-built) must run the
+        test exactly once. Proves the log-append observable actually
+        detects execution."""
+        os.makedirs(tmp_path / "junit")
+        log_path = tmp_path / "run.log"
+        cas_xml = str(tmp_path / "cas_exe.xml")
+        script = self._script(log_path, Path(cas_xml))
+        graph, cas_xml, cas_result, user_xml = self._graph(tmp_path, script)
+
+        with ShakeBackendTestContext(graph) as (backend, _):
+            monkeypatch.chdir(tmp_path)
+            backend.execute("build")
+
+        assert self._run_count(log_path) == 1, f"cold run count was {self._run_count(log_path)}, expected exactly 1"
+        assert os.path.exists(cas_result)
+        assert os.path.exists(user_xml)
+
+    def test_warm_cas_with_deleted_result_reruns_the_test(self, monkeypatch, tmp_path):
+        """A warm cas-exedir (xml + result already on disk from a prior
+        build) with the ``.result`` sidecar DELETED must still re-run the
+        test -- the deletion is the signal that the prior pass-status is
+        no longer trustworthy."""
+        os.makedirs(tmp_path / "junit")
+        log_path = tmp_path / "run.log"
+        cas_xml = str(tmp_path / "cas_exe.xml")
+        script = self._script(log_path, Path(cas_xml))
+        graph, cas_xml, cas_result, user_xml = self._graph(tmp_path, script)
+
+        # Simulate a prior successful build: xml + result already present,
+        # workspace xml already materialised.
+        with open(cas_xml, "w") as f:
+            f.write("<testsuite/>")
+        with open(cas_result, "w") as f:
+            f.write("")
+        with open(user_xml, "w") as f:
+            f.write("<testsuite/>")
+
+        # Now delete the result sidecar -- the warm-but-untrusted state
+        # under test.
+        os.remove(cas_result)
+
+        with ShakeBackendTestContext(graph) as (backend, _):
+            monkeypatch.chdir(tmp_path)
+            backend.execute("build")
+
+        run_count = self._run_count(log_path)
+        assert run_count == 1, (
+            f"warm-CAS-with-deleted-result run count was {run_count}, expected exactly 1 "
+            "(deleting .result must force a real re-run, not a silent skip)"
+        )
+        assert os.path.exists(cas_result), "test did not re-run: .result was never re-created"
