@@ -12,6 +12,30 @@ import sys
 import compiletools.filesystem_utils
 import compiletools.publish_copy
 
+# On PyPy, several hashlib/ssl/lzma C-accelerator backends are implemented as
+# bundled cffi shim modules rather than C extensions, so their names are
+# absent from sys.stdlib_module_names (unlike CPython's _hashlib/_sha3/etc,
+# which ARE listed there). `secrets` -> `hmac` -> `hashlib` pulls them in
+# transitively; they're genuinely part of PyPy's stdlib, not a dependency
+# this module adds.
+_PYPY_STDLIB_BACKEND_ROOTS = frozenset(
+    {
+        "_blake2",
+        "_sha3",
+        "_hashlib",
+        "_lzma_cffi",
+        "_cffi_ssl",
+        "_pypy_openssl",
+        "_pypy_util_cffi_inner",
+    }
+)
+
+
+def _is_stdlib_root(root: str) -> bool:
+    if root in sys.stdlib_module_names:
+        return True
+    return sys.implementation.name == "pypy" and root in _PYPY_STDLIB_BACKEND_ROOTS
+
 
 def _modules_added_by(import_stmt: str) -> set[str]:
     """Return the sys.modules delta a fresh interpreter shows for *import_stmt*
@@ -59,9 +83,7 @@ def test_module_imports_no_heavy_dependencies():
     )
 
     non_stdlib = {
-        name
-        for name in added
-        if name.partition(".")[0] not in sys.stdlib_module_names and name != "compiletools.publish_copy"
+        name for name in added if not _is_stdlib_root(name.partition(".")[0]) and name != "compiletools.publish_copy"
     }
     assert non_stdlib == set(), (
         f"publish_copy grew non-stdlib imports {sorted(non_stdlib)}; each one is paid twice "
@@ -79,7 +101,7 @@ def test_control_filesystem_utils_is_measurably_heavier():
     """
     added = _modules_added_by("import compiletools.filesystem_utils")
 
-    non_stdlib = {name for name in added if name.partition(".")[0] not in sys.stdlib_module_names}
+    non_stdlib = {name for name in added if not _is_stdlib_root(name.partition(".")[0])}
     assert non_stdlib, (
         "importing filesystem_utils added no non-stdlib modules -- the probe cannot "
         "distinguish a leaf from a non-leaf, so test_module_imports_no_heavy_dependencies "
