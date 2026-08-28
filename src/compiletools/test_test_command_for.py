@@ -250,3 +250,26 @@ def test_sitelocal_pkgconfig_package_detects_framework(tmp_path):
     assert framework is not None and framework.id == "doctest"
     expected_xml = os.path.join(xml_dir, "gcc.debug", os.path.basename(exe) + ".xml")
     assert cmd == [exe, "--reporters=junit", f"--out={expected_xml}"]
+
+
+def test_conflicting_pkgconfig_does_not_override_header_match(tmp_path):
+    """A doctest header plus a ``//#PKG-CONFIG=gtest`` magic flag (a
+    doctest test that transitively links a gtest-providing package) must
+    still resolve to doctest via the header channel, not raise and not
+    fall through to None -- pkg-config is a fallback tier, only
+    consulted when no header matched."""
+    import stringzilla as sz
+
+    tmpdir = str(tmp_path)
+    source = _write(
+        os.path.join(tmpdir, "src", "test_mixed.cpp"),
+        "//#PKG-CONFIG=gtest\n#include <doctest/doctest.h>\n",
+    )
+    cmd, exe, expected_xml, framework = _xml_cmd(
+        tmpdir,
+        source,
+        headers=[],
+        magicflags_map={sz.Str("PKG-CONFIG"): [sz.Str("gtest")]},
+    )
+    assert framework is not None and framework.id == "doctest"
+    assert cmd == [exe, "--reporters=junit", f"--out={expected_xml}"]

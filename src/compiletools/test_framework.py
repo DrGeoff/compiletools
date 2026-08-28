@@ -40,10 +40,11 @@ class TestFramework:
     def xml_argv(self, path: str) -> list[str]:
         return [token.format(path=path) for token in self.xml_argv_template]
 
-    def matches(self, header_texts: list[str], pkgconfig_packages: list[str]) -> bool:
-        return any(sub in text for sub in self.header_substrings for text in header_texts) or any(
-            sub in pkg for sub in self.pkgconfig_substrings for pkg in pkgconfig_packages
-        )
+    def matches_headers(self, header_texts: list[str]) -> bool:
+        return any(sub in text for sub in self.header_substrings for text in header_texts)
+
+    def matches_pkgconfig(self, pkgconfig_packages: list[str]) -> bool:
+        return any(sub in pkg for sub in self.pkgconfig_substrings for pkg in pkgconfig_packages)
 
 
 KNOWN_FRAMEWORKS: tuple[TestFramework, ...] = (
@@ -68,6 +69,11 @@ KNOWN_FRAMEWORKS: tuple[TestFramework, ...] = (
 )
 
 
+def _ambiguous_message(test_source: str, matched: list[TestFramework]) -> str:
+    ids = ", ".join(fw.id for fw in matched)
+    return f"{test_source}: multiple test frameworks detected ({ids}); disambiguate include paths"
+
+
 def detect_framework(
     header_texts: Iterable[str],
     test_source: str,
@@ -75,23 +81,38 @@ def detect_framework(
 ) -> TestFramework | None:
     """Return the unique ``TestFramework`` this test's source text names.
 
-    A framework matches when any of its ``header_substrings`` appears as
-    a substring of any string in ``header_texts`` (raw ``#include``
-    operand tokens and/or resolved header paths -- which framework a
-    test uses is a property of the source text, so callers should feed
-    the raw tokens rather than only the resolved subset), or when any of
-    its ``pkgconfig_substrings`` appears in any ``pkgconfig_packages``
-    name.
+    Two evidence tiers, consulted in order:
 
-    Returns ``None`` when no framework matches; raises ``ValueError``
-    on multi-match (the signals name two frameworks at once -- silently
-    picking one would lose data, so callers must disambiguate, typically
-    by fixing include paths or magic flags).
+    1. ``header_substrings`` against ``header_texts`` (raw ``#include``
+       operand tokens and/or resolved header paths -- which framework a
+       test uses is a property of the source text, so callers should
+       feed the raw tokens rather than only the resolved subset).
+    2. ``pkgconfig_substrings`` against ``pkgconfig_packages``, consulted
+       ONLY when no header matched. This is a fallback tier, not a peer
+       signal: a test linking a library annotated with a
+       ``//#PKG-CONFIG`` package for one framework while its headers
+       name a different one is extremely common (e.g. a doctest test
+       pulling in a ``gtest`` pkg-config package transitively) and must
+       not be treated as ambiguous. The fallback exists to catch a
+       site-local wrapper package (e.g. ``cpp_doctest``) that never
+       textually names the framework it vendors.
+
+    Returns ``None`` when no framework matches at either tier. Raises
+    ``ValueError`` when more than one framework matches WITHIN a single
+    tier (e.g. two conditional-blind raw header matches): the signals
+    name two frameworks at once, and silently picking one would lose
+    data, so callers must disambiguate.
     """
     texts = list(header_texts)
     packages = list(pkgconfig_packages)
-    matched = [fw for fw in KNOWN_FRAMEWORKS if fw.matches(texts, packages)]
-    if len(matched) > 1:
-        ids = ", ".join(fw.id for fw in matched)
-        raise ValueError(f"{test_source}: multiple test frameworks detected ({ids}); disambiguate include paths")
-    return matched[0] if matched else None
+
+    header_matched = [fw for fw in KNOWN_FRAMEWORKS if fw.matches_headers(texts)]
+    if len(header_matched) > 1:
+        raise ValueError(_ambiguous_message(test_source, header_matched))
+    if header_matched:
+        return header_matched[0]
+
+    pkg_matched = [fw for fw in KNOWN_FRAMEWORKS if fw.matches_pkgconfig(packages)]
+    if len(pkg_matched) > 1:
+        raise ValueError(_ambiguous_message(test_source, pkg_matched))
+    return pkg_matched[0] if pkg_matched else None

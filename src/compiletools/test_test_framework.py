@@ -169,19 +169,20 @@ def test_detect_framework_header_and_pkgconfig_agreeing_is_single_match():
     assert framework.id == "gtest"
 
 
-def test_detect_framework_conflicting_channels_raise():
-    """Header channel says gtest, pkg-config channel says catch2: that is
-    a genuine two-framework signal and must raise like a two-header
-    conflict does."""
-    with pytest.raises(ValueError, match="multiple test frameworks"):
-        detect_framework(
-            ["/usr/include/gtest/gtest.h"],
-            test_source="t.cpp",
-            pkgconfig_packages=["catch2"],
-        )
-
-
-# --- TestFramework dataclass invariants -----------------------------------
+def test_detect_framework_header_wins_over_conflicting_pkgconfig(capsys):
+    """pkg-config is a FALLBACK tier, consulted only when no header
+    matched. A header naming gtest while ``//#PKG-CONFIG`` names catch2
+    (e.g. a doctest test that transitively links a gtest-providing
+    package) must resolve to the header's framework, not raise and not
+    warn -- cross-tier disagreement is not ambiguity."""
+    framework = detect_framework(
+        ["/usr/include/gtest/gtest.h"],
+        test_source="t.cpp",
+        pkgconfig_packages=["catch2"],
+    )
+    assert framework is not None
+    assert framework.id == "gtest"
+    assert capsys.readouterr().err == ""
 
 
 def test_test_framework_is_frozen_and_hashable():
