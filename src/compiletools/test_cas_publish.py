@@ -168,6 +168,67 @@ class TestPublishExdevFallback:
         )
 
 
+class TestPublishPermissionDiagnostic:
+    """EPERM/EACCES from ``os.link`` still re-raise (a silent symlink
+    fallback here was the prior bug this module fixed), but the raw errno
+    left an operator guessing. On a multi-user CAS with the stock umask
+    (0022) and the Linux default ``fs.protected_hardlinks=1``, this is the
+    EXPECTED outcome of a cross-user publish, not a misconfigured pool: CAS
+    entries land 0644 (group-readable, not group-writable), and the kernel
+    refuses ``link()`` onto a file this uid cannot write. The diagnostic
+    must name that mechanism, the remedy, and the offending path/owner.
+    """
+
+    def test_eperm_from_link_names_protected_hardlinks_and_remedy(self, cas, user, monkeypatch):
+        def fake_link(src, dst, *, src_dir_fd=None, dst_dir_fd=None, follow_symlinks=True):
+            raise OSError(errno.EPERM, "Operation not permitted")
+
+        monkeypatch.setattr(os, "link", fake_link)
+        with pytest.raises(OSError) as excinfo:
+            publish(str(cas), str(user))
+
+        assert excinfo.value.errno == errno.EPERM
+        message = str(excinfo.value)
+        assert "protected_hardlinks" in message
+        assert str(cas) in message
+        assert "umask" in message
+        assert not user.exists(), "a diagnosed EPERM must still fail the publish, not degrade to a symlink"
+
+    def test_eacces_from_link_gets_the_same_diagnostic(self, cas, user, monkeypatch):
+        def fake_link(src, dst, *, src_dir_fd=None, dst_dir_fd=None, follow_symlinks=True):
+            raise OSError(errno.EACCES, "Permission denied")
+
+        monkeypatch.setattr(os, "link", fake_link)
+        with pytest.raises(OSError) as excinfo:
+            publish(str(cas), str(user))
+
+        assert excinfo.value.errno == errno.EACCES
+        assert "protected_hardlinks" in str(excinfo.value)
+
+    def test_exdev_control_still_degrades_to_symlink_not_a_hard_failure(self, cas, user, monkeypatch):
+        """Control: the EPERM/EACCES change must not have widened to swallow
+        or reroute the EXDEV branch — it still falls back to a symlink.
+        """
+
+        def fake_link(src, dst, *, src_dir_fd=None, dst_dir_fd=None, follow_symlinks=True):
+            raise OSError(errno.EXDEV, "Cross-device link")
+
+        monkeypatch.setattr(os, "link", fake_link)
+        publish(str(cas), str(user))
+
+        assert user.is_symlink()
+
+    def test_same_owner_publish_control_still_hardlinks(self, cas, user):
+        """Control: an ordinary same-owner publish (no injected failure) must
+        still take the real hardlink path with nlink raised to 2, not be
+        pushed onto the new diagnostic branch.
+        """
+        publish(str(cas), str(user))
+
+        assert user.stat().st_ino == cas.stat().st_ino
+        assert os.stat(str(cas)).st_nlink >= 2
+
+
 class TestSidecarManifest:
     def test_manifest_written_with_source_realpath(self, cas, user):
         """C4 sidecar: trim_exedir reads <cas>.manifest to bucket entries

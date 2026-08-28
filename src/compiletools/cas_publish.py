@@ -21,6 +21,18 @@ The new contract:
 3. Any other ``OSError`` from step 1: re-raise visibly. Operators get a clear
    diagnostic instead of a silent symlink degradation.
 
+``EPERM``/``EACCES`` specifically are the DEFAULT outcome of a cross-user
+publish on a stock multi-user host, not a narrow misconfiguration: the
+kernel's ``fs.protected_hardlinks=1`` (on by default) refuses ``link()``
+onto a file this uid did not create unless it can also write it, and a
+stock umask (0022) leaves CAS entries at 0644 -- group-readable, never
+group-writable. Swallowing that into a symlink fallback was a PRIOR BUG
+(see point 3's history above) and stays fixed: the two errnos still
+re-raise, but with ``_permission_denied_diagnostic`` naming the mechanism,
+the offending path/owner, and the pool-level remedy (umask 0002 for CAS
+writers, or a setgid CAS root with a default rw ACL) instead of a bare
+``OSError``.
+
 Sidecar manifest at ``<cas_path>.manifest`` (C4): JSON of ``{"source_realpath": ...}``,
 written best-effort after a successful link/rename. ``trim_cache`` reads it to
 bucket entries by source identity instead of by basename — disambiguates
@@ -56,6 +68,7 @@ import contextlib
 import errno
 import json
 import os
+import stat
 import sys
 
 import compiletools.ct_lock_helper
@@ -98,6 +111,49 @@ EXIT_CONCURRENT_TRIM = 3
 _UNLOCKED_PUBLISH_ERRNOS = frozenset(
     {errno.EACCES, errno.EPERM, errno.EROFS, errno.ENOTSUP, errno.ENOLCK, errno.ENOSYS}
 )
+
+
+def _permission_denied_diagnostic(cas_path: str, denied_errno: int) -> str:
+    """Explain an EPERM/EACCES from ``os.link(cas_path, ...)``.
+
+    This is the DEFAULT outcome of a cross-user publish on a stock
+    multi-user host, not a narrow misconfiguration: the Linux kernel's
+    ``protected_hardlinks`` sysctl (default on, ``fs.protected_hardlinks=1``)
+    lets ``link()`` succeed only when the caller owns the source inode, or
+    the source is a regular non-setuid file AND the caller already has
+    read+write access to it. A stock umask (0022) leaves a freshly-created
+    CAS entry at 0644 -- group-readable, never group-writable -- so any
+    peer uid that did not create the entry fails the write-access half and
+    ``os.link`` raises EPERM (some filesystems report EACCES for the same
+    kernel check). Nothing in the cas-exedir/build_backend/cas_publish path
+    chmods entries into a shared-writable mode the way ``locking.py``
+    deliberately does for its lock sidecars (``os.fchmod(fd, 0o666)``).
+
+    Remedy is at the pool, not at this publish: writers into the shared CAS
+    should run with ``umask 0002``, or the CAS root should be setgid with a
+    default ACL granting the sharing group rw, so new entries land
+    group-writable and a peer's ``os.link()`` can succeed.
+    """
+    try:
+        st = os.stat(cas_path)
+        owner = f"uid={st.st_uid} mode={oct(stat.S_IMODE(st.st_mode))}"
+    except OSError:
+        owner = "owner/mode unavailable (stat of the entry itself failed)"
+    return (
+        f"Permission denied hardlinking CAS entry {cas_path} ({owner}): errno "
+        f"{denied_errno} ({os.strerror(denied_errno)}). This is the expected outcome "
+        "of a cross-user publish on a stock multi-user host, not a "
+        "misconfigured pool -- fs.protected_hardlinks=1 (the Linux default) "
+        "refuses os.link() onto a file this uid did not create unless it can "
+        "also write it, and a stock umask (0022) leaves CAS entries at 0644, "
+        "group-readable but not group-writable. A silent symlink fallback is "
+        "refused here on purpose: it would leave the cas-exedir entry at "
+        "nlink==1, outside trim_exedir's hard-link protection, and strand the "
+        "published path once a later trim evicts it. Fix the pool instead: "
+        "run writers into the shared CAS with umask 0002, or mark the CAS "
+        "root setgid with a default ACL granting the sharing group rw, so new "
+        "entries land group-writable and a peer's os.link() succeeds."
+    )
 
 
 class ConcurrentTrimError(Exception):
@@ -223,9 +279,14 @@ def publish(cas_path: str, user_path: str, source_realpath: str | None = None) -
                 raise
             raise ConcurrentTrimError(cas_path) from None
         except OSError as e:
-            if e.errno != errno.EXDEV:
+            if e.errno == errno.EXDEV:
+                os.symlink(cas_path, tmp_path)
+            elif e.errno in (errno.EPERM, errno.EACCES):
+                # Re-raise with a diagnostic, not a fallback: see
+                # _permission_denied_diagnostic and README.ct-cas-publish.rst.
+                raise OSError(e.errno, _permission_denied_diagnostic(cas_path, e.errno)) from e
+            else:
                 raise
-            os.symlink(cas_path, tmp_path)
 
     with _cas_entry_lock(cas_path):
         if not os.path.exists(cas_path):

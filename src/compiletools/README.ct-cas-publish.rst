@@ -37,11 +37,34 @@ during a publish.
 If ``link()`` fails with ``EXDEV`` — the user path lives on a different
 filesystem from the cas entry — the helper falls back to
 ``symlink()`` + ``rename()``. Any other ``OSError`` (``ENOSPC``,
-``EPERM``, ``EROFS``, ``EMFILE``) is re-raised visibly. The previous
-shell recipe (``ln -f cas user 2>/dev/null || ln -sfn cas user``)
+``EPERM``, ``EACCES``, ``EROFS``, ``EMFILE``) is re-raised visibly. The
+previous shell recipe (``ln -f cas user 2>/dev/null || ln -sfn cas user``)
 swallowed those errors and silently downgraded to a symlink, which
 would then break ``trim_exedir``'s hard-link protection by leaving
 ``nlink == 1`` on the cas entry.
+
+``EPERM``/``EACCES`` deserve a specific note, because on a shared
+multi-user CAS they are the DEFAULT outcome, not a misconfigured pool.
+Linux's ``fs.protected_hardlinks`` sysctl (on by default) only allows
+``link()`` onto a file the caller owns, or onto a file the caller
+already has read+write access to. A stock umask (``0022``) leaves a
+freshly-produced CAS entry at ``0644`` — group-readable, never
+group-writable — so a peer user who did not create the entry fails
+that check and ``os.link`` raises ``EPERM`` (some filesystems surface
+``EACCES`` for the same kernel decision). Nothing in the
+cas-exedir/publish path chmods entries into a shared-writable mode the
+way ``locking.py`` deliberately does for its own lock sidecars
+(``os.fchmod(fd, 0o666)``); a "run compiletools as expected and it just
+works" multi-user pool needs that mode fix applied where the CAS
+entries are written, or the pool's writers running under ``umask
+0002``, or the CAS root marked setgid with a default ACL granting the
+sharing group rw. ``ct-cas-publish`` cannot repair this itself: it
+does not own the entry, so it cannot chmod it either, and a silent
+symlink fallback here would reintroduce the exact bug this module
+fixed (``nlink == 1``, unprotected by ``trim_exedir``, a build that
+degrades instead of failing loudly). What it does instead is re-raise
+with a diagnostic naming the mechanism, the offending path and its
+owner/mode, and the remedy, rather than a bare ``OSError``.
 
 After a successful publish, the helper writes a best-effort sidecar
 manifest at ``<cas-path>.manifest`` containing
