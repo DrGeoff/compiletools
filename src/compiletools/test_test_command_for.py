@@ -273,3 +273,20 @@ def test_conflicting_pkgconfig_does_not_override_header_match(tmp_path):
     )
     assert framework is not None and framework.id == "doctest"
     assert cmd == [exe, "--reporters=junit", f"--out={expected_xml}"]
+
+
+def test_same_tier_header_ambiguity_returns_none_and_warns(tmp_path, capsys):
+    """Two header-tier matches at once (e.g. a shared header selecting
+    between gtest and catch2 behind a conditional) must not raise --
+    graph construction must survive an ambiguous test by disabling its
+    XML output, not failing the whole build. A warning must still reach
+    stderr."""
+    cmd, exe, _, framework = _xml_cmd(
+        str(tmp_path),
+        "/src/test_ambiguous.cpp",
+        ["/inc/gtest/gtest.h", "/inc/catch2/catch.hpp"],
+    )
+    assert framework is None
+    assert cmd == [exe]
+    err = capsys.readouterr().err
+    assert "gtest" in err and "catch2" in err

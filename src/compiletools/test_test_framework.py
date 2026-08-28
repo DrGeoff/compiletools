@@ -62,31 +62,34 @@ def test_detect_framework_returns_none_on_empty_header_set():
     assert detect_framework([], test_source="t.cpp") is None
 
 
-# --- detect_framework: multi-match must hard-error ------------------------
+# --- detect_framework: same-tier multi-match warns and returns None -------
 
 
-def test_detect_framework_multi_match_raises_naming_both_ids():
+def test_detect_framework_multi_match_warns_naming_both_ids(capsys):
+    """Same-tier (header) multi-match must NOT raise -- an ambiguous test
+    only loses its own XML report, never the whole build. It must warn,
+    naming the source and every matched framework, and return None."""
     headers = ["/inc/gtest/gtest.h", "/inc/doctest/doctest.h"]
-    with pytest.raises(ValueError, match="multiple test frameworks") as excinfo:
-        detect_framework(headers, test_source="my_test.cpp")
-    msg = str(excinfo.value)
-    # The error message must name the source so users can locate the
-    # offending test, and name *every* matched framework so they know
-    # what to disambiguate.
+    framework = detect_framework(headers, test_source="my_test.cpp")
+    assert framework is None
+    msg = capsys.readouterr().err
+    # The warning must name the source so users can locate the offending
+    # test, and name *every* matched framework so they know what to
+    # disambiguate.
     assert "my_test.cpp" in msg
     assert "gtest" in msg
     assert "doctest" in msg
 
 
-def test_detect_framework_three_way_multi_match_lists_all():
+def test_detect_framework_three_way_multi_match_lists_all(capsys):
     headers = [
         "/inc/gtest/gtest.h",
         "/inc/doctest/doctest.h",
         "/inc/catch2/catch.hpp",
     ]
-    with pytest.raises(ValueError) as excinfo:
-        detect_framework(headers, test_source="t.cpp")
-    msg = str(excinfo.value)
+    framework = detect_framework(headers, test_source="t.cpp")
+    assert framework is None
+    msg = capsys.readouterr().err
     for fw_id in ("gtest", "doctest", "catch2"):
         assert fw_id in msg
 
@@ -183,6 +186,39 @@ def test_detect_framework_header_wins_over_conflicting_pkgconfig(capsys):
     assert framework is not None
     assert framework.id == "gtest"
     assert capsys.readouterr().err == ""
+
+
+def test_detect_framework_same_tier_header_ambiguity_warns_and_returns_none(capsys):
+    """Two frameworks matching WITHIN the header tier (e.g. a shared
+    header behind ``#if``/``#else`` naming both gtest and catch2) cannot
+    be resolved by picking one -- their argv are mutually incompatible.
+    This must warn (naming the source and both ids) and return None,
+    NOT raise -- an ambiguous test's lost XML report must never fail the
+    whole build."""
+    framework = detect_framework(
+        ["/inc/gtest/gtest.h", "/inc/catch2/catch.hpp"],
+        test_source="ambiguous_test.cpp",
+    )
+    assert framework is None
+    err = capsys.readouterr().err
+    assert "ambiguous_test.cpp" in err
+    assert "gtest" in err and "catch2" in err
+
+
+def test_detect_framework_same_tier_pkgconfig_ambiguity_warns_and_returns_none(capsys):
+    """Same-tier ambiguity within the pkg-config fallback tier (no header
+    matched at all) must also warn and return None rather than raise."""
+    framework = detect_framework(
+        [],
+        test_source="t.cpp",
+        pkgconfig_packages=["gtest", "doctest"],
+    )
+    assert framework is None
+    err = capsys.readouterr().err
+    assert "gtest" in err and "doctest" in err
+
+
+# --- TestFramework dataclass invariants -----------------------------------
 
 
 def test_test_framework_is_frozen_and_hashable():

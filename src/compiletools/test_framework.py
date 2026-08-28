@@ -8,6 +8,7 @@ set) to build each test rule's argv.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -69,9 +70,13 @@ KNOWN_FRAMEWORKS: tuple[TestFramework, ...] = (
 )
 
 
-def _ambiguous_message(test_source: str, matched: list[TestFramework]) -> str:
+def _warn_ambiguous(test_source: str, matched: list[TestFramework]) -> None:
     ids = ", ".join(fw.id for fw in matched)
-    return f"{test_source}: multiple test frameworks detected ({ids}); disambiguate include paths"
+    print(
+        f"{test_source}: multiple test frameworks detected ({ids}); "
+        "disambiguate include paths or //#PKG-CONFIG; skipping XML output for this test",
+        file=sys.stderr,
+    )
 
 
 def detect_framework(
@@ -97,22 +102,30 @@ def detect_framework(
        site-local wrapper package (e.g. ``cpp_doctest``) that never
        textually names the framework it vendors.
 
-    Returns ``None`` when no framework matches at either tier. Raises
-    ``ValueError`` when more than one framework matches WITHIN a single
-    tier (e.g. two conditional-blind raw header matches): the signals
-    name two frameworks at once, and silently picking one would lose
-    data, so callers must disambiguate.
+    Returns ``None`` when no framework matches at either tier. Also
+    returns ``None`` -- after printing a warning naming the offending
+    source and every matched framework -- when more than one framework
+    matches WITHIN a single tier (e.g. two conditional-blind raw header
+    matches, such as a ``#if``/``#else`` selecting between gtest and
+    catch2 headers behind a shared macro). A same-tier ambiguity cannot
+    be resolved by picking a fixed order: the frameworks' argv are
+    mutually incompatible, so handing one binary another's XML flag
+    converts a graph-time diagnostic into a runtime test failure. Losing
+    one test's XML report is preferable to failing the whole build over
+    optional reporting, so this is a warning, not a raised exception.
     """
     texts = list(header_texts)
     packages = list(pkgconfig_packages)
 
     header_matched = [fw for fw in KNOWN_FRAMEWORKS if fw.matches_headers(texts)]
     if len(header_matched) > 1:
-        raise ValueError(_ambiguous_message(test_source, header_matched))
+        _warn_ambiguous(test_source, header_matched)
+        return None
     if header_matched:
         return header_matched[0]
 
     pkg_matched = [fw for fw in KNOWN_FRAMEWORKS if fw.matches_pkgconfig(packages)]
     if len(pkg_matched) > 1:
-        raise ValueError(_ambiguous_message(test_source, pkg_matched))
+        _warn_ambiguous(test_source, pkg_matched)
+        return None
     return pkg_matched[0] if pkg_matched else None
