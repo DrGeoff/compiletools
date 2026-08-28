@@ -118,6 +118,14 @@ _CAS_EXE_SUFFIXES: tuple[str, ...] = (".exe", ".a", ".so")
 # ``match_exe_sidecar`` match-and-strip contract this module relies on.
 _EXE_SIDECAR_SUFFIXES = compiletools.filesystem_utils._EXE_SIDECAR_SUFFIXES
 
+# sha256 hexdigest length. build_backend._compute_artefact_key_hash always
+# writes a full, untruncated sha256 hexdigest as the link key
+# (namer.cas_exe_pathname / _cas_artefact_pathname never slice it), so a
+# genuine cas-exedir link key is always exactly this many lowercase hex
+# characters.
+_LINK_KEY_HEXLEN = 64
+_HEXDIGITS = frozenset("0123456789abcdef")
+
 # Matchers that identify orphaned producer temp files inside CAS bucket / cmd_hash
 # dirs. Two sources:
 #   • ``build_backend`` PCH/PCM precompile temp: ``<artefact>.compiletools.tmp.<pid>``
@@ -392,6 +400,28 @@ def _split_exe_leaf_name(name):
     if sep <= 0:
         return None
     return stem[:sep], stem[sep + 1 :], matched_suffix
+
+
+def _is_cas_exe_leaf_name(name):
+    """True when ``name`` is a genuine cas-exedir artefact leaf
+    (``<basename>_<64-hex-linkkey>.{exe,a,so}``), not merely a name that
+    happens to end in one of ``_CAS_EXE_SUFFIXES``.
+
+    Reuses ``_split_exe_leaf_name`` (THE shared exe-leaf format rule) for the
+    split and adds the hex/length check that helper deliberately omits: the
+    dead-CA-sibling leaves ``_ca_sibling_real_entry`` parses
+    (``<basename>_<64hex>_<20hex>.{a,so}``) have a valid-hex but
+    non-64-length trailing segment once split on the LAST underscore, so
+    that check cannot live inside ``_split_exe_leaf_name`` itself without
+    breaking CA-sibling detection. This predicate is for callers (the
+    ``.xml`` orphan-sidecar gate) that need to know the PRIMARY artefact
+    itself is real, not merely parseable.
+    """
+    parsed = _split_exe_leaf_name(name)
+    if parsed is None:
+        return False
+    _basename, link_key, _suffix = parsed
+    return len(link_key) == _LINK_KEY_HEXLEN and _HEXDIGITS.issuperset(link_key)
 
 
 # A cas-exedir leaf name whose stem is ``<basename>_<64hex>_<20hex>``. Shake
@@ -1597,6 +1627,20 @@ class CacheTrimmer:
                 if matched is None:
                     continue
                 primary_leaf, suffix = matched
+                if suffix == compiletools.filesystem_utils.EXE_XML_SUFFIX and not _is_cas_exe_leaf_name(primary_leaf):
+                    # ``.xml`` is the only GENERIC extension in
+                    # _EXE_SIDECAR_SUFFIXES (.manifest/.result are
+                    # compiletools-minted and can never collide with a user
+                    # file). Without this shape check, a user's own
+                    # coverage.xml — or a --test-xml-dir report placed
+                    # inside the cache tree — would be selected here, its
+                    # "primary" would never exist, and it would be reaped
+                    # once past the age floor. Require the primary to
+                    # actually look like a cas-exedir artefact leaf first.
+                    # ``match_exe_sidecar`` already stripped any argv-key
+                    # segment, so this checks the same bare exe leaf shape
+                    # whether the ``.xml`` is legacy-unkeyed or argv-keyed.
+                    continue
                 primary = os.path.join(os.path.dirname(entry.path), primary_leaf)
 
             if os.path.exists(primary):

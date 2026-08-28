@@ -4494,10 +4494,12 @@ class TestReclaimOrphanSidecars:
     def test_orphan_xml_removed(self, tmp_path):
         """The content-addressed JUnit report (``<cas_exe>.xml``) is the
         third exe-pool sidecar family; one whose artefact is gone must be
-        reaped like an orphan .manifest/.result."""
+        reaped like an orphan .manifest/.result. The link key must be a
+        genuine 64-hex sha256 digest — the reaper's ``.xml`` arm gates on
+        that shape (see ``TestXmlSidecarShapeGate``)."""
         cache_root = str(tmp_path / "exedir")
         bucket = os.path.join(cache_root, "aa")
-        xml = _touch_temp(bucket, "main_deadbeef.exe.xml", age_seconds=2 * 86400, size=300)
+        xml = _touch_temp(bucket, f"main_{_REAL_LINK_KEY}.exe.xml", age_seconds=2 * 86400, size=300)
 
         trimmer = CacheTrimmer(_make_args())
         stats = _sidecar_stats()
@@ -4511,8 +4513,8 @@ class TestReclaimOrphanSidecars:
         of truth the materialise rule copies from."""
         cache_root = str(tmp_path / "exedir")
         bucket = os.path.join(cache_root, "aa")
-        exe = _touch_temp(bucket, "main_deadbeef.exe", age_seconds=2 * 86400, size=4096)
-        xml = _touch_temp(bucket, "main_deadbeef.exe.xml", age_seconds=2 * 86400, size=300)
+        exe = _touch_temp(bucket, f"main_{_REAL_LINK_KEY}.exe", age_seconds=2 * 86400, size=4096)
+        xml = _touch_temp(bucket, f"main_{_REAL_LINK_KEY}.exe.xml", age_seconds=2 * 86400, size=300)
 
         trimmer = CacheTrimmer(_make_args())
         stats = _sidecar_stats()
@@ -5005,6 +5007,84 @@ class TestReclaimOrphanSidecars:
         assert not os.path.exists(lock), "the orphan .lock residue must be reaped same-run"
         assert not os.path.exists(bucket), "the drained bucket must be reaped same-run"
         assert res["objdir"]["empty_buckets_removed"] == 1
+
+
+class TestXmlSidecarShapeGate:
+    """The ``.xml`` orphan-sidecar arm is the only GENERIC-extension member of
+    ``_EXE_SIDECAR_SUFFIXES`` — ``.manifest``/``.result`` are compiletools-minted
+    names that can never collide with a user file. A bare
+    ``name.endswith(".xml")`` match therefore also selects a user's own
+    ``coverage.xml`` (or a ``--test-xml-dir`` report placed inside the cache
+    tree): its "primary" (the name with ``.xml`` stripped) never exists, so a
+    naive reaper would delete it once past the age floor. The fix requires the
+    PRIMARY name to actually look like a cas-exedir artefact leaf
+    (``<basename>_<64-hex-linkkey>.{exe,a,so}``) before ever treating the
+    ``.xml`` as an orphan candidate.
+    """
+
+    def test_user_xml_not_reaped(self, tmp_path):
+        """A user ``coverage.xml`` with no cas-exedir-shaped primary must never
+        be touched, no matter how old it is."""
+        cache_root = str(tmp_path / "exedir")
+        bucket = os.path.join(cache_root, "aa")
+        xml = _touch_temp(bucket, "coverage.xml", age_seconds=30 * 86400, size=500)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _sidecar_stats()
+        trimmer.reclaim_orphan_sidecars(cache_root, stats)
+
+        assert os.path.exists(xml), "a non-cas-exedir .xml must never be reaped"
+        assert stats["orphan_sidecars_removed"] == 0
+
+    def test_falsifying_case_not_reaped(self, tmp_path):
+        """``coverage_backup.exe.xml`` passes a gate that only checks
+        ``_split_exe_leaf_name`` succeeds (it ends in ``_CAS_EXE_SUFFIXES``
+        after stripping ``.xml``) but its trailing segment ``backup`` is
+        neither hex nor 64 characters long — it is not a real link key. This
+        is the case that distinguishes a correct fix from the naive
+        ``_split_exe_leaf_name``-only gate."""
+        cache_root = str(tmp_path / "exedir")
+        bucket = os.path.join(cache_root, "aa")
+        xml = _touch_temp(bucket, "coverage_backup.exe.xml", age_seconds=30 * 86400, size=500)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _sidecar_stats()
+        trimmer.reclaim_orphan_sidecars(cache_root, stats)
+
+        assert os.path.exists(xml), "a fake exe-shaped .xml with a non-hex link key must not be reaped"
+        assert stats["orphan_sidecars_removed"] == 0
+
+    def test_genuine_orphan_xml_still_reaped(self, tmp_path):
+        """Control: a real cas-exedir ``.xml`` (``<basename>_<64hex>.exe.xml``)
+        whose ``.exe`` is gone must still be reaped — the shape gate must not
+        degenerate into never reaping anything."""
+        cache_root = str(tmp_path / "exedir")
+        bucket = os.path.join(cache_root, "aa")
+        xml = _touch_temp(bucket, f"main_{_REAL_LINK_KEY}.exe.xml", age_seconds=30 * 86400, size=500)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _sidecar_stats()
+        trimmer.reclaim_orphan_sidecars(cache_root, stats)
+
+        assert not os.path.exists(xml), "a genuinely orphaned cas-exedir .xml must still be reaped"
+        assert stats["orphan_sidecars_removed"] == 1
+
+    def test_manifest_and_result_unaffected_by_shape_gate(self, tmp_path):
+        """The shape gate is ``.xml``-only: arbitrary-looking ``.manifest`` /
+        ``.result`` names (compiletools-minted, never collide with user files)
+        keep their pre-existing bare-suffix-match reap behaviour."""
+        cache_root = str(tmp_path / "exedir")
+        bucket = os.path.join(cache_root, "aa")
+        man = _touch_temp(bucket, "coverage_backup.exe.manifest", age_seconds=30 * 86400, size=200)
+        res = _touch_temp(bucket, "coverage_backup.exe.result", age_seconds=30 * 86400, size=0)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _sidecar_stats()
+        trimmer.reclaim_orphan_sidecars(cache_root, stats)
+
+        assert not os.path.exists(man), ".manifest reap behaviour must be unchanged by the .xml shape gate"
+        assert not os.path.exists(res), ".result reap behaviour must be unchanged by the .xml shape gate"
+        assert stats["orphan_sidecars_removed"] == 2
 
 
 class TestArgvKeyedSidecarTrapRegressions:
