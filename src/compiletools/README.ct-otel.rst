@@ -8,7 +8,7 @@ Export ct-cake build timing as OpenTelemetry (OTLP) traces and metrics
 
 :Author: drgeoffathome@gmail.com
 :Date:   2026-05-27
-:Version: 13.1.3
+:Version: 13.1.4
 :Manual section: 1
 :Manual group: developers
 
