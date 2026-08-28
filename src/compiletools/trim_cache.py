@@ -113,7 +113,7 @@ _CAS_EXE_SUFFIXES: tuple[str, ...] = (".exe", ".a", ".so")
 # test-success marker, and the content-addressed JUnit report. Evicted
 # with their artefact (``_RetryItem.remove_sidecars``) and orphan-swept
 # once the artefact is gone (``_reap_sidecars_in``).
-_EXE_SIDECAR_SUFFIXES: tuple[str, ...] = (".manifest", ".result", ".xml")
+_EXE_SIDECAR_SUFFIXES = compiletools.filesystem_utils._EXE_SIDECAR_SUFFIXES
 
 # Matchers that identify orphaned producer temp files inside CAS bucket / cmd_hash
 # dirs. Two sources:
@@ -133,7 +133,7 @@ _EXE_SIDECAR_SUFFIXES: tuple[str, ...] = (".manifest", ".result", ".xml")
 # them requires a SIGKILL mid-write — rare enough that the broad ``.tmp`` suffix
 # is not worth the risk of accidentally matching unrelated files.
 _COMPILETOOLS_TMP_RE = re.compile(r"\.compiletools\.tmp(\.\d+)?$")
-_PUBLISH_TMP_SUFFIX: str = ".publish.tmp"
+_PUBLISH_TMP_SUFFIX = compiletools.filesystem_utils._PUBLISH_TMP_SUFFIX
 
 # A temp file untouched for this many seconds cannot be an in-flight write — no
 # build invocation legitimately holds a temp open for more than a day. Removing a
@@ -213,7 +213,7 @@ def _load_exe_manifest(cas_path: str) -> dict | None:
     manifest-rollout window.
     """
     try:
-        with open(cas_path + ".manifest") as f:
+        with open(cas_path + compiletools.filesystem_utils.EXE_MANIFEST_SUFFIX) as f:
             return json.load(f)
     except (OSError, json.JSONDecodeError):
         return None

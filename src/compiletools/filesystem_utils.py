@@ -18,6 +18,24 @@ from functools import lru_cache
 
 from stringzilla import Str
 
+# ---------------------------------------------------------------------------
+# cas-exedir sidecar family (single source of truth)
+# ---------------------------------------------------------------------------
+#
+# Every cas-exedir artefact (``<basename>_<linkkey>.{exe,a,so}``) may carry
+# up to three sidecars, deposited by ``cas_publish`` / ``build_backend`` and
+# consumed by ``trim_cache`` / ``cache_report``: the source-identity
+# ``.manifest`` JSON, the content-keyed ``.result`` success marker, and the
+# content-addressed ``.xml`` JUnit report. Producers and consumers live in
+# four different modules, so the family is named here rather than spelled as
+# a literal at each site.
+EXE_MANIFEST_SUFFIX: str = ".manifest"
+EXE_RESULT_SUFFIX: str = ".result"
+EXE_XML_SUFFIX: str = ".xml"
+_EXE_SIDECAR_SUFFIXES: tuple[str, ...] = (EXE_MANIFEST_SUFFIX, EXE_RESULT_SUFFIX, EXE_XML_SUFFIX)
+
+_PUBLISH_TMP_SUFFIX: str = ".publish.tmp"
+
 
 def _umask_default_file_mode() -> int:
     """Return the file mode a normal ``open(path, 'w')`` would create now.

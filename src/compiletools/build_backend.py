@@ -1707,7 +1707,7 @@ class BuildBackend(abc.ABC):
                     rule_inputs: list[str] = []
                     rule_order_only = [exe_path]
                 else:
-                    result_path = exe_path + ".result"
+                    result_path = exe_path + compiletools.filesystem_utils.EXE_RESULT_SUFFIX
                     rule_inputs = [exe_path]
                     rule_order_only = []
                 if xml_bucket_dir:
@@ -1818,12 +1818,12 @@ class BuildBackend(abc.ABC):
            confusion) is specific to the cas-exedir publish path.
         """
         if getattr(self.args, "use_mtime", False) or self._self_manages_exe_placement():
-            return exe_path + ".result"
+            return exe_path + compiletools.filesystem_utils.EXE_RESULT_SUFFIX
         graph = self._graph
         if graph is not None:
             rule = graph.get_rule(exe_path)
             if rule is not None and rule.rule_type == RuleType.SYMLINK and rule.inputs:
-                return rule.inputs[0] + ".result"
+                return rule.inputs[0] + compiletools.filesystem_utils.EXE_RESULT_SUFFIX
         # Unexpected fallback: CAS-only mode but no publish-symlink rule
         # found. In production ``build_graph`` always populates
         # ``self._graph`` before a consumer asks for a marker path, so
@@ -1837,7 +1837,7 @@ class BuildBackend(abc.ABC):
                 f"falling back to legacy <exe>.result (CAS-side marker disabled)",
                 file=sys.stderr,
             )
-        return exe_path + ".result"
+        return exe_path + compiletools.filesystem_utils.EXE_RESULT_SUFFIX
 
     def _xml_path_for(self, exe_path: str) -> str:
         """Per-test JUnit XML path under ``--test-xml-dir``.

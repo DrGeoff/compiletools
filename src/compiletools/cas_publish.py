@@ -244,7 +244,7 @@ def publish(cas_path: str, user_path: str, source_realpath: str | None = None) -
         # has a known source identity, and under the lock so it cannot be
         # stranded beside an entry a trim is concurrently evicting.
         if source_realpath:
-            manifest_path = cas_path + ".manifest"
+            manifest_path = cas_path + compiletools.filesystem_utils.EXE_MANIFEST_SUFFIX
             try:
                 with open(manifest_path, "w") as f:
                     json.dump({"source_realpath": source_realpath}, f)
