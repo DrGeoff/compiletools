@@ -627,10 +627,23 @@ class ShakeBackend(BuildBackend):
         append to ``_test_failures`` so sibling rules already in flight
         can finish and ``execute()`` raises the aggregate once the
         traversal returns. Shared by the sync ``_run_test_rule`` and the
-        async ``_execute_rule_async``."""
+        async ``_execute_rule_async``.
+
+        Deposits go through ``secure_publish_copy``, not
+        ``atomic_copy_bytes``: the latter's ``atomic_replace`` helper
+        creates its O_EXCL temp, then closes and *unlinks* it before
+        handing the bare pathname to ``shutil.copyfile`` to reopen — a
+        peer sharing this directory (the shared CAS pool) can win that
+        gap by replacing the path with a symlink between the unlink and
+        the reopen. ``secure_publish_copy`` never reopens a pathname; it
+        copies through the single fd its ``O_CREAT|O_EXCL|O_NOFOLLOW``
+        open already holds, closing that race for both this in-process
+        path and the shell-rendered recipe (``build_graph.render_shell_recipe``)
+        which invokes the same function via ``python -m
+        compiletools.filesystem_utils``."""
         if returncode == 0:
             for src, dst in rule.success_copies:
-                compiletools.filesystem_utils.atomic_copy_bytes(src, dst)
+                compiletools.filesystem_utils.secure_publish_copy(src, dst)
             self._touch_result_marker(rule.success_marker or "")
         else:
             self._test_failures.append(f"{rule.output} (exit {returncode}): {' '.join(flat_cmd)}")

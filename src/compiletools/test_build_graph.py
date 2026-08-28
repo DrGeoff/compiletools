@@ -83,14 +83,19 @@ class TestBuildRule:
         assert rule.success_copies == ()
 
     def test_render_shell_recipe_success_copies_before_marker_touch(self):
-        """``success_copies`` render as atomic ``cp`` + ``mv -f`` pairs
-        between the command and the success-marker touch: the deposit
-        into the CAS must complete before the marker asserts success,
-        and the temp name must be deterministic (build files are
-        regenerated and compared byte-for-byte) yet unique per source
-        path (concurrent peer workspaces deposit under distinct temps).
+        """``success_copies`` render as a static invocation of the secure
+        publish-copy helper between the command and the success-marker
+        touch: the deposit into the CAS must complete before the marker
+        asserts success. The recipe text is deterministic (build files
+        are regenerated and compared byte-for-byte) -- it names no temp
+        path at all, because the temp itself is chosen at runtime inside
+        the helper (unguessable, so a peer sharing the CAS directory
+        cannot pre-implant it; per-call random, so two peer workspaces
+        depositing the same src never collide on the same temp).
         """
         import re
+        import shlex
+        import sys
 
         rule = BuildRule(
             output="/cas/ab/e.xml",
@@ -101,13 +106,15 @@ class TestBuildRule:
             success_copies=(("/ws/junit/test_foo.xml", "/cas/ab/e.xml"),),
         )
         rendered = render_shell_recipe(rule)
-        pattern = (
-            r"^/ws/bin/test_foo --gtest_output=xml:/ws/junit/test_foo\.xml"
-            r" && cp /ws/junit/test_foo\.xml (/cas/ab/e\.xml\.[0-9a-f]{12}\.publish\.tmp)"
-            r" && mv -f \1 /cas/ab/e\.xml"
-            r" && touch /cas/ab/e\.result$"
+        expected = (
+            "/ws/bin/test_foo --gtest_output=xml:/ws/junit/test_foo.xml"
+            f" && {shlex.quote(sys.executable)} -m compiletools.filesystem_utils"
+            " /ws/junit/test_foo.xml /cas/ab/e.xml"
+            " && touch /cas/ab/e.result"
         )
-        assert re.match(pattern, rendered), rendered
+        assert rendered == expected
+        assert "publish.tmp" not in rendered
+        assert re.search(r"filesystem_utils \S+ \S+ && touch", rendered)
         assert render_shell_recipe(rule) == rendered
 
 

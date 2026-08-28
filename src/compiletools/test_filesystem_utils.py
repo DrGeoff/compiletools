@@ -11,9 +11,11 @@ from pathlib import Path
 import pytest
 
 from compiletools.filesystem_utils import (
+    _PUBLISH_TMP_SUFFIX,
     EXE_MANIFEST_SUFFIX,
     EXE_RESULT_SUFFIX,
     EXE_XML_SUFFIX,
+    atomic_copy_bytes,
     atomic_output_file,
     atomic_write,
     atomic_write_if_changed,
@@ -26,6 +28,7 @@ from compiletools.filesystem_utils import (
     match_mountpoint,
     parse_mount_lines,
     safe_read_text_file,
+    secure_publish_copy,
     should_parallelize_scan,
     supports_mmap_safely,
     unescape_mount_field,
@@ -607,6 +610,215 @@ class TestMountpointMatching:
         unescaped, so the comparison only lands if parsing decoded first."""
         mounts = parse_mount_lines(["/dev/sdb1 /mnt/two\\040words nfs rw 0 0"])
         assert match_mountpoint("/mnt/two words/obj.o", mounts) == "nfs"
+
+
+class TestSecurePublishCopy:
+    """``secure_publish_copy`` is the deposit path for workspace -> CAS
+    artefacts (a shared, peer-writable directory). It must resist a peer
+    pre-implanting a symlink at the guessable/reused temp name that older
+    helpers relied on, and must let two peers depositing the same src at
+    the same dst both succeed without ENOENT."""
+
+    def test_control_uncontended_copy_produces_identical_bytes(self, tmp_path):
+        src = tmp_path / "workspace.xml"
+        src.write_bytes(b"<testsuite>pass</testsuite>")
+        dst = tmp_path / "cas" / "e.xml"
+        dst.parent.mkdir()
+
+        secure_publish_copy(str(src), str(dst))
+
+        assert dst.is_file()
+        assert not dst.is_symlink()
+        assert dst.read_bytes() == b"<testsuite>pass</testsuite>"
+        assert list(dst.parent.glob("*.publish.tmp")) == []
+
+    def test_symlink_implantation_does_not_write_through_or_publish_the_link(self, tmp_path):
+        """Pre-create every temp name a naive hash-of-src helper would have
+        used, as a symlink pointing at a victim file. A helper vulnerable
+        to implantation (no O_EXCL|O_NOFOLLOW on a freshly-created path, or
+        one that reopens a pathname after creating it) either writes the
+        deposited bytes through the symlink into the victim, or moves the
+        symlink itself into dst. Neither may happen."""
+        import hashlib
+
+        src = tmp_path / "workspace.xml"
+        src.write_bytes(b"<testsuite>pass</testsuite>")
+        cas_dir = tmp_path / "cas"
+        cas_dir.mkdir()
+        dst = cas_dir / "e.xml"
+        victim = tmp_path / "victim_original.txt"
+        victim.write_bytes(b"ORIGINAL")
+
+        # The exact deterministic name the old hash-of-src helper used --
+        # a peer who knows the workspace layout can precompute this.
+        legacy_deterministic_tmp = cas_dir / f"e.xml.{hashlib.sha1(str(src).encode()).hexdigest()[:12]}.publish.tmp"
+        legacy_deterministic_tmp.symlink_to(victim)
+
+        secure_publish_copy(str(src), str(dst))
+
+        assert victim.read_bytes() == b"ORIGINAL", "deposit wrote through the pre-implanted symlink"
+        assert legacy_deterministic_tmp.is_symlink(), "the planted symlink itself must be left alone"
+        assert dst.is_file()
+        assert not dst.is_symlink(), "the published symlink itself was published instead of a regular file"
+        assert dst.read_bytes() == b"<testsuite>pass</testsuite>"
+
+    def test_symlink_implantation_defeats_the_naive_atomic_copy_bytes_helper(self, monkeypatch, tmp_path):
+        """Demonstrates the FINDING A18/A21 failure mode BEFORE the fix:
+        ``atomic_copy_bytes`` derives its temp name from ``dst`` alone and
+        reopens that pathname (via ``shutil.copyfile``) after its O_EXCL
+        placeholder is unlinked. A peer who wins the race between the
+        unlink and the reopen can make that reopen follow a symlink into a
+        victim file. This pins the defect atomic_copy_bytes has, which
+        secure_publish_copy above is verified not to share."""
+        src = tmp_path / "workspace.xml"
+        src.write_bytes(b"<testsuite>pass</testsuite>")
+        cas_dir = tmp_path / "cas"
+        cas_dir.mkdir()
+        dst = cas_dir / "e.xml"
+        victim = tmp_path / "victim_original.txt"
+        victim.write_bytes(b"ORIGINAL")
+
+        real_unlink = os.unlink
+
+        def unlink_then_implant(path, *args, **kwargs):
+            real_unlink(path, *args, **kwargs)
+            if str(path).startswith(str(dst)) and str(path).endswith(".publish.tmp"):
+                os.symlink(str(victim), path)
+
+        monkeypatch.setattr(os, "unlink", unlink_then_implant)
+        atomic_copy_bytes(str(src), str(dst))
+
+        assert victim.read_bytes() == b"<testsuite>pass</testsuite>", (
+            "expected atomic_copy_bytes to be vulnerable (write through the implanted "
+            "symlink); if this fails, the helper this test documents as unsafe has "
+            "changed and the comparison claim in secure_publish_copy's docstring is stale"
+        )
+
+    def test_concurrent_peers_depositing_the_same_src_both_succeed(self, tmp_path):
+        """A5: two peer 'workspaces' racing the same src -> shared dst must
+        not ENOENT each other. Runtime-random temp names never collide, so
+        both copies run to completion and dst ends up a regular file with
+        valid content from one of the two (content-identical) writers."""
+        import threading
+
+        src = tmp_path / "workspace.xml"
+        src.write_bytes(b"<testsuite>pass</testsuite>")
+        dst = tmp_path / "cas" / "e.xml"
+        dst.parent.mkdir()
+
+        errors: list[BaseException] = []
+
+        def deposit():
+            try:
+                secure_publish_copy(str(src), str(dst))
+            except BaseException as exc:  # captured for the assertion below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=deposit) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == []
+        assert dst.is_file()
+        assert not dst.is_symlink()
+        assert dst.read_bytes() == b"<testsuite>pass</testsuite>"
+        assert list(dst.parent.glob("*.publish.tmp")) == []
+
+    def test_the_temp_path_carries_the_publish_tmp_suffix(self, monkeypatch, tmp_path):
+        """``trim_cache.reclaim_orphan_temps`` matches purely on the
+        ``.publish.tmp`` suffix, so a helper that changed the suffix would
+        silently stop a killed-mid-copy temp from ever being reclaimed.
+        Record the path the helper actually opens (the temp is unlinked by
+        the rename, so it cannot be observed after the fact) and assert
+        the suffix on that non-empty observation."""
+        src = tmp_path / "workspace.xml"
+        src.write_bytes(b"<testsuite/>")
+        dst = tmp_path / "cas" / "e.xml"
+        dst.parent.mkdir()
+
+        opened: list[str] = []
+        real_open = os.open
+
+        def recording_open(path, flags, *args, **kwargs):
+            if flags & os.O_CREAT:
+                opened.append(str(path))
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(os, "open", recording_open)
+        secure_publish_copy(str(src), str(dst))
+
+        assert dst.read_bytes() == b"<testsuite/>", "the deposit itself must still land"
+        temps = [p for p in opened if p != str(dst)]
+        assert temps, "helper opened no temp file; the atomic temp+rename contract is gone"
+        assert not any(os.path.exists(p) for p in temps), "the temp must be renamed away, not left behind"
+        assert all(p.endswith(_PUBLISH_TMP_SUFFIX) for p in temps), (
+            f"temp names must end in {_PUBLISH_TMP_SUFFIX} for reclaim_orphan_temps to find them, got {temps}"
+        )
+        assert all(os.path.dirname(p) == str(dst.parent) for p in temps), (
+            "the temp must sit beside dst so the rename is same-filesystem"
+        )
+
+    def test_a_failed_deposit_leaves_no_orphan_temp(self, tmp_path):
+        """A deposit that raises mid-copy must clean up its own temp. Force
+        an interruption with a directory src, so ``open(src, 'rb')`` raises
+        after the temp exists. A MISSING src is a sanctioned no-op rather
+        than an interruption -- see
+        ``TestSecurePublishCopy::test_missing_src_warns_and_skips_rather_than_raising``."""
+        unreadable_src = tmp_path / "a_directory_not_a_file"
+        unreadable_src.mkdir()
+        dst = tmp_path / "cas" / "e.xml"
+        dst.parent.mkdir()
+
+        with pytest.raises(IsADirectoryError):
+            secure_publish_copy(str(unreadable_src), str(dst))
+
+        assert not dst.exists()
+        assert list(dst.parent.glob("*.publish.tmp")) == [], "a failed deposit must not leave an orphan temp behind"
+
+    def test_in_process_shake_deposit_uses_the_secure_helper(self, monkeypatch, tmp_path):
+        """A21: the in-process Shake path (trace_backend._record_test_outcome)
+        must route through the same secure helper as the shell recipe, not
+        the vulnerable atomic_copy_bytes."""
+        import compiletools.filesystem_utils
+        import compiletools.trace_backend as trace_backend_module
+
+        calls: list[tuple[str, str]] = []
+
+        def fake_secure_publish_copy(src, dst):
+            calls.append((src, dst))
+            Path(dst).write_bytes(Path(src).read_bytes())
+
+        monkeypatch.setattr(compiletools.filesystem_utils, "secure_publish_copy", fake_secure_publish_copy)
+
+        src = tmp_path / "workspace.xml"
+        src.write_bytes(b"<testsuite>pass</testsuite>")
+        dst = tmp_path / "cas" / "e.xml"
+        dst.parent.mkdir()
+        marker = tmp_path / "cas" / "e.result"
+
+        rule = trace_backend_module.BuildRule(
+            output=str(dst),
+            inputs=[],
+            command=["dummy"],
+            rule_type="test",
+            success_marker=str(marker),
+            success_copies=((str(src), str(dst)),),
+        )
+
+        backend = trace_backend_module.ShakeBackend.__new__(trace_backend_module.ShakeBackend)
+        backend._test_failures = []
+
+        def fake_touch_result_marker(result_path: str) -> None:
+            Path(result_path).touch()
+
+        monkeypatch.setattr(backend, "_touch_result_marker", fake_touch_result_marker)
+
+        trace_backend_module.ShakeBackend._record_test_outcome(backend, rule, 0, ["dummy"])
+
+        assert calls == [(str(src), str(dst))]
+        assert marker.exists()
 
 
 class TestExeSidecarMatchAndStrip:

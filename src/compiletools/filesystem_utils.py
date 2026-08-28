@@ -11,8 +11,10 @@ import errno
 import hashlib
 import os
 import re
+import secrets
 import shutil
 import subprocess
+import sys
 import tempfile
 from collections.abc import Callable, Sequence
 from functools import lru_cache
@@ -20,6 +22,8 @@ from functools import lru_cache
 from stringzilla import Str
 
 import compiletools.apptools_canonicalize
+
+_SECURE_PUBLISH_MAX_ATTEMPTS = 100
 
 # ---------------------------------------------------------------------------
 # cas-exedir sidecar family (single source of truth)
@@ -254,6 +258,94 @@ def atomic_copy_bytes(src: str, dst: str) -> None:
         tmp_prefix=os.path.basename(dst) + ".",
         tmp_suffix=_PUBLISH_TMP_SUFFIX,
     )
+
+
+def secure_publish_copy(src: str, dst: str) -> None:
+    """Byte-copy *src* to *dst*, resistant to symlink implantation by a peer
+    sharing *dst*'s directory (a CAS pool).
+
+    This is the ONE deposit-copy path for workspace -> CAS artefacts (e.g.
+    a test framework's JUnit XML into its content-addressed
+    ``<cas_exe>.xml`` home). Both the shell-rendered recipe
+    (``render_shell_recipe`` in ``build_graph.py``, invoked via
+    ``python -m compiletools.filesystem_utils <src> <dst>``) and Shake's
+    in-process deposit (``trace_backend._record_test_outcome``) route
+    through it, so there is exactly one implementation of the copy's
+    security properties, not two of differing strength.
+
+    Two properties close the holes that a naive "hash of src" temp name or
+    an unlink-then-reopen helper (``atomic_replace``) leave open:
+
+    1. **Temp name is runtime-random, not a hash of anything guessable.**
+       ``atomic_replace``-style helpers derive the temp name from ``dst``
+       alone or from a hash of ``src`` -- both are computable by any peer
+       who knows the workspace layout, so a peer can pre-create that exact
+       path as a symlink before the real writer ever runs (implantation).
+       Two peer workspaces publishing the *same* ``src`` path to the *same*
+       shared ``dst`` also collide on the same hash-derived temp, so one
+       peer's ``mv -f``/``os.rename`` loses the source and gets ``ENOENT``
+       (a passing test reported failed). A ``secrets.token_hex`` name with
+       retry-on-collision defeats both: unguessable defeats implantation,
+       runtime-random-per-call defeats cross-peer collision.
+    2. **The temp is populated through the SAME retained file descriptor
+       used to create it, never by reopening the pathname.** ``os.open``
+       with ``O_CREAT | O_EXCL | O_NOFOLLOW`` atomically creates-or-fails
+       and refuses to follow a symlink placed at that exact path in the
+       (vanishingly small, now-unguessable) race window; writing through
+       that same fd means there is no second ``open()`` call for a peer to
+       race against by replacing the path with a symlink in between
+       (the gap ``atomic_replace`` + ``atomic_copy_bytes`` has: they close
+       and unlink the O_EXCL temp, then ``shutil.copyfile`` reopens the
+       bare pathname).
+
+    The final ``os.replace`` is atomic against concurrent readers of
+    ``dst`` and, like ``mv -f``, follows-and-replaces rather than writing
+    through a symlink at ``dst`` itself (POSIX ``rename()`` never
+    dereferences its target). The ``.publish.tmp`` suffix keeps orphans
+    (a build killed mid-copy) reclaimable by
+    ``trim_cache.reclaim_orphan_temps``, which matches on that suffix
+    alone -- unaffected by the temp basename now being random instead of
+    hash-derived.
+    """
+    dst_dir = os.path.dirname(dst) or "."
+    base = os.path.basename(dst)
+    tmp_fd = None
+    tmp_path = None
+    for _ in range(_SECURE_PUBLISH_MAX_ATTEMPTS):
+        candidate = os.path.join(dst_dir, f"{base}.{secrets.token_hex(16)}{_PUBLISH_TMP_SUFFIX}")
+        try:
+            tmp_fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o644)
+        except FileExistsError:
+            continue
+        tmp_path = candidate
+        break
+    if tmp_fd is None or tmp_path is None:
+        raise OSError(f"secure_publish_copy: could not create a unique temp under {dst_dir!r}")
+
+    try:
+        with os.fdopen(tmp_fd, "wb") as tmp_f, open(src, "rb") as src_f:
+            shutil.copyfileobj(src_f, tmp_f)
+        os.replace(tmp_path, dst)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+        raise
+
+
+def _secure_publish_copy_main(argv: list[str] | None = None) -> int:
+    """CLI entry point: ``python -m compiletools.filesystem_utils <src> <dst>``.
+
+    Thin argv wrapper around :func:`secure_publish_copy` so shell-rendered
+    build recipes (make/ninja) can invoke the same secure copy Shake's
+    in-process path uses, keeping the recipe text static (no per-build
+    computed temp name) while the temp itself stays runtime-random.
+    """
+    args = sys.argv[1:] if argv is None else argv
+    if len(args) != 2:
+        print("usage: python -m compiletools.filesystem_utils <src> <dst>", file=sys.stderr)
+        return 2
+    secure_publish_copy(args[0], args[1])
+    return 0
 
 
 _OCTAL_ESCAPE_RE = re.compile(r"\\([0-7]{3})")
@@ -662,3 +754,7 @@ def atomic_output_file(target_path, mode="w", encoding="utf-8", preserve_permiss
             raise
 
     return _atomic_context()
+
+
+if __name__ == "__main__":
+    sys.exit(_secure_publish_copy_main())
