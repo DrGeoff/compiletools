@@ -1434,6 +1434,32 @@ def write_failing_gtest_fixture(tmp_path):
     return test_src
 
 
+# A plain-main() test that framework detection classifies as gtest (it
+# includes "gtest/gtest.h" purely to be linked against a
+# //#PKG-CONFIG=gtest-flavoured library) but whose main() ignores
+# --gtest_output entirely and never writes any XML. Exits 0. This is the
+# misdetection shape from finding 3: rc==0, framework-classified, no report
+# ever produced.
+_MISDETECTED_GTEST_FIXTURE_SRC = '#include "unit_test.hpp"\n#include "gtest/gtest.h"\nint main() {\n    return 0;\n}\n'
+
+
+def write_misdetected_gtest_fixture(tmp_path):
+    """Write a test fixture that is framework-DETECTED as gtest but never
+    writes the XML report its detection promises (a plain ``main()`` that
+    ignores ``--gtest_output``), exiting 0.
+
+    Reproduces finding 3: a passing test whose classification is wrong must
+    not fail the build when the expected report is absent. Returns the test
+    source ``Path``.
+    """
+    (tmp_path / "unit_test.hpp").write_text("#pragma once\n")
+    (tmp_path / "gtest").mkdir(exist_ok=True)
+    (tmp_path / "gtest" / "gtest.h").write_text("#pragma once\n")
+    test_src = tmp_path / "test_misdetected_gtest.cpp"
+    test_src.write_text(_MISDETECTED_GTEST_FIXTURE_SRC)
+    return test_src
+
+
 def make_mock_hunter(sources=None, headers=None, magicflags_map=None, per_file_magicflags=None):
     """Create a MagicMock hunter with standard behavior.
 

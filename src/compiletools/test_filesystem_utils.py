@@ -726,6 +726,23 @@ class TestSecurePublishCopy:
         assert dst.read_bytes() == b"<testsuite>pass</testsuite>"
         assert list(dst.parent.glob("*.publish.tmp")) == []
 
+    def test_missing_src_warns_and_skips_rather_than_raising(self, tmp_path, capsys):
+        """Finding 3: a missing src means rc==0 framework detection was
+        wrong about the test, not that the deposit failed -- this must
+        warn and return quietly, never raise, and must not touch dst."""
+        missing_src = tmp_path / "does_not_exist.xml"
+        dst = tmp_path / "cas" / "e.xml"
+        dst.parent.mkdir()
+
+        secure_publish_copy(str(missing_src), str(dst))
+
+        assert not dst.exists(), "a missing src must never create dst"
+        assert list(dst.parent.glob("*.publish.tmp")) == [], "a missing src must leave no temp behind"
+        captured = capsys.readouterr()
+        assert "Warning" in captured.err
+        assert str(missing_src) in captured.err
+        assert str(dst) in captured.err
+
     def test_the_temp_path_carries_the_publish_tmp_suffix(self, monkeypatch, tmp_path):
         """``trim_cache.reclaim_orphan_temps`` matches purely on the
         ``.publish.tmp`` suffix, so a helper that changed the suffix would

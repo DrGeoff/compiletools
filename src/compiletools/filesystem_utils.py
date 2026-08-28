@@ -306,7 +306,36 @@ def secure_publish_copy(src: str, dst: str) -> None:
     ``trim_cache.reclaim_orphan_temps``, which matches on that suffix
     alone -- unaffected by the temp basename now being random instead of
     hash-derived.
+
+    **A missing *src* is a warning, not an error.** This is only ever
+    called on rc==0 (the test process exited successfully), so a missing
+    *src* means framework detection misclassified the test -- it links
+    something matched by ``//#PKG-CONFIG`` package-name substring or an
+    unevaluated ``#include``, but its actual ``main()`` never writes the
+    report the detected framework promised. The test genuinely passed;
+    only the optional report is missing. Failing the build here would
+    turn a passing test into a rendered infrastructure error (an absent
+    file is an ``OSError``, caught by ``cake.py``'s ``_FATAL_ERROR_RENDERERS``
+    and reported as "No such file or directory", masking the real,
+    green, test-failures aggregate). So this returns quietly after a
+    stderr warning naming the test and the missing path, leaving *dst*
+    untouched -- the CAS is never touched by a report that was never
+    produced. Both callers (this shell-argv wrapper, invoked by
+    ``build_graph.render_shell_recipe``'s static recipe text, and
+    ``trace_backend._record_test_outcome``'s in-process call) get this
+    for free by routing through the same function; the shell recipe text
+    itself never needs a conditional. Callers still touch the
+    ``success_marker`` afterwards -- the marker asserts "the test
+    passed," not "the report landed."
     """
+    if not os.path.exists(src):
+        print(
+            f"Warning: expected test report {src!r} not found after a passing test run "
+            f"(rc==0) -- framework detection likely misclassified this test. Skipping "
+            f"deposit to {dst!r}; the test result itself is unaffected.",
+            file=sys.stderr,
+        )
+        return
     dst_dir = os.path.dirname(dst) or "."
     base = os.path.basename(dst)
     tmp_fd = None

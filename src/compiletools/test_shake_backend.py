@@ -1941,6 +1941,50 @@ class TestShakeRunsTestsInBuildPhase:
             "failure artefact was deposited into the CAS -- a cas .xml must imply a passing run"
         )
 
+    @uth.requires_functional_compiler
+    def test_shake_passing_misdetected_test_warns_and_skips_deposit(self, tmp_path, capfd):
+        """A test misdetected as gtest (rc==0, but its main() never writes
+        the expected JUnit XML) must not fail the build. Finding 3: the
+        deposit is a best-effort report, not a build gate. Covers the
+        in-process ``_record_test_outcome`` path (shell recipes are
+        covered by the makefile-backend counterpart of this test).
+
+        Asserts:
+          - execute("build") succeeds (does NOT raise),
+          - a warning naming the test and the missing path is printed,
+          - no cas-side ``.xml`` is created,
+          - the ``.result`` success marker IS touched (the test passed).
+        """
+        test_src = uth.write_misdetected_gtest_fixture(tmp_path)
+
+        xml_dir = tmp_path / "junit"
+        backend, graph = uth.build_real_backend(
+            ShakeBackend, tmp_path, [], tests=[test_src], extra_argv=["--test-xml-dir=" + str(xml_dir)]
+        )
+
+        test_rules = [r for r in graph.rules if r.rule_type == "test"]
+        assert len(test_rules) == 1
+        xml_rule = test_rules[0]
+        assert xml_rule.output != xml_rule.success_marker, (
+            "framework was not detected -- test rule output is still the .result marker"
+        )
+        assert xml_rule.success_copies, "framework test rule lost its CAS deposit wiring"
+        workspace_xml = xml_rule.success_copies[0][0]
+        assert not os.path.exists(workspace_xml), "fixture unexpectedly wrote XML -- misdetection setup is wrong"
+
+        backend.generate(graph)
+        backend.execute("build")
+
+        captured = capfd.readouterr()
+        assert "Warning" in captured.err and workspace_xml in captured.err, (
+            f"expected a warning naming the missing report path {workspace_xml!r}, got stderr: {captured.err!r}"
+        )
+        assert not os.path.exists(xml_rule.output), "no XML was ever written -- the CAS side must not be touched"
+        assert xml_rule.success_marker is not None
+        assert os.path.exists(xml_rule.success_marker), (
+            "the test genuinely passed (rc==0) -- the .result marker must still be touched"
+        )
+
 
 # The driver runs in a REAL subprocess (main thread of the main interpreter,
 # so ``loop.add_signal_handler`` actually installs -- an in-process pytest

@@ -3671,6 +3671,7 @@ class BuildBackend(abc.ABC):
         copy_snippet = (
             "import os,shutil,sys;"
             "src,dst=sys.argv[1],sys.argv[2];"
+            "sys.exit(0) if not os.path.exists(src) else None;"
             "tmp=dst+'.'+str(os.getpid())+'.copytmp';"
             "shutil.copyfile(src,tmp);"
             "os.replace(tmp,dst)"
