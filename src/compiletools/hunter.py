@@ -804,7 +804,6 @@ class Hunter:
 
         # Cache the results as sorted absolute paths
         self._hunted_sources = sorted(all_sources)  # all_sources already contains realpaths
-        self._test_sources = None
 
         if self.args.verbose >= 5:
             print(f"Hunter::huntsource - Discovered {len(self._hunted_sources)} total sources")
