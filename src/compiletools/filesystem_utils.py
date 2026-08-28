@@ -8,15 +8,18 @@ This module provides filesystem type detection and policy decisions for:
 
 import contextlib
 import errno
+import hashlib
 import os
 import re
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from functools import lru_cache
 
 from stringzilla import Str
+
+import compiletools.apptools_canonicalize
 
 # ---------------------------------------------------------------------------
 # cas-exedir sidecar family (single source of truth)
@@ -24,17 +27,103 @@ from stringzilla import Str
 #
 # Every cas-exedir artefact (``<basename>_<linkkey>.{exe,a,so}``) may carry
 # up to three sidecars, deposited by ``cas_publish`` / ``build_backend`` and
-# consumed by ``trim_cache`` / ``cache_report``: the source-identity
-# ``.manifest`` JSON, the content-keyed ``.result`` success marker, and the
-# content-addressed ``.xml`` JUnit report. Producers and consumers live in
-# four different modules, so the family is named here rather than spelled as
-# a literal at each site.
+# consumed by ``trim_cache`` / ``cache_report``:
+#
+# * ``.manifest`` -- source-identity JSON (``cas_publish.publish``). Depends
+#   only on the artefact itself, never on how a test using it was invoked --
+#   an IDENTITY sidecar, named ``<primary>.manifest`` with no extra key.
+# * ``.result`` / ``.xml`` -- TEST sidecars: the content-keyed success marker
+#   and the content-addressed JUnit report. Both are keyed not just on the
+#   exe's bytes (the link key already captures that) but on how the test was
+#   INVOKED -- ``TESTPREFIX`` (``valgrind`` vs none) changes what "success"
+#   or "the XML" means for byte-identical exes, so the primary exe path alone
+#   is not a safe cache key for these two. They are named
+#   ``<primary>.<test_sidecar_key>.result`` / ``.xml`` where
+#   ``test_sidecar_key`` is :func:`compute_test_sidecar_key`.
+#
+# ``match_exe_sidecar`` is the single match-and-strip entry point every
+# producer/consumer must share: given a sidecar LEAF name, it returns
+# ``(primary_leaf_name, suffix)`` -- the bare exe/lib leaf name with both the
+# suffix and (for TEST sidecars) the key segment stripped, so trim's
+# "does the primary still exist" check and the ``_is_cas_exe_leaf_name``
+# shape gate keep working unchanged. A TEST-sidecar leaf with no (or a
+# non-hex, non-16-char) key segment is treated as a legacy pre-migration
+# sidecar and stripped bare-suffix-only, matching the pre-A12 behaviour --
+# it is neither corrupted nor spuriously reaped merely because a newer
+# argv-keyed sibling now also exists beside the same primary.
 EXE_MANIFEST_SUFFIX: str = ".manifest"
 EXE_RESULT_SUFFIX: str = ".result"
 EXE_XML_SUFFIX: str = ".xml"
-_EXE_SIDECAR_SUFFIXES: tuple[str, ...] = (EXE_MANIFEST_SUFFIX, EXE_RESULT_SUFFIX, EXE_XML_SUFFIX)
+_EXE_IDENTITY_SIDECAR_SUFFIXES: tuple[str, ...] = (EXE_MANIFEST_SUFFIX,)
+_EXE_TEST_SIDECAR_SUFFIXES: tuple[str, ...] = (EXE_RESULT_SUFFIX, EXE_XML_SUFFIX)
+_EXE_SIDECAR_SUFFIXES: tuple[str, ...] = _EXE_IDENTITY_SIDECAR_SUFFIXES + _EXE_TEST_SIDECAR_SUFFIXES
 
 _PUBLISH_TMP_SUFFIX: str = ".publish.tmp"
+
+# sha256-hexdigest-prefix length for the test-sidecar key segment. Short by
+# design -- unlike the link key (which needs enough entropy that a collision
+# would silently miscompile, see build_backend._compute_artefact_key_hash),
+# a test-sidecar-key collision only degrades to "two different TESTPREFIX
+# invocations share a stale skip/report" -- annoying but self-correcting on
+# the next run once the marker is stale for either. 16 hex chars (64 bits)
+# is ample.
+_TEST_SIDECAR_KEY_HEXLEN = 16
+_TEST_SIDECAR_KEY_RE = re.compile(rf"^[0-9a-f]{{{_TEST_SIDECAR_KEY_HEXLEN}}}$")
+
+
+def compute_test_sidecar_key(argv_tokens: Sequence[str], framework_id: str | None, anchor_root: str) -> str:
+    """Semantic (path-blind) key for a test invocation's ``.result``/``.xml``
+    sidecars.
+
+    Hashes the CANONICAL ``TESTPREFIX`` tokens (path-bearing tokens rewritten
+    via :func:`compiletools.apptools_canonicalize.canonicalize_for_cache_key`
+    so a per-workspace absolute path inside e.g. ``--log-file=<path>`` does
+    not fork the key across checkouts of the same logical build) plus the
+    detected test-framework id -- never the literal argv, which also
+    contains workspace-specific ``exe_path``/XML-output paths that would
+    defeat cross-workspace CAS sharing if hashed verbatim.
+    """
+    canonical = compiletools.apptools_canonicalize.canonicalize_for_cache_key(list(argv_tokens), anchor_root)
+    payload = "\x1f".join((framework_id or "", *canonical))
+    return hashlib.sha256(payload.encode()).hexdigest()[:_TEST_SIDECAR_KEY_HEXLEN]
+
+
+def build_test_sidecar_path(cas_primary_path: str, key: str, suffix: str) -> str:
+    """Build a TEST-sidecar path: ``<cas_primary_path>.<key><suffix>``.
+
+    *suffix* must be one of :data:`_EXE_TEST_SIDECAR_SUFFIXES`.
+    """
+    if suffix not in _EXE_TEST_SIDECAR_SUFFIXES:
+        raise ValueError(f"build_test_sidecar_path: {suffix!r} is not a TEST sidecar suffix")
+    return f"{cas_primary_path}.{key}{suffix}"
+
+
+def match_exe_sidecar(leaf_name: str) -> tuple[str, str] | None:
+    """Match-and-strip a cas-exedir sidecar LEAF name.
+
+    Returns ``(primary_leaf_name, suffix)`` where ``primary_leaf_name`` is
+    the bare exe/lib leaf (``<basename>_<linkkey>.{exe,a,so}``) the sidecar
+    belongs to -- with both the sidecar suffix and, for a TEST sidecar
+    carrying a well-formed key segment, that key segment stripped. Returns
+    ``None`` for anything not ending in a member of
+    :data:`_EXE_SIDECAR_SUFFIXES`.
+
+    THE single strip implementation shared by every producer/consumer
+    (``build_backend``, ``trim_cache``'s orphan reaper and per-artefact
+    eviction) -- see the module-level sidecar-family docstring above for the
+    key-vs-legacy disambiguation rule.
+    """
+    for suffix in _EXE_IDENTITY_SIDECAR_SUFFIXES:
+        if leaf_name.endswith(suffix):
+            return leaf_name[: -len(suffix)], suffix
+    for suffix in _EXE_TEST_SIDECAR_SUFFIXES:
+        if leaf_name.endswith(suffix):
+            body = leaf_name[: -len(suffix)]
+            dot = body.rfind(".")
+            if dot != -1 and _TEST_SIDECAR_KEY_RE.match(body[dot + 1 :]):
+                return body[:dot], suffix
+            return body, suffix  # legacy / unkeyed -- stripped bare-suffix-only
+    return None
 
 
 def _umask_default_file_mode() -> int:
@@ -163,7 +252,7 @@ def atomic_copy_bytes(src: str, dst: str) -> None:
         dst,
         populate,
         tmp_prefix=os.path.basename(dst) + ".",
-        tmp_suffix=".publish.tmp",
+        tmp_suffix=_PUBLISH_TMP_SUFFIX,
     )
 
 

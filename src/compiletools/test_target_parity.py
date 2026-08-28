@@ -167,7 +167,10 @@ def parse_cake_makefile(root, text):
     the cached artefact -- ``ar`` for a static library, a ``-shared`` link for
     a dynamic one, a plain link otherwise -- and a plain link is a test rather
     than an executable when its ``.result`` marker is a ``runtests``
-    prerequisite.
+    prerequisite. Test sidecars are argv-keyed (``<cas_path>.<16hex>.result``,
+    see ``filesystem_utils.build_test_sidecar_path``), so membership is
+    prefix/suffix matched rather than compared for exact equality against
+    ``<cas_path>.result``.
     """
     archives = set(_ARCHIVE.findall(text))
     shared = set(_SHARED.findall(text))
@@ -180,7 +183,10 @@ def parse_cake_makefile(root, text):
             bucket = STATIC
         elif cas_path in shared:
             bucket = DYNAMIC
-        elif cas_path + ".result" in results:
+        elif any(
+            result == cas_path + ".result" or (result.startswith(cas_path + ".") and result.endswith(".result"))
+            for result in results
+        ):
             bucket = TESTS
         else:
             bucket = EXES

@@ -112,7 +112,10 @@ _CAS_EXE_SUFFIXES: tuple[str, ...] = (".exe", ".a", ".so")
 # source-identity manifest (``ct-cas-publish``), the content-keyed
 # test-success marker, and the content-addressed JUnit report. Evicted
 # with their artefact (``_RetryItem.remove_sidecars``) and orphan-swept
-# once the artefact is gone (``_reap_sidecars_in``).
+# once the artefact is gone (``_reap_sidecars_in``). Single source of
+# truth is ``filesystem_utils`` -- see its module-level sidecar-family
+# docstring for the identity-vs-test-sidecar distinction and the
+# ``match_exe_sidecar`` match-and-strip contract this module relies on.
 _EXE_SIDECAR_SUFFIXES = compiletools.filesystem_utils._EXE_SIDECAR_SUFFIXES
 
 # Matchers that identify orphaned producer temp files inside CAS bucket / cmd_hash
@@ -284,10 +287,41 @@ class _RetryItem:
         """Best-effort exe sidecar cleanup — the IO half of a success.
 
         Not counted towards ``bytes_freed`` (small, ignore failure).
+
+        IDENTITY sidecars (``.manifest``) are unkeyed -- ``self.path`` plus
+        the bare suffix is always the exact name, removed directly. TEST
+        sidecars (``.result``/``.xml``) carry an argv-derived key segment
+        this code cannot recompute (it has no access to the TESTPREFIX that
+        produced it), so evicting the primary artefact without scanning its
+        directory would leak every argv-keyed sidecar beside it. The parent
+        directory is listed once and each entry run through the shared
+        ``match_exe_sidecar`` match-and-strip so every sidecar (keyed or
+        legacy-unkeyed) whose primary equals this artefact's leaf name is
+        found and removed, regardless of how many distinct TESTPREFIX
+        invocations produced siblings.
         """
-        for sidecar_suffix in _EXE_SIDECAR_SUFFIXES:
+        for sidecar_suffix in compiletools.filesystem_utils._EXE_IDENTITY_SIDECAR_SUFFIXES:
             try:
                 os.remove(self.path + sidecar_suffix)
+            except OSError:
+                pass
+        parent = os.path.dirname(self.path)
+        exe_leaf = os.path.basename(self.path)
+        try:
+            names = os.listdir(parent)
+        except OSError:
+            return
+        for name in names:
+            matched = compiletools.filesystem_utils.match_exe_sidecar(name)
+            if matched is None:
+                continue
+            primary_leaf, suffix = matched
+            if suffix in compiletools.filesystem_utils._EXE_IDENTITY_SIDECAR_SUFFIXES:
+                continue  # already handled above
+            if primary_leaf != exe_leaf:
+                continue
+            try:
+                os.remove(os.path.join(parent, name))
             except OSError:
                 pass
 
@@ -1554,14 +1588,17 @@ class CacheTrimmer:
                 continue
             if name.endswith(".lockdir"):
                 suffix = ".lockdir"
+                primary = entry.path[: -len(suffix)]
             elif name.endswith(".lock"):
                 suffix = ".lock"
+                primary = entry.path[: -len(suffix)]
             else:
-                suffix = next((s for s in _EXE_SIDECAR_SUFFIXES if name.endswith(s)), None)
-                if suffix is None:
+                matched = compiletools.filesystem_utils.match_exe_sidecar(name)
+                if matched is None:
                     continue
+                primary_leaf, suffix = matched
+                primary = os.path.join(os.path.dirname(entry.path), primary_leaf)
 
-            primary = entry.path[: -len(suffix)]
             if os.path.exists(primary):
                 continue  # artefact still cached — keep its sidecar
 

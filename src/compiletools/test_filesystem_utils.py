@@ -11,12 +11,18 @@ from pathlib import Path
 import pytest
 
 from compiletools.filesystem_utils import (
+    EXE_MANIFEST_SUFFIX,
+    EXE_RESULT_SUFFIX,
+    EXE_XML_SUFFIX,
     atomic_output_file,
     atomic_write,
     atomic_write_if_changed,
+    build_test_sidecar_path,
+    compute_test_sidecar_key,
     get_filesystem_type,
     get_lock_strategy,
     get_lockdir_sleep_interval,
+    match_exe_sidecar,
     match_mountpoint,
     parse_mount_lines,
     safe_read_text_file,
@@ -601,3 +607,66 @@ class TestMountpointMatching:
         unescaped, so the comparison only lands if parsing decoded first."""
         mounts = parse_mount_lines(["/dev/sdb1 /mnt/two\\040words nfs rw 0 0"])
         assert match_mountpoint("/mnt/two words/obj.o", mounts) == "nfs"
+
+
+class TestExeSidecarMatchAndStrip:
+    """``match_exe_sidecar`` / ``compute_test_sidecar_key`` / ``build_test_sidecar_path`` —
+    the single match-and-strip abstraction A12 layers the argv-keyed
+    ``.result``/``.xml`` naming on top of (A8)."""
+
+    def test_identity_sidecar_round_trips(self):
+        """A ``.manifest`` (IDENTITY sidecar) strips bare-suffix-only —
+        it carries no argv key."""
+        matched = match_exe_sidecar(f"main_{'a' * 64}.exe{EXE_MANIFEST_SUFFIX}")
+        assert matched == (f"main_{'a' * 64}.exe", EXE_MANIFEST_SUFFIX)
+
+    def test_keyed_test_sidecar_strips_back_to_the_primary_exe(self):
+        """A TEST sidecar built via ``build_test_sidecar_path`` strips back to
+        exactly the primary exe leaf name ``build_test_sidecar_path`` was given —
+        the trap-1/trap-3 guarantee this whole abstraction exists for."""
+        primary = f"main_{'a' * 64}.exe"
+        key = compute_test_sidecar_key(["valgrind"], "gtest", anchor_root="")
+        keyed_name = os.path.basename(build_test_sidecar_path(primary, key, EXE_XML_SUFFIX))
+
+        matched = match_exe_sidecar(keyed_name)
+
+        assert matched == (primary, EXE_XML_SUFFIX)
+
+    def test_legacy_unkeyed_test_sidecar_still_strips(self):
+        """A pre-migration ``.result``/``.xml`` with no key segment (or a
+        key-shaped-but-wrong-length trailer) must still strip bare-suffix
+        -only, matching pre-A12 behaviour, so it is neither corrupted nor
+        treated as belonging to a different primary."""
+        primary = f"main_{'a' * 64}.exe"
+        assert match_exe_sidecar(primary + EXE_RESULT_SUFFIX) == (primary, EXE_RESULT_SUFFIX)
+
+    def test_non_sidecar_name_does_not_match(self):
+        assert match_exe_sidecar("main.exe") is None
+        assert match_exe_sidecar("main.exe.lock") is None
+
+    def test_test_sidecar_path_rejects_identity_suffix(self):
+        with pytest.raises(ValueError):
+            build_test_sidecar_path("main.exe", "0" * 16, EXE_MANIFEST_SUFFIX)
+
+    def test_different_testprefix_tokens_yield_different_keys(self):
+        """(a)-supporting unit: the key alone must fork on TESTPREFIX."""
+        key_none = compute_test_sidecar_key([], None, anchor_root="")
+        key_valgrind = compute_test_sidecar_key(["valgrind", "--leak-check=full"], None, anchor_root="")
+
+        assert key_none != key_valgrind
+
+    def test_key_is_blind_to_workspace_path_but_not_to_semantics(self):
+        """(e): the SAME logical TESTPREFIX token, canonicalised against two
+        DIFFERENT gitroots, must hash to the SAME key -- proving the key is
+        built from canonicalised (gitroot-relative) semantics, not the
+        literal per-workspace argv, so cross-workspace CAS sharing survives.
+        A control differing TESTPREFIX must still fork the key even across
+        those same two workspaces."""
+        key_workspace_a = compute_test_sidecar_key(["-B/ws/a/tool"], "gtest", anchor_root="/ws/a")
+        key_workspace_b = compute_test_sidecar_key(["-B/ws/b/tool"], "gtest", anchor_root="/ws/b")
+        assert key_workspace_a == key_workspace_b
+
+        key_workspace_b_different_prefix = compute_test_sidecar_key(
+            ["-B/ws/b/tool", "--extra"], "gtest", anchor_root="/ws/b"
+        )
+        assert key_workspace_b_different_prefix != key_workspace_a

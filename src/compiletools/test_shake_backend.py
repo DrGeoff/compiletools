@@ -16,6 +16,7 @@ from unittest import mock
 import pytest
 
 import compiletools.apptools
+import compiletools.filesystem_utils
 import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.magicflags
@@ -1918,7 +1919,10 @@ class TestShakeRunsTestsInBuildPhase:
         assert xml_rule.output != xml_rule.success_marker, (
             "framework was not detected -- test rule output is still the .result marker"
         )
-        assert xml_rule.output.endswith(".exe.xml")
+        matched = compiletools.filesystem_utils.match_exe_sidecar(os.path.basename(xml_rule.output))
+        assert matched is not None and matched[1] == compiletools.filesystem_utils.EXE_XML_SUFFIX, (
+            f"framework test rule output {xml_rule.output!r} is not an argv-keyed cas .xml sidecar"
+        )
         assert xml_rule.success_copies, "framework test rule lost its CAS deposit"
         workspace_xml = xml_rule.success_copies[0][0]
 

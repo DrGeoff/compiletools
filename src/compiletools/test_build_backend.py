@@ -11,6 +11,7 @@ import stringzilla as sz
 
 import compiletools.apptools
 import compiletools.build_backend as bb
+import compiletools.filesystem_utils
 import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.magicflags
@@ -773,9 +774,13 @@ class TestBuildGraphPopulation:
             f"expected publish-symlink rule for the test exe; got {publish_rule}"
         )
         cas_exe_path = publish_rule.inputs[0]
-        assert rule.output == cas_exe_path + ".result", (
-            f"test rule output must be sibling to the cas-exedir entry; got {rule.output}, "
-            f"expected {cas_exe_path}.result"
+        sidecar_key = compiletools.filesystem_utils.compute_test_sidecar_key([], None, backend._anchor_root)
+        expected_result = compiletools.filesystem_utils.build_test_sidecar_path(
+            cas_exe_path, sidecar_key, compiletools.filesystem_utils.EXE_RESULT_SUFFIX
+        )
+        assert rule.output == expected_result, (
+            f"test rule output must be sibling to the cas-exedir entry, argv-keyed (A12); got {rule.output}, "
+            f"expected {expected_result}"
         )
         assert rule.inputs == (), (
             f"test rule must not declare normal prereqs in CAS mode (the .result is content-keyed); got {rule.inputs}"
@@ -828,8 +833,12 @@ class TestBuildGraphPopulation:
         publish_rule = graph.get_rule(f"{bindir}/test_foo")
         assert publish_rule is not None and publish_rule.rule_type == "symlink"
         cas_exe_path = publish_rule.inputs[0]
+        sidecar_key = compiletools.filesystem_utils.compute_test_sidecar_key([], None, backend._anchor_root)
+        expected_result = compiletools.filesystem_utils.build_test_sidecar_path(
+            cas_exe_path, sidecar_key, compiletools.filesystem_utils.EXE_RESULT_SUFFIX
+        )
         assert rule.success_marker == rule.output
-        assert rule.success_marker == cas_exe_path + ".result"
+        assert rule.success_marker == expected_result
 
     def test_test_result_rules_include_testprefix(self, tmp_path):
         """Test result rules should include TESTPREFIX when set."""
@@ -844,6 +853,58 @@ class TestBuildGraphPopulation:
         assert len(test_rules) == 1
         assert "valgrind" in _cmd(test_rules[0])
         assert "--leak-check=full" in _cmd(test_rules[0])
+
+    def test_different_testprefix_gets_distinct_sidecars_and_is_not_skipped(self, tmp_path):
+        """A12 regression: two builds sharing a cas-exedir and differing ONLY
+        in TESTPREFIX (e.g. ``valgrind`` vs none) produce byte-identical
+        exes, so pre-fix the link-key-only ``.result``/``.xml`` sidecar
+        paths collided -- the second build's distinct test invocation was
+        silently skipped because the first build's marker already existed.
+
+        Both graphs are built against the SAME tmp_path/source (same cas
+        exe, same link key) so any output-path difference below can only
+        come from the TESTPREFIX-derived sidecar key, not from the exe
+        itself moving.
+        """
+        args_plain = make_backend_args(tmp_path, filename=[], tests=["/src/test_foo.cpp"])
+        hunter = make_mock_hunter(sources=["/src/test_foo.cpp"])
+        backend_plain = self._make_backend(tmp_path, args=args_plain, hunter=hunter)
+        graph_plain = backend_plain.build_graph()
+        rule_plain = graph_plain.rules_by_type("test")[0]
+
+        args_valgrind = make_backend_args(tmp_path, filename=[], tests=["/src/test_foo.cpp"])
+        args_valgrind.TESTPREFIX = "valgrind --leak-check=full"
+        backend_valgrind = self._make_backend(tmp_path, args=args_valgrind, hunter=hunter)
+        graph_valgrind = backend_valgrind.build_graph()
+        rule_valgrind = graph_valgrind.rules_by_type("test")[0]
+
+        # Same underlying cas exe (link key unaffected by TESTPREFIX) ...
+        publish_plain = graph_plain.get_rule(f"{tmp_path / 'bin'}/test_foo")
+        publish_valgrind = graph_valgrind.get_rule(f"{tmp_path / 'bin'}/test_foo")
+        assert publish_plain is not None and publish_valgrind is not None
+        assert publish_plain.inputs[0] == publish_valgrind.inputs[0], (
+            "the two builds must share the same cas exe -- otherwise this test doesn't "
+            "isolate the TESTPREFIX-vs-sidecar-key claim"
+        )
+        # ... but DISTINCT sidecar paths (before the fix these were identical,
+        # which is exactly the bug: build 2's run gets vouched for by build 1's).
+        assert rule_plain.output != rule_valgrind.output, (
+            "differing TESTPREFIX must fork the .result sidecar path (A12)"
+        )
+        assert rule_plain.success_marker != rule_valgrind.success_marker
+
+        # Demonstrate the practical consequence: after build 1 runs and its
+        # marker/output exist on disk, build 2's own rule must NOT be
+        # reported current by _all_outputs_current -- i.e. it will actually
+        # execute rather than being vouched for by build 1's marker.
+        os.makedirs(os.path.dirname(rule_plain.output), exist_ok=True)
+        with open(rule_plain.output, "w") as f:
+            f.write("")
+        assert rule_plain.success_marker is not None
+        assert os.path.exists(rule_plain.success_marker)  # same file as output here
+        assert not os.path.exists(rule_valgrind.output), (
+            "build 2's sidecar must not already exist just because build 1's ran"
+        )
 
     def test_testprefix_unbalanced_quote_raises_flag_tokenize_error(self, tmp_path):
         """coverage-gaps Task 9: TESTPREFIX used to be split with a bare
@@ -4102,6 +4163,11 @@ class TestContentAddressedXmlRules:
         user_xml = os.path.join(args.test_xml_dir, "gcc.debug", os.path.basename(exe) + ".xml")
         return exe, cas_exe, user_xml
 
+    def _sidecar_key(self, backend, framework_id="gtest"):
+        testprefix = getattr(backend.args, "TESTPREFIX", "")
+        tokens = compiletools.utils.tokenize_flags_or_raise(testprefix, slot="TESTPREFIX") if testprefix else []
+        return compiletools.filesystem_utils.compute_test_sidecar_key(tokens, framework_id, backend._anchor_root)
+
     def test_cas_mode_test_rule_targets_cas_xml(self, tmp_path):
         """The test rule's output (= its staleness key) must be the
         content-addressed ``<cas_exe>.xml``, deposited on success via
@@ -4111,11 +4177,18 @@ class TestContentAddressedXmlRules:
         backend, args = self._framework_backend(tmp_path)
         graph = backend.build_graph()
         _exe, cas_exe, user_xml = self._paths(backend, graph, args)
+        key = self._sidecar_key(backend)
+        cas_xml = compiletools.filesystem_utils.build_test_sidecar_path(
+            cas_exe, key, compiletools.filesystem_utils.EXE_XML_SUFFIX
+        )
+        cas_result = compiletools.filesystem_utils.build_test_sidecar_path(
+            cas_exe, key, compiletools.filesystem_utils.EXE_RESULT_SUFFIX
+        )
 
         rule = graph.rules_by_type("test")[0]
-        assert rule.output == cas_exe + ".xml"
-        assert rule.success_marker == cas_exe + ".result"
-        assert rule.success_copies == ((user_xml, cas_exe + ".xml"),)
+        assert rule.output == cas_xml
+        assert rule.success_marker == cas_result
+        assert rule.success_copies == ((user_xml, cas_xml),)
         # argv writes the workspace path, stays shell-naive
         assert f"--gtest_output=xml:{user_xml}" in _cmd(rule)
         assert "&&" not in _cmd(rule) and "cp" not in _cmd(rule)
@@ -4127,16 +4200,20 @@ class TestContentAddressedXmlRules:
         backend, args = self._framework_backend(tmp_path)
         graph = backend.build_graph()
         _exe, cas_exe, user_xml = self._paths(backend, graph, args)
+        key = self._sidecar_key(backend)
+        cas_xml = compiletools.filesystem_utils.build_test_sidecar_path(
+            cas_exe, key, compiletools.filesystem_utils.EXE_XML_SUFFIX
+        )
 
         materialize = graph.get_rule(user_xml)
         assert materialize is not None and materialize.rule_type == "symlink"
-        assert materialize.inputs == (cas_exe + ".xml",)
+        assert materialize.inputs == (cas_xml,)
         assert _cmd(materialize)[0] == "ct-cas-publish"
 
         runtests = graph.get_rule("runtests")
         assert runtests is not None
         assert user_xml in runtests.inputs
-        assert cas_exe + ".xml" not in runtests.inputs
+        assert cas_xml not in runtests.inputs
 
     def test_use_mtime_keeps_legacy_xml_rule_shape(self, tmp_path):
         """--use-mtime opts out: the workspace XML stays the test rule's

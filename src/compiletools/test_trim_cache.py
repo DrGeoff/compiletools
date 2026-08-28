@@ -11,6 +11,7 @@ import types
 
 import pytest
 
+import compiletools.filesystem_utils
 from compiletools import trim_cache
 from compiletools.trim_cache import (
     CacheTrimmer,
@@ -4007,6 +4008,13 @@ class TestRetryList:
 
 # ── A6: orphan temp reclamation ────────────────────────────────────────────────
 
+# A genuine cas-exedir link key: a full sha256 hexdigest (64 lowercase hex
+# chars), matching what build_backend._compute_artefact_key_hash actually
+# writes. Short placeholders like "deadbeef" have the right alphabet but the
+# wrong length, so they cannot stand in for a real key once the .xml orphan
+# reaper starts validating link-key shape (see TestXmlSidecarShapeGate).
+_REAL_LINK_KEY = "aa11" * 16
+
 
 def _touch_temp(bucket_dir, name, *, age_seconds=0, size=512):
     """Create a fake orphan temp file inside ``bucket_dir``, with controlled mtime/size.
@@ -4997,6 +5005,93 @@ class TestReclaimOrphanSidecars:
         assert not os.path.exists(lock), "the orphan .lock residue must be reaped same-run"
         assert not os.path.exists(bucket), "the drained bucket must be reaped same-run"
         assert res["objdir"]["empty_buckets_removed"] == 1
+
+
+class TestArgvKeyedSidecarTrapRegressions:
+    """A12's argv-keyed ``.result``/``.xml`` naming layers a ``.<16-hex-key>``
+    segment onto the TEST sidecar suffixes. Three traps a naive
+    ``<cas_exe>.exe.<argvhash>.xml`` rename would have hit, each pinned here
+    against the actual ``match_exe_sidecar``/``remove_sidecars`` machinery:
+
+    1. A live sidecar's own exe still exists -- the orphan reaper must not
+       treat the inserted key segment as making the primary "not found".
+    2. Evicting a cas exe must remove every argv-keyed sidecar beside it
+       (no leak), while leaving an unrelated exe's sidecars in the same
+       bucket untouched.
+    """
+
+    def test_live_argv_keyed_sidecar_is_not_reaped(self, tmp_path):
+        """Trap 1: an argv-keyed ``.result``/``.xml`` whose exe primary is
+        still present must survive ``reclaim_orphan_sidecars`` however old
+        it is -- the key segment must not be mistaken for part of a
+        nonexistent primary path."""
+        cache_root = str(tmp_path / "exedir")
+        bucket = os.path.join(cache_root, "aa")
+        exe_leaf = f"main_{_REAL_LINK_KEY}.exe"
+        exe = _touch_temp(bucket, exe_leaf, age_seconds=30 * 86400, size=4096)
+        key = compiletools.filesystem_utils.compute_test_sidecar_key(["valgrind"], "gtest", anchor_root="")
+        xml_leaf = os.path.basename(
+            compiletools.filesystem_utils.build_test_sidecar_path(
+                exe_leaf, key, compiletools.filesystem_utils.EXE_XML_SUFFIX
+            )
+        )
+        xml = _touch_temp(bucket, xml_leaf, age_seconds=30 * 86400, size=500)
+
+        trimmer = CacheTrimmer(_make_args())
+        stats = _sidecar_stats()
+        trimmer.reclaim_orphan_sidecars(cache_root, stats)
+
+        assert os.path.exists(exe), "control: the exe itself must be untouched by the sidecar reaper"
+        assert os.path.exists(xml), "an argv-keyed sidecar whose exe is still live must not be reaped (trap 1)"
+        assert stats["orphan_sidecars_removed"] == 0
+
+    def test_evicting_exe_removes_all_argv_keyed_siblings_no_leak(self, tmp_path):
+        """Trap 2: evicting a cas exe via ``_RetryItem.remove_sidecars`` must
+        remove EVERY argv-keyed ``.result``/``.xml`` sibling beside it (two
+        distinct TESTPREFIX invocations produced two distinct keys here),
+        while leaving a different exe's sidecar in the same bucket alone."""
+        bucket = str(tmp_path / "exedir" / "aa")
+        os.makedirs(bucket, exist_ok=True)
+        exe_leaf = f"main_{_REAL_LINK_KEY}.exe"
+        exe_path = os.path.join(bucket, exe_leaf)
+        with open(exe_path, "wb") as f:
+            f.write(b"\0" * 4096)
+
+        key_plain = compiletools.filesystem_utils.compute_test_sidecar_key([], "gtest", anchor_root="")
+        key_valgrind = compiletools.filesystem_utils.compute_test_sidecar_key(["valgrind"], "gtest", anchor_root="")
+        assert key_plain != key_valgrind, "the two TESTPREFIX invocations must key differently"
+        sidecar_plain = compiletools.filesystem_utils.build_test_sidecar_path(
+            exe_path, key_plain, compiletools.filesystem_utils.EXE_RESULT_SUFFIX
+        )
+        sidecar_valgrind = compiletools.filesystem_utils.build_test_sidecar_path(
+            exe_path, key_valgrind, compiletools.filesystem_utils.EXE_XML_SUFFIX
+        )
+        manifest_sidecar = exe_path + compiletools.filesystem_utils.EXE_MANIFEST_SUFFIX
+        for sidecar in (sidecar_plain, sidecar_valgrind, manifest_sidecar):
+            with open(sidecar, "wb") as f:
+                f.write(b"")
+
+        # A DIFFERENT exe's sidecar in the same bucket must survive.
+        other_leaf = f"other_{'bb' * 32}.exe"
+        other_path = os.path.join(bucket, other_leaf)
+        with open(other_path, "wb") as f:
+            f.write(b"\0" * 128)
+        other_sidecar = compiletools.filesystem_utils.build_test_sidecar_path(
+            other_path, key_plain, compiletools.filesystem_utils.EXE_RESULT_SUFFIX
+        )
+        with open(other_sidecar, "wb") as f:
+            f.write(b"")
+
+        item = trim_cache._RetryItem(
+            path=exe_path, is_dir=False, size=4096, removed_key="removed", cleanup_sidecars=True
+        )
+        item.remove_sidecars()
+
+        assert not os.path.exists(sidecar_plain), "argv-keyed .result sibling must be removed with its exe"
+        assert not os.path.exists(sidecar_valgrind), "argv-keyed .xml sibling must be removed with its exe"
+        assert not os.path.exists(manifest_sidecar), ".manifest sibling must still be removed too"
+        assert os.path.exists(other_path), "an unrelated exe in the same bucket must be untouched"
+        assert os.path.exists(other_sidecar), "an unrelated exe's sidecar must not leak-delete (no false match)"
 
 
 # ── _parse_size ──────────────────────────────────────────────────────

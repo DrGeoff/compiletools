@@ -491,6 +491,29 @@ class BuildBackend(abc.ABC):
         cmd.extend(framework.xml_argv(self._xml_path_for(exe_path)))
         return cmd, framework
 
+    def _test_sidecar_key(self, framework: TestFramework | None) -> str:
+        """Sidecar key distinguishing test INVOCATIONS that share a link key.
+
+        A cas-exedir link key folds in linker identity, LDFLAGS, objects,
+        and the like -- everything that determines the exe's BYTES -- but
+        not ``TESTPREFIX`` or which framework's XML argv was appended, so
+        two builds differing only in ``TESTPREFIX`` (e.g. ``valgrind`` vs
+        none) produce byte-identical exes and, pre-fix, identical
+        ``.result``/``.xml`` sidecars: the second invocation's run was
+        silently skipped and "vouched for" by the first's marker (A12).
+
+        Delegates the actual hashing to
+        ``filesystem_utils.compute_test_sidecar_key``, which canonicalises
+        any path-bearing TESTPREFIX token so this key -- unlike the argv
+        itself -- stays identical across workspaces/checkouts of the same
+        logical build (cross-workspace CAS sharing must survive this fix).
+        """
+        testprefix = getattr(self.args, "TESTPREFIX", "")
+        tokens = compiletools.utils.tokenize_flags_or_raise(testprefix, slot="TESTPREFIX") if testprefix else []
+        return compiletools.filesystem_utils.compute_test_sidecar_key(
+            tokens, framework.id if framework is not None else None, self._anchor_root
+        )
+
     def _raw_include_tokens(self, files: list[str]) -> list[str]:
         """Union of raw ``#include`` operand tokens across *files*.
 
@@ -1690,6 +1713,15 @@ class BuildBackend(abc.ABC):
             test_result_paths = []
             test_rules: list[tuple[str, BuildRule]] = []
             for source, exe_path in zip(self.args.tests, test_exe_paths):
+                # Test command / framework detection must happen before the
+                # sidecar paths are built below: the sidecar key folds in
+                # TESTPREFIX + the detected framework id (see
+                # ``_test_sidecar_key``) so two builds differing only in
+                # TESTPREFIX (e.g. ``valgrind`` vs none) get DISTINCT
+                # ``.result``/``.xml`` sidecars instead of colliding on the
+                # link key alone (A12).
+                test_cmd, framework = self._test_command_for(source, exe_path)
+                sidecar_key = self._test_sidecar_key(framework)
                 # In CAS-only mode, place .result next to the CAS exe entry
                 # so success markers are content-addressed: two builds that
                 # produce byte-identical exes share the marker, and the
@@ -1703,7 +1735,9 @@ class BuildBackend(abc.ABC):
                         cas_exe_path = publish_rule.inputs[0]
                     else:
                         cas_exe_path = exe_path
-                    result_path = cas_exe_path + ".result"
+                    result_path = compiletools.filesystem_utils.build_test_sidecar_path(
+                        cas_exe_path, sidecar_key, compiletools.filesystem_utils.EXE_RESULT_SUFFIX
+                    )
                     rule_inputs: list[str] = []
                     rule_order_only = [exe_path]
                 else:
@@ -1714,7 +1748,6 @@ class BuildBackend(abc.ABC):
                     # Order-only: the XML dir must exist before the test runs,
                     # but its mtime must not retrigger the test.
                     rule_order_only = rule_order_only + [xml_bucket_dir]
-                test_cmd, framework = self._test_command_for(source, exe_path)
                 # When a framework is detected and --test-xml-dir is set the
                 # test recipe emits a JUnit XML file as a side effect, and the
                 # XML (rather than the .result marker) becomes the rule's
@@ -1738,7 +1771,9 @@ class BuildBackend(abc.ABC):
                 if xml_bucket_dir and framework is not None:
                     user_xml = self._xml_path_for(exe_path)
                     if cas_exe_path is not None and cas_exe_path != exe_path:
-                        cas_xml = cas_exe_path + ".xml"
+                        cas_xml = compiletools.filesystem_utils.build_test_sidecar_path(
+                            cas_exe_path, sidecar_key, compiletools.filesystem_utils.EXE_XML_SUFFIX
+                        )
                         success_copies = ((user_xml, cas_xml),)
                         graph.add_rule(self._build_publish_rule(cas_xml, user_xml))
                 rule_output = cas_xml or user_xml or result_path
