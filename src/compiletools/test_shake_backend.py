@@ -1985,6 +1985,57 @@ class TestShakeRunsTestsInBuildPhase:
             "the test genuinely passed (rc==0) -- the .result marker must still be touched"
         )
 
+    @uth.requires_functional_compiler
+    def test_shake_reruns_when_testprefix_changes_and_skips_when_repeated(self, tmp_path):
+        """The A12 analogue through shake's own rerun-skip predicate.
+
+        All three builds share one tmp_path (hence one cas-exedir and one
+        byte-identical exe). Only --TESTPREFIX differs. The exe appends a line
+        to run.log on every actual run, making the run count the observable:
+
+          - build 1 (no TESTPREFIX) runs once — cold control,
+          - build 2 (--TESTPREFIX=env) must run again: the keyed sidecar set
+            is new, so build 1's .result marker must not vouch it,
+          - build 3 (same --TESTPREFIX=env) must be skipped by the warm
+            marker — proving the observable detects both firing and skipping.
+        """
+        (tmp_path / "unit_test.hpp").write_text("#pragma once\n")
+        test_src = tmp_path / "test_run_counter.cpp"
+        test_src.write_text(
+            '#include "unit_test.hpp"\n'
+            "#include <cstdio>\n"
+            "int main() {\n"
+            '    FILE *f = fopen("run.log", "a");\n'
+            '    if (f) { fputs("ran\\n", f); fclose(f); }\n'
+            "    return 0;\n"
+            "}\n"
+        )
+
+        def run_build(extra_argv):
+            backend, graph = uth.build_real_backend(ShakeBackend, tmp_path, [], tests=[test_src], extra_argv=extra_argv)
+            backend.generate(graph)
+            backend.execute("build")
+
+        log = tmp_path / "run.log"
+
+        def run_count():
+            return len(log.read_text().splitlines()) if log.exists() else 0
+
+        run_build([])
+        assert run_count() == 1, f"cold build must run the test exactly once, ran {run_count()} times"
+
+        run_build(["--TESTPREFIX=env"])
+        assert run_count() == 2, (
+            "changing --TESTPREFIX over the same cas-exedir must re-run the test "
+            f"(shake's skip predicate must not reuse the old invocation's marker); ran {run_count()} times"
+        )
+
+        run_build(["--TESTPREFIX=env"])
+        assert run_count() == 2, (
+            f"rebuilding with the same --TESTPREFIX must be skipped by the warm marker; "
+            f"the test re-ran ({run_count()} lines), so the canary cannot distinguish skip from fire"
+        )
+
 
 # The driver runs in a REAL subprocess (main thread of the main interpreter,
 # so ``loop.add_signal_handler`` actually installs -- an in-process pytest
