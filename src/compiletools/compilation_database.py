@@ -218,8 +218,7 @@ class CompilationDatabaseCreator:
         # Discover all source files using Hunter's project-level discovery
         try:
             # Hunt for all source files from command line arguments and dependencies
-            self.hunter.huntsource()
-            source_files = self.hunter.getsources()
+            source_files = self.hunter.huntsource()
 
             if self.args.verbose >= 6:
                 print(f"CompilationDatabase: Processing {len(source_files)} source files")
