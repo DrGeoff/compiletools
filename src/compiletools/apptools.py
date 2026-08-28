@@ -1102,13 +1102,15 @@ _PROJECT_MACRO_DEPRECATION_MESSAGE = (
 def _compose_xxpend_list(base, prepends, appends) -> list:
     """Pure dedup-and-place composition for list-typed xxpend attrs.
 
-    Mirrors ``build_state.stage_xxpend``'s rule (prepend leftmost,
-    append rightmost, skip duplicates already present in the list
-    accumulated so far — prepend extras merge into the base before the
-    append pass, so append entries dedup against base *plus* prepend
-    contributions, but never against other entries of their own group)
-    so consumers of ``--prepend-PKG-CONFIG`` / ``--append-PKG-CONFIG``
-    get the same composition semantics that compiler-flag slots have.
+    Prepend leftmost, append rightmost, skip duplicates already present
+    in the list accumulated so far: prepend extras merge into the base
+    before the append pass runs, so append entries dedup against base
+    *plus* prepend contributions (but never against other entries of
+    their own group). This differs from ``build_state.stage_xxpend``,
+    which computes its prepend and append extras independently against
+    the same unmodified base, so a value present in both the prepend and
+    append lists but absent from the base survives in both places there
+    and only once (on the prepend side) here.
 
     Dedup compares elements verbatim, so a caller whose conf surface can
     spell one logical entry more than one way normalises the three inputs

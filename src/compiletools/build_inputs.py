@@ -103,8 +103,11 @@ def _xxpend_tokens(args, attr):
 
 def _merged_pkg_config_specs(args):
     """Port of _tier_one_modifications' pkg-config normalization: tokenize
-    the three spec lists, then merge with _do_xxpend_list's dedup-and-place
-    rule (prepend leftmost, append rightmost, skip already-present)."""
+    the three spec lists, then merge prepend leftmost / append rightmost,
+    skipping entries already present in the list accumulated so far —
+    prepend extras land in base before the append pass runs, so append
+    entries dedup against base plus prepend contributions (matching
+    apptools._compose_xxpend_list's rule, not build_state.stage_xxpend's)."""
     import compiletools.apptools_pkgconfig as pkgconf
 
     base = pkgconf.tokenize_pkg_config_specs(list(getattr(args, "pkg_config", None) or []))

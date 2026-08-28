@@ -1168,7 +1168,7 @@ class TestAddArguments:
         """The pure composition core: prepend leftmost, append rightmost,
         extras dedup against the list accumulated so far (append sees base
         plus prepend contributions) but NOT against their own group —
-        within-group duplicates survive, matching stage_xxpend."""
+        within-group duplicates survive."""
         base = ["b1", "b2"]
         composed = apptools._compose_xxpend_list(
             base,
