@@ -11,10 +11,8 @@ import errno
 import hashlib
 import os
 import re
-import secrets
 import shutil
 import subprocess
-import sys
 import tempfile
 from collections.abc import Callable, Sequence
 from functools import lru_cache
@@ -22,8 +20,7 @@ from functools import lru_cache
 from stringzilla import Str
 
 import compiletools.apptools_canonicalize
-
-_SECURE_PUBLISH_MAX_ATTEMPTS = 100
+import compiletools.publish_copy
 
 # ---------------------------------------------------------------------------
 # cas-exedir sidecar family (single source of truth)
@@ -62,7 +59,14 @@ _EXE_IDENTITY_SIDECAR_SUFFIXES: tuple[str, ...] = (EXE_MANIFEST_SUFFIX,)
 _EXE_TEST_SIDECAR_SUFFIXES: tuple[str, ...] = (EXE_RESULT_SUFFIX, EXE_XML_SUFFIX)
 _EXE_SIDECAR_SUFFIXES: tuple[str, ...] = _EXE_IDENTITY_SIDECAR_SUFFIXES + _EXE_TEST_SIDECAR_SUFFIXES
 
-_PUBLISH_TMP_SUFFIX: str = ".publish.tmp"
+# Re-exported from the import leaf that owns the secure copy. The copy runs
+# as a subprocess twice per test on a warm build, so it must not drag this
+# module's stringzilla / apptools_canonicalize / subprocess imports onto that
+# path -- see compiletools/publish_copy.py. In-process callers
+# (``trace_backend``) keep importing it from here.
+_PUBLISH_TMP_SUFFIX: str = compiletools.publish_copy.PUBLISH_TMP_SUFFIX
+QUIET_MISSING_SRC_FLAG = compiletools.publish_copy.QUIET_MISSING_SRC_FLAG
+secure_publish_copy = compiletools.publish_copy.secure_publish_copy
 
 # sha256-hexdigest-prefix length for the test-sidecar key segment. Short by
 # design -- unlike the link key (which needs enough entropy that a collision
@@ -79,13 +83,17 @@ def compute_test_sidecar_key(argv_tokens: Sequence[str], framework_id: str | Non
     """Semantic (path-blind) key for a test invocation's ``.result``/``.xml``
     sidecars.
 
-    Hashes the CANONICAL ``TESTPREFIX`` tokens (path-bearing tokens rewritten
-    via :func:`compiletools.apptools_canonicalize.canonicalize_for_cache_key`
-    so a per-workspace absolute path inside e.g. ``--log-file=<path>`` does
-    not fork the key across checkouts of the same logical build) plus the
-    detected test-framework id -- never the literal argv, which also
-    contains workspace-specific ``exe_path``/XML-output paths that would
-    defeat cross-workspace CAS sharing if hashed verbatim.
+    Hashes the CANONICAL ``TESTPREFIX`` tokens plus the detected
+    test-framework id -- never the literal argv, which also contains
+    workspace-specific ``exe_path``/XML-output paths that would defeat
+    cross-workspace CAS sharing if hashed verbatim.
+
+    :func:`compiletools.apptools_canonicalize.canonicalize_for_cache_key`
+    rewrites only the recognised path-flag families (``-I``, ``-isystem``,
+    ``-B``, ``-L``, ``-Wl``, prefix maps, ...); any other path-bearing
+    token (e.g. ``--log-file=<abs path>``) passes through verbatim and so
+    forks the key per workspace. That is the safe direction: it costs
+    extra re-runs, never a wrong skip.
     """
     canonical = compiletools.apptools_canonicalize.canonicalize_for_cache_key(list(argv_tokens), anchor_root)
     payload = "\x1f".join((framework_id or "", *canonical))
@@ -241,12 +249,16 @@ def atomic_copy(src: str, dst: str) -> None:
 def atomic_copy_bytes(src: str, dst: str) -> None:
     """Byte-copy ``src`` to ``dst`` atomically — never a hardlink.
 
-    The counterpart to :func:`atomic_copy` for sources that ARE
-    rewritten in place on later runs (a test framework truncating its
-    JUnit XML output path each execution): a hardlinked ``dst`` would be
-    corrupted through the shared inode, so this always materialises
-    fresh bytes. The ``.publish.tmp`` suffix keeps interrupted copies
-    reclaimable by ``trim_cache.reclaim_orphan_temps``.
+    Production-dead: every production copy goes through
+    :func:`secure_publish_copy`. Retained only as the vulnerable
+    comparison baseline that keeps that function's security claim
+    honest — this variant reopens the destination pathname, so a
+    pre-planted symlink defeats it. Deleting it breaks
+    ``test_filesystem_utils.py::TestSecurePublishCopy::test_symlink_implantation_defeats_the_naive_atomic_copy_bytes_helper``,
+    which is the point: the claim is measured against a live
+    counterexample rather than asserted in prose. The ``.publish.tmp``
+    suffix keeps interrupted copies reclaimable by
+    ``trim_cache.reclaim_orphan_temps``.
     """
 
     def populate(tmp_path: str) -> None:
@@ -258,123 +270,6 @@ def atomic_copy_bytes(src: str, dst: str) -> None:
         tmp_prefix=os.path.basename(dst) + ".",
         tmp_suffix=_PUBLISH_TMP_SUFFIX,
     )
-
-
-def secure_publish_copy(src: str, dst: str) -> None:
-    """Byte-copy *src* to *dst*, resistant to symlink implantation by a peer
-    sharing *dst*'s directory (a CAS pool).
-
-    This is the ONE deposit-copy path for workspace -> CAS artefacts (e.g.
-    a test framework's JUnit XML into its content-addressed
-    ``<cas_exe>.xml`` home). Both the shell-rendered recipe
-    (``render_shell_recipe`` in ``build_graph.py``, invoked via
-    ``python -m compiletools.filesystem_utils <src> <dst>``) and Shake's
-    in-process deposit (``trace_backend._record_test_outcome``) route
-    through it, so there is exactly one implementation of the copy's
-    security properties, not two of differing strength.
-
-    Two properties close the holes that a naive "hash of src" temp name or
-    an unlink-then-reopen helper (``atomic_replace``) leave open:
-
-    1. **Temp name is runtime-random, not a hash of anything guessable.**
-       ``atomic_replace``-style helpers derive the temp name from ``dst``
-       alone or from a hash of ``src`` -- both are computable by any peer
-       who knows the workspace layout, so a peer can pre-create that exact
-       path as a symlink before the real writer ever runs (implantation).
-       Two peer workspaces publishing the *same* ``src`` path to the *same*
-       shared ``dst`` also collide on the same hash-derived temp, so one
-       peer's ``mv -f``/``os.rename`` loses the source and gets ``ENOENT``
-       (a passing test reported failed). A ``secrets.token_hex`` name with
-       retry-on-collision defeats both: unguessable defeats implantation,
-       runtime-random-per-call defeats cross-peer collision.
-    2. **The temp is populated through the SAME retained file descriptor
-       used to create it, never by reopening the pathname.** ``os.open``
-       with ``O_CREAT | O_EXCL | O_NOFOLLOW`` atomically creates-or-fails
-       and refuses to follow a symlink placed at that exact path in the
-       (vanishingly small, now-unguessable) race window; writing through
-       that same fd means there is no second ``open()`` call for a peer to
-       race against by replacing the path with a symlink in between
-       (the gap ``atomic_replace`` + ``atomic_copy_bytes`` has: they close
-       and unlink the O_EXCL temp, then ``shutil.copyfile`` reopens the
-       bare pathname).
-
-    The final ``os.replace`` is atomic against concurrent readers of
-    ``dst`` and, like ``mv -f``, follows-and-replaces rather than writing
-    through a symlink at ``dst`` itself (POSIX ``rename()`` never
-    dereferences its target). The ``.publish.tmp`` suffix keeps orphans
-    (a build killed mid-copy) reclaimable by
-    ``trim_cache.reclaim_orphan_temps``, which matches on that suffix
-    alone -- unaffected by the temp basename now being random instead of
-    hash-derived.
-
-    **A missing *src* is a warning, not an error.** This is only ever
-    called on rc==0 (the test process exited successfully), so a missing
-    *src* means framework detection misclassified the test -- it links
-    something matched by ``//#PKG-CONFIG`` package-name substring or an
-    unevaluated ``#include``, but its actual ``main()`` never writes the
-    report the detected framework promised. The test genuinely passed;
-    only the optional report is missing. Failing the build here would
-    turn a passing test into a rendered infrastructure error (an absent
-    file is an ``OSError``, caught by ``cake.py``'s ``_FATAL_ERROR_RENDERERS``
-    and reported as "No such file or directory", masking the real,
-    green, test-failures aggregate). So this returns quietly after a
-    stderr warning naming the test and the missing path, leaving *dst*
-    untouched -- the CAS is never touched by a report that was never
-    produced. Both callers (this shell-argv wrapper, invoked by
-    ``build_graph.render_shell_recipe``'s static recipe text, and
-    ``trace_backend._record_test_outcome``'s in-process call) get this
-    for free by routing through the same function; the shell recipe text
-    itself never needs a conditional. Callers still touch the
-    ``success_marker`` afterwards -- the marker asserts "the test
-    passed," not "the report landed."
-    """
-    if not os.path.exists(src):
-        print(
-            f"Warning: expected test report {src!r} not found after a passing test run "
-            f"(rc==0) -- framework detection likely misclassified this test. Skipping "
-            f"deposit to {dst!r}; the test result itself is unaffected.",
-            file=sys.stderr,
-        )
-        return
-    dst_dir = os.path.dirname(dst) or "."
-    base = os.path.basename(dst)
-    tmp_fd = None
-    tmp_path = None
-    for _ in range(_SECURE_PUBLISH_MAX_ATTEMPTS):
-        candidate = os.path.join(dst_dir, f"{base}.{secrets.token_hex(16)}{_PUBLISH_TMP_SUFFIX}")
-        try:
-            tmp_fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o644)
-        except FileExistsError:
-            continue
-        tmp_path = candidate
-        break
-    if tmp_fd is None or tmp_path is None:
-        raise OSError(f"secure_publish_copy: could not create a unique temp under {dst_dir!r}")
-
-    try:
-        with os.fdopen(tmp_fd, "wb") as tmp_f, open(src, "rb") as src_f:
-            shutil.copyfileobj(src_f, tmp_f)
-        os.replace(tmp_path, dst)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp_path)
-        raise
-
-
-def _secure_publish_copy_main(argv: list[str] | None = None) -> int:
-    """CLI entry point: ``python -m compiletools.filesystem_utils <src> <dst>``.
-
-    Thin argv wrapper around :func:`secure_publish_copy` so shell-rendered
-    build recipes (make/ninja) can invoke the same secure copy Shake's
-    in-process path uses, keeping the recipe text static (no per-build
-    computed temp name) while the temp itself stays runtime-random.
-    """
-    args = sys.argv[1:] if argv is None else argv
-    if len(args) != 2:
-        print("usage: python -m compiletools.filesystem_utils <src> <dst>", file=sys.stderr)
-        return 2
-    secure_publish_copy(args[0], args[1])
-    return 0
 
 
 _OCTAL_ESCAPE_RE = re.compile(r"\\([0-7]{3})")
@@ -783,7 +678,3 @@ def atomic_output_file(target_path, mode="w", encoding="utf-8", preserve_permiss
             raise
 
     return _atomic_context()
-
-
-if __name__ == "__main__":
-    sys.exit(_secure_publish_copy_main())

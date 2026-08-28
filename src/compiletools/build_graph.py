@@ -12,6 +12,8 @@ import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+import compiletools.publish_copy
+
 
 class RuleType:
     """Named string constants for ``BuildRule.rule_type``.
@@ -122,8 +124,9 @@ class BuildRule:
             failure artefacts never enter the CAS. Rendered by shell
             backends as a static (regenerated build files stay
             byte-identical) invocation of
-            ``compiletools.filesystem_utils.secure_publish_copy`` via
-            ``python -m compiletools.filesystem_utils src dst``; the temp
+            ``compiletools.publish_copy.secure_publish_copy`` via
+            ``compiletools.publish_copy.copy_command`` (which runs the leaf
+            module by path -- see there for why); the temp
             name itself is chosen at runtime, unguessable and distinct per
             call, so a peer sharing the CAS directory can neither implant
             a symlink at the temp path nor collide with a peer workspace
@@ -274,9 +277,7 @@ def render_shell_recipe(rule: BuildRule) -> str:
         raise ValueError(f"render_shell_recipe called on rule {rule.output!r} with no command")
     cmd_str = shlex.join(rule.command)
     for src, dst in rule.success_copies:
-        cmd_str += (
-            f" && {shlex.quote(sys.executable)} -m compiletools.filesystem_utils {shlex.quote(src)} {shlex.quote(dst)}"
-        )
+        cmd_str += " && " + shlex.join(compiletools.publish_copy.copy_command(sys.executable, src, dst))
     if rule.success_marker:
         cmd_str += f" && touch {shlex.quote(rule.success_marker)}"
     return cmd_str

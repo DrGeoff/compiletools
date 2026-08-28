@@ -1356,7 +1356,7 @@ class BazelBackend(BuildBackend):
             if os.path.exists(test_xml) and self._junit_xml_has_failures(test_xml):
                 failures.append(exe_path)
                 continue
-            self._touch_result_marker(self._result_marker_path(exe_path))
+            self._touch_result_marker(rule.success_marker)
             if xml_dir and os.path.exists(test_xml):
                 dest = self._xml_path_for(exe_path)
                 os.makedirs(os.path.dirname(dest), exist_ok=True)

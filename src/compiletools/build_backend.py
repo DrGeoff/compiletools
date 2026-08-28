@@ -39,6 +39,7 @@ import compiletools.filesystem_utils
 import compiletools.git_utils
 import compiletools.global_hash_registry
 import compiletools.namer
+import compiletools.publish_copy
 import compiletools.test_framework
 import compiletools.utils
 import compiletools.wrappedos
@@ -543,10 +544,18 @@ class BuildBackend(abc.ABC):
         magic = self.hunter.magicflags(source)
         return [token for value in magic.get(sz.Str("PKG-CONFIG"), []) for token in str(value).split()]
 
-    def _touch_result_marker(self, result_path: str) -> None:
+    def _touch_result_marker(self, result_path: str | None) -> None:
         """Touch a test's success marker. No-op (without error) if result_path
-        is empty. Used by backends that run tests in-process and need to record
-        success themselves (shake, bazel post-hoc)."""
+        is empty or None. Used by backends that run tests in-process and need
+        to record success themselves (shake, bazel post-hoc).
+
+        Callers pass ``rule.success_marker`` straight through rather than
+        pre-checking it: this is the single place that decision lives. The
+        populator sets a marker on every test rule it emits (pinned by
+        ``test_build_backend.py::TestBuildGraphPopulation::
+        test_every_test_rule_carries_a_success_marker``), so the no-op arm
+        is a contract for out-of-tree graphs, not a live production path.
+        """
         if not result_path:
             return
         _touch(result_path)
@@ -1741,7 +1750,9 @@ class BuildBackend(abc.ABC):
                     rule_inputs: list[str] = []
                     rule_order_only = [exe_path]
                 else:
-                    result_path = exe_path + compiletools.filesystem_utils.EXE_RESULT_SUFFIX
+                    result_path = compiletools.filesystem_utils.build_test_sidecar_path(
+                        exe_path, sidecar_key, compiletools.filesystem_utils.EXE_RESULT_SUFFIX
+                    )
                     rule_inputs = [exe_path]
                     rule_order_only = []
                 if xml_bucket_dir:
@@ -1829,54 +1840,6 @@ class BuildBackend(abc.ABC):
             all_deps.append("runtests")
 
         graph.add_rule(BuildRule(output="all", inputs=all_deps, command=None, rule_type="phony"))
-
-    def _result_marker_path(self, exe_path: str) -> str:
-        """Return the success-marker path for ``exe_path``.
-
-        In CAS-only mode (``--use-mtime=False``, default) for backends that
-        publish via the cas-exedir layer, the marker lives at
-        ``<cas_path>.result`` — sibling to the content-addressed exe — so
-        the marker is keyed by exe content and survives the inode-mtime
-        confusion introduced by the hard-link publish.
-
-        In legacy mode (``--use-mtime=True``) or for backends that
-        self-manage exe placement (cmake/bazel, where
-        ``_self_manages_exe_placement()`` is True and there is no
-        separate publish-symlink rule), falls back to
-        ``<exe_path>.result`` — bit-identical to the pre-fix behaviour.
-
-        .. note:: Self-managed-placement backends (cmake / bazel)
-           currently fall back to legacy ``<exe_path>.result`` semantics
-           by *omission*,
-           not by design intent — they don't emit a separate
-           publish-symlink rule that ``_result_marker_path`` could resolve
-           through. A future change could add an equivalent content-keyed
-           marker for those backends (their own change-detection layers
-           know the artefact identity); the present design just doesn't
-           require it because the bug being fixed (hard-link inode mtime
-           confusion) is specific to the cas-exedir publish path.
-        """
-        if getattr(self.args, "use_mtime", False) or self._self_manages_exe_placement():
-            return exe_path + compiletools.filesystem_utils.EXE_RESULT_SUFFIX
-        graph = self._graph
-        if graph is not None:
-            rule = graph.get_rule(exe_path)
-            if rule is not None and rule.rule_type == RuleType.SYMLINK and rule.inputs:
-                return rule.inputs[0] + compiletools.filesystem_utils.EXE_RESULT_SUFFIX
-        # Unexpected fallback: CAS-only mode but no publish-symlink rule
-        # found. In production ``build_graph`` always populates
-        # ``self._graph`` before a consumer asks for a marker path, so
-        # reaching here means either the graph wasn't populated (a custom
-        # ``execute`` override in an out-of-tree backend) or the publish rule
-        # was filtered out of the graph. Surface it at verbose>=2 so the
-        # silent downgrade to legacy semantics is at least diagnosable.
-        if getattr(self.args, "verbose", 0) >= 2:
-            print(
-                f"_result_marker_path: no publish-symlink rule for {exe_path}; "
-                f"falling back to legacy <exe>.result (CAS-side marker disabled)",
-                file=sys.stderr,
-            )
-        return exe_path + compiletools.filesystem_utils.EXE_RESULT_SUFFIX
 
     def _xml_path_for(self, exe_path: str) -> str:
         """Per-test JUnit XML path under ``--test-xml-dir``.
@@ -3632,22 +3595,30 @@ class BuildBackend(abc.ABC):
         ``src/compiletools/CLAUDE.md`` "Test-rerun skip semantics" and this
         rule's regression tests for the measured failure mode.
 
-        Recipe: a bare ``python -c`` invocation doing
-        ``shutil.copyfile(src, tmp); os.replace(tmp, dst)`` -- a real,
-        independent-inode, temp+rename atomic copy. Deliberately NOT routed
-        through ``ct-cas-publish``/``cas_publish.py``: that helper's
-        contract is the hardlink-by-default publish this method's sibling
-        already covers, and widening it to a second, weaker byte-copy mode
-        would blur the one invariant (`nlink>=2` protects the entry from
-        trim) that ``_build_publish_rule`` exists to guarantee. A separate,
-        SECURE deposit helper for the opposite direction (workspace -> CAS,
-        the ``success_copies`` side of a test rule) is being hardened in
-        ``cas_publish.py`` independently (O_EXCL, retained-FD,
-        symlink-implantation-proof); if that work grows a general
-        ``--mode=copy`` flag (or a dedicated new entry point) taking
-        ``--src``/``--dst``, this recipe should delegate to it instead of
-        the inline python below, to share the hardening rather than
-        duplicate a weaker copy.
+        Recipe: ``python -m compiletools.publish_copy --quiet-missing-src
+        <cas> <user>``, the same hardened entry point the deposit direction
+        uses. The two directions therefore share ONE copy implementation
+        and one set of security properties. ``publish_copy`` is a
+        stdlib-only import leaf precisely because this spawns once per test
+        on warm cache-hit builds -- see that module's docstring.
+
+        This replaced an inline ``python -c`` snippet that staged through
+        ``<dst>.<os.getpid()>.copytmp`` and populated it with
+        ``shutil.copyfile``. Both halves of that were unsafe: the temp name
+        is computable by any peer that knows ``dst`` (and pids collide
+        across containers, which have separate pid namespaces), and
+        ``shutil.copyfile`` opens the pathname, so anything pre-planted
+        there is written straight through. ``secure_publish_copy`` uses a
+        ``secrets``-random ``O_CREAT|O_EXCL|O_NOFOLLOW`` temp written via
+        the retained fd, closing both.  Regression test:
+        ``test_build_backend.py::TestXmlCopyPublishTempIsNotGuessable``.
+
+        Still deliberately NOT routed through
+        ``ct-cas-publish``/``cas_publish.py``: that helper's contract is
+        the hardlink-by-default publish this method's sibling already
+        covers, and widening it to a second byte-copy mode would blur the
+        one invariant (``nlink>=2`` protects the entry from trim) that
+        ``_build_publish_rule`` exists to guarantee.
 
         No lock coordination beyond the standard target-keyed ``FileLock``
         every ``execute_link_rule`` call already takes (this rule is
@@ -3666,20 +3637,12 @@ class BuildBackend(abc.ABC):
         SYMLINK/COPY branch when the input is absent
         (``trace_backend.py`` around ``_all_outputs_current``); this
         mirrors that for the shell-rendered recipe. The deposit side
-        already warned once, so this stays quiet.
+        already warned once, so ``--quiet-missing-src`` keeps this quiet.
         """
-        copy_snippet = (
-            "import os,shutil,sys;"
-            "src,dst=sys.argv[1],sys.argv[2];"
-            "sys.exit(0) if not os.path.exists(src) else None;"
-            "tmp=dst+'.'+str(os.getpid())+'.copytmp';"
-            "shutil.copyfile(src,tmp);"
-            "os.replace(tmp,dst)"
-        )
         return BuildRule(
             output=user_path,
             inputs=[cas_path],
-            command=[sys.executable, "-c", copy_snippet, cas_path, user_path],
+            command=compiletools.publish_copy.copy_command(sys.executable, cas_path, user_path, quiet_missing_src=True),
             rule_type=RuleType.COPY,
             order_only_deps=[os.path.dirname(user_path)],
         )

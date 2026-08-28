@@ -211,3 +211,35 @@ ignore_imports =
     # lets flags.py import it at top level without reviving the historical
     # flags <-> apptools cycle. Any new edge here needs the same argument.
     compiletools.flag_ops -> compiletools.utils
+
+# ---------------------------------------------------------------------------
+# Contract: publish_copy is a PERFORMANCE leaf, not just an architectural one.
+#
+# It is spawned as `python -m compiletools.publish_copy` twice per test on a
+# fresh-workspace/warm-CAS build (once to deposit the JUnit XML into the CAS,
+# once to materialise it back under --test-xml-dir), so its import graph sits
+# on the critical path of exactly the builds the CAS exists to make fast.
+#
+# Measured: hosting this copy in filesystem_utils cost +18.4 ms per spawn over
+# the inline snippet it replaced (~740 ms CPU on a 40-test build, ~5% wall),
+# of which only 6.7 ms was the security primitives. The rest was stringzilla,
+# apptools_canonicalize and subprocess -- none of which a byte copy needs.
+#
+# So ANY compiletools import added here is a measurable regression on every
+# warm CI build, not a style question. test_publish_copy.py's
+# test_module_imports_no_heavy_dependencies re-measures the module graph in a
+# fresh interpreter and is the backstop for third-party imports, which this
+# contract's forbidden list cannot enumerate exhaustively.
+# ---------------------------------------------------------------------------
+[importlinter:contract:publish-copy-is-a-leaf]
+name = publish_copy stays a leaf (spawned per test; imports are on the hot path)
+type = forbidden
+source_modules =
+    compiletools.publish_copy
+forbidden_modules =
+    compiletools.filesystem_utils
+    compiletools.apptools
+    compiletools.apptools_canonicalize
+    compiletools.utils
+    compiletools.build_backend
+    compiletools.build_graph

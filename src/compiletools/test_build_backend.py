@@ -895,10 +895,12 @@ class TestBuildGraphPopulation:
         )
         assert rule_plain.success_marker != rule_valgrind.success_marker
 
-        # Demonstrate the practical consequence: after build 1 runs and its
-        # marker/output exist on disk, build 2's own rule must NOT be
-        # reported current by _all_outputs_current -- i.e. it will actually
-        # execute rather than being vouched for by build 1's marker.
+        # Prove the consequence at the actual skip gate: with build 1's
+        # marker/output on disk, ``_all_outputs_current`` must report
+        # build 1's rule current and build 2's rule NOT current. Each rule
+        # is probed in a minimal single-rule graph -- the full graphs'
+        # unbuilt compile/link/symlink outputs would force False for
+        # reasons unrelated to A12, making the False assertion vacuous.
         os.makedirs(os.path.dirname(rule_plain.output), exist_ok=True)
         with open(rule_plain.output, "w") as f:
             f.write("")
@@ -906,6 +908,54 @@ class TestBuildGraphPopulation:
         assert os.path.exists(rule_plain.success_marker)  # same file as output here
         assert not os.path.exists(rule_valgrind.output), (
             "build 2's sidecar must not already exist just because build 1's ran"
+        )
+        graph_only_plain = BuildGraph()
+        graph_only_plain.add_rule(rule_plain)
+        assert backend_plain._all_outputs_current(graph_only_plain) is True, (
+            "control: build 1's own marker must satisfy its own rule, else the False below proves nothing"
+        )
+        graph_only_valgrind = BuildGraph()
+        graph_only_valgrind.add_rule(rule_valgrind)
+        assert backend_valgrind._all_outputs_current(graph_only_valgrind) is False, (
+            "build 2 must not be vouched for by build 1's marker (A12 skip gate)"
+        )
+
+    def test_every_test_rule_carries_a_success_marker(self, tmp_path):
+        """``_touch_result_marker`` no-ops on a falsy path, and its two
+        in-process callers (shake, bazel post-hoc) rely on that rather than
+        guarding themselves. That contract is only safe because the
+        populator sets ``success_marker`` on EVERY test rule it emits --
+        pin it as a property here rather than incidentally, per-backend.
+
+        Both arms matter: without a framework the marker IS the rule's
+        output, with one the output becomes the JUnit XML and the marker is
+        a separate ``.result`` path, so a populator change could drop the
+        marker on the framework arm alone and every no-framework test would
+        still pass.
+        """
+        marker_is_output = {}
+        for label, extra in (("no-framework", {}), ("framework", {"test_xml_dir": str(tmp_path / "junit")})):
+            args = make_backend_args(tmp_path, filename=[], tests=["/src/test_foo.cpp"], variant="gcc.debug", **extra)
+            hunter = make_mock_hunter(sources=["/src/test_foo.cpp"], headers=["/usr/include/gtest/gtest.h"])
+            backend = self._make_backend(tmp_path, args=args, hunter=hunter)
+            test_rules = backend.build_graph().rules_by_type("test")
+
+            assert test_rules, f"{label}: no test rules emitted, so this proves nothing"
+            for rule in test_rules:
+                assert rule.success_marker, (
+                    f"{label}: test rule {rule.output!r} has no success_marker; "
+                    f"_touch_result_marker would silently no-op and the test would re-run forever"
+                )
+                assert rule.success_marker.endswith(compiletools.filesystem_utils.EXE_RESULT_SUFFIX), (
+                    f"{label}: success_marker {rule.success_marker!r} is not a .result stamp"
+                )
+            marker_is_output[label] = all(r.success_marker == r.output for r in test_rules)
+
+        # The two arms must be structurally DIFFERENT, else the loop above
+        # checked one shape twice and the framework claim is unearned.
+        assert marker_is_output == {"no-framework": True, "framework": False}, (
+            f"the two arms did not produce distinct rule shapes ({marker_is_output}); "
+            f"the framework arm must move the output to the JUnit XML and leave the marker separate"
         )
 
     def test_testprefix_unbalanced_quote_raises_flag_tokenize_error(self, tmp_path):
@@ -4268,6 +4318,77 @@ class TestXmlCopyPublishIsByteCopyNotHardlink:
             assert f.read() == "<testsuite passed=1/>", (
                 "rewriting the workspace XML altered the CAS-side copy -- the publish rule is still sharing an inode"
             )
+
+
+class TestXmlCopyPublishTempIsNotGuessable:
+    """The materialise recipe must not stage through a temp path a peer can
+    compute in advance. The pre-hardening recipe used
+    ``<dst>.<os.getpid()>.copytmp`` and populated it with
+    ``shutil.copyfile``, which opens the pathname and therefore follows
+    whatever is sitting there -- the same class of hole
+    ``secure_publish_copy`` was written to close on the deposit side
+    (``test_filesystem_utils.py::TestSecurePublishCopy``)."""
+
+    @staticmethod
+    def _run_with_pid_planted_symlink(command, dst, victim):
+        """Run *command* with a symlink to *victim* pre-planted at the temp
+        path the pid-derived recipe would choose.
+
+        ``sh -c '... ; exec "$@"'`` plants the link using the shell's own
+        ``$$`` and then ``exec``s the real command, which inherits that
+        exact pid -- so the plant lands on the pid-derived name with no
+        race and no guessing. Returns the CompletedProcess.
+        """
+        plant_then_exec = 'ln -s "$2" "$1.$$.copytmp"; shift 2; exec "$@"'
+        return subprocess.run(
+            ["sh", "-c", plant_then_exec, "sh", dst, victim, *command],
+            capture_output=True,
+            text=True,
+        )
+
+    def test_pid_derived_temp_path_is_never_written_through(self, tmp_path):
+        backend = make_stub_backend_class()(args=MagicMock(), hunter=MagicMock())
+        cas_xml = str(tmp_path / "cas" / "foo_abc.exe.xml")
+        user_xml = str(tmp_path / "junit" / "foo.xml")
+        os.makedirs(os.path.dirname(cas_xml))
+        os.makedirs(os.path.dirname(user_xml))
+        with open(cas_xml, "w") as f:
+            f.write("<testsuite>real</testsuite>")
+        victim = tmp_path / "victim.txt"
+        victim.write_text("ORIGINAL")
+
+        rule = backend._build_copy_publish_rule(cas_xml, user_xml)
+        assert rule.command is not None
+        proc = self._run_with_pid_planted_symlink(list(rule.command), user_xml, str(victim))
+
+        assert proc.returncode == 0, f"materialise recipe failed: {proc.stderr}"
+        assert victim.read_text() == "ORIGINAL", (
+            "the recipe wrote through a symlink planted at its own pid-derived temp path -- "
+            "the temp name is computable by any peer that knows dst, so it must not be used"
+        )
+        with open(user_xml) as f:
+            assert f.read() == "<testsuite>real</testsuite>", "the workspace copy did not receive the CAS bytes"
+
+    def test_missing_cas_side_input_is_a_silent_no_op(self, tmp_path):
+        """A test misdetected as framework-bearing passes (rc==0) but writes
+        no report, so the deposit is skipped and no CAS-side xml exists.
+        The materialise recipe must then exit 0 and stay quiet -- the
+        deposit side already warned once in that same build, and a second
+        warning is duplicate noise on every subsequent cache-hit build."""
+        backend = make_stub_backend_class()(args=MagicMock(), hunter=MagicMock())
+        cas_xml = str(tmp_path / "cas" / "foo_abc.exe.xml")
+        user_xml = str(tmp_path / "junit" / "foo.xml")
+        os.makedirs(os.path.dirname(cas_xml))
+        os.makedirs(os.path.dirname(user_xml))
+        # cas_xml deliberately never created.
+
+        rule = backend._build_copy_publish_rule(cas_xml, user_xml)
+        assert rule.command is not None
+        proc = subprocess.run(list(rule.command), capture_output=True, text=True)
+
+        assert proc.returncode == 0, f"a missing CAS-side report must not fail the build: {proc.stderr}"
+        assert not os.path.exists(user_xml), "nothing was deposited, so nothing may be materialised"
+        assert proc.stderr == "", f"the materialise recipe must stay quiet, got stderr: {proc.stderr!r}"
 
 
 class TestXmlCopyAllOutputsCurrent:

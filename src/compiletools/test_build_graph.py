@@ -105,16 +105,25 @@ class TestBuildRule:
             success_marker="/cas/ab/e.result",
             success_copies=(("/ws/junit/test_foo.xml", "/cas/ab/e.xml"),),
         )
+        import compiletools.publish_copy
+
         rendered = render_shell_recipe(rule)
-        expected = (
-            "/ws/bin/test_foo --gtest_output=xml:/ws/junit/test_foo.xml"
-            f" && {shlex.quote(sys.executable)} -m compiletools.filesystem_utils"
-            " /ws/junit/test_foo.xml /cas/ab/e.xml"
-            " && touch /cas/ab/e.result"
+        # Built from copy_command rather than a literal, so the two cannot
+        # drift: that helper is the single place the invocation form (leaf
+        # module by path, never ``-m``) is decided.
+        deposit = shlex.join(
+            compiletools.publish_copy.copy_command(sys.executable, "/ws/junit/test_foo.xml", "/cas/ab/e.xml")
         )
+        expected = f"/ws/bin/test_foo --gtest_output=xml:/ws/junit/test_foo.xml && {deposit} && touch /cas/ab/e.result"
         assert rendered == expected
         assert "publish.tmp" not in rendered
-        assert re.search(r"filesystem_utils \S+ \S+ && touch", rendered)
+        assert re.search(r"publish_copy\S* \S+ \S+ && touch", rendered), (
+            f"deposit must run publish_copy immediately before the marker touch: {rendered}"
+        )
+        assert " -m " not in rendered, (
+            f"deposit regressed to a -m invocation, which pays compiletools/__init__ "
+            f"plus runpy on a per-test hot path: {rendered}"
+        )
         assert render_shell_recipe(rule) == rendered
 
 

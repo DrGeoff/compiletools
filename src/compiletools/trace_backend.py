@@ -658,7 +658,7 @@ class ShakeBackend(BuildBackend):
         if returncode == 0:
             for src, dst in rule.success_copies:
                 compiletools.filesystem_utils.secure_publish_copy(src, dst)
-            self._touch_result_marker(rule.success_marker or "")
+            self._touch_result_marker(rule.success_marker)
         else:
             self._test_failures.append(f"{rule.output} (exit {returncode}): {' '.join(flat_cmd)}")
 
