@@ -191,6 +191,41 @@ build-flavor-specific ``.pc`` directory overrides a global ``ct.conf``'s
 prepend. CLI ``--prepend-PKG-CONFIG-PATH`` wins over all conf-file entries.
 ``append-PKG-CONFIG-PATH`` follows the symmetric ordering at the rear.
 
+Automatic pkg-config inference
+------------------------------
+With the default-on ``--auto-pkg-config``, an angle-include that no explicit
+flag covers is attributed to a pkg-config package automatically, and the
+translation unit is built exactly as if it carried the corresponding
+``//#PKG-CONFIG=<pkg>`` annotation. What is never inferred: standard,
+compiler-shipped and libc/kernel headers; project headers; and anything an
+explicit ``-I``/``-l``/``//#PKG-CONFIG`` (CLI, magic, or conf) already
+covers. When several packages export the same header directory the include
+is left unresolved — never guessed — and the verdict is explained by
+``-v`` (``auto-pkg-config: fam/x.h unresolved: ambiguous: a.pc, b.pc; add
+auto-pkg-config-map=fam/x.h=<pkg>``); ``--pkg-config-errors=error`` makes
+that ambiguity fatal instead. Pin one header with
+``auto-pkg-config-map = header=package`` (conf or
+``--auto-pkg-config-map``) and suppress spellings with
+``auto-pkg-config-ignore = glob`` (``--auto-pkg-config-ignore``); use the
+``append-``/``prepend-`` forms to accumulate across the conf hierarchy.
+The resolver chain (``--auto-pkg-config-resolvers``, default
+``pc,distro``) tries the pkg-config include-dir index, then the distro
+package database.
+
+Two host-independence aids: ``ct-auto-pkg-config`` (see ct-auto-pkg-config(1))
+reports the verdicts of any source tree — its ``--style magic`` output is the
+freeze workflow: run
+
+.. code-block:: console
+
+    ct-auto-pkg-config --style magic src/*.cpp
+
+and paste the emitted ``//#PKG-CONFIG=<pkg>`` lines into the sources; a
+subsequent build with ``--no-auto-pkg-config`` parses to the identical flags,
+so the content-addressable cache keys stop depending on the build host's
+devel packages (``--fail-on-ambiguous`` reports ambiguous includes as a
+non-zero exit instead of leaving them unresolved).
+
 CPPFLAGS and CXXFLAGS Unification
 ==================================
 By default, ``CPPFLAGS`` and ``CXXFLAGS`` magic flags are merged into a single
@@ -357,4 +392,4 @@ EXAMPLES
 
 SEE ALSO
 ========
-``compiletools`` (1), ``ct-cake`` (1)
+``compiletools`` (1), ``ct-cake`` (1), ``ct-auto-pkg-config`` (1)

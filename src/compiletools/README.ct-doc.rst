@@ -102,6 +102,29 @@ KEY FEATURES
     external git repository with ``//#GIT=<url>``. See ct-magicflags(1) and
     the worked example in ``src/compiletools/examples-end-to-end/sudoku_tui/``.
 
+**Automatic pkg-config inference**
+    With the default-on ``--auto-pkg-config``, angle-includes that no
+    explicit ``-I``/``-l``/``//#PKG-CONFIG`` flag covers are attributed to a
+    pkg-config package automatically. The freeze workflow comes first: run
+
+    .. code-block:: console
+
+        ct-auto-pkg-config --style magic src/*.cpp
+
+    and paste the emitted ``//#PKG-CONFIG=<pkg>`` lines into the sources so
+    builds parse to identical flags with ``--no-auto-pkg-config`` —
+    host-independent cache keys for teams sharing one content-addressable
+    cache. Never inferred: std/compiler headers, project headers, and
+    anything an explicit flag already covers; ambiguity resolves to nothing
+    plus a diagnostic (``-v`` shows why, ``--pkg-config-errors=error`` makes
+    it fatal). Pin headers with ``auto-pkg-config-map = header=package``
+    (conf key, ``append-`` form accumulates) and suppress spellings with
+    ``auto-pkg-config-ignore = glob``; list resolvers with
+    ``--auto-pkg-config-resolvers``. ``ct-auto-pkg-config`` (see
+    ct-auto-pkg-config(1)) reports every verdict — ``--style json`` carries
+    the reason for each unresolved include, ``--fail-on-ambiguous`` exits
+    non-zero on an ambiguous include.
+
 **Automatic Dependency Detection**
     Traces #include statements to determine what to compile and link.
     No manual dependency lists needed.
@@ -158,6 +181,10 @@ CORE TOOLS
 
 **ct-magicflags**
     Show magic flags extracted from source files.
+
+**ct-auto-pkg-config**
+    Report (or freeze via ``--style magic``) the ``//#PKG-CONFIG``
+    annotations automatic inference attributes to unannotated includes.
 
 **ct-fetch**
     Clone, update, or report the ``//#GIT=`` external git repositories a
@@ -272,6 +299,7 @@ continues the development and maintenance of the compiletools project.
 
 SEE ALSO
 ========
+* ct-auto-pkg-config
 * ct-backends (7) -- build backend architecture and selection guide
 * ct-build
 * ct-build-docs

@@ -229,6 +229,21 @@ class MagicFlagsBase:
         # without this the unconditional warning prints twice per entry.
         self._warned_unresolved_readmacros: set = set()
 
+        # Stage 7 diagnostic hook (plan 2026-09-02): the raw
+        # ``pkgconfig_infer.InferenceResult`` verdicts of the most recent
+        # parse, keyed by the ``wrappedos.realpath`` of every file of the
+        # translation unit they belong to (the parsed file plus every header
+        # that contributed candidates), so a reader that parsed file X can
+        # look up ``realpath(X)`` without knowing which files contributed.
+        # Instance-owned (category (b) owned-accumulator): declared here,
+        # written only by ``_infer_pkg_config`` (an entry stays until the
+        # next parse of the same TU overwrites it), and read by
+        # ``ct-auto-pkg-config`` (auto_pkg_config_report.main) right after
+        # ``parser.parse(file)``. Maintained only while ``--auto-pkg-config``
+        # is on -- the inference layer is never entered otherwise, so readers
+        # with the flag off must treat a missing key as "no inferences".
+        self.last_inference_results: dict[str, list] = {}
+
     def parse(self, filename):
         """Parse magic flags for the given file. Implemented by subclasses."""
         raise NotImplementedError
@@ -681,6 +696,19 @@ class MagicFlagsBase:
                     file=sys.stderr,
                 )
             return []
+
+        # Stage 7 diagnostic hook: publish the raw verdicts for
+        # ct-auto-pkg-config before any downstream strict-mode ambiguity
+        # SystemExit, so the report survives even a fatal ambiguity. Keyed
+        # by every TU file's realpath (see the __init__ comment); the same
+        # list object is stored under each key, readers must not mutate it.
+        tu_realpaths = []
+        for file_data in file_analysis_data:
+            filepath = get_filepath_by_hash(file_data["content_hash"], self.context)
+            if filepath:
+                tu_realpaths.append(compiletools.wrappedos.realpath(filepath))
+        if tu_realpaths:
+            self.last_inference_results.update(dict.fromkeys(tu_realpaths, results))
 
         pairs: list[tuple[str, str]] = []
         for result in results:
