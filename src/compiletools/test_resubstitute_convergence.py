@@ -18,6 +18,7 @@ import pytest
 import compiletools.apptools as apptools
 import compiletools.compilation_database as cdb
 import compiletools.hunter
+import compiletools.test_base
 import compiletools.testhelper as uth
 from compiletools.build_apply import get_build_state
 from compiletools.build_context import BuildContext
@@ -173,6 +174,48 @@ class TestResubstitute:
             apptools.resubstitute(args)
             assert get_build_state(args).flags == first_flags, (
                 "resubstitute must converge to the same flags when nothing input-affecting changed."
+            )
+
+    def test_auto_pkg_config_widening_converges_with_fresh_single_pass(self, pkgconfig_env):
+        """The auto-pkg-config analogue of the INCLUDE widening: the TU's
+        inferred //#PKG-CONFIG packages are the input cake folds into the
+        args-level pkg-config list before the sanctioned re-run. A
+        re-gather over those widened args must land on exactly the same
+        Flags a fresh single-pass parseargs would compute with the
+        package known up front -- and the exported tokens must match what
+        magicflags inference actually emitted for the TU (the feature
+        invents nothing beyond what pkg-config exports)."""
+        with uth.TempDirContext():
+            pathlib.Path("main.cpp").write_text("#include <autoinfer/api.h>\nint main() { return 0; }\n")
+
+            # What the inference layer emits for the TU (fresh magicflags parse).
+            import stringzilla as sz
+
+            from compiletools.build_context import BuildContext
+
+            parser = compiletools.test_base.create_magic_parser(
+                ["--auto-pkg-config"], tempdir=os.getcwd(), context=BuildContext()
+            )
+            inferred = parser.parse(os.path.realpath("main.cpp"))
+            assert [str(v) for v in inferred[sz.Str("PKG-CONFIG")]] == ["autoinfer"], (
+                "Precondition failed: inference did not annotate the TU."
+            )
+
+            widened = _parseargs_in_temp_repo(extra_argv=["--auto-pkg-config", "--pkg-config=autoinfer"])
+            apptools.resubstitute(widened)
+            fresh = _parseargs_in_temp_repo(extra_argv=["--auto-pkg-config", "--pkg-config=autoinfer"])
+
+            widened_flags = get_build_state(widened).flags
+            fresh_flags = get_build_state(fresh).flags
+            assert widened_flags == fresh_flags, (
+                f"--auto-pkg-config widening + resubstitute diverged from a fresh single-pass parse:\n"
+                f"  widened: {widened_flags}\n  fresh:   {fresh_flags}"
+            )
+            assert any(tok == "-lautoinfer" for tok in widened_flags.ld), (
+                f"Precondition failed: the re-run did not export the inferred package's libs: {widened_flags.ld}"
+            )
+            assert any("autoinfer-include" in tok for tok in widened_flags.cpp), (
+                f"Precondition failed: the re-run did not export the inferred package's include dir: {widened_flags.cpp}"
             )
 
     def test_rerun_does_not_redecrement_verbose(self):

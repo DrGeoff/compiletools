@@ -15,6 +15,8 @@ The hash contract pinned here:
   present in cxx hashes the same whether or not it also sits in cpp.
 """
 
+import pathlib
+
 from compiletools.preprocessing_cache import MacroState
 
 _BASE = ["-I/ws/lib", "-fPIC", "-g"]
@@ -78,3 +80,48 @@ def test_cxx_token_order_still_forks_the_key():
     """Token order is an argv property (-I search order, last-wins flags);
     the hash must not sort it away."""
     assert _hash(cpp=[], c=[], cxx=["-I/a", "-I/b"]) != _hash(cpp=[], c=[], cxx=["-I/b", "-I/a"])
+
+
+def test_auto_pkg_config_emitted_tokens_do_not_fork_the_key(pkgconfig_env):
+    """The auto-pkg-config build-context fork, pinned with the REAL tokens
+    the feature emits: for an explicitly annotated TU the feature is a
+    no-op (F1: the package is already covered), so --auto-pkg-config and
+    --no-auto-pkg-config must produce identical flag slots and therefore
+    identical build-context hashes. Parsing the TU for real through
+    magicflags and hashing the emitted slots is what keeps this honest --
+    a regression that makes inference re-annotate (or emit through only
+    one slot) forks the CAS key space exactly like the historical
+    --auto/--no-auto prefix-map fork this file exists to prevent."""
+    import os
+
+    import compiletools.magicflags
+    import compiletools.test_base
+    import compiletools.testhelper as uth
+    from compiletools.build_context import BuildContext
+
+    with uth.TempDirContext():
+        os.makedirs("src")
+        pathlib.Path("src/main.cpp").write_text(
+            "//#PKG-CONFIG=autoinfer\n#include <autoinfer/api.h>\nint main() { return 0; }\n"
+        )
+        projections = {}
+        for argv in (["--auto-pkg-config"], ["--no-auto-pkg-config"]):
+            compiletools.magicflags.MagicFlagsBase.clear_cache()
+            parser = compiletools.test_base.create_magic_parser(argv, tempdir=os.getcwd(), context=BuildContext())
+            result = parser.parse(os.path.realpath("src/main.cpp"))
+            projections[tuple(argv)] = {str(k): [str(v) for v in values] for k, values in result.items()}
+
+        assert projections[("--auto-pkg-config",)] == projections[("--no-auto-pkg-config",)], (
+            f"--auto-pkg-config must not alter the flag slots of an explicitly annotated TU: {projections}"
+        )
+
+        cpp = projections[("--auto-pkg-config",)]["CPPFLAGS"]
+        cxx = projections[("--auto-pkg-config",)]["CXXFLAGS"]
+        assert any("autoinfer-include" in tok for tok in cpp + cxx), (
+            f"Precondition failed: the package's include dir is missing: {cpp + cxx}"
+        )
+        assert _hash(cpp=cpp, c=[], cxx=cxx) == _hash(cpp=[], c=[], cxx=cxx), (
+            "A token present in cxx must hash the same whether or not it also "
+            "sits in cpp (pkg-config exports land in both slots; the compile "
+            "argv is identical in both layouts)."
+        )
