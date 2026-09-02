@@ -14,18 +14,23 @@ unresolved):
    everything (even standard headers). Resolver ``"map"``.
 2. :func:`is_standard_header` -- fast-path static list (C89-C23, C++98-C++23,
    common POSIX, libc/kernel prefixes). Not the only std guard: the compiler
-   built-in include-dir probe (Stage 2/4) completes it.
+   built-in include-dir probe (Stage 2: ``compiletools.compiler_macros
+   .builtin_include_dirs``) plus :func:`classify_location` complete it.
 3. ``ignore_globs`` -- fnmatch on the include spelling.
-4. :func:`_locate` -- find the header under ``InferenceConfig.search_dirs``;
+4. :func:`locate_header` -- find the header under ``InferenceConfig.search_dirs``;
    not found anywhere -> ``REASON_NOT_FOUND``.
-5. Covered-by-include-dir -- the header lives under an explicit ``-I``/
+5. :func:`classify_location` -- the header lives under a compiler built-in
+   include dir other than the default dirs -> ``REASON_COMPILER``. This
+   completes the static std list (item 2) for compiler-shipped headers:
+   ``bits/...``, ``c++/N/...``, ``immintrin.h``, ``omp.h`` and friends.
+6. Covered-by-include-dir -- the header lives under an explicit ``-I``/
    ``-isystem`` dir -> ``REASON_COVERED``.
-6. Resolver chain: pc-index (``"pc"`` in ``InferenceConfig.resolvers``) ->
+7. Resolver chain: pc-index (``"pc"`` in ``InferenceConfig.resolvers``) ->
    distro -> man. The pc-index resolver walks the header's parent dirs upward
    against :func:`build_pc_include_index`; a single candidate wins, several go
    through :func:`tie_break`. An ambiguity verdict is terminal for the chain:
    the diagnostic is the answer, and later stages would only overwrite it.
-7. Post-demotions: an inferred package the user already names explicitly (as a
+8. Post-demotions: an inferred package the user already names explicitly (as a
    pkg-config package or via its first ``-l`` stem) reports ``REASON_COVERED``
    instead of "inferred".
 
@@ -591,10 +596,12 @@ def is_standard_header(name: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _locate(name: str, search_dirs) -> str | None:
+def locate_header(name: str, search_dirs) -> str | None:
     """First existing ``search_dir/name`` under *search_dirs*, realpath'd.
 
-    (Stage 2 may replace this with ``apptools.find_header_in_paths``.)
+    Search-dir order is the caller's (Stage 5 builds it as TU-declared
+    ``-isystem``/``-I`` -> state ``-isystem``/``-I`` -> ``CPATH``-family ->
+    compiler built-ins); the first hit wins.
     """
     for directory in search_dirs:
         candidate = os.path.join(directory, name)
@@ -604,6 +611,41 @@ def _locate(name: str, search_dirs) -> str | None:
             # NOT cached: realpath of an already-absolute derived candidate
             # (documented skip case #3).
             return os.path.realpath(candidate)
+    return None
+
+
+# Stage 1 spelling, kept working for its existing callers.
+_locate = locate_header
+
+
+def classify_location(header_path: str | None, builtin_dirs) -> str | None:
+    """``REASON_COMPILER`` when *header_path* lives under a compiler built-in
+    include dir that is not one of :data:`_DEFAULT_INCLUDE_DIRS`; else None.
+
+    This is the location-based half of the compiler-shipped guard (F6):
+    ``bits/...``, ``c++/N/...``, ``immintrin.h``, ``omp.h`` and friends live
+    under the compiler's private include trees, while a bare ``/usr/include``
+    (or ``/usr/local/include``) built-in dir is ordinary libc/kernel material
+    a distro package may own and must stay resolvable. Both sides are
+    realpath-compared; the prefix check uses a trailing separator so a dir
+    like ``/usr/include-extra`` never matches ``/usr/include``.
+    """
+    if not header_path:
+        return None
+    # NOT cached: realpath of an already-absolute per-TU header path
+    # (documented skip case #3).
+    real = os.path.realpath(header_path)
+    # NOT cached: realpath of a module-constant default-dir string.
+    skip = {os.path.realpath(d) for d in _DEFAULT_INCLUDE_DIRS}
+    for directory in builtin_dirs:
+        if not directory:
+            continue
+        # NOT cached: realpath of an already-absolute built-in probe dir.
+        real_dir = os.path.realpath(directory)
+        if real_dir in skip:
+            continue
+        if real == real_dir or real.startswith(real_dir + os.sep):
+            return REASON_COMPILER
     return None
 
 
@@ -771,11 +813,18 @@ def _infer_one(header: str, config: InferenceConfig, memo: dict) -> InferenceRes
             return InferenceResult(header, None, None, None, (), REASON_IGNORED)
 
     # 4. Locate the header.
-    header_path = _locate(header, config.search_dirs)
+    header_path = locate_header(header, config.search_dirs)
     if header_path is None:
         return InferenceResult(header, None, None, None, (), REASON_NOT_FOUND)
 
-    # 5. Covered by an explicit include dir -> the user's own -I wins.
+    # 5. Compiler-shipped: under a compiler built-in include dir other than
+    #    the default dirs -> compiler/libc territory, not pkg-config material
+    #    (F6 part 1; the location half of the std-header guard).
+    compiler_reason = classify_location(header_path, config.compiler_builtin_dirs)
+    if compiler_reason is not None:
+        return InferenceResult(header, header_path, None, None, (), compiler_reason)
+
+    # 6. Covered by an explicit include dir -> the user's own -I wins.
     for include_dir in config.explicit_include_dirs:
         # NOT cached: explicit include dirs are already realpaths from the
         # caller (documented skip case #3).
@@ -783,7 +832,7 @@ def _infer_one(header: str, config: InferenceConfig, memo: dict) -> InferenceRes
         if header_path == real_dir or header_path.startswith(real_dir + os.sep):
             return InferenceResult(header, header_path, None, None, (), REASON_COVERED)
 
-    # 6. Resolver chain, memoised per (header_path, PKG_CONFIG_PATH,
+    # 7. Resolver chain, memoised per (header_path, PKG_CONFIG_PATH,
     #    config.resolvers). Post-demotions depend on the config, so the memo
     #    holds the pre-post verdict only.
     chain_key = (header_path, os.environ.get("PKG_CONFIG_PATH", ""), config.resolvers)
@@ -793,7 +842,7 @@ def _infer_one(header: str, config: InferenceConfig, memo: dict) -> InferenceRes
         package, resolver, candidates, reason = _run_resolver_chain(header, header_path, config)
         memo[chain_key] = (package, resolver, candidates, reason)
 
-    # 7. Post-demotions: an inferred package the user already covers
+    # 8. Post-demotions: an inferred package the user already covers
     #    explicitly reports REASON_COVERED, keeping the package attribution.
     if package is not None:
         if package in config.explicit_packages:

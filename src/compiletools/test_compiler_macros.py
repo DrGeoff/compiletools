@@ -1,11 +1,14 @@
 """Tests for the compiler_macros module."""
 
+import os
 import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+import compiletools.apptools as apptools
 import compiletools.compiler_macros as cm
+from compiletools.testhelper import requires_functional_compiler
 
 
 def _mock_subprocess_result(stdout: str = "", returncode: int = 0) -> MagicMock:
@@ -160,6 +163,64 @@ class TestCompilerMacros:
             assert "__GNUC__" in macros
             # Should have many macros
             assert len(macros) > 50  # GCC typically defines 100+ macros
+
+
+class TestBuiltinIncludeDirs:
+    """``builtin_include_dirs`` -- Stage 2 of the auto-pkg-config plan.
+
+    The include-dir probe is folded into the existing ``-dM`` macro probe
+    via ``-Wp,-v`` (plan finding F11): one compiler invocation yields both
+    the macros (stdout) and the angle-bracket search list (stderr), so the
+    macros+dirs pair costs exactly one subprocess.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_probe_caches(self):
+        cm.clear_cache()
+        yield
+        cm.clear_cache()
+
+    @requires_functional_compiler
+    def test_returns_existing_dirs_containing_std_headers(self):
+        compiler = apptools.get_functional_cxx_compiler()
+        assert compiler, "the requires_functional_compiler decorator guarantees this"
+
+        dirs = cm.builtin_include_dirs(compiler)
+
+        assert dirs, "expected a non-empty built-in include dir list"
+        for directory in dirs:
+            assert os.path.isdir(directory)
+        assert any(
+            os.path.isfile(os.path.join(directory, "stddef.h")) or os.path.isfile(os.path.join(directory, "stdio.h"))
+            for directory in dirs
+        ), f"no built-in include dir ships stddef.h/stdio.h: {dirs}"
+
+    @requires_functional_compiler
+    def test_macros_and_dirs_share_one_subprocess(self, monkeypatch):
+        """F11: the macros+dirs pair triggers exactly ONE compiler invocation."""
+        compiler = apptools.get_functional_cxx_compiler()
+        assert compiler, "the requires_functional_compiler decorator guarantees this"
+
+        calls: list[object] = []
+        real_run = subprocess.run
+
+        def counting_run(*args, **kwargs):
+            calls.append(args[0] if args else kwargs.get("args"))
+            return real_run(*args, **kwargs)
+
+        monkeypatch.setattr(cm.subprocess, "run", counting_run)
+
+        macros = cm.get_compiler_macros(compiler)
+        dirs = cm.builtin_include_dirs(compiler)
+
+        assert len(calls) == 1  # one invocation covers the pair
+        assert macros
+        assert dirs
+
+    def test_failure_yields_empty_tuple(self):
+        """Any probe failure degrades to ``()`` rather than raising."""
+        assert cm.builtin_include_dirs("nonexistent_compiler_xyz_999") == ()
+        assert cm.builtin_include_dirs("") == ()
 
 
 class TestFilterForExpansion:

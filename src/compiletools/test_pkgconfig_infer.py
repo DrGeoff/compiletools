@@ -22,6 +22,7 @@ import compiletools.apptools_pkgconfig as apptools_pkgconfig
 import compiletools.pkgconfig_infer as pkgconfig_infer
 from compiletools.pkgconfig_infer import (
     REASON_AMBIGUOUS,
+    REASON_COMPILER,
     REASON_COVERED,
     REASON_IGNORED,
     REASON_NOT_FOUND,
@@ -323,3 +324,112 @@ def test_infer_is_deterministic(pkgconfig_env, auto_pkg_config_on):
     second = pkgconfig_infer.infer(["autoinfer/api.h", "umbrella/u.h", "vector", "nosuch/x.h"], config, memo={})
     assert first == second
     assert [r.header for r in first] == ["autoinfer/api.h", "umbrella/u.h", "vector", "nosuch/x.h"]
+
+
+# ---------------------------------------------------------------------------
+# Stage 2: locate_header / classify_location -- compiler built-in guard
+# ---------------------------------------------------------------------------
+
+
+def test_locate_header_first_search_dir_wins(tmp_path):
+    """Same relative spelling under two search dirs: the FIRST dir wins."""
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    for base in (first, second):
+        (base / "myown").mkdir(parents=True)
+        (base / "myown" / "dup.h").write_text("#pragma once\n")
+    search_dirs = (str(first), str(second))
+    expected = os.path.realpath(str(first / "myown" / "dup.h"))
+    assert pkgconfig_infer.locate_header("myown/dup.h", search_dirs) == expected
+    assert pkgconfig_infer.locate_header("myown/dup.h", search_dirs) == pkgconfig_infer._locate(
+        "myown/dup.h", search_dirs
+    )
+
+
+def test_locate_header_absent_everywhere_is_none(tmp_path):
+    """No search dir has the spelling: None (REASON_NOT_FOUND upstream)."""
+    base = tmp_path / "only"
+    base.mkdir()
+    assert pkgconfig_infer.locate_header("myown/absent.h", (str(base),)) is None
+
+
+def test_classify_location_under_builtin_dir(tmp_path):
+    """A header under a non-default built-in dir classifies compiler-shipped."""
+    gcc_include = tmp_path / "gcc" / "include"
+    (gcc_include / "bits").mkdir(parents=True)
+    header = gcc_include / "bits" / "foo.h"
+    header.write_text("#pragma once\n")
+
+    assert pkgconfig_infer.classify_location(str(header), (str(gcc_include),)) == REASON_COMPILER
+
+
+def test_classify_location_default_include_dir_not_classified():
+    """The /usr/include carve-out: a bare distro header stays resolvable.
+
+    Pure path logic (realpath does not require the path to exist), so this
+    exercises the real default dirs without touching the filesystem."""
+    usr_include = pkgconfig_infer._DEFAULT_INCLUDE_DIRS[0]
+    other_builtin = pkgconfig_infer._DEFAULT_INCLUDE_DIRS[1]
+    assert pkgconfig_infer.classify_location(os.path.join(usr_include, "zlib.h"), (usr_include,)) is None
+    # Both defaults in the builtin list: still no classification.
+    assert pkgconfig_infer.classify_location(os.path.join(usr_include, "zlib.h"), (usr_include, other_builtin)) is None
+
+
+def test_classify_location_empty_or_none_header_path(tmp_path):
+    """Empty/None header paths classify as not-compiler-built-in (None)."""
+    assert pkgconfig_infer.classify_location(None, (str(tmp_path),)) is None
+    assert pkgconfig_infer.classify_location("", (str(tmp_path),)) is None
+
+
+def test_classify_location_builtin_dir_not_in_default_dirs(tmp_path):
+    """A built-in dir under the fixture tree (not /usr/include) still wins."""
+    builtin_dir = tmp_path / "toolchain" / "lib" / "gcc" / "include"
+    builtin_dir.mkdir(parents=True)
+    header = builtin_dir / "omp.h"
+    header.write_text("#pragma once\n")
+    default_dirs = tuple(pkgconfig_infer._DEFAULT_INCLUDE_DIRS)
+
+    assert pkgconfig_infer.classify_location(str(header), (*default_dirs, str(builtin_dir))) == REASON_COMPILER
+
+
+def test_infer_classifies_builtin_dir_header_end_to_end(tmp_path):
+    """End to end: a header only reachable under a built-in dir resolves to
+    REASON_COMPILER without reaching the pkg-config resolver chain."""
+    builtin_dir = tmp_path / "toolchain" / "include"
+    (builtin_dir / "gccpriv").mkdir(parents=True)
+    header = builtin_dir / "gccpriv" / "foo.h"
+    header.write_text("#pragma once\n")
+    config = InferenceConfig(
+        search_dirs=(str(builtin_dir),),
+        compiler_builtin_dirs=(str(builtin_dir),),
+    )
+    (result,) = pkgconfig_infer.infer(["gccpriv/foo.h"], config, memo={})
+    assert result.header_path == os.path.realpath(str(header))
+    assert result.package is None
+    assert result.resolver is None
+    assert result.reason == REASON_COMPILER
+
+
+def test_infer_default_builtin_dir_header_stays_resolvable(tmp_path, monkeypatch):
+    """A header under a built-in dir that counts as a DEFAULT dir must NOT
+    classify compiler-shipped (F6 carve-out): it falls through to the
+    resolver chain, which yields the unresolved no-owner verdict on this
+    fixture tree. The default-dir list is retargeted to the tmp tree so the
+    test stays host-independent."""
+    usr_include = tmp_path / "usr" / "include"
+    usr_include.mkdir(parents=True)
+    header = usr_include / "myown.h"
+    header.write_text("#pragma once\n")
+    monkeypatch.setattr(pkgconfig_infer, "_DEFAULT_INCLUDE_DIRS", (str(usr_include),))
+    config = InferenceConfig(
+        resolvers=(),
+        search_dirs=(str(usr_include),),
+        compiler_builtin_dirs=(str(usr_include),),
+    )
+    (result,) = pkgconfig_infer.infer(["myown.h"], config, memo={})
+    # Not classified compiler-shipped: the header fell through to the
+    # resolver chain (whose terminal verdict on this fixture tree is the
+    # man stub's not-implemented), with no package attributed.
+    assert result.reason != REASON_COMPILER
+    assert result.package is None
+    assert result.header_path == os.path.realpath(str(header))

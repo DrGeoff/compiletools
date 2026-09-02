@@ -4,10 +4,60 @@ This module queries compilers for their predefined macros rather than
 hardcoding them, allowing automatic adaptation to new compiler versions.
 """
 
+import os
 import subprocess
 from functools import lru_cache
 
 import compiletools.utils
+
+# Built-in include dirs parsed from the macro probe's ``-Wp,-v`` stderr.
+# Keyed on compiler_path; populated by every :func:`get_compiler_macros` run
+# so :func:`builtin_include_dirs` reads the SAME single invocation (plan
+# finding F11: one compiler subprocess for macros + dirs, not two).
+_builtin_include_dirs_memo: dict[str, tuple[str, ...]] = {}
+
+_SEARCH_START_MARKER = "#include <...> search starts here:"
+_SEARCH_END_MARKER = "End of search list."
+
+
+def _parse_builtin_include_dirs(stderr_text: str) -> tuple[str, ...]:
+    """Parse the ``-Wp,-v`` include search list out of compiler stderr.
+
+    GCC and clang both print this block when preprocessing with ``-v``
+    passed to the preprocessor::
+
+        #include <...> search starts here:
+         /usr/lib/gcc/.../include
+         /usr/include
+        End of search list.
+
+    Only the angle-bracket block is taken; the ``#include "..."`` block the
+    compilers print above it is the quoted-include list. Entries are
+    stripped, realpath'd (gcc prints ``..``-chains), kept only when they
+    exist on disk, and de-duplicated preserving order.
+    """
+    dirs: list[str] = []
+    in_block = False
+    for line in stderr_text.splitlines():
+        stripped = line.strip()
+        if not in_block:
+            if stripped == _SEARCH_START_MARKER:
+                in_block = True
+            continue
+        if stripped == _SEARCH_END_MARKER:
+            break
+        # macOS clang annotates framework dirs with this suffix.
+        stripped = stripped.removesuffix(" (framework directory)")
+        if not stripped:
+            continue
+        # NOT cached: realpath of an already-absolute probe entry
+        # (documented skip case #3), guarded by an existence check so probe
+        # entries for dirs removed since the run never leak in.
+        real = os.path.realpath(stripped)
+        # NOT cached: isdir of a freshly probed compiler-reported dir.
+        if os.path.isdir(real) and real not in dirs:
+            dirs.append(real)
+    return tuple(dirs)
 
 
 @lru_cache(maxsize=32)
@@ -27,13 +77,15 @@ def get_compiler_macros(compiler_path: str, verbose: int = 0) -> dict[str, str]:
         return {}
 
     try:
-        # Use -dM to dump macros, -E to preprocess only, - to read from stdin
+        # Use -dM to dump macros, -E to preprocess only, - to read from stdin.
+        # -Wp,-v asks the preprocessor to print its include search list to
+        # stderr so ONE invocation yields both the macros (stdout) and the
+        # built-in include dirs (stderr) -- F11.
         # Split compiler_path to handle multi-word commands like "ccache g++"
         result = subprocess.run(
-            compiletools.utils.split_compiler_command(compiler_path, slot="CXX") + ["-dM", "-E", "-"],
+            compiletools.utils.split_compiler_command(compiler_path, slot="CXX") + ["-Wp,-v", "-dM", "-E", "-"],
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            capture_output=True,
             text=True,
             timeout=5,
         )
@@ -41,6 +93,7 @@ def get_compiler_macros(compiler_path: str, verbose: int = 0) -> dict[str, str]:
         if result.returncode != 0:
             if verbose >= 4:
                 print(f"Compiler {compiler_path} returned non-zero exit code: {result.returncode}")
+            _builtin_include_dirs_memo[compiler_path] = ()
             return {}
 
         macros = {}
@@ -56,6 +109,11 @@ def get_compiler_macros(compiler_path: str, verbose: int = 0) -> dict[str, str]:
                         macro_value = macro_value[1:-1]
                     macros[macro_name] = macro_value
 
+        # Probe tests may stub subprocess.run with a mock whose stderr is
+        # not a string; guard so a parse always sees probe-shaped text.
+        stderr_text = result.stderr if isinstance(result.stderr, str) else ""
+        _builtin_include_dirs_memo[compiler_path] = _parse_builtin_include_dirs(stderr_text)
+
         if verbose >= 3:
             print(f"Queried {len(macros)} macros from {compiler_path}")
             if verbose >= 8:
@@ -69,7 +127,33 @@ def get_compiler_macros(compiler_path: str, verbose: int = 0) -> dict[str, str]:
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
         if verbose >= 3:
             print(f"Failed to query macros from {compiler_path}: {e}")
+        _builtin_include_dirs_memo[compiler_path] = ()
         return {}
+
+
+def builtin_include_dirs(compiler_path: str, verbose: int = 0) -> tuple[str, ...]:
+    """Directories the compiler searches for angle-bracket includes.
+
+    Shares the single ``-Wp,-v`` macro probe invocation with
+    :func:`get_compiler_macros` (F11): whichever of the two functions runs
+    first for a compiler triggers the one subprocess and both memoise their
+    half of the parsed result, so calling the pair costs exactly one
+    compiler invocation. Cleared by :func:`clear_cache`. Any failure yields
+    ``()``.
+    """
+    if not compiler_path:
+        if verbose >= 2:
+            print("No compiler specified, returning empty include-dir tuple")
+        return ()
+
+    cached = _builtin_include_dirs_memo.get(compiler_path)
+    if cached is not None:
+        return cached
+
+    # One run populates both the macro cache and the include-dir memo.
+    get_compiler_macros(compiler_path, verbose)
+
+    return _builtin_include_dirs_memo.get(compiler_path, ())
 
 
 def filter_for_expansion(compiler_macros: dict[str, str]) -> dict[str, str]:
@@ -149,3 +233,4 @@ def clear_cache():
     """Clear the LRU caches for compiler macro functions."""
     get_compiler_macros.cache_clear()
     query_has_function.cache_clear()
+    _builtin_include_dirs_memo.clear()
