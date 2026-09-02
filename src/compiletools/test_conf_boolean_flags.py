@@ -120,6 +120,7 @@ _EXPECTED_FLAG_ARGUMENT_NAMES = frozenset(
     {
         "allow-fake-git",
         "auto",
+        "auto-pkg-config",
         "compilation-database",
         "disable-exes",
         "disable-tests",

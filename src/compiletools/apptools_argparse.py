@@ -347,6 +347,20 @@ def add_common_arguments(cap, argv=None, variant=None):
     )
     compiletools.utils.add_flag_argument(
         parser=cap,
+        name="auto-pkg-config",
+        dest="auto_pkg_config",
+        default=True,
+        env_var="CT_AUTO_PKG_CONFIG",
+        help=(
+            "Infer //#PKG-CONFIG packages from #includes that no explicit "
+            "flag covers, and treat the translation unit as if it carried "
+            "the annotation (default: on). Only headers that are not "
+            "project headers, not compiler/libc headers, and not already "
+            "served by an explicit -I/-l/pkg-config flag are candidates."
+        ),
+    )
+    compiletools.utils.add_flag_argument(
+        parser=cap,
         name="separate-flags-CPP-CXX",
         dest="separate_flags_CPP_CXX",
         default=False,

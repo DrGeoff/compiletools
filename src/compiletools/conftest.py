@@ -404,6 +404,56 @@ def _isolate_pkg_config_error_policy():
         _pkgconfig.set_pkg_config_errors(saved)
 
 
+@pytest.fixture(autouse=True)
+def auto_pkg_config_off():
+    """Force the default-on ``--auto-pkg-config`` feature off for every test.
+
+    ``auto-pkg-config`` (registered in ``apptools_argparse``) defaults to
+    ON and resolves ``//#PKG-CONFIG`` packages from plain ``#include``s by
+    querying the host's pkg-config database (and later the distro package
+    DB). Left at its default, every magic-flag test parsing a TU that
+    includes a non-project header (e.g. ``<zlib.h>``) would silently gain
+    host-dependent ``PKG-CONFIG`` flags — the same sources would parse
+    differently on a box without the matching devel packages, and every
+    magic-flag test would pay the inference subprocess cost. Forcing the
+    flag off via its documented env var keeps the suite hermetic and
+    deterministic: feature tests opt back in with the companion
+    ``auto_pkg_config_on`` fixture.
+
+    This mutates ``os.environ`` directly (saving/restoring the key itself)
+    rather than depending on the ``monkeypatch`` fixture — the same
+    deliberate choice ``_hermetic_git_env`` makes: an autouse fixture
+    requesting ``monkeypatch`` pulls the shared per-test monkeypatch
+    instance's setup earlier, which inverts its LIFO teardown relative to a
+    test's own temp-dir fixtures, and ``monkeypatch.chdir`` teardown then
+    restores a cwd the temp-dir teardown already deleted
+    (``FileNotFoundError`` — measured on test_backend_integration).
+    """
+    saved = os.environ.get("CT_AUTO_PKG_CONFIG")
+    os.environ["CT_AUTO_PKG_CONFIG"] = "0"
+    try:
+        yield
+    finally:
+        if saved is None:
+            os.environ.pop("CT_AUTO_PKG_CONFIG", None)
+        else:
+            os.environ["CT_AUTO_PKG_CONFIG"] = saved
+
+
+@pytest.fixture
+def auto_pkg_config_on(auto_pkg_config_off):
+    """Opt-in counterpart to ``auto_pkg_config_off``: re-enable the feature.
+
+    Requests ``auto_pkg_config_off`` so the ordering is guaranteed (the
+    autouse fixture's env override to ``"0"`` has run before this body),
+    then overrides the same env var to ``"1"``; the autouse fixture's
+    finally still restores the pre-test value exactly once, after this
+    fixture's scope ends. Use this in tests that exercise auto-inference
+    itself; everything else must keep the autouse default.
+    """
+    os.environ["CT_AUTO_PKG_CONFIG"] = "1"
+
+
 @pytest.fixture
 def pkgconfig_env(monkeypatch):
     """Set PKG_CONFIG_PATH to shared test pkg-config directory.
