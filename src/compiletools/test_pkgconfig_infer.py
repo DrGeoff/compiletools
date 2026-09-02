@@ -8,7 +8,8 @@ autouse fixture clears them before and after every test here.
 
 Conventions honoured here: no compiler names, no ``os.chdir`` (env is changed
 through ``monkeypatch.setenv``), and only the documented subprocess
-boundaries (``_run_pkg_config_index``, ``_run_pkg_config_exists``) are ever
+boundaries (``_run_pkg_config_index``, ``_run_pkg_config_exists``,
+``_run_distro_owner_query``, ``_run_distro_list_query``) are ever
 wrapped/stubbed -- every other function runs for real.
 """
 
@@ -25,6 +26,8 @@ from compiletools.pkgconfig_infer import (
     REASON_COMPILER,
     REASON_COVERED,
     REASON_IGNORED,
+    REASON_NO_OWNER,
+    REASON_NO_PC,
     REASON_NOT_FOUND,
     REASON_STD,
     InferenceConfig,
@@ -428,8 +431,285 @@ def test_infer_default_builtin_dir_header_stays_resolvable(tmp_path, monkeypatch
     )
     (result,) = pkgconfig_infer.infer(["myown.h"], config, memo={})
     # Not classified compiler-shipped: the header fell through to the
-    # resolver chain (whose terminal verdict on this fixture tree is the
-    # man stub's not-implemented), with no package attributed.
+    # resolver chain (all stages disabled via resolvers=(), so the terminal
+    # verdict is the no-owner default), with no package attributed.
     assert result.reason != REASON_COMPILER
     assert result.package is None
     assert result.header_path == os.path.realpath(str(header))
+
+
+# ---------------------------------------------------------------------------
+# Stage 3: distro-DB resolver
+# ---------------------------------------------------------------------------
+
+# Real output formats, one owner-query fixture per backend, all answering for
+# /usr/include/zlib.h. The dpkg line uses the arch-qualified shape; apk strips
+# the version by dropping the last two dash components.
+_ZLIB_OWNER_STUBS = {
+    "rpm": "zlib-devel\n",
+    "dpkg": "zlib1g-dev:amd64: /usr/include/zlib.h\n",
+    "pacman": "zlib\n",
+    "apk": "/usr/include/zlib.h is owned by zlib-dev-1.2.11-r17\n",
+}
+# The file list each backend's owner query implies; the zlib.pc line lives in
+# the live pkg-config search dir (the pkgconfig_env dir).
+_ZLIB_LIST_STUBS = {
+    "rpm": "/usr/include/zlib.h\n/usr/lib64/libz.so\n{pcdir}/zlib.pc\n",
+    "dpkg": "/usr/include/zlib.h\n/usr/lib/x86_64-linux-gnu/libz.so\n{pcdir}/zlib.pc\n",
+    "pacman": "/usr/include/zlib.h\n/usr/lib/libz.so\n{pcdir}/zlib.pc\n",
+    "apk": "/usr/include/zlib.h\n/usr/lib/libz.so\n{pcdir}/zlib.pc\n",
+}
+
+
+@pytest.mark.parametrize("backend", ["rpm", "dpkg", "pacman", "apk"])
+def test_distro_owner_with_single_pc_resolves(pkgconfig_env, auto_pkg_config_on, monkeypatch, backend):
+    """Each backend's real owner/list output format: /usr/include/zlib.h is
+    owned by the distro zlib devel package, whose one .pc ships inside the
+    live pkg-config search dir -> package ``zlib`` via resolver
+    ``distro:<backend>``. The .pc file itself need not exist on disk: the
+    package file list is the evidence."""
+    monkeypatch.setenv("CT_DISTRO_BACKEND", backend)
+    pkgconfig_infer.clear_cache()
+    monkeypatch.setattr(
+        pkgconfig_infer, "_run_distro_owner_query", lambda paths, called_backend: _ZLIB_OWNER_STUBS[backend]
+    )
+    monkeypatch.setattr(
+        pkgconfig_infer,
+        "_run_distro_list_query",
+        lambda pkg, called_backend: _ZLIB_LIST_STUBS[backend].format(pcdir=pkgconfig_env),
+    )
+    result = pkgconfig_infer.resolve_via_distro("zlib.h", "/usr/include/zlib.h")
+    assert result.package == "zlib"
+    assert result.resolver == f"distro:{backend}"
+    assert result.candidates == ("zlib",)
+    assert result.reason == ""
+
+
+def test_distro_umbrella_pc_wins(pkgconfig_env, auto_pkg_config_on, monkeypatch, tmp_path):
+    """Owner ships libssl.pc/libcrypto.pc/openssl.pc: the tie-break picks the
+    umbrella. Here the .pc files must really exist (in a temp PKG_CONFIG_PATH
+    dir) so the tie-break can read openssl.pc's Requires line."""
+    pcdir = tmp_path / "ssl-pc"
+    pcdir.mkdir()
+    (pcdir / "openssl.pc").write_text("Name: OpenSSL\nLibs: -lssl -lcrypto\nRequires: libssl libcrypto\n")
+    (pcdir / "libssl.pc").write_text("Libs: -lssl\n")
+    (pcdir / "libcrypto.pc").write_text("Libs: -lcrypto\n")
+    monkeypatch.setenv("PKG_CONFIG_PATH", str(pcdir))
+    monkeypatch.setenv("CT_DISTRO_BACKEND", "dpkg")
+    pkgconfig_infer.clear_cache()
+    monkeypatch.setattr(
+        pkgconfig_infer,
+        "_run_distro_owner_query",
+        lambda paths, called_backend: "openssl-devel:amd64: /usr/include/openssl/ssl.h\n",
+    )
+    monkeypatch.setattr(
+        pkgconfig_infer,
+        "_run_distro_list_query",
+        lambda pkg, called_backend: (
+            f"/usr/include/openssl/ssl.h\n{pcdir}/libssl.pc\n{pcdir}/libcrypto.pc\n{pcdir}/openssl.pc\n"
+        ),
+    )
+    result = pkgconfig_infer.resolve_via_distro("openssl/ssl.h", "/usr/include/openssl/ssl.h")
+    assert result.package == "openssl"
+    assert result.resolver == "distro:dpkg"
+
+
+def test_distro_owner_without_pc_reports_no_pc(pkgconfig_env, auto_pkg_config_on, monkeypatch):
+    """Boost case: the owning devel package ships headers but no .pc anywhere
+    -> REASON_NO_PC naming the owner, unresolved, no guess."""
+    monkeypatch.setenv("CT_DISTRO_BACKEND", "rpm")
+    pkgconfig_infer.clear_cache()
+    monkeypatch.setattr(pkgconfig_infer, "_run_distro_owner_query", lambda paths, called_backend: "boost-devel\n")
+    monkeypatch.setattr(
+        pkgconfig_infer,
+        "_run_distro_list_query",
+        lambda pkg, called_backend: "/usr/include/boost/version.hpp\n/usr/include/boost/functional.hpp\n",
+    )
+    result = pkgconfig_infer.resolve_via_distro("boost/version.hpp", "/usr/include/boost/version.hpp")
+    assert result.package is None
+    assert result.resolver is None
+    assert result.reason.startswith(REASON_NO_PC)
+    assert "boost-devel" in result.reason
+
+
+def test_distro_libc_owner_counts_as_standard(pkgconfig_env, auto_pkg_config_on, monkeypatch):
+    """F6 part 2: an owner that is libc/kernel material (kernel-headers) is a
+    standard header for inference purposes; no package-list query is even
+    attempted for it."""
+    monkeypatch.setenv("CT_DISTRO_BACKEND", "rpm")
+    pkgconfig_infer.clear_cache()
+    monkeypatch.setattr(pkgconfig_infer, "_run_distro_owner_query", lambda paths, called_backend: "kernel-headers\n")
+    calls = {"list": 0}
+
+    def counting_list(pkg, called_backend):
+        calls["list"] += 1
+        return ""
+
+    monkeypatch.setattr(pkgconfig_infer, "_run_distro_list_query", counting_list)
+    result = pkgconfig_infer.resolve_via_distro("sys/types.h", "/usr/include/sys/types.h")
+    assert calls["list"] == 0
+    assert result.package is None
+    assert result.reason == REASON_STD
+
+
+def test_distro_backend_none_runs_no_boundary(pkgconfig_env, auto_pkg_config_on, monkeypatch):
+    """CT_DISTRO_BACKEND=none masks the distro resolver: unresolved with the
+    missing-database reason, and NEITHER distro boundary is ever entered
+    (this is a counting-stub interaction test; the call counts are the whole
+    contract here)."""
+    monkeypatch.setenv("CT_DISTRO_BACKEND", "none")
+    pkgconfig_infer.clear_cache()
+    calls = {"owner": 0, "list": 0}
+
+    def counting_owner(paths, called_backend):
+        calls["owner"] += 1
+        return ""
+
+    def counting_list(pkg, called_backend):
+        calls["list"] += 1
+        return ""
+
+    monkeypatch.setattr(pkgconfig_infer, "_run_distro_owner_query", counting_owner)
+    monkeypatch.setattr(pkgconfig_infer, "_run_distro_list_query", counting_list)
+    result = pkgconfig_infer.resolve_via_distro("custom.h", "/usr/include/custom.h")
+    assert calls == {"owner": 0, "list": 0}
+    assert result.package is None
+    assert result.resolver is None
+    assert result.reason.startswith(REASON_NO_OWNER)
+    assert "no distro package database" in result.reason
+
+
+def test_detect_distro_backend_env_override_and_memo(monkeypatch):
+    """CT_DISTRO_BACKEND forces or masks the backend without touching PATH,
+    even over a memoised detection result; the PATH probe itself runs once
+    and a real None detection result is memoised exactly like a found one."""
+    monkeypatch.setenv("CT_DISTRO_BACKEND", "pacman")
+    assert pkgconfig_infer.detect_distro_backend() == "pacman"
+    monkeypatch.setenv("CT_DISTRO_BACKEND", "none")
+    assert pkgconfig_infer.detect_distro_backend() is None
+
+    monkeypatch.delenv("CT_DISTRO_BACKEND", raising=False)
+    pkgconfig_infer.clear_cache()
+    probes = {"count": 0}
+
+    def counting_which(tool):
+        probes["count"] += 1
+        return  # no backend tool on this PATH
+
+    monkeypatch.setattr(pkgconfig_infer.shutil, "which", counting_which)
+    assert pkgconfig_infer.detect_distro_backend() is None
+    assert pkgconfig_infer.detect_distro_backend() is None
+    assert probes["count"] == len(pkgconfig_infer._DISTRO_BACKEND_TOOLS)
+    pkgconfig_infer.clear_cache()
+    assert pkgconfig_infer.detect_distro_backend() is None
+    assert probes["count"] == 2 * len(pkgconfig_infer._DISTRO_BACKEND_TOOLS)
+
+    # The override wins even while a None detection is memoised.
+    monkeypatch.setenv("CT_DISTRO_BACKEND", "apk")
+    assert pkgconfig_infer.detect_distro_backend() == "apk"
+
+
+def test_infer_batches_one_owner_query_per_call(pkgconfig_env, auto_pkg_config_on, monkeypatch, tmp_path):
+    """Plan §0: ONE distro owner query per TU. Five unresolved headers in a
+    private include dir -> exactly one _run_distro_owner_query call carrying
+    all five located paths."""
+    include_dir = tmp_path / "batch-include"
+    include_dir.mkdir()
+    names = [f"batched{index}.h" for index in range(5)]
+    for name in names:
+        (include_dir / name).write_text("#pragma once\n")
+    config = InferenceConfig(search_dirs=(str(include_dir),))
+    monkeypatch.setenv("CT_DISTRO_BACKEND", "rpm")
+    pkgconfig_infer.clear_cache()
+    calls = {"owner": 0, "paths": []}
+
+    def counting_owner(paths, called_backend):
+        calls["owner"] += 1
+        calls["paths"].append(list(paths))
+        return "\n".join(f"file {path} is not owned by any package" for path in paths)
+
+    monkeypatch.setattr(pkgconfig_infer, "_run_distro_owner_query", counting_owner)
+    monkeypatch.setattr(pkgconfig_infer, "_run_distro_list_query", lambda pkg, called_backend: None)
+    results = pkgconfig_infer.infer(names, config, memo={})
+    assert calls["owner"] == 1
+    assert sorted(calls["paths"][0]) == sorted(os.path.realpath(str(include_dir / name)) for name in names)
+    assert [result.package for result in results] == [None] * 5
+    assert [result.header for result in results] == names
+
+
+def test_distro_pc_outside_search_dirs_is_ignored(pkgconfig_env, auto_pkg_config_on, monkeypatch):
+    """A .pc the package ships somewhere pkg-config never looks does not
+    count: the owner reports REASON_NO_PC even though its list contains a
+    .pc."""
+    monkeypatch.setenv("CT_DISTRO_BACKEND", "pacman")
+    pkgconfig_infer.clear_cache()
+    monkeypatch.setattr(pkgconfig_infer, "_run_distro_owner_query", lambda paths, called_backend: "zlib\n")
+    monkeypatch.setattr(
+        pkgconfig_infer,
+        "_run_distro_list_query",
+        lambda pkg, called_backend: "/usr/include/zlib.h\n/opt/other/pkgconfig/zlib.pc\n",
+    )
+    result = pkgconfig_infer.resolve_via_distro("zlib.h", "/usr/include/zlib.h")
+    assert result.package is None
+    assert result.reason.startswith(REASON_NO_PC)
+    assert "zlib" in result.reason
+
+
+@pytest.mark.parametrize(
+    ("backend", "garbage"),
+    [
+        ("rpm", "a-package\nanother-package\n"),  # 2 lines for 1 path: unalignable
+        ("rpm", None),  # failed boundary (tool gone, interrupted) -> None
+        ("dpkg", "dpkg-query: no path found matching pattern /usr/include/zlib.h\n"),
+        ("pacman", "one\ntwo\n"),  # 2 lines for 1 path: unalignable
+        ("apk", "ERROR: unable to select packages: zlib\n"),
+    ],
+)
+def test_distro_unparseable_owner_output_is_unresolved(
+    pkgconfig_env, auto_pkg_config_on, monkeypatch, backend, garbage
+):
+    """Garbage or missing owner output maps to REASON_NO_OWNER -- never a
+    guess, never an exception, regardless of backend output shape."""
+    monkeypatch.setenv("CT_DISTRO_BACKEND", backend)
+    pkgconfig_infer.clear_cache()
+    monkeypatch.setattr(pkgconfig_infer, "_run_distro_owner_query", lambda paths, called_backend: garbage)
+    result = pkgconfig_infer.resolve_via_distro("zlib.h", "/usr/include/zlib.h")
+    assert result.package is None
+    assert result.resolver is None
+    assert result.reason == REASON_NO_OWNER
+
+
+def test_pc_stems_memoised_per_owner_and_env(pkgconfig_env, auto_pkg_config_on, monkeypatch):
+    """pc_stems_shipped_by hits the package-list boundary once per
+    (owner, backend, PKG_CONFIG_PATH, PKG_CONFIG_LIBDIR); clear_cache() and a
+    different owner each force a fresh query."""
+    monkeypatch.setenv("CT_DISTRO_BACKEND", "rpm")
+    pkgconfig_infer.clear_cache()
+    calls = {"count": 0}
+
+    def counting_list(pkg, called_backend):
+        calls["count"] += 1
+        return f"{pkgconfig_env}/zlib.pc\n"
+
+    monkeypatch.setattr(pkgconfig_infer, "_run_distro_list_query", counting_list)
+    first = pkgconfig_infer.pc_stems_shipped_by("zlib-devel", "rpm")
+    assert pkgconfig_infer.pc_stems_shipped_by("zlib-devel", "rpm") == first
+    assert first == ("zlib",)
+    assert calls["count"] == 1
+
+    pkgconfig_infer.clear_cache()
+    pkgconfig_infer.pc_stems_shipped_by("zlib-devel", "rpm")
+    assert calls["count"] == 2
+
+    pkgconfig_infer.pc_stems_shipped_by("other-devel", "rpm")
+    assert calls["count"] == 3
+
+
+@pytest.mark.skipif(not shutil.which("rpm"), reason="rpm not available on this host")
+@pytest.mark.skipif(not os.path.isfile("/usr/include/stdio.h"), reason="/usr/include/stdio.h not present")
+def test_live_rpm_owner_smoke(pkgconfig_env, auto_pkg_config_on):
+    """Live distro-DB boundary: /usr/include/stdio.h has an owning package on
+    any rpm host with glibc headers installed. No assertion on the name --
+    distros differ (glibc-headers vs glibc-devel)."""
+    owners = pkgconfig_infer.owners_for_headers(["/usr/include/stdio.h"], "rpm")
+    assert bool(owners.get("/usr/include/stdio.h"))

@@ -26,11 +26,21 @@ unresolved):
 6. Covered-by-include-dir -- the header lives under an explicit ``-I``/
    ``-isystem`` dir -> ``REASON_COVERED``.
 7. Resolver chain: pc-index (``"pc"`` in ``InferenceConfig.resolvers``) ->
-   distro -> man. The pc-index resolver walks the header's parent dirs upward
-   against :func:`build_pc_include_index`; a single candidate wins, several go
-   through :func:`tie_break`. An ambiguity verdict is terminal for the chain:
-   the diagnostic is the answer, and later stages would only overwrite it.
-8. Post-demotions: an inferred package the user already names explicitly (as a
+   distro (``"distro"``) -> man (``"man"``). The pc-index resolver walks the
+   header's parent dirs upward against :func:`build_pc_include_index`; a
+   single candidate wins, several go through :func:`tie_break`. An ambiguity
+   verdict is terminal for the chain: the diagnostic is the answer, and
+   later stages would only overwrite it.
+8. Distro DB (Stage 3): the distro package owning the header is found via
+   ONE batched query per TU (rpm -qf / dpkg-query -S / pacman -Qoq / apk
+   info --who-owns, see :func:`owners_for_headers`); a libc/kernel owner
+   (``_LIBC_OWNERS``) counts as a standard header, an owner shipping no
+   ``.pc`` in the live search dirs reports ``REASON_NO_PC``, several stems
+   go through :func:`tie_break`. The backend is detected on PATH
+   (:func:`detect_distro_backend`, rpm -> dpkg -> pacman -> apk) and can be
+   forced or masked with ``CT_DISTRO_BACKEND`` (rpm|dpkg|pacman|apk|none);
+   no backend means the stage runs no subprocess at all.
+9. Post-demotions: an inferred package the user already names explicitly (as a
    pkg-config package or via its first ``-l`` stem) reports ``REASON_COVERED``
    instead of "inferred".
 
@@ -45,6 +55,12 @@ Memo keys:
   ``(PKG_CONFIG_PATH, PKG_CONFIG_LIBDIR, compiler_builtin_dirs)``.
 * :func:`pkg_config_exists_quiet` -- module-level dict keyed on
   ``(pkg, PKG_CONFIG_PATH, PKG_CONFIG_LIBDIR)``.
+* :func:`pc_stems_shipped_by` -- module-level dict keyed on
+  ``(owner, backend, PKG_CONFIG_PATH, PKG_CONFIG_LIBDIR)``.
+* :func:`detect_distro_backend` -- module-level dict holding the PATH probe
+  result (a real None is cached too); the ``CT_DISTRO_BACKEND`` override is
+  honoured even when the memo is populated, so masking never needs to know
+  the memo state.
 * :func:`infer` -- caller-supplied ``memo`` dict keyed on
   ``(header_path, PKG_CONFIG_PATH, config.resolvers)`` holding the pre-post
   resolver-chain verdict (post-demotions depend on the config, so they are
@@ -52,11 +68,12 @@ Memo keys:
   caller-supplied memo dicts are the caller's lifetime.
 
 Subprocess boundaries (the ONLY functions here that invoke subprocess, all
-wrapped so they never raise): :func:`_run_pkg_config_index` and
-:func:`_run_pkg_config_exists`. The distro/man boundaries
-(:func:`_run_distro_owner_query`, :func:`_run_distro_list_query`,
-:func:`_run_man_lookup`) are stubs pending Stages 3-4. Everything else is pure
-python; tests stub only the boundaries.
+wrapped so they never raise): :func:`_run_pkg_config_index`,
+:func:`_run_pkg_config_exists`, :func:`_run_distro_owner_query` (one batched
+query for all still-unresolved headers of a TU; apk takes one call per path)
+and :func:`_run_distro_list_query` (per owning package). The man boundary
+(:func:`_run_man_lookup`) is still a stub pending Stage 4. Everything else is
+pure python; tests stub only the boundaries.
 
 Import-surface note: leaf module. Imports stdlib plus
 :mod:`compiletools.apptools_pkgconfig` and NOTHING else from compiletools.
@@ -68,6 +85,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -158,13 +176,77 @@ def _run_pkg_config_index() -> tuple[list[str], dict[str, str]]:
 
 
 def _run_distro_owner_query(paths, backend):
-    """Stub: the distro-DB resolver lands in Stage 3. Returns None."""
-    return
+    """Raw stdout of ONE batched distro-DB owner query for *paths*.
+
+    Per backend:
+
+    * rpm -- ``rpm -qf --qf '%{NAME}\\n' <paths>``: one line per path, in
+      order. A path owned by nothing prints ``file <path> is not owned by
+      any package`` on stdout instead of a package name; a nonexistent path
+      prints only to stderr (so stdout can carry fewer lines than paths).
+    * dpkg -- ``dpkg-query -S <paths>``: unordered ``pkg:arch: path`` (or
+      ``pkg: path``) lines; an unowned path is reported on stderr only.
+    * pacman -- ``pacman -Qoq <paths>``: one package per path, in order;
+      errors go to stderr.
+    * apk -- no batched who-owns: one ``apk info --who-owns <path>`` per
+      path (bounded by the already-filtered candidate count), outputs joined
+      with newlines as ``<path> is owned by <pkg>-<version>``.
+
+    The returncode is deliberately NOT gated: rpm/dpkg/pacman exit non-zero
+    when *some* paths are unowned while stdout still carries the owned ones,
+    and those partial results are exactly what the batched query exists for
+    (parsing decides what is trustworthy; see :func:`owners_for_headers`).
+    An unknown backend or any exception (tool vanished, interrupted) -> None.
+    """
+    try:
+        if backend == "rpm":
+            cmd = ["rpm", "-qf", "--qf", "%{NAME}\\n", *paths]
+        elif backend == "dpkg":
+            cmd = ["dpkg-query", "-S", *paths]
+        elif backend == "pacman":
+            cmd = ["pacman", "-Qoq", *paths]
+        elif backend == "apk":
+            chunks = []
+            for path in paths:
+                probe = subprocess.run(
+                    ["apk", "info", "--who-owns", path],
+                    capture_output=True,
+                    check=False,
+                    text=True,
+                )
+                chunks.append(probe.stdout)
+            return "\n".join(chunks)
+        else:
+            return None
+        probe = subprocess.run(cmd, capture_output=True, check=False, text=True)
+        return probe.stdout
+    except Exception:
+        return None
 
 
 def _run_distro_list_query(pkg, backend):
-    """Stub: the distro-DB resolver lands in Stage 3. Returns None."""
-    return
+    """Raw stdout of the distro-DB file list for package *pkg*
+    (``rpm -ql`` / ``dpkg-query -L`` / ``pacman -Qlq`` / ``apk info -L``).
+
+    A non-zero exit (a package that is not installed lists nothing) or any
+    exception -> None; an unknown backend -> None.
+    """
+    commands = {
+        "rpm": ["rpm", "-ql", pkg],
+        "dpkg": ["dpkg-query", "-L", pkg],
+        "pacman": ["pacman", "-Qlq", pkg],
+        "apk": ["apk", "info", "-L", pkg],
+    }
+    cmd = commands.get(backend)
+    if cmd is None:
+        return None
+    try:
+        probe = subprocess.run(cmd, capture_output=True, check=False, text=True)
+        if probe.returncode != 0:
+            return None
+        return probe.stdout
+    except Exception:
+        return None
 
 
 def _run_man_lookup(header):
@@ -650,6 +732,236 @@ def classify_location(header_path: str | None, builtin_dirs) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Distro-DB resolver (Stage 3)
+# ---------------------------------------------------------------------------
+
+# Owner package names that are libc/kernel material, not pkg-config packages:
+# a header owned by one of these is a standard header for inference purposes
+# (F6 part 2, the owner half of the std-header guard -- the location half is
+# :func:`classify_location`). Checked before any package-list query, so a
+# glibc-devel-owned header never costs a second subprocess.
+_LIBC_OWNERS = frozenset(
+    {
+        "glibc-headers",
+        "glibc-devel",
+        "kernel-headers",
+        "libc6-dev",
+        "linux-libc-dev",
+        "musl-dev",
+        "linux-headers",
+        "bionic-headers",
+        "linux-api-headers",
+        "glibc",
+    }
+)
+
+# Backend name -> query tool, in detection priority order.
+_DISTRO_BACKEND_TOOLS: tuple[tuple[str, str], ...] = (
+    ("rpm", "rpm"),
+    ("dpkg", "dpkg-query"),
+    ("pacman", "pacman"),
+    ("apk", "apk"),
+)
+_DISTRO_BACKENDS = frozenset(name for name, _tool in _DISTRO_BACKEND_TOOLS)
+
+# Memoised PATH probe. A real None result (no backend on PATH) is cached too:
+# detection runs before every distro resolution, and a non-distro box must
+# not pay four shutil.which probes per call. Cleared by clear_cache(). The
+# CT_DISTRO_BACKEND override is checked BEFORE this memo, so tests and
+# masking always win without knowing the memo state.
+_distro_backend_memo: dict[str, str | None] = {}
+
+
+def detect_distro_backend() -> str | None:
+    """First distro package DB whose query tool is on PATH, or None.
+
+    Priority: rpm, dpkg (via ``dpkg-query``), pacman, apk. Memoised --
+    including a real None result -- and cleared by :func:`clear_cache`. The
+    ``CT_DISTRO_BACKEND`` environment variable overrides detection (values:
+    ``rpm`` | ``dpkg`` | ``pacman`` | ``apk`` | ``none``); an unknown value
+    is ignored and detection proceeds. The override is honoured even when a
+    detection result is already memoised, so forcing or masking the backend
+    in tests never needs to know the memo state.
+    """
+    override = os.environ.get("CT_DISTRO_BACKEND", "").strip().lower()
+    if override == "none":
+        return None
+    if override in _DISTRO_BACKENDS:
+        return override
+    if "backend" in _distro_backend_memo:
+        return _distro_backend_memo["backend"]
+    backend: str | None = None
+    try:
+        for name, tool in _DISTRO_BACKEND_TOOLS:
+            # NOT cached: shutil.which probes PATH, which tests change between
+            # calls; the memo above is the cache.
+            if shutil.which(tool):
+                backend = name
+                break
+    except Exception:
+        backend = None
+    _distro_backend_memo["backend"] = backend
+    return backend
+
+
+def _parse_rpm_owner_output(stdout: str, paths: Sequence[str]) -> dict[str, str]:
+    """rpm prints one line per path in order; an unowned path prints
+    ``file <path> is not owned by any package`` instead of a package name, so
+    the 1:1 positional mapping survives mixed owned/unowned sets. A line
+    count that does not match ``len(paths)`` (a nonexistent path prints to
+    stderr only) is unalignable -> no owners at all rather than a shifted
+    guess. A package literally named ``file`` is not mistaken for the
+    message: the message is longer and pattern-checked.
+    """
+    lines = [line for line in stdout.splitlines() if line.strip()]
+    if len(lines) != len(paths):
+        return {}
+    owners: dict[str, str] = {}
+    for path, line in zip(paths, lines):
+        if line.startswith("file ") and line.endswith(" is not owned by any package"):
+            continue
+        owners[path] = line
+    return owners
+
+
+def _parse_dpkg_owner_output(stdout: str, paths: Sequence[str]) -> dict[str, str]:
+    """dpkg-query -S prints ``pkg:arch: path`` (or ``pkg: path``) lines in no
+    defined order; a path owned by several packages prints them
+    comma-separated (``a, b:arch: path``) -- the first owner wins. Lines that
+    do not parse into that shape (diversions, noise) are skipped, which also
+    keeps stderr-echoed noise from minting owners."""
+    wanted = set(paths)
+    owners: dict[str, str] = {}
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line or line.startswith("diversion by ") or line.startswith("local diversion"):
+            continue
+        left, separator, path = line.rpartition(": ")
+        if not separator:
+            continue
+        path = path.strip()
+        if path not in wanted:
+            continue
+        owner = left.split(",", 1)[0].split(":", 1)[0].strip()
+        if owner and path not in owners:
+            owners[path] = owner
+    return owners
+
+
+def _parse_pacman_owner_output(stdout: str, paths: Sequence[str]) -> dict[str, str]:
+    """pacman -Qoq prints one package per path, in order; unowned paths are
+    reported on stderr only, so a line count below ``len(paths)`` is
+    unalignable -> no owners at all rather than a shifted guess."""
+    lines = [line for line in stdout.splitlines() if line.strip()]
+    if len(lines) != len(paths):
+        return {}
+    return dict(zip(paths, lines))
+
+
+def _parse_apk_owner_output(stdout: str, paths: Sequence[str]) -> dict[str, str]:
+    """apk prints ``<path> is owned by <pkg>-<version>`` (one joined chunk per
+    path). The version suffix is stripped by splitting off the last two dash
+    components (apk versions are ``<upstream>-r<pkgrel>``), which keeps
+    package names that themselves contain dashes intact."""
+    marker = " is owned by "
+    wanted = set(paths)
+    owners: dict[str, str] = {}
+    for line in stdout.splitlines():
+        line = line.strip()
+        if marker not in line:
+            continue
+        path, _, pkgver = line.partition(marker)
+        path = path.strip()
+        if path not in wanted:
+            continue
+        owner = pkgver.strip().rsplit("-", 2)[0].strip()
+        if owner and path not in owners:
+            owners[path] = owner
+    return owners
+
+
+_OWNER_PARSERS = {
+    "rpm": _parse_rpm_owner_output,
+    "dpkg": _parse_dpkg_owner_output,
+    "pacman": _parse_pacman_owner_output,
+    "apk": _parse_apk_owner_output,
+}
+
+
+def owners_for_headers(paths: Sequence[str], backend: str) -> dict[str, str]:
+    """Map each header path to the distro package owning it.
+
+    ONE batched query for the whole set (apk: one call per path inside the
+    single :func:`_run_distro_owner_query` call). Unparseable output, an
+    unknown backend, or any failure maps to an empty dict: unresolved, never
+    a guess, never an exception. Paths with no owner are simply absent.
+    """
+    paths = list(paths)
+    if not paths or backend not in _OWNER_PARSERS:
+        return {}
+    stdout = _run_distro_owner_query(paths, backend)
+    if stdout is None:
+        return {}
+    try:
+        return _OWNER_PARSERS[backend](stdout, paths)
+    except Exception:
+        return {}
+
+
+# Keyed on (owner, backend, PKG_CONFIG_PATH, PKG_CONFIG_LIBDIR).
+_pc_stems_memo: dict[tuple[str, str, str, str], tuple[str, ...]] = {}
+
+
+def pc_stems_shipped_by(owner: str, backend: str) -> tuple[str, ...]:
+    """Sorted stems of the ``.pc`` files distro package *owner* ships.
+
+    Only ``.pc`` files whose directory is one of the live pkg-config search
+    dirs (:func:`apptools_pkgconfig._pkg_config_search_dirs`, realpath
+    compared on both sides) count: a .pc installed where pkg-config will
+    never look is invisible to this feature. The file itself is NOT probed
+    for existence -- the package file list is the evidence; a stale list
+    entry degrades to a later ``REASON_MISSING_PC``, not a crash. Memoised
+    per (owner, backend, PKG_CONFIG_PATH, PKG_CONFIG_LIBDIR); cleared by
+    :func:`clear_cache`. Never raises.
+    """
+    key = (
+        owner,
+        backend,
+        os.environ.get("PKG_CONFIG_PATH", ""),
+        os.environ.get("PKG_CONFIG_LIBDIR", ""),
+    )
+    if key in _pc_stems_memo:
+        return _pc_stems_memo[key]
+    stems: tuple[str, ...] = ()
+    try:
+        listing = _run_distro_list_query(owner, backend)
+        if listing:
+            search_dirs = {
+                # NOT cached: search dirs come from PKG_CONFIG_PATH, whose
+                # entries are user-supplied and may be relative, so a cached
+                # realpath could survive a chdir (same reasoning as
+                # apptools_pkgconfig._locate_pc_file).
+                os.path.realpath(directory)
+                for directory in _ap._pkg_config_search_dirs()
+                if directory
+            }
+            found: set[str] = set()
+            for line in listing.splitlines():
+                line = line.strip()
+                if not line.endswith(".pc"):
+                    continue
+                # NOT cached: realpath of a list line from a one-off
+                # subprocess answer.
+                if os.path.realpath(os.path.dirname(line)) in search_dirs:
+                    found.add(os.path.basename(line)[: -len(".pc")])
+            stems = tuple(sorted(found))
+    except Exception:
+        stems = ()
+    _pc_stems_memo[key] = stems
+    return stems
+
+
+# ---------------------------------------------------------------------------
 # Resolvers
 # ---------------------------------------------------------------------------
 
@@ -689,10 +1001,60 @@ def resolve_via_pc_index(header: str, header_path: str | None, index: Mapping[st
     return InferenceResult(header, header_path, None, None, (), REASON_NO_OWNER)
 
 
-def resolve_via_distro(header: str, header_path: str | None) -> InferenceResult:
-    """Distro-DB resolver (Stage 3). Stub: always unresolved; the distro
-    subprocess boundaries are left untouched."""
-    return InferenceResult(header, header_path, None, None, (), REASON_NO_OWNER)
+def resolve_via_distro(
+    header: str,
+    header_path: str | None,
+    *,
+    backend: str | None = None,
+    owner: str | None = None,
+) -> InferenceResult:
+    """Infer the owner from the distro package database.
+
+    *backend* ``None`` -> :func:`detect_distro_backend`; still ``None`` ->
+    unresolved ``REASON_NO_OWNER`` naming the missing database, and NO
+    subprocess is started. *owner* (precomputed by :func:`infer`'s batched
+    owner query) skips the per-header owner query -- an empty string is the
+    batch's definitive "no owner" answer, so a batched miss never triggers a
+    second, per-header query. Otherwise: no owner -> ``REASON_NO_OWNER``; a
+    libc/kernel owner (:data:`_LIBC_OWNERS`) -> ``REASON_STD`` (F6 part 2);
+    no ``.pc`` in the live search dirs -> ``REASON_NO_PC`` naming the owner;
+    one stem -> that package; several -> :func:`tie_break`; a tie-break miss
+    -> ``REASON_AMBIGUOUS`` with all stems. Resolver string
+    ``distro:<backend>`` on a hit. Never raises.
+    """
+    if backend is None:
+        backend = detect_distro_backend()
+    if backend is None:
+        return InferenceResult(
+            header,
+            header_path,
+            None,
+            None,
+            (),
+            f"{REASON_NO_OWNER}: no distro package database found",
+        )
+    if owner is None and header_path:
+        owner = owners_for_headers([header_path], backend).get(header_path)
+    if not owner:
+        return InferenceResult(header, header_path, None, None, (), REASON_NO_OWNER)
+    if owner in _LIBC_OWNERS:
+        return InferenceResult(header, header_path, None, None, (), REASON_STD)
+    stems = pc_stems_shipped_by(owner, backend)
+    if not stems:
+        return InferenceResult(header, header_path, None, None, (), f"{REASON_NO_PC}: {owner}")
+    if len(stems) == 1:
+        return InferenceResult(header, header_path, stems[0], f"distro:{backend}", stems, "")
+    winner = tie_break(stems, header, header_path)
+    if winner is not None:
+        return InferenceResult(header, header_path, winner, f"distro:{backend}", stems, "")
+    return InferenceResult(
+        header,
+        header_path,
+        None,
+        None,
+        stems,
+        f"{REASON_AMBIGUOUS}: {', '.join(stems)}",
+    )
 
 
 def resolve_via_man(header: str, header_path: str | None) -> InferenceResult:
@@ -739,90 +1101,82 @@ def _is_ambiguity(reason: str) -> bool:
     return reason == REASON_AMBIGUOUS or reason.startswith(REASON_AMBIGUOUS + ": ")
 
 
-def _run_resolver_chain(
-    header: str, header_path: str, config: InferenceConfig
-) -> tuple[str | None, str | None, tuple[str, ...], str]:
-    """Run the pc-index -> distro -> man chain, each step wrapped.
+def _pc_index_stage(header: str, header_path: str, config: InferenceConfig) -> InferenceResult | None:
+    """The pc-index stage of the resolver chain.
 
-    Returns the winning verdict as (package, resolver, candidates, reason).
-    An exception inside a resolver counts as unresolved for that resolver and
-    the chain continues (F8). An ambiguity verdict stops the chain: the
-    diagnostic is the answer and a later stub would only overwrite it.
+    Returns a terminal verdict when the pc index settles the header (single
+    candidate, tie-break winner, or a terminal ambiguity); ``None`` when the
+    stage is disabled, fails (F8: an exception counts as unresolved for that
+    resolver and the chain continues), or leaves the header to a later
+    resolver. The index itself is memoised, so calling this per header costs
+    no extra subprocess beyond the first.
     """
-    package: str | None = None
-    resolver: str | None = None
-    candidates: tuple[str, ...] = ()
-    reason = REASON_NO_OWNER
-
+    if "pc" not in config.resolvers:
+        return None
     try:
-        if "pc" in config.resolvers:
-            index = build_pc_include_index(config.compiler_builtin_dirs)
-            result = resolve_via_pc_index(header, header_path, index)
-            package, resolver, candidates, reason = (
-                result.package,
-                result.resolver,
-                result.candidates,
-                result.reason,
-            )
+        index = build_pc_include_index(config.compiler_builtin_dirs)
+        result = resolve_via_pc_index(header, header_path, index)
     except Exception:
-        package, resolver, candidates, reason = None, None, (), REASON_NO_OWNER
-    if package is not None or _is_ambiguity(reason):
-        return (package, resolver, candidates, reason)
+        return None
+    if result.package is not None or _is_ambiguity(result.reason):
+        return result
+    return None
 
-    try:
-        result = resolve_via_distro(header, header_path)
-        package, resolver, candidates, reason = (
-            result.package,
-            result.resolver,
-            result.candidates,
-            result.reason,
+
+def _demote(result: InferenceResult, config: InferenceConfig) -> InferenceResult:
+    """Post-demotion (step 9): an inferred package the user already covers
+    explicitly reports ``REASON_COVERED``, keeping the package/resolver/
+    candidates attribution."""
+    if result.package is None:
+        return result
+    if result.package in config.explicit_packages:
+        return InferenceResult(
+            result.header, result.header_path, result.package, result.resolver, result.candidates, REASON_COVERED
         )
-    except Exception:
-        package, resolver, candidates, reason = None, None, (), REASON_NO_OWNER
-    if package is not None or _is_ambiguity(reason):
-        return (package, resolver, candidates, reason)
-
-    try:
-        result = resolve_via_man(header, header_path)
-        package, resolver, candidates, reason = (
-            result.package,
-            result.resolver,
-            result.candidates,
-            result.reason,
+    stem = _pc_metadata(result.package).get("libs_first_stem")
+    if stem and stem in config.explicit_lib_stems:
+        return InferenceResult(
+            result.header, result.header_path, result.package, result.resolver, result.candidates, REASON_COVERED
         )
-    except Exception:
-        package, resolver, candidates, reason = None, None, (), REASON_NO_OWNER
-    return (package, resolver, candidates, reason)
+    return result
 
 
-def _infer_one(header: str, config: InferenceConfig, memo: dict) -> InferenceResult:
-    """Resolver chain for one header spelling. Never raises (wrapped by
-    :func:`infer`), but kept exception-clean internally as well."""
+def _pre_chain(header: str, config: InferenceConfig, memo: dict) -> tuple[InferenceResult | None, str | None]:
+    """Everything before the distro stage, for one header spelling.
+
+    Returns ``(settled, header_path)``. *settled* is the final
+    :class:`InferenceResult` when the header needs no distro stage: a user
+    map hit, standard-header fast path, ignore glob, unlocatable,
+    compiler-shipped, covered by an explicit include dir, a memo hit, or a
+    terminal pc-index verdict (memo hits and pc verdicts already carry their
+    post-demotion). Otherwise ``None`` with the located *header_path* for
+    the batched distro stage.
+    """
     # 1. User map wins over everything, including standard headers.
     mapped = config.header_map.get(header)
     if mapped is not None:
-        return InferenceResult(header, None, mapped, "map", (), "")
+        return InferenceResult(header, None, mapped, "map", (), ""), None
 
     # 2. Standard-header fast path.
     if is_standard_header(header):
-        return InferenceResult(header, None, None, None, (), REASON_STD)
+        return InferenceResult(header, None, None, None, (), REASON_STD), None
 
     # 3. Ignore globs, matched against the include spelling.
     for pattern in config.ignore_globs:
         if fnmatch.fnmatch(header, pattern):
-            return InferenceResult(header, None, None, None, (), REASON_IGNORED)
+            return InferenceResult(header, None, None, None, (), REASON_IGNORED), None
 
     # 4. Locate the header.
     header_path = locate_header(header, config.search_dirs)
     if header_path is None:
-        return InferenceResult(header, None, None, None, (), REASON_NOT_FOUND)
+        return InferenceResult(header, None, None, None, (), REASON_NOT_FOUND), None
 
     # 5. Compiler-shipped: under a compiler built-in include dir other than
     #    the default dirs -> compiler/libc territory, not pkg-config material
     #    (F6 part 1; the location half of the std-header guard).
     compiler_reason = classify_location(header_path, config.compiler_builtin_dirs)
     if compiler_reason is not None:
-        return InferenceResult(header, header_path, None, None, (), compiler_reason)
+        return InferenceResult(header, header_path, None, None, (), compiler_reason), None
 
     # 6. Covered by an explicit include dir -> the user's own -I wins.
     for include_dir in config.explicit_include_dirs:
@@ -830,36 +1184,72 @@ def _infer_one(header: str, config: InferenceConfig, memo: dict) -> InferenceRes
         # caller (documented skip case #3).
         real_dir = os.path.realpath(include_dir)
         if header_path == real_dir or header_path.startswith(real_dir + os.sep):
-            return InferenceResult(header, header_path, None, None, (), REASON_COVERED)
+            return InferenceResult(header, header_path, None, None, (), REASON_COVERED), None
 
     # 7. Resolver chain, memoised per (header_path, PKG_CONFIG_PATH,
     #    config.resolvers). Post-demotions depend on the config, so the memo
-    #    holds the pre-post verdict only.
+    #    holds the pre-demotion verdict only.
     chain_key = (header_path, os.environ.get("PKG_CONFIG_PATH", ""), config.resolvers)
     if chain_key in memo:
         package, resolver, candidates, reason = memo[chain_key]
-    else:
-        package, resolver, candidates, reason = _run_resolver_chain(header, header_path, config)
-        memo[chain_key] = (package, resolver, candidates, reason)
+        return _demote(InferenceResult(header, header_path, package, resolver, candidates, reason), config), header_path
 
-    # 8. Post-demotions: an inferred package the user already covers
-    #    explicitly reports REASON_COVERED, keeping the package attribution.
-    if package is not None:
-        if package in config.explicit_packages:
-            return InferenceResult(header, header_path, package, resolver, candidates, REASON_COVERED)
-        stem = _pc_metadata(package).get("libs_first_stem")
-        if stem and stem in config.explicit_lib_stems:
-            return InferenceResult(header, header_path, package, resolver, candidates, REASON_COVERED)
+    pc_result = _pc_index_stage(header, header_path, config)
+    if pc_result is not None:
+        memo[chain_key] = (pc_result.package, pc_result.resolver, pc_result.candidates, pc_result.reason)
+        return _demote(pc_result, config), header_path
 
-    return InferenceResult(header, header_path, package, resolver, candidates, reason)
+    return None, header_path
+
+
+def _chain_tail(
+    header: str,
+    header_path: str,
+    config: InferenceConfig,
+    *,
+    backend: str | None,
+    owner: str | None,
+) -> InferenceResult:
+    """Distro -> man stages for one header, each wrapped (F8).
+
+    The first stage to settle the header wins (an ambiguity verdict is
+    terminal); when every enabled stage leaves it unresolved, the LAST
+    stage's verdict is the diagnostic. *backend*/*owner* come from the
+    batched precomputation in :func:`infer`: *owner* ``None`` means "not
+    precomputed" (the distro resolver queries for itself), an empty string
+    means the batch definitively found no owner and nothing further is
+    queried.
+    """
+    if "distro" in config.resolvers:
+        try:
+            result = resolve_via_distro(header, header_path, backend=backend, owner=owner)
+        except Exception:
+            result = InferenceResult(header, header_path, None, None, (), REASON_NO_OWNER)
+        if result.package is not None or _is_ambiguity(result.reason):
+            return result
+    if "man" in config.resolvers:
+        try:
+            return resolve_via_man(header, header_path)
+        except Exception:
+            return InferenceResult(header, header_path, None, None, (), REASON_NO_OWNER)
+    return InferenceResult(header, header_path, None, None, (), REASON_NO_OWNER)
 
 
 def infer(headers: Sequence[str], config: InferenceConfig, *, memo: dict) -> list[InferenceResult]:
     """Run the resolver chain for each include spelling, input order preserved.
 
     One result per *distinct* header (later duplicates of a spelling are
-    dropped). Never raises: the whole per-header body is wrapped, and a
-    header that somehow raises still yields an unresolved result.
+    dropped). Never raises: every per-header step is wrapped, and a header
+    that somehow raises still yields an unresolved result.
+
+    Batching (plan §0: ONE distro-DB query per TU): a first pass runs the
+    pre-filters, memo lookups and the pc-index stage for every distinct
+    header; the headers still pending then get ONE :func:`owners_for_headers`
+    call for the whole set -- skipped entirely when no distro backend exists
+    -- and each pending header is finished through the distro -> man chain
+    with its precomputed owner. The memo semantics are unchanged: the final
+    chain verdict per header_path is memoised pre-demotion; pre-filter
+    verdicts are never memoised.
 
     Covered contract: a header located under an explicit include dir is
     demoted before the resolver chain and reports ``REASON_COVERED`` with
@@ -869,17 +1259,54 @@ def infer(headers: Sequence[str], config: InferenceConfig, *, memo: dict) -> lis
     ``package``/``resolver``/``candidates`` attribution and reports
     ``REASON_COVERED`` as the reason.
     """
-    results: list[InferenceResult] = []
+    settled: dict[str, InferenceResult] = {}
+    order: list[str] = []
+    pending: list[tuple[str, str]] = []
     seen: set[str] = set()
     for header in headers:
         if header in seen:
             continue
         seen.add(header)
+        order.append(header)
         try:
-            results.append(_infer_one(header, config, memo))
+            result, header_path = _pre_chain(header, config, memo)
         except Exception:
-            results.append(InferenceResult(header, None, None, None, (), REASON_NO_OWNER))
-    return results
+            settled[header] = InferenceResult(header, None, None, None, (), REASON_NO_OWNER)
+            continue
+        if result is not None:
+            settled[header] = result
+        else:
+            # _pre_chain returning (None, None) cannot happen (every no-distro
+            # path returns a result); guard anyway, never raise.
+            if header_path is None:  # pragma: no cover
+                settled[header] = InferenceResult(header, None, None, None, (), REASON_NO_OWNER)
+            else:
+                pending.append((header, header_path))
+
+    # ONE batched owner query for everything the chain left pending; no
+    # distro backend -> no subprocess at all.
+    owners: dict[str, str] = {}
+    backend: str | None = None
+    if pending:
+        backend = detect_distro_backend()
+        if backend is not None:
+            owners = owners_for_headers([path for _header, path in pending], backend)
+
+    for header, header_path in pending:
+        chain_key = (header_path, os.environ.get("PKG_CONFIG_PATH", ""), config.resolvers)
+        # The batch answer is definitive: "" (no owner) must not trigger a
+        # second, per-header owner query. With no backend at all there is
+        # nothing precomputed -- resolve_via_distro re-detects (memoised) and
+        # reports the missing database without starting a subprocess.
+        precomputed = owners.get(header_path, "") if backend is not None else None
+        try:
+            verdict = _chain_tail(header, header_path, config, backend=backend, owner=precomputed)
+            memo[chain_key] = (verdict.package, verdict.resolver, verdict.candidates, verdict.reason)
+            settled[header] = _demote(verdict, config)
+        except Exception:
+            settled[header] = InferenceResult(header, header_path, None, None, (), REASON_NO_OWNER)
+
+    return [settled[header] for header in order]
 
 
 # ---------------------------------------------------------------------------
@@ -888,7 +1315,8 @@ def infer(headers: Sequence[str], config: InferenceConfig, *, memo: dict) -> lis
 
 
 def clear_cache() -> None:
-    """Clear this module's memos (pc include index, quiet-exists probe).
+    """Clear this module's memos (pc include index, quiet-exists probe,
+    distro backend detection, per-owner ``.pc`` stems).
 
     Does NOT clear caller-supplied :func:`infer` ``memo`` dicts -- those are
     owned by their callers. Fanned out from
@@ -896,3 +1324,5 @@ def clear_cache() -> None:
     """
     _pc_include_index_memo.clear()
     _exists_memo.clear()
+    _distro_backend_memo.clear()
+    _pc_stems_memo.clear()
