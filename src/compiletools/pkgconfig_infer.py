@@ -1192,11 +1192,21 @@ def _pre_chain(header: str, config: InferenceConfig, memo: dict) -> tuple[Infere
         return InferenceResult(header, header_path, None, None, (), compiler_reason), None
 
     # 6. Covered by an explicit include dir -> the user's own -I wins.
+    # Spelling-aware, not realpath-prefix: the user's flag serves the
+    # translation unit only if it resolves THIS spelling (the compiler
+    # probes <dir>/<spelling>). A prefix test alone would let a catch-all
+    # -I (e.g. the gitroot include build_inputs adds) blanket-cover every
+    # header whose realpath merely happens to live under it, including
+    # pkg-config fixtures inside the source tree the -I never reaches.
     for include_dir in config.explicit_include_dirs:
         # NOT cached: explicit include dirs are already realpaths from the
         # caller (documented skip case #3).
         real_dir = os.path.realpath(include_dir)
-        if header_path == real_dir or header_path.startswith(real_dir + os.sep):
+        spelling_candidate = os.path.join(real_dir, header)
+        # NOT wrappedos: spelling_probe is chdir-relative-input + a one-shot
+        # diagnostic-time existence check against a possibly-symlinked tree;
+        # the realpath comparison needs the on-disk target, not a cached one.
+        if os.path.isfile(spelling_candidate) and os.path.realpath(spelling_candidate) == header_path:
             return InferenceResult(header, header_path, None, None, (), REASON_COVERED), None
 
     # 7. Resolver chain, memoised per (header_path, PKG_CONFIG_PATH,

@@ -359,6 +359,59 @@ def add_common_arguments(cap, argv=None, variant=None):
             "served by an explicit -I/-l/pkg-config flag are candidates."
         ),
     )
+    cap.add_argument(
+        "--auto-pkg-config-resolvers",
+        dest="auto_pkg_config_resolvers",
+        type=str,
+        default="pc,distro",
+        help=(
+            "Comma-separated resolver chain for auto-pkg-config inference, "
+            "tried in order: 'pc' (pkg-config include-dir index), 'distro' "
+            "(package database), 'man' (man pages, currently a stub). "
+            "Validated at use time rather than by argparse choices: conf-file "
+            "values bypass choice checking, and an unknown name must disable "
+            "inference with a diagnostic instead of aborting the parse."
+        ),
+    )
+    cap.add_argument(
+        "--auto-pkg-config-map",
+        dest="auto_pkg_config_map",
+        metavar="HEADER=PACKAGE",
+        action="append",
+        default=[],
+        help=(
+            "header=package entries, e.g. openssl/ssl.h=libssl, that pin "
+            "auto-pkg-config inference for that #include spelling (wins over "
+            "every resolver). Use the append-AUTO-PKG-CONFIG-MAP / "
+            "prepend-AUTO-PKG-CONFIG-MAP forms in conf files so values "
+            "accumulate across the variant hierarchy."
+        ),
+    )
+    cap.add_argument(
+        "--auto-pkg-config-ignore",
+        dest="auto_pkg_config_ignore",
+        metavar="GLOB",
+        action="append",
+        default=[],
+        help=(
+            "fnmatch globs of #include spellings that auto-pkg-config never "
+            "infers, e.g. 'vtk/*_auto.h'. Use the "
+            "append-AUTO-PKG-CONFIG-IGNORE / prepend-AUTO-PKG-CONFIG-IGNORE "
+            "forms in conf files so values accumulate."
+        ),
+    )
+    _add_xxpend_argument(
+        cap,
+        "auto-pkg-config-map",
+        extrahelp=(
+            "header=package entries, e.g. openssl/ssl.h=libssl, pinning auto-pkg-config inference for that header."
+        ),
+    )
+    _add_xxpend_argument(
+        cap,
+        "auto-pkg-config-ignore",
+        extrahelp="fnmatch globs of #include spellings never inferred.",
+    )
     compiletools.utils.add_flag_argument(
         parser=cap,
         name="separate-flags-CPP-CXX",

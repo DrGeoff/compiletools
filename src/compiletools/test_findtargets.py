@@ -48,6 +48,7 @@ class TestFindTargetsModule:
     def _find_samples_targets(self, disable_tests, disable_exes=False):
         relativeexpectedexes = {
             "appinfo/main.cpp",
+            "auto_pkg_config/main.cpp",
             "basename_collision/appalpha/main.cpp",
             "basename_collision/appbeta/main.cpp",
             "cache_scoping/no_ref.cpp",

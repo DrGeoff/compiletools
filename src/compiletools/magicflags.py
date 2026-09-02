@@ -8,11 +8,13 @@ import stringzilla as sz
 import compiletools.apptools
 import compiletools.apptools_pkgconfig
 import compiletools.build_apply
+import compiletools.build_inputs
 import compiletools.compiler_macros
 import compiletools.flag_ops
 import compiletools.git_utils
 import compiletools.headerdeps
 import compiletools.namer
+import compiletools.pkgconfig_infer
 import compiletools.preprocessing_cache
 import compiletools.preprocessor
 import compiletools.utils
@@ -49,6 +51,42 @@ from compiletools.utils import instance_cache
 #       like the other dict keys without colliding with any real flag
 #       key (no compiler flag starts with an underscore).
 _HARD_ORDERINGS_KEY = sz.Str("_HARD_ORDERINGS")
+
+# Resolver names --auto-pkg-config-resolvers may name, in pkgconfig_infer's
+# vocabulary. Validated at use time in _infer_pkg_config_candidates (conf-file
+# values bypass argparse choice checking) rather than in the parser.
+_AUTO_PKG_CONFIG_RESOLVER_SET = frozenset({"pc", "distro", "man"})
+
+#: Inference diagnostics deduped per process, keyed (header, outcome). The
+#: same TU is often parsed repeatedly in one process (Hunter's dependency
+#: expansion walks sources multiple times), and the identical "-> pkg" or
+#: "unresolved: reason" line must not repeat for it. Cleared by
+#: MagicFlagsBase.clear_cache().
+_AUTO_PKG_CONFIG_DIAGNOSED: set = set()
+
+
+def _auto_pkg_config_entries(value):
+    """Split one raw ``--auto-pkg-config-map`` / ``--auto-pkg-config-ignore``
+    value into individual entries.
+
+    Mirrors the tolerance apptools_pkgconfig.tokenize_pkg_config_specs gives
+    the pkg-config package list: one conf value may carry whitespace- and
+    comma-separated entries (``openssl/ssl.h=libssl, zlib.h=zlib``). A shlex
+    failure degrades to dropping the value: a malformed map entry must not
+    poison the rest of the map, and the authoritative tokenizer reports its
+    own malformed spellings on the explicit flag path.
+    """
+    entries: list[str] = []
+    for fragment in str(value).split(","):
+        fragment = fragment.strip()
+        if not fragment:
+            continue
+        try:
+            tokens = compiletools.utils.split_command_cached(fragment)
+        except ValueError:
+            continue
+        entries.extend(token.strip() for token in tokens if token.strip())
+    return entries
 
 
 class MacroConvergenceError(Exception):
@@ -580,6 +618,292 @@ class MagicFlagsBase:
 
         return include_paths
 
+    # --- auto-pkg-config inference (plan 2026-09-02 Stage 5) ---
+
+    def _inference_direct_headerdeps(self):
+        """A ``DirectHeaderDeps`` for include-path resolution during inference.
+
+        ``self._headerdeps`` is reused when it already is a DirectHeaderDeps
+        (the default flavour). Under ``--headerdeps=cpp`` (CppHeaderDeps has no
+        ``_find_include``) a lazily created ``DirectHeaderDeps`` is used *only*
+        for ``_find_include`` (F4) -- never ``process``, so the cpp-mode
+        preprocessor walk is untouched. Cached on the instance.
+        """
+        if getattr(self, "_infer_direct_headerdeps", None) is None:
+            if isinstance(self._headerdeps, compiletools.headerdeps.DirectHeaderDeps):
+                instance = self._headerdeps
+            else:
+                instance = compiletools.headerdeps.DirectHeaderDeps(self._args, self.context)
+            self._infer_direct_headerdeps = instance
+        return self._infer_direct_headerdeps
+
+    def _infer_pkg_config(self, file_analysis_data, flagsforfilename, expander, macro_state=None):
+        """Infer PKG-CONFIG packages from the settled active #include set.
+
+        Plan 2026-09-02 Stage 5. Runs once per ``_parse`` after every explicit
+        magic flag of every file in the translation unit has been processed
+        and the macro state has converged (F3), and returns deduped,
+        package-sorted ``(package, including_file)`` pairs that the caller
+        feeds through the normal PKG-CONFIG processing path (F7: the
+        downstream flag shape is identical to an explicit annotation, and
+        inferred packages sort after explicit ones so the result does not
+        depend on TU-walk order).
+
+        Inference must never cost the translation unit its explicit flags
+        (F8): the whole resolution is wrapped in ``try/except Exception``,
+        and any failure prints one verbose>=1 breadcrumb and returns ``[]``.
+        The one intentional carve-out is the strict-mode ambiguity error,
+        which raises SystemExit outside the wrapped region -- exactly like
+        the explicit PKG-CONFIG branch. SystemExit derives from
+        BaseException, so neither this ``except Exception`` nor Hunter's
+        broad one can swallow it.
+
+        Args:
+            file_analysis_data: The per-file structured data ``_parse`` already
+                gathered (one entry per TU file, each with ``content_hash``).
+            flagsforfilename: The explicit magic flags accumulated so far.
+            expander: The macro expander ``_parse`` built from the settled
+                state (unused for package names, which never carry macros;
+                kept for signature symmetry with ``_process_magic_flag``).
+            macro_state: The settled TU-level ``MacroState`` (from
+                ``self._final_macro_states``); drives the conditional-aware
+                active-include pass. ``None`` falls back to the analyzer's
+                includes (conditional-blind).
+        """
+        try:
+            candidates, results = self._infer_pkg_config_candidates(file_analysis_data, flagsforfilename, macro_state)
+        except SystemExit:
+            raise
+        except Exception as exc:
+            if getattr(self._args, "verbose", 0) >= 1:
+                print(
+                    f"auto-pkg-config: inference skipped ({exc!r}); explicit flags are unaffected",
+                    file=sys.stderr,
+                )
+            return []
+
+        pairs: list[tuple[str, str]] = []
+        for result in results:
+            header = result.header
+            including_file = candidates.get(header, "")
+            if result.package is None:
+                # Diagnostics live outside the F8 wrapper on purpose: the
+                # strict-mode ambiguity termination must survive every broad
+                # except, same as the explicit PKG-CONFIG path.
+                if getattr(self._args, "pkg_config_errors", "warn") == "error" and (
+                    result.reason == compiletools.pkgconfig_infer.REASON_AMBIGUOUS
+                    or result.reason.startswith(compiletools.pkgconfig_infer.REASON_AMBIGUOUS + ": ")
+                ):
+                    print(
+                        f"auto-pkg-config: {header} ambiguous between {', '.join(result.candidates)}; "
+                        f"add auto-pkg-config-map={header}=<pkg> (requested by {including_file})",
+                        file=sys.stderr,
+                    )
+                    raise SystemExit(1)
+                reason = result.reason or compiletools.pkgconfig_infer.REASON_NO_OWNER
+                if result.reason.startswith(compiletools.pkgconfig_infer.REASON_AMBIGUOUS):
+                    reason += "; add auto-pkg-config-map=" + header + "=<pkg>"
+                self._auto_pkg_config_note(header, f"unresolved: {reason}")
+                continue
+            if not compiletools.pkgconfig_infer.pkg_config_exists_quiet(result.package):
+                # The chain picked a package whose .pc has vanished from the
+                # live pkg-config search path. Diagnostic only (warn mode must
+                # not abort the parse; F5/F12): the downstream explicit-path
+                # probe would warn the same way.
+                self._auto_pkg_config_note(header, f"unresolved: {compiletools.pkgconfig_infer.REASON_MISSING_PC}")
+                continue
+            self._auto_pkg_config_note(header, f"-> {result.package} (via {result.resolver})")
+            pairs.append((result.package, including_file))
+
+        # F7: dedupe by package (first including file wins) and sort, so the
+        # emitted order is independent of include discovery order.
+        deduped: dict[str, str] = {}
+        for package, including_file in pairs:
+            deduped.setdefault(package, including_file)
+        return sorted(deduped.items())
+
+    def _infer_pkg_config_candidates(self, file_analysis_data, flagsforfilename, macro_state):
+        """Resolve the candidate headers of one translation unit.
+
+        Returns ``(candidates, results)``: the spelling -> first including file
+        map that was inferred from, and the ``pkgconfig_infer.infer`` verdicts
+        for it (memoised on ``self.context.auto_pkg_config_memo``).
+        """
+        args = self._args
+        verbose = getattr(args, "verbose", 0)
+
+        # 1. Candidate headers: the settled active system includes of every
+        # file in the translation unit, deduped by spelling with the first
+        # including file remembered for diagnostics.
+        candidates: dict[str, str] = {}
+        tu_files: list[str] = []
+        for file_data in file_analysis_data:
+            filepath = get_filepath_by_hash(file_data["content_hash"], self.context)
+            if not filepath:
+                continue
+            tu_files.append(filepath)
+            try:
+                analysis_result = self._get_file_analyzer_result(filepath)
+            except OSError:
+                continue
+            if macro_state is not None:
+                # F3/F4: the settled macro state decides which #includes are
+                # active. The same TU-level final state is used for every
+                # file of the translation unit; the preprocessing result is
+                # cached, so headers already walked by headerdeps re-hit it.
+                preprocessed = get_or_compute_preprocessing(analysis_result, macro_state, verbose, context=self.context)
+                includes = preprocessed.active_includes
+            else:
+                # Conditional-blind fallback for flavours without a settled
+                # MacroState: every analyzed include counts. Commented-out
+                # directives still carry ``is_commented`` in this shape.
+                includes = analysis_result.includes
+            for include in includes:
+                if include.get("is_commented", False):
+                    continue
+                if not include.get("is_system", False):
+                    continue
+                spelling = str(include["filename"])
+                candidates.setdefault(spelling, filepath)
+
+        if not candidates:
+            return {}, []
+
+        # 2. Project-ness (F4): a header resolvable through the project's
+        # include search (the including file's directory plus the build
+        # state's -I/-isystem dirs) is a project header and never a
+        # pkg-config candidate -- it is dropped before any InferenceResult
+        # exists, so no diagnostic mentions it.
+        direct = self._inference_direct_headerdeps()
+        for spelling in list(candidates):
+            including_file = candidates[spelling]
+            if direct._find_include(sz.Str(spelling), compiletools.wrappedos.dirname(including_file)) is not None:
+                del candidates[spelling]
+
+        if not candidates:
+            return {}, []
+
+        # 3. Build the InferenceConfig.
+        strict = getattr(args, "pkg_config_errors", "warn") == "error"
+
+        # Resolver chain, validated at use time: conf-file values bypass
+        # argparse choice checking, so an unknown token raises here and the
+        # F8 wrapper turns it into a verbose breadcrumb.
+        resolvers = tuple(
+            token.strip()
+            for token in str(getattr(args, "auto_pkg_config_resolvers", "pc,distro")).split(",")
+            if token.strip()
+        )
+        unknown = [token for token in resolvers if token not in _AUTO_PKG_CONFIG_RESOLVER_SET]
+        if unknown:
+            raise ValueError(
+                f"unknown auto-pkg-config resolver(s) {', '.join(unknown)}; "
+                f"allowed: {', '.join(sorted(_AUTO_PKG_CONFIG_RESOLVER_SET))}"
+            )
+
+        header_map: dict[str, str] = {}
+        ignore_globs: list[str] = []
+        for attr, sink in (
+            ("auto_pkg_config_map", header_map),
+            ("auto_pkg_config_ignore", ignore_globs),
+        ):
+            # prepend lands leftmost, append rightmost (the xxpend contract
+            # build_inputs._merged_pkg_config_specs encodes for pkg-config
+            # specs); the first entry for a key wins, so prepend outranks a
+            # bare value which outranks append for map collisions.
+            values: list[str] = []
+            for xx in ("prepend_", "", "append_"):
+                values.extend(getattr(args, xx + attr, None) or [])
+            for value in values:
+                for entry in _auto_pkg_config_entries(value):
+                    if sink is header_map:
+                        header, sep, package = entry.partition("=")
+                        if sep and header and package:
+                            header_map.setdefault(header, package)
+                    else:
+                        ignore_globs.append(entry)
+
+        # Explicit packages: this TU's PKG-CONFIG annotations (macro-expanded
+        # by _parse already, so the token list carries spaced version
+        # constraints as separate tokens -- rejoining them reconstructs the
+        # specs tokenize_pkg_config_specs expects) plus the conf/CLI list.
+        explicit_packages: set[str] = set()
+        tu_specs = " ".join(str(token) for token in flagsforfilename.get(sz.Str("PKG-CONFIG"), []))
+        if tu_specs:
+            try:
+                specs = compiletools.apptools_pkgconfig.tokenize_pkg_config_specs([tu_specs])
+            except compiletools.utils.FlagTokenizeError:
+                # The authoritative diagnostic comes from the explicit
+                # processing path (F8); inference must not re-raise it.
+                specs = []
+            explicit_packages.update(compiletools.apptools_pkgconfig._bare_package_name(spec) for spec in specs)
+        for spec in compiletools.build_inputs._merged_pkg_config_specs(args):
+            explicit_packages.add(compiletools.apptools_pkgconfig._bare_package_name(spec))
+
+        # Explicit lib stems: this TU's LDFLAGS/LINKFLAGS annotations plus the
+        # build state's LDFLAGS tokens.
+        explicit_lib_stems: set[str] = set()
+        for slot in (sz.Str("LDFLAGS"), sz.Str("LINKFLAGS")):
+            for token in flagsforfilename.get(slot, []):
+                text = str(token)
+                if text.startswith("-l") and len(text) > 2:
+                    explicit_lib_stems.add(text[2:])
+        for token in compiletools.build_apply.get_build_state(args).flags.ld:
+            text = str(token)
+            if text.startswith("-l") and len(text) > 2:
+                explicit_lib_stems.add(text[2:])
+
+        # Explicit include dirs: TU-declared -I/-isystem plus the state's.
+        explicit_include_dirs = list(
+            dict.fromkeys(
+                compiletools.wrappedos.realpath(directory)
+                for directory in self._tu_declared_include_paths(tu_files)
+                + compiletools.apptools.extract_system_include_paths(args)
+            )
+        )
+
+        # Search dirs (Stage 2 order): TU-declared -isystem/-I, state
+        # -isystem/-I, CPATH-family, compiler built-ins -- then the
+        # pkg-config-exported include dirs, so a header that only pkg-config
+        # knows how to reach is still locatable and the pc-index resolver can
+        # attribute it (the covered-by-explicit guard above only considers
+        # user-declared dirs, so these never demote).
+        compiler_builtin_dirs = compiletools.compiler_macros.builtin_include_dirs(getattr(args, "CXX", ""), verbose)
+        pc_dirs = compiletools.pkgconfig_infer.build_pc_include_index(compiler_builtin_dirs)
+        search_dirs = (
+            tuple(explicit_include_dirs)
+            + tuple(compiletools.headerdeps._include_dirs_from_env())
+            + tuple(compiler_builtin_dirs)
+            + tuple(sorted(pc_dirs))
+        )
+
+        config = compiletools.pkgconfig_infer.InferenceConfig(
+            resolvers=resolvers,
+            header_map=header_map,
+            ignore_globs=tuple(ignore_globs),
+            explicit_packages=frozenset(explicit_packages),
+            explicit_lib_stems=frozenset(explicit_lib_stems),
+            explicit_include_dirs=tuple(explicit_include_dirs),
+            search_dirs=search_dirs,
+            compiler_builtin_dirs=tuple(compiler_builtin_dirs),
+            strict=strict,
+        )
+        results = compiletools.pkgconfig_infer.infer(
+            list(candidates.keys()), config, memo=self.context.auto_pkg_config_memo
+        )
+        return candidates, results
+
+    def _auto_pkg_config_note(self, header, outcome):
+        """Print one inference diagnostic at verbose>=1, deduped per
+        (header, outcome) for the process."""
+        if getattr(self._args, "verbose", 0) < 1:
+            return
+        key = (header, outcome)
+        if key in _AUTO_PKG_CONFIG_DIAGNOSED:
+            return
+        _AUTO_PKG_CONFIG_DIAGNOSED.add(key)
+        print(f"auto-pkg-config: {header} {outcome}", file=sys.stderr)
+
     def _resolve_readmacros_path(self, flag, source_filename, extra_include_paths=None):
         """Resolve READMACROS flag to absolute path (pure path resolution logic).
 
@@ -791,6 +1115,27 @@ class MagicFlagsBase:
                 # the per-call state has no hidden dependency on `self`.
                 self._process_magic_flag(magic, flag, flagsforfilename, magic_flag, filepath, expander=expander)
 
+        # Auto-pkg-config inference (plan 2026-09-02 Stage 5): after every
+        # explicit magic flag of every TU file has been processed (F7: the
+        # inferred packages sort after the explicit ones, so the PKG-CONFIG
+        # list is independent of include-walk order) and before the LINKFLAGS
+        # merge that finalizes the flag lists. Each inferred pair goes through
+        # the ordinary PKG-CONFIG processing path so the resulting flag slots,
+        # LDFLAGS edges, and PKG-CONFIG key are identical to an explicit
+        # annotation.
+        if getattr(self._args, "auto_pkg_config", False):
+            for pkg, including_file in self._infer_pkg_config(
+                file_analysis_data, flagsforfilename, expander, macro_state=macro_state
+            ):
+                self._process_magic_flag(
+                    sz.Str("PKG-CONFIG"),
+                    sz.Str(pkg),
+                    flagsforfilename,
+                    {"key": "PKG-CONFIG", "value": pkg, "inferred": True},
+                    including_file,
+                    expander=expander,
+                )
+
         # Merge deprecated LINKFLAGS into LDFLAGS before deduplication
         if sz.Str("LINKFLAGS") in flagsforfilename:
             flagsforfilename[sz.Str("LDFLAGS")].extend(flagsforfilename[sz.Str("LINKFLAGS")])
@@ -971,6 +1316,9 @@ class MagicFlagsBase:
         compiletools.apptools.clear_cache()
         DirectMagicFlags.clear_cache()
         CppMagicFlags.clear_cache()
+        # Inference diagnostics are deduped per process; a fresh parse session
+        # (tests re-parse the same files) must be able to re-report them.
+        _AUTO_PKG_CONFIG_DIAGNOSED.clear()
         # Clear LRU caches
         compiletools.utils.split_command_cached.cache_clear()
         compiletools.utils.split_command_cached_sz.cache_clear()

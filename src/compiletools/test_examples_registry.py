@@ -13,7 +13,7 @@ from compiletools import examples_registry as er
     ("registry", "expected_size"),
     [
         pytest.param(er.EXAMPLES_E2E, 44, id="examples-end-to-end"),
-        pytest.param(er.EXAMPLES_FEATURES, 29, id="examples-features"),
+        pytest.param(er.EXAMPLES_FEATURES, 30, id="examples-features"),
     ],
 )
 def test_registry_size(registry, expected_size):

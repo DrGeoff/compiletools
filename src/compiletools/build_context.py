@@ -187,6 +187,14 @@ class BuildContext:
         # want_libs because a libs-free entry must not be served to a caller
         # that needs libs.
         self.pkg_config_query_cache: dict[tuple[str, str | None, str, bool], PkgConfigResult] = {}
+        # auto-pkg-config inference memo (plan 2026-09-02 Stage 5). Owned
+        # cache -- purity exception (b), category (b) like
+        # pkg_config_query_cache: pkgconfig_infer.infer keys it on
+        # (header_realpath, PKG_CONFIG_PATH, resolvers), so a
+        # PKG_CONFIG_PATH change re-resolves instead of serving a stale
+        # verdict. Lives and dies with this BuildContext rather than being
+        # cleared in place, exactly like pkg_config_query_cache above.
+        self.auto_pkg_config_memo: dict = {}
         # Sentinel: True means PKG_CONFIG_PATH was unset before override.
         # str means we saved that prior value. None means no override active.
         self._original_pkg_config_path: str | bool | None = None
