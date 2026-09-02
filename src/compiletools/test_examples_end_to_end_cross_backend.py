@@ -36,7 +36,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 import pytest
 
@@ -127,6 +127,12 @@ class ExamplePlan:
             tmpdir so clones never share or pollute global state.
         extra_args: Additional argv tokens appended after ``--backend``.
         extra_env: Environment variables to set for the subprocess.
+        prebuild: Optional per-cell hook called with the copied workspace
+            path right before the build subprocess runs. Returns env
+            additions merged into the subprocess environment (after the
+            ``needs_pkg_config`` PKG_CONFIG_PATH, before ``extra_env``) --
+            e.g. the auto_pkg_config cell compiles a real fixture library
+            and publishes it through a generated ``.pc``.
     """
 
     targets: tuple[str, ...] = ()
@@ -137,6 +143,7 @@ class ExamplePlan:
     needs_network_clone: bool = False
     extra_args: tuple[str, ...] = ()
     extra_env: dict[str, str] = dataclasses.field(default_factory=dict)
+    prebuild: Callable[[pathlib.Path], dict[str, str]] | None = None
 
 
 # Most examples are vanilla --auto builds. Only the awkward ones need
@@ -166,6 +173,86 @@ _EXAMPLES_REQUIRING_STDLIB_HEADER_UNITS = frozenset(
     }
 )
 
+
+def _prebuild_auto_pkg_config(workspace: pathlib.Path) -> dict[str, str]:
+    """Make the autoinfer fixture library real for one matrix cell.
+
+    ``autoinfer/api.h`` only *declares* ``autoinfer_answer()``; the
+    definition lives in ``examples-features/pkgs/autoinfer-src/autoinfer.c``.
+    This hook compiles it into a static ``libautoinfer.a`` inside the cell's
+    workspace and publishes it through a generated ``autoinfer.pc`` whose
+    ``Cflags: -I<ws>/include`` / ``Libs: -L<ws>/lib -lautoinfer`` point INSIDE
+    the workspace (bazel/cmake sandboxes reject absolute include paths
+    outside it -- the same hermeticity restriction documented for the
+    ``cxx_modules_header_unit_*`` opt-outs). Listed first on
+    ``PKG_CONFIG_PATH``, the generated ``.pc`` shadows the fixture's
+    ``Libs: -lautoinfer`` for the package name ``autoinfer``, so the ordinary
+    PKG-CONFIG magic path -- explicit or inferred -- links against the real
+    library.
+
+    Returns the env additions for the build subprocess: the cell-scoped
+    ``PKG_CONFIG_PATH`` (workspace pcdir first, shared fixture pkgs second).
+    """
+    cxx = compiletools.apptools.get_functional_cxx_compiler()
+    if not cxx:
+        raise AssertionError("auto_pkg_config prebuild: no functional C++ compiler found")
+    cc = compiletools.apptools.derive_c_compiler_from_cxx(cxx)
+
+    pcdir = workspace / "pkgconfig"
+    libdir = workspace / "lib"
+    incdir = workspace / "include"
+    objdir = workspace / "autoinfer-obj"
+    for directory in (pcdir, libdir, incdir, objdir):
+        directory.mkdir(parents=True, exist_ok=True)
+
+    src_root = pathlib.Path(uth.example_path("pkgs"))
+
+    # The header tree: copied into the workspace so the inferred -I stays
+    # inside it (sandbox hermeticity, see the docstring).
+    shutil.copytree(src_root / "autoinfer-include", incdir, dirs_exist_ok=True)
+
+    # Compile the fixture library with the probed C compiler (derived from
+    # the functional C++ compiler, the same derivation create_temp_config
+    # uses) and archive it. No compiler names are hardcoded anywhere.
+    objfile = objdir / "autoinfer.o"
+    compile_step = subprocess.run(
+        [cc, "-c", "-o", str(objfile), str(src_root / "autoinfer-src" / "autoinfer.c")],  # type: ignore[list-item]
+        capture_output=True,
+        text=True,
+    )
+    if compile_step.returncode != 0:
+        raise AssertionError(
+            "auto_pkg_config prebuild: compiling autoinfer.c failed\n"
+            f"stdout: {compile_step.stdout}\nstderr: {compile_step.stderr}"
+        )
+    archive_step = subprocess.run(
+        ["ar", "rcs", str(libdir / "libautoinfer.a"), str(objfile)],
+        capture_output=True,
+        text=True,
+    )
+    if archive_step.returncode != 0:
+        raise AssertionError(
+            "auto_pkg_config prebuild: archiving libautoinfer.a failed\n"
+            f"stdout: {archive_step.stdout}\nstderr: {archive_step.stderr}"
+        )
+
+    # Generated .pc shadowing the fixture's Libs: -lautoinfer for the name
+    # 'autoinfer' (first on PKG_CONFIG_PATH wins), with all flags pointing
+    # inside the workspace.
+    (pcdir / "autoinfer.pc").write_text(
+        "Name: autoinfer\n"
+        "Description: auto_pkg_config e2e cell library (generated per cell)\n"
+        "Version: 1.0\n"
+        f"Cflags: -I{incdir}\n"
+        f"Libs: -L{libdir} -lautoinfer\n"
+    )
+
+    return {
+        "PKG_CONFIG_PATH": f"{pcdir}{os.pathsep}{src_root}",
+        "CT_AUTO_PKG_CONFIG": "1",
+    }
+
+
 _EXAMPLE_PLANS: dict[str, ExamplePlan] = {
     # ----- vanilla --auto, no special setup -----
     "appinfo": ExamplePlan(
@@ -178,6 +265,30 @@ _EXAMPLE_PLANS: dict[str, ExamplePlan] = {
         # stdout assertion lives in test_appinfo_example.py.
         extra_args=("--prebuild-script=./gen_appinfo.sh appinfo.cpp",),
         extra_env={"APP_NAME": "demo_app", "APP_VERSION": "1.2.3"},
+    ),
+    # Default-on //#PKG-CONFIG inference showcase: a bare
+    # #include <autoinfer/api.h> with no annotation. The prebuild compiles
+    # a real libautoinfer.a into the cell's workspace and publishes it
+    # through a generated autoinfer.pc (Libs: -L<ws>/lib -lautoinfer) that
+    # shadows the fixture's Libs: -lautoinfer, so the positive cell is a
+    # genuine link test: inference must inject both the -I (compile finds
+    # the header) and the -l (link finds the symbol). The negative half --
+    # --no-auto-pkg-config must fail at the #include -- lives in
+    # test_auto_pkg_config_negative. Skips when pkg-config is absent.
+    #
+    # bazel/cmake are skipped: PKG-CONFIG magic flags expand to the
+    # 2-token ``-isystem <dir>`` form and those backends' rule emitters
+    # mishandle it -- cmake's extract_copts leaves a bare orphan
+    # ``-isystem`` in target_compile_options (gcc then consumes cmake's
+    # ``-MD`` as the -isystem argument: "cc1plus: error: to generate
+    # dependencies you must specify either '-M' or '-MM'"), and bazel's
+    # strip_includes drops the dir entirely so the compile can't find the
+    # header. Every other PKG-CONFIG magic example already skips these
+    # backends for the same family of reasons; a cmake-backend fix would
+    # be a separate production change, not a Stage-6 test-harness one.
+    "auto_pkg_config": ExamplePlan(
+        skip_for_backends=frozenset({"bazel", "cmake"}),
+        prebuild=_prebuild_auto_pkg_config,
     ),
     # Two subprojects each with a main.cpp — the source-mirrored bindir
     # layout must build BOTH (they'd silently collide under a flat
@@ -506,18 +617,23 @@ def _build_argv(
     return argv
 
 
-def _build_env(plan: ExamplePlan) -> dict[str, str]:
+def _build_env(plan: ExamplePlan, workspace: pathlib.Path) -> dict[str, str]:
     """Build a clean environment for the subprocess.
 
     Strips host CXXFLAGS/CFLAGS/LDFLAGS/CPPFLAGS so the test isn't at
     the mercy of whatever the operator has exported, then layers on the
     example's own extra_env, then optionally PKG_CONFIG_PATH pointing at
-    examples-features/pkgs/."""
+    examples-features/pkgs/. A ``prebuild`` hook runs last before
+    ``extra_env``: it receives the workspace and returns env additions
+    (e.g. a cell-scoped PKG_CONFIG_PATH) for examples that need per-cell
+    build-side setup."""
     env = os.environ.copy()
     for var in ("CXXFLAGS", "CFLAGS", "LDFLAGS", "CPPFLAGS"):
         env.pop(var, None)
     if plan.needs_pkg_config:
         env["PKG_CONFIG_PATH"] = str(pathlib.Path(uth.example_path("pkgs")))
+    if plan.prebuild is not None:
+        env.update(plan.prebuild(workspace))
     env.update(plan.extra_env)
     return env
 
@@ -529,7 +645,7 @@ def _run_build(
     cas_root: pathlib.Path,
 ) -> subprocess.CompletedProcess:
     argv = _build_argv(workspace, backend_name, plan, cas_root)
-    env = _build_env(plan)
+    env = _build_env(plan, workspace)
     try:
         return subprocess.run(argv, cwd=workspace, env=env, capture_output=True, text=True)
     finally:
@@ -584,6 +700,12 @@ def test_example_builds_with_backend(example_name, backend_name, cas_layout, tmp
         pytest.skip(f"{backend_name} build tool not on PATH")
     if plan.needs_network_clone and not _github_sudoku_reachable():
         pytest.skip(f"cannot reach {_SUDOKU_URL} (offline or blocked)")
+    if example_name == "auto_pkg_config" and shutil.which("pkg-config") is None:
+        # pkgconfig_infer's resolver chain bottoms out in pkg-config; the
+        # auto_pkg_config cell is a genuine link test through it, so there
+        # is nothing to assert on a box without the tool (the Stage-5b
+        # magicflags tests cover the pkg-config-free classification path).
+        pytest.skip("pkg-config not on PATH")
     if example_name == "cxx_modules_import_std" and not _toolchain_supports_import_std():
         pytest.skip(
             "toolchain does not ship a std-module source (needs gcc 15+ for bits/std.cc, or clang+libc++ for std.cppm)"
@@ -615,6 +737,69 @@ def test_example_builds_with_backend(example_name, backend_name, cas_layout, tmp
         f"ct-cake failed for example={example_name!r} backend={backend_name!r} "
         f"cas_layout={cas_layout!r}\n"
         f"argv: {_build_argv(workspace, backend_name, plan, cas_root)}\n"
+        f"--- stdout ---\n{result.stdout}\n"
+        f"--- stderr ---\n{result.stderr}\n"
+    )
+
+
+@uth.requires_functional_compiler
+@pytest.mark.parametrize("backend_name", ["make", "ninja", "shake"])
+def test_auto_pkg_config_example_without_inference_fails_to_link(backend_name, tmp_path):
+    """The auto_pkg_config example must fail without inference — at LINK.
+
+    The positive cells (auto_pkg_config x every backend above) prove that
+    inference made the build work; this cell pins WHICH half did. With the
+    include path supplied explicitly (state ``-I``) but
+    ``--no-auto-pkg-config`` on argv, the TU compiles (the header only
+    declares) and the link fails with ``undefined reference to
+    'autoinfer_answer()'`` — so the ``-lautoinfer`` on the successful link
+    line came from the inferred ``//#PKG-CONFIG``, not from anywhere else.
+
+    Mirrors the matrix's per-cell workspace isolation (copy_example_workspace
+    + the same prebuild hook); only the failure expectation and the explicit
+    ``-I`` differ from the positive cells. Skipped for backends whose tool
+    is not on PATH, and like the matrix, needs a functional compiler.
+    """
+    if not uth._backend_tool_available(backend_name):
+        pytest.skip(f"{backend_name} build tool not on PATH")
+    if shutil.which("pkg-config") is None:
+        pytest.skip("pkg-config not on PATH")
+
+    example_name = "auto_pkg_config"
+    plan = _example_plan(example_name)
+    workspace = uth.copy_example_workspace(
+        pathlib.Path(uth.e2e_dir()) / example_name,
+        pathlib.Path(str(tmp_path)) / "ws",
+    )
+    cas_root = _resolve_cas_root(workspace, "inside")
+    env = _build_env(plan, workspace)
+    incdir = workspace / "include"
+
+    argv = _build_argv(workspace, backend_name, plan, cas_root)
+    # Compile-side path only: state -I so the TU compiles under
+    # --no-auto-pkg-config, isolating the failure to the link line. The
+    # header located under this explicit dir is F1-covered, so inference
+    # would contribute nothing even without --no-auto-pkg-config.
+    argv.append(f"--prepend-CXXFLAGS=-I{incdir}")
+    argv.append("--no-auto-pkg-config")
+
+    result = subprocess.run(argv, cwd=workspace, env=env, capture_output=True, text=True)
+    assert result.returncode != 0, (
+        "expected the auto_pkg_config example to fail without inference "
+        f"(backend={backend_name})\n"
+        f"argv: {argv}\n"
+        f"--- stdout ---\n{result.stdout}\n"
+        f"--- stderr ---\n{result.stderr}\n"
+    )
+    combined = result.stdout + result.stderr
+    assert "autoinfer" in combined, (
+        "expected the linker error to name the missing autoinfer symbol\n"
+        f"--- stdout ---\n{result.stdout}\n"
+        f"--- stderr ---\n{result.stderr}\n"
+    )
+    assert "undefined reference" in combined or "undefined symbol" in combined, (
+        "expected an undefined-reference link error (the compile must have "
+        "succeeded -- the failure proves the -l came from inference)\n"
         f"--- stdout ---\n{result.stdout}\n"
         f"--- stderr ---\n{result.stderr}\n"
     )

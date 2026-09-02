@@ -93,16 +93,15 @@ def create_magic_parser(extraargs=None, tempdir=None, context=None):
     temp_config_name = uth.create_temp_config(tempdir)
     argv = ["--config=" + temp_config_name] + extraargs
 
-    config_files = compiletools.configutils.config_files_from_variant(argv=argv, exedir=uth.cakedir())
-
-    cap = configargparse.ArgumentParser(
-        conflict_handler="resolve",
-        description="TestMagicFlagsModule",
-        formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
-        default_config_files=config_files,
-        args_for_setting_config_path=["-c", "--config"],
-        ignore_unknown_config_file_keys=True,
-    )
+    # Production parser class (_ComposingArgumentParser), same constructor
+    # arguments apptools.create_parser uses everywhere else (identical
+    # default_config_files — verified to equal the config_files_from_variant
+    # list this helper used to build by hand). A bare configargparse
+    # ArgumentParser here would let a CT_AUTO_PKG_CONFIG=1 environment
+    # inject --auto-pkg-config even when argv carries --no-auto-pkg-config,
+    # tripping the mutually-exclusive group; the composing class suppresses
+    # the env injection when either form of a flag pair is on the CLI.
+    cap = compiletools.apptools.create_parser("TestMagicFlagsModule", argv=argv)
 
     compiletools.apptools.add_common_arguments(cap)
     compiletools.headerdeps.add_arguments(cap)
