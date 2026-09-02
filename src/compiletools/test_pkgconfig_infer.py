@@ -9,8 +9,9 @@ autouse fixture clears them before and after every test here.
 Conventions honoured here: no compiler names, no ``os.chdir`` (env is changed
 through ``monkeypatch.setenv``), and only the documented subprocess
 boundaries (``_run_pkg_config_index``, ``_run_pkg_config_exists``,
-``_run_distro_owner_query``, ``_run_distro_list_query``) are ever
-wrapped/stubbed -- every other function runs for real.
+``_run_distro_owner_query``, ``_run_distro_list_query``,
+``_run_man_lookup``) are ever wrapped/stubbed -- every other function runs
+for real.
 """
 
 import os
@@ -713,3 +714,144 @@ def test_live_rpm_owner_smoke(pkgconfig_env, auto_pkg_config_on):
     distros differ (glibc-headers vs glibc-devel)."""
     owners = pkgconfig_infer.owners_for_headers(["/usr/include/stdio.h"], "rpm")
     assert bool(owners.get("/usr/include/stdio.h"))
+
+
+# ---------------------------------------------------------------------------
+# Stage 4: libc-owner guard through the chain, no-backend fallback, man stub
+# ---------------------------------------------------------------------------
+
+
+def test_kernel_headers_futex_path_counts_as_standard(pkgconfig_env, auto_pkg_config_on, monkeypatch):
+    """Stage 4 / F6 part 2, futex shape: a ``/usr/include/linux/futex.h``
+    path whose distro owner is ``kernel-headers`` is a standard header via
+    the ``_LIBC_OWNERS`` check -- no package-list query is attempted."""
+    monkeypatch.setenv("CT_DISTRO_BACKEND", "rpm")
+    pkgconfig_infer.clear_cache()
+    monkeypatch.setattr(pkgconfig_infer, "_run_distro_owner_query", lambda paths, called_backend: "kernel-headers\n")
+    calls = {"list": 0}
+
+    def counting_list(pkg, called_backend):
+        calls["list"] += 1
+        return ""
+
+    monkeypatch.setattr(pkgconfig_infer, "_run_distro_list_query", counting_list)
+    result = pkgconfig_infer.resolve_via_distro("linux/futex.h", "/usr/include/linux/futex.h")
+    assert calls["list"] == 0
+    assert result.package is None
+    assert result.resolver is None
+    assert result.reason == REASON_STD
+
+
+def test_no_distro_backend_nonstd_name_is_not_standard(pkgconfig_env, auto_pkg_config_on, monkeypatch, tmp_path):
+    """Fallback half of the std guard: with no distro backend at all, a
+    non-standard name under a default include dir is NOT classified standard
+    -- only the static fast-path list applies. A libc-prefix sibling in the
+    same call still takes that fast path."""
+    monkeypatch.setenv("CT_DISTRO_BACKEND", "none")
+    pkgconfig_infer.clear_cache()
+    usr_include = tmp_path / "usr" / "include"
+    usr_include.mkdir(parents=True)
+    (usr_include / "myown.h").write_text("#pragma once\n")
+    config = InferenceConfig(search_dirs=(str(usr_include),))
+    results = pkgconfig_infer.infer(["myown.h", "sys/types.h"], config, memo={})
+    by_header = {result.header: result for result in results}
+    assert by_header["myown.h"].reason == REASON_NO_OWNER
+    assert by_header["myown.h"].package is None
+    assert by_header["myown.h"].resolver is None
+    assert by_header["sys/types.h"].reason == REASON_STD
+
+
+def test_man_resolver_enabled_runs_stub_without_boundary(pkgconfig_env, auto_pkg_config_on, monkeypatch, tmp_path):
+    """resolvers=("man",): the stub resolver settles the header with the
+    not-implemented reason and the man boundary is never entered (the
+    call-count is the drop-in contract; the reason assertion is the
+    behavioural half)."""
+    include_dir = tmp_path / "man-include"
+    include_dir.mkdir()
+    (include_dir / "weird.h").write_text("#pragma once\n")
+    config = InferenceConfig(resolvers=("man",), search_dirs=(str(include_dir),))
+    calls = {"man": 0}
+
+    def counting_man(header):
+        calls["man"] += 1
+
+    monkeypatch.setattr(pkgconfig_infer, "_run_man_lookup", counting_man)
+    (result,) = pkgconfig_infer.infer(["weird.h"], config, memo={})
+    assert calls["man"] == 0
+    assert result.package is None
+    assert result.resolver is None
+    assert result.reason == "man resolver not implemented"
+
+
+def test_default_resolvers_never_invoke_man(pkgconfig_env, auto_pkg_config_on, monkeypatch, tmp_path):
+    """Default resolvers ("pc", "distro"): resolve_via_man is not invoked at
+    all -- patched to raise, the chain still completes with the distro
+    stage's no-owner verdict, never the man stub's reason."""
+    include_dir = tmp_path / "default-include"
+    include_dir.mkdir()
+    (include_dir / "unowned.h").write_text("#pragma once\n")
+    config = InferenceConfig(search_dirs=(str(include_dir),))
+    monkeypatch.setenv("CT_DISTRO_BACKEND", "none")
+    pkgconfig_infer.clear_cache()
+    calls = {"man": 0}
+
+    def exploding_man(header, header_path):
+        calls["man"] += 1
+        raise AssertionError("resolve_via_man must not run under default resolvers")
+
+    monkeypatch.setattr(pkgconfig_infer, "resolve_via_man", exploding_man)
+    (result,) = pkgconfig_infer.infer(["unowned.h"], config, memo={})
+    assert calls["man"] == 0
+    assert result.package is None
+    assert result.resolver is None
+    assert result.reason.startswith(REASON_NO_OWNER)
+    assert result.reason != "man resolver not implemented"
+
+
+def test_std_vector_short_circuits_before_any_boundary(pkgconfig_env, auto_pkg_config_on, monkeypatch):
+    """The std fast path fires before EVERY subprocess boundary: with all
+    three counting stubs in place, ``<vector>`` settles without a single
+    call (the zero counts are the whole contract here; the REASON_STD
+    assertion is the behavioural half)."""
+    calls = {"index": 0, "owner": 0, "man": 0}
+
+    def counting_index():
+        calls["index"] += 1
+        return [], {}
+
+    def counting_owner(paths, called_backend):
+        calls["owner"] += 1
+        return ""
+
+    def counting_man(header):
+        calls["man"] += 1
+
+    monkeypatch.setattr(pkgconfig_infer, "_run_pkg_config_index", counting_index)
+    monkeypatch.setattr(pkgconfig_infer, "_run_distro_owner_query", counting_owner)
+    monkeypatch.setattr(pkgconfig_infer, "_run_man_lookup", counting_man)
+    (result,) = pkgconfig_infer.infer(["vector"], _config(pkgconfig_env), memo={})
+    assert calls == {"index": 0, "owner": 0, "man": 0}
+    assert result.reason == REASON_STD
+    assert result.package is None
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "sys/",
+        "netinet/",
+        "arpa/",
+        "linux/",
+        "asm/",
+        "asm-generic/",
+        "bits/",
+        "gnu/",
+        "rpc/",
+        "net/",
+        "netpacket/",
+    ],
+)
+def test_std_prefix_fast_path(prefix):
+    """Every libc/kernel prefix (including the Stage 4 addition
+    ``netpacket/``) is classified standard by the static fast path."""
+    assert pkgconfig_infer.is_standard_header(prefix + "whatever.h") is True

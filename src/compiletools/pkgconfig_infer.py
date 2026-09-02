@@ -26,7 +26,9 @@ unresolved):
 6. Covered-by-include-dir -- the header lives under an explicit ``-I``/
    ``-isystem`` dir -> ``REASON_COVERED``.
 7. Resolver chain: pc-index (``"pc"`` in ``InferenceConfig.resolvers``) ->
-   distro (``"distro"``) -> man (``"man"``). The pc-index resolver walks the
+   distro (``"distro"``) -> man (``"man"``); each stage runs only when its
+   name is listed in ``InferenceConfig.resolvers`` (default
+   ``("pc", "distro")``). The pc-index resolver walks the
    header's parent dirs upward against :func:`build_pc_include_index`; a
    single candidate wins, several go through :func:`tie_break`. An ambiguity
    verdict is terminal for the chain: the diagnostic is the answer, and
@@ -39,8 +41,14 @@ unresolved):
    go through :func:`tie_break`. The backend is detected on PATH
    (:func:`detect_distro_backend`, rpm -> dpkg -> pacman -> apk) and can be
    forced or masked with ``CT_DISTRO_BACKEND`` (rpm|dpkg|pacman|apk|none);
-   no backend means the stage runs no subprocess at all.
-9. Post-demotions: an inferred package the user already names explicitly (as a
+   no backend means the stage runs no subprocess at all and only the static
+   std fast path (item 2) classifies standard headers.
+9. man (Stage 4): :func:`resolve_via_man` honours the ``"man"`` resolver
+   gate but is an intentional stub -- it always returns unresolved with the
+   reason ``"man resolver not implemented"`` and never touches its
+   :func:`_run_man_lookup` boundary, which exists as a drop-in slot for the
+   deferred implementation.
+10. Post-demotions: an inferred package the user already names explicitly (as a
    pkg-config package or via its first ``-l`` stem) reports ``REASON_COVERED``
    instead of "inferred".
 
@@ -72,7 +80,8 @@ wrapped so they never raise): :func:`_run_pkg_config_index`,
 :func:`_run_pkg_config_exists`, :func:`_run_distro_owner_query` (one batched
 query for all still-unresolved headers of a TU; apk takes one call per path)
 and :func:`_run_distro_list_query` (per owning package). The man boundary
-(:func:`_run_man_lookup`) is still a stub pending Stage 4. Everything else is
+(:func:`_run_man_lookup`) is a drop-in slot for the deferred man resolver:
+the Stage 4 stub (:func:`resolve_via_man`) never calls it. Everything else is
 pure python; tests stub only the boundaries.
 
 Import-surface note: leaf module. Imports stdlib plus
@@ -250,7 +259,9 @@ def _run_distro_list_query(pkg, backend):
 
 
 def _run_man_lookup(header):
-    """Stub: the man-page resolver lands in Stage 4. Returns None."""
+    """Subprocess-boundary slot for the man-page resolver. Intentionally
+    unimplemented: the Stage 4 stub resolver (:func:`resolve_via_man`) never
+    calls it, so the real implementation is a drop-in."""
     return
 
 
@@ -663,6 +674,7 @@ _STD_PREFIXES = (
     "gnu/",
     "rpc/",
     "net/",
+    "netpacket/",
     "scsi/",
     "xen/",
 )
@@ -1058,8 +1070,9 @@ def resolve_via_distro(
 
 
 def resolve_via_man(header: str, header_path: str | None) -> InferenceResult:
-    """man-page resolver (Stage 4). Stub: always unresolved; the man
-    subprocess boundary is left untouched."""
+    """man-page resolver (Stage 4). Stub by design: always unresolved with
+    the ``"man resolver not implemented"`` reason, and the :func:`_run_man_lookup`
+    boundary is never touched, so the later implementation is a drop-in."""
     return InferenceResult(header, header_path, None, None, (), "man resolver not implemented")
 
 
