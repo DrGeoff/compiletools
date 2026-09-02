@@ -1,0 +1,5 @@
+Name: autoinfer-fam-b
+Description: Auto-inference family fixture B (shared include dir)
+Version: 1.0
+Cflags: -I${pcfiledir}/autoinfer-fam-include
+Libs: -lfam-b

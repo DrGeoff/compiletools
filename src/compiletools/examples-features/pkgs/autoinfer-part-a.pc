@@ -1,0 +1,5 @@
+Name: autoinfer-part-a
+Description: Auto-inference umbrella part A
+Version: 1.0
+Cflags: -I${pcfiledir}/autoinfer-umbrella-include
+Libs: -lpart-a

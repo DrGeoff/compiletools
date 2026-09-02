@@ -1,0 +1,6 @@
+Name: autoinfer-umbrella
+Description: Auto-inference umbrella fixture (requires its parts)
+Version: 1.0
+Requires: autoinfer-part-a autoinfer-part-b
+Cflags: -I${pcfiledir}/autoinfer-umbrella-include
+Libs: -lumbrella

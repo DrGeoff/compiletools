@@ -1,0 +1,5 @@
+Name: autoinfer
+Description: Auto-inference happy-path fixture (unique include dir)
+Version: 1.0
+Cflags: -I${pcfiledir}/autoinfer-include
+Libs: -lautoinfer

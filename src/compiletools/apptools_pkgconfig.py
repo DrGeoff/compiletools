@@ -152,6 +152,13 @@ def clear_cache():
     _cached_pkg_config_exists.cache_clear()
     _forwarded_pkg_config_stderr.clear()
     _report_undefined_pc_variables.cache_clear()
+    # The auto-pkg-config inference memos live in a leaf module that must not
+    # import us at module scope (this function is our import-time users'
+    # only route back), so the fan-out is a deferred import, matching the
+    # build_inputs pattern used for gitroot-relative PKG_CONFIG_PATH.
+    import compiletools.pkgconfig_infer as _infer
+
+    _infer.clear_cache()
 
 
 def get_pkg_config_errors() -> Literal["warn", "error"]:

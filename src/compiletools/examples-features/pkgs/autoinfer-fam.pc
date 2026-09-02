@@ -1,0 +1,5 @@
+Name: fam
+Description: Auto-inference family fixture (tie-break rule 1: Name equals the header's first path component)
+Version: 1.0
+Cflags: -I${pcfiledir}/autoinfer-fam-include
+Libs: -lfam
