@@ -86,6 +86,38 @@ class TestCompilerMacros:
             macros = cm.get_compiler_macros("bad-compiler", verbose=0)
             assert macros == {}
 
+    def test_retries_without_wp_v_when_driver_rejects_it(self):
+        """A driver that rejects -Wp,-v must not lose the macro half.
+
+        The F11 probe passes -Wp,-v so ONE invocation yields macros (stdout)
+        and built-in include dirs (stderr). A driver that rejects -Wp,-v
+        exits non-zero; get_compiler_macros must retry once without the
+        flag, recovering the macros, and memoise () for the include dirs
+        (the fallback run prints no search list)."""
+        # get_compiler_macros is lru_cached and the include-dir memo is
+        # module-global: start from a clean slate.
+        cm.clear_cache()
+
+        calls: list[list[str]] = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(list(argv))
+            if "-Wp,-v" in argv:
+                return _mock_subprocess_result(returncode=1)
+            return _mock_subprocess_result(stdout="#define FOO 1")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            macros = cm.get_compiler_macros("fake-driver-0001", verbose=0)
+            dirs = cm.builtin_include_dirs("fake-driver-0001")
+
+        assert macros == {"FOO": "1"}
+        assert dirs == ()
+        # The retry dropped the flag, and the () include-dir memo satisfied
+        # the builtin_include_dirs query with no third invocation.
+        assert len(calls) == 2
+        assert "-Wp,-v" in calls[0]
+        assert "-Wp,-v" not in calls[1]
+
     def test_get_compiler_macros_failure_not_found(self):
         """Test handling of FileNotFoundError."""
         with patch("subprocess.run", side_effect=FileNotFoundError("Compiler not found")):

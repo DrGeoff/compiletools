@@ -82,13 +82,35 @@ def get_compiler_macros(compiler_path: str, verbose: int = 0) -> dict[str, str]:
         # stderr so ONE invocation yields both the macros (stdout) and the
         # built-in include dirs (stderr) -- F11.
         # Split compiler_path to handle multi-word commands like "ccache g++"
+        base_cmd = compiletools.utils.split_compiler_command(compiler_path, slot="CXX")
         result = subprocess.run(
-            compiletools.utils.split_compiler_command(compiler_path, slot="CXX") + ["-Wp,-v", "-dM", "-E", "-"],
+            base_cmd + ["-Wp,-v", "-dM", "-E", "-"],
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=5,
         )
+
+        # Some compiler drivers reject -Wp,-v outright, failing the whole
+        # probe. Retry once without the flag so the macro half survives (the
+        # pre-F11 behaviour); the fallback run prints no include search
+        # list, so on success the include-dir memo records () instead of a
+        # parsed stderr.
+        used_fallback = False
+        if result.returncode != 0:
+            if verbose >= 4:
+                print(
+                    f"Compiler {compiler_path} returned non-zero exit code {result.returncode} "
+                    "with -Wp,-v; retrying macro probe without it"
+                )
+            result = subprocess.run(
+                base_cmd + ["-dM", "-E", "-"],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            used_fallback = True
 
         if result.returncode != 0:
             if verbose >= 4:
@@ -109,10 +131,16 @@ def get_compiler_macros(compiler_path: str, verbose: int = 0) -> dict[str, str]:
                         macro_value = macro_value[1:-1]
                     macros[macro_name] = macro_value
 
-        # Probe tests may stub subprocess.run with a mock whose stderr is
-        # not a string; guard so a parse always sees probe-shaped text.
-        stderr_text = result.stderr if isinstance(result.stderr, str) else ""
-        _builtin_include_dirs_memo[compiler_path] = _parse_builtin_include_dirs(stderr_text)
+        if used_fallback:
+            # The retry ran without -Wp,-v, so no include search list was
+            # printed: record () rather than parsing a stderr that cannot
+            # contain one.
+            _builtin_include_dirs_memo[compiler_path] = ()
+        else:
+            # Probe tests may stub subprocess.run with a mock whose stderr is
+            # not a string; guard so a parse always sees probe-shaped text.
+            stderr_text = result.stderr if isinstance(result.stderr, str) else ""
+            _builtin_include_dirs_memo[compiler_path] = _parse_builtin_include_dirs(stderr_text)
 
         if verbose >= 3:
             print(f"Queried {len(macros)} macros from {compiler_path}")
