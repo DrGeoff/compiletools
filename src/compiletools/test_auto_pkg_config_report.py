@@ -138,6 +138,40 @@ class TestAutoPkgConfigReport(tb.BaseCompileToolsTestCase):
         assert main(["--fail-on-ambiguous", tu]) == 1
         assert "unresolved:" in capsys.readouterr().out
 
+    @uth.requires_functional_compiler
+    def test_env_strict_pkg_config_errors_cannot_abort_the_report(self, pkgconfig_env, tmp_path, monkeypatch, capsys):
+        """PKG_CONFIG_ERRORS=error (the env var auto-bound to
+        --pkg-config-errors by the empty auto_env_var_prefix) must not make the
+        report die on the first ambiguity: main prepends --pkg-config-errors=warn
+        alongside --auto-pkg-config, so the ambiguity is reported as a verdict
+        and --fail-on-ambiguous still turns it into exit code 1."""
+        monkeypatch.setenv("PKG_CONFIG_PATH", _copy_fam_pc_dir(pkgconfig_env, tmp_path / "pc"))
+        monkeypatch.setenv("CT_DISTRO_BACKEND", "none")
+        monkeypatch.setenv("PKG_CONFIG_ERRORS", "error")
+        tu = self._write_tu(TU_AMBIGUOUS)
+
+        assert main([tu]) == 0
+        out = capsys.readouterr()
+        assert f"{os.path.realpath(tu)}: fam/x.h unresolved: ambiguous" in out.out
+
+        assert main(["--fail-on-ambiguous", tu]) == 1
+        assert f"{os.path.realpath(tu)}: fam/x.h unresolved: ambiguous" in capsys.readouterr().out
+
+    @uth.requires_functional_compiler
+    def test_explicit_cli_strict_pkg_config_errors_still_wins(self, pkgconfig_env, tmp_path, monkeypatch, capsys):
+        """An explicit --pkg-config-errors=error later on the CLI must beat the
+        prepended warn default (argparse last-wins): strict mode aborts on the
+        first ambiguity. Pins the prepend-not-append shape of the argv fix --
+        appended, the forced warn would silently disarm an explicit strict run."""
+        monkeypatch.setenv("PKG_CONFIG_PATH", _copy_fam_pc_dir(pkgconfig_env, tmp_path / "pc"))
+        monkeypatch.setenv("CT_DISTRO_BACKEND", "none")
+        tu = self._write_tu(TU_AMBIGUOUS)
+
+        with pytest.raises(SystemExit) as excinfo:
+            main(["--pkg-config-errors=error", tu])
+        assert excinfo.value.code == 1
+        assert "ambiguous" in capsys.readouterr().err
+
     # -------------------------------------------------------------- magic
 
     @uth.requires_functional_compiler

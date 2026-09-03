@@ -2,9 +2,12 @@
 
 Plan 2026-09-02 Stage 7 diagnostic entry point. Parses each requested file
 through the production ``magicflags`` pipeline (forcing ``--auto-pkg-config``
-on, so the report cannot be silently disabled by conf/env) and prints the raw
-``pkgconfig_infer.InferenceResult`` verdicts -- resolved *and* unresolved with
-the reason -- rather than just the injected packages.
+on and ``--pkg-config-errors=warn`` on, both prepended to argv so conf/env
+can neither disable the report nor kill it on the first ambiguity before
+later files are reported; an explicit ``--pkg-config-errors=error`` on the
+CLI still wins under argparse last-wins) and prints the raw
+``pkgconfig_infer.InferenceResult`` verdicts -- resolved *and* unresolved
+with the reason -- rather than just the injected packages.
 
 Styles:
 
@@ -21,7 +24,9 @@ Styles:
   host-independent CAS keys (F13). Files with no inferences print nothing.
 
 Exit code is 0 (diagnostic) unless ``--fail-on-ambiguous`` and any verdict is
-ambiguous, in which case it is 1.
+ambiguous, in which case it is 1. An explicit CLI ``--pkg-config-errors=error``
+restores the strict abort instead: the run exits 1 on the first ambiguity,
+before any report is emitted.
 """
 
 import dataclasses
@@ -80,8 +85,19 @@ def main(argv=None) -> int:
     # able to turn the report into a silent no-op. The composing parser
     # suppresses the env/conf injection of the flag pair when either form is
     # on the CLI, so the prepend is safe and wins.
+    #
+    # --pkg-config-errors=warn is prepended for the same parse-survival
+    # reason: with the strict policy from conf (`pkg-config-errors = error`)
+    # or the env (PKG_CONFIG_ERRORS), an ambiguous verdict raises
+    # SystemExit(1) inside magicparser.parse on the FIRST file, so later
+    # files are never reported. The flag being on the CLI already makes
+    # configargparse discard the conf/env values; an explicit
+    # --pkg-config-errors=error later on the CLI still wins under argparse
+    # last-wins, so strict enforcement stays opt-in per invocation. This is
+    # a PREPEND, not an append: appended, the forced warn would come after
+    # the user's value and silently disarm an explicit strict run.
     argv = list(sys.argv[1:]) if argv is None else list(argv)
-    argv = ["--auto-pkg-config"] + argv
+    argv = ["--auto-pkg-config", "--pkg-config-errors=warn"] + argv
 
     cap = compiletools.apptools.create_parser(
         "Report the pkg-config packages auto-inference attributes to includes", argv=argv
