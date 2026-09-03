@@ -446,7 +446,7 @@ class MagicFlagsBase:
             print(f"Added -I {flag} to CPPFLAGS, CFLAGS, and CXXFLAGS")
         return flagsforfilename
 
-    def _handle_pkg_config(self, flag, filename, expander=None):
+    def _handle_pkg_config(self, flag, filename, expander=None, magic_flag_data=None):
         """Expand a ``//#PKG-CONFIG=pkg1 pkg2 ...`` annotation.
 
         Args:
@@ -457,6 +457,11 @@ class MagicFlagsBase:
                 inside the pkg-config output (e.g. ``$LIB_SUFFIX``). Passed
                 explicitly rather than read from ``self._expander`` so this
                 method has no hidden mutable per-call state on ``self``.
+            magic_flag_data: The raw magic-flag dict ``_process_magic_flag``
+                received. Its ``inferred`` marker -- set only for
+                auto-pkg-config-injected packages -- switches the verbose>=9
+                per-package trace to the ``Magic PKG-CONFIG (inferred) = ...``
+                label.
 
         The annotation is split into package specs by
         ``apptools.tokenize_pkg_config_specs`` — the same tokenizer the
@@ -527,7 +532,8 @@ class MagicFlagsBase:
             flagsforfilename[sz.Str("LDFLAGS")].extend(libs_list)
 
             if self._args.verbose >= 9:
-                print(f"Magic PKG-CONFIG = {pkg}:")
+                label = " (inferred)" if magic_flag_data and magic_flag_data.get("inferred") else ""
+                print(f"Magic PKG-CONFIG{label} = {pkg}:")
                 print(f"\tadded {cflags_list} to CPPFLAGS, CFLAGS, and CXXFLAGS")
                 print(f"\tadded {libs_list} to LDFLAGS")
 
@@ -700,7 +706,7 @@ class MagicFlagsBase:
                 includes (conditional-blind).
         """
         try:
-            candidates, results, unresolved_explicit = self._infer_pkg_config_candidates(
+            candidates, results, unresolved_explicit, tu_files = self._infer_pkg_config_candidates(
                 file_analysis_data, flagsforfilename, macro_state, tu_main_file=tu_main_file
             )
         except SystemExit:
@@ -718,12 +724,11 @@ class MagicFlagsBase:
         # SystemExit, so the report survives even a fatal ambiguity. Keyed
         # by every TU file's realpath (see the __init__ comment); the same
         # list object is stored under each key, readers must not mutate it.
-        tu_realpaths = []
-        for file_data in file_analysis_data:
-            filepath = get_filepath_by_hash(file_data["content_hash"], self.context)
-            if filepath:
-                tu_realpaths.append(compiletools.wrappedos.realpath(filepath))
-        if tu_realpaths:
+        # tu_files is the TU file list _infer_pkg_config_candidates already
+        # resolved through get_filepath_by_hash -- reuse it instead of
+        # re-walking file_analysis_data for the registry lookup.
+        if tu_files:
+            tu_realpaths = [compiletools.wrappedos.realpath(filepath) for filepath in tu_files]
             self.last_inference_results.update(dict.fromkeys(tu_realpaths, results))
 
         pairs: list[tuple[str, str]] = []
@@ -795,11 +800,14 @@ class MagicFlagsBase:
     def _infer_pkg_config_candidates(self, file_analysis_data, flagsforfilename, macro_state, tu_main_file=None):
         """Resolve the candidate headers of one translation unit.
 
-        Returns ``(candidates, results, unresolved_explicit)``: the spelling ->
-        first including file map that was inferred from, the
+        Returns ``(candidates, results, unresolved_explicit, tu_files)``: the
+        spelling -> first including file map that was inferred from, the
         ``pkgconfig_infer.infer`` verdicts for it (memoised on
-        ``self.context.auto_pkg_config_memo``), and the explicitly declared
-        packages pkg-config cannot find.
+        ``self.context.auto_pkg_config_memo``), the explicitly declared
+        packages pkg-config cannot find, and the TU file list the include
+        walk resolved through ``get_filepath_by_hash`` -- returned so
+        callers (e.g. the Stage 7 diagnostic hook, which keys verdicts by TU
+        realpaths) reuse it instead of re-walking ``file_analysis_data``.
         """
         args = self._args
         verbose = getattr(args, "verbose", 0)
@@ -839,7 +847,7 @@ class MagicFlagsBase:
                 candidates.setdefault(spelling, filepath)
 
         if not candidates:
-            return {}, [], frozenset()
+            return {}, [], frozenset(), tu_files
 
         # 2. Project-ness (F4): a header resolvable through the project's
         # include search (the including file's directory plus the build
@@ -853,7 +861,7 @@ class MagicFlagsBase:
                 del candidates[spelling]
 
         if not candidates:
-            return {}, [], frozenset()
+            return {}, [], frozenset(), tu_files
 
         # 3. Build the InferenceConfig.
         strict = getattr(args, "pkg_config_errors", "warn") == "error"
@@ -983,7 +991,7 @@ class MagicFlagsBase:
         results = compiletools.pkgconfig_infer.infer(
             list(candidates.keys()), config, memo=self.context.auto_pkg_config_memo
         )
-        return candidates, results, unresolved_explicit
+        return candidates, results, unresolved_explicit, tu_files
 
     def _auto_pkg_config_note(self, header, outcome):
         """Print one inference diagnostic at verbose>=1, deduped per
@@ -1355,7 +1363,8 @@ class MagicFlagsBase:
             flag: Magic flag value (already macro-expanded by the caller).
             flagsforfilename: Output dict to append flags into.
             magic_flag_data: Raw structured magic-flag dict (for SOURCE
-                context resolution etc.).
+                context resolution; forwarded to the PKG-CONFIG handler,
+                whose ``inferred`` marker picks the verbose>=9 label).
             filename: Path of the file the magic flag came from.
             expander: Optional ``SimplePreprocessor`` forwarded to
                 downstream handlers (notably ``_handle_pkg_config``) that
@@ -1393,7 +1402,8 @@ class MagicFlagsBase:
         if magic == sz.Str("PKG-CONFIG"):
             try:
                 self._extend_flags_from_dict(
-                    flagsforfilename, self._handle_pkg_config(flag, filename, expander=expander)
+                    flagsforfilename,
+                    self._handle_pkg_config(flag, filename, expander=expander, magic_flag_data=magic_flag_data),
                 )
             except compiletools.apptools_pkgconfig.PkgConfigError as exc:
                 # Verbosity must not invert the policy. SystemExit is the

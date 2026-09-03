@@ -310,6 +310,35 @@ class TestAutoPkgConfig(tb.BaseCompileToolsTestCase):
         _, result = self._parse(text)
         assert self._strings(result, "PKG-CONFIG") == ["autoinfer", "autoinfer-umbrella"]
 
+    # ------------------------------- verbose label: inferred vs explicit
+
+    @uth.requires_functional_compiler
+    @pytest.mark.usefixtures("pkgconfig_env", "auto_pkg_config_on")
+    def test_inferred_package_verbose_label_marks_inferred(self, capsys):
+        """The inferred package rides the ordinary PKG-CONFIG processing path
+        carrying the inferred marker, so the verbose>=9 per-package trace
+        labels it 'Magic PKG-CONFIG (inferred) = ...' -- and, with no
+        annotation anywhere in the TU, no plain-labelled trace appears."""
+        _, result = self._parse(TU_AUTOINFER, extraargs=["-vvvvvvvvv"])
+        assert self._strings(result, "PKG-CONFIG") == ["autoinfer"], "precondition: autoinfer was inferred"
+        out = capsys.readouterr().out
+        assert "Magic PKG-CONFIG (inferred) = autoinfer:" in out
+        assert "Magic PKG-CONFIG = autoinfer:" not in out
+
+    @uth.requires_functional_compiler
+    @pytest.mark.usefixtures("pkgconfig_env", "auto_pkg_config_on")
+    def test_explicit_package_verbose_label_not_marked_inferred(self, capsys):
+        """The must-not-leak control: a hand-written //#PKG-CONFIG=autoinfer
+        prints the plain 'Magic PKG-CONFIG = ...' trace at the same verbosity
+        -- the (inferred) marker never lands on an explicit annotation (the
+        explicit flag covers the header, so inference adds nothing here)."""
+        text = "//#PKG-CONFIG=autoinfer\n#include <autoinfer/api.h>\nint main() { return 0; }\n"
+        _, result = self._parse(text, extraargs=["-vvvvvvvvv"])
+        assert self._strings(result, "PKG-CONFIG") == ["autoinfer"], "precondition: the annotation parsed"
+        out = capsys.readouterr().out
+        assert "Magic PKG-CONFIG = autoinfer:" in out
+        assert "Magic PKG-CONFIG (inferred)" not in out
+
     # --------------------------------------------- F2: ambiguity warn/strict/map
 
     @uth.requires_functional_compiler
