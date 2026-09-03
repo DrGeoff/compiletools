@@ -742,6 +742,66 @@ def test_distro_libc_owner_counts_as_standard(pkgconfig_env, auto_pkg_config_on,
     assert result.reason == REASON_STD
 
 
+@pytest.mark.parametrize(
+    "owner",
+    [
+        # exact _LIBC_OWNERS members, including the newly added libc-dev
+        "libc6-dev",
+        "linux-libc-dev",
+        "glibc",
+        "libc-dev",
+        # versioned / multiarch / cross / suffixed spellings the exact set
+        # alone misses -- caught by the _LIBC_OWNER_PREFIXES half
+        "linux-headers-6.1.0-18-amd64",  # Debian versioned kernel headers
+        "libc6-dev-i386",  # multiarch libc
+        "libc6-dev-arm64-cross",  # cross-toolchain libc
+        "glibc-devel-static",  # suffixed rpm devel package
+        "glibc-headers-x86",  # Fedora split headers package
+        "musl-dev",  # exact member, also a prefix family
+    ],
+)
+def test_is_libc_owner_matches_exact_and_prefixed_owners(owner):
+    """``is_libc_owner`` recognises libc/kernel material under both the exact
+    ``_LIBC_OWNERS`` spellings and the versioned/multiarch/suffixed names the
+    ``_LIBC_OWNER_PREFIXES`` families cover (Debian versioned kernel-header
+    packages, multiarch and cross libc variants, rpm -static/-arch splits)."""
+    assert pkgconfig_infer.is_libc_owner(owner) is True
+
+
+def test_is_libc_owner_rejects_third_party_packages():
+    """A third-party devel package (libpng-dev) is never libc/kernel material:
+    its headers must keep flowing to the package-list query, not be
+    short-circuited as standard."""
+    assert pkgconfig_infer.is_libc_owner("libpng-dev") is False
+
+
+def test_versioned_kernel_headers_owner_counts_as_standard(pkgconfig_env, auto_pkg_config_on, monkeypatch):
+    """The ``is_libc_owner`` prefix half through the distro resolver: a
+    Debian versioned kernel-header owner (``linux-headers-6.1.0-18-amd64``)
+    is standard material -- no package-list query is attempted (F6 part 2
+    wiring; the zero count is the guard, the REASON_STD assertion the
+    behavioural half)."""
+    monkeypatch.setenv("CT_DISTRO_BACKEND", "rpm")
+    pkgconfig_infer.clear_cache()
+    monkeypatch.setattr(
+        pkgconfig_infer,
+        "_run_distro_owner_query",
+        lambda paths, called_backend: "linux-headers-6.1.0-18-amd64\n",
+    )
+    calls = {"list": 0}
+
+    def counting_list(pkg, called_backend):
+        calls["list"] += 1
+        return ""
+
+    monkeypatch.setattr(pkgconfig_infer, "_run_distro_list_query", counting_list)
+    result = pkgconfig_infer.resolve_via_distro("linux/futex.h", "/usr/include/linux/futex.h")
+    assert calls["list"] == 0
+    assert result.package is None
+    assert result.resolver is None
+    assert result.reason == REASON_STD
+
+
 def test_distro_backend_none_runs_no_boundary(pkgconfig_env, auto_pkg_config_on, monkeypatch):
     """CT_DISTRO_BACKEND=none masks the distro resolver: unresolved with the
     missing-database reason, and NEITHER distro boundary is ever entered
@@ -1044,3 +1104,53 @@ def test_std_prefix_fast_path(prefix):
     """Every libc/kernel prefix (including the Stage 4 addition
     ``netpacket/``) is classified standard by the static fast path."""
     assert pkgconfig_infer.is_standard_header(prefix + "whatever.h") is True
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        # C89
+        "stdio.h",
+        # C99
+        "stdint.h",
+        # C11
+        "threads.h",
+        # C++98
+        "algorithm",
+        "vector",
+        # C++11
+        "type_traits",
+        "random",
+        # C++14
+        "shared_mutex",
+        # C++17
+        "optional",
+        "filesystem",
+        # C++20
+        "format",
+        "span",
+        # C++23
+        "expected",
+        "print",
+        # POSIX / common libc
+        "unistd.h",
+        "netdb.h",
+        # libc/kernel prefixes
+        "sys/types.h",
+        "linux/ioctl.h",
+    ],
+)
+def test_every_standard_bucket_kept_a_representative(name):
+    """One pinned representative per standard bucket (C89..C++23, POSIX,
+    libc/kernel prefixes) so a future edit to the static list cannot silently
+    drop a whole bucket; netdb.h also pins one of the newly added libc names
+    and linux/ioctl.h one of the prefix trees."""
+    assert pkgconfig_infer.is_standard_header(name) is True
+
+
+@pytest.mark.parametrize("name", ["zlib.h", "openssl/ssl.h"])
+def test_package_headers_are_not_standard(name):
+    """The negative half of the bucket guard: package headers must stay off
+    the static list, or every package-owned include would short-circuit as
+    standard and never resolve to a package."""
+    assert pkgconfig_infer.is_standard_header(name) is False

@@ -41,7 +41,7 @@ unresolved):
 9. Distro DB (Stage 3): the distro package owning the header is found via
    ONE batched query per TU (rpm -qf / dpkg-query -S / pacman -Qoq / apk
    info --who-owns, see :func:`owners_for_headers`); a libc/kernel owner
-   (``_LIBC_OWNERS``) counts as a standard header, an owner shipping no
+   (``is_libc_owner``) counts as a standard header, an owner shipping no
    ``.pc`` in the live search dirs reports ``REASON_NO_PC``, several stems
    go through :func:`tie_break`. The backend is detected on PATH
    (:func:`detect_distro_backend`, rpm -> dpkg -> pacman -> apk) and can be
@@ -648,11 +648,20 @@ _STD_HEADERS = frozenset(
         "stacktrace",
         "stdfloat",
         # POSIX / common libc
+        "alloca.h",
+        "argp.h",
+        "byteswap.h",
+        "cpio.h",
         "dirent.h",
         "dlfcn.h",
+        "elf.h",
         "endian.h",
+        "err.h",
+        "execinfo.h",
         "fcntl.h",
+        "fmtmsg.h",
         "fnmatch.h",
+        "ftw.h",
         "getopt.h",
         "glob.h",
         "grp.h",
@@ -661,13 +670,18 @@ _STD_HEADERS = frozenset(
         "langinfo.h",
         "libgen.h",
         "libintl.h",
+        "link.h",
         "malloc.h",
+        "mntent.h",
         "monetary.h",
         "mqueue.h",
+        "ndbm.h",
+        "netdb.h",
         "nl_types.h",
         "paths.h",
         "poll.h",
         "pthread.h",
+        "pty.h",
         "pwd.h",
         "regex.h",
         "sched.h",
@@ -675,13 +689,18 @@ _STD_HEADERS = frozenset(
         "semaphore.h",
         "spawn.h",
         "strings.h",
+        "syscall.h",
+        "sysexits.h",
         "syslog.h",
         "tar.h",
         "termios.h",
+        "uchar.h",
+        "ucontext.h",
         "ulimit.h",
         "unistd.h",
         "utime.h",
         "utmpx.h",
+        "wait.h",
         "wordexp.h",
     }
 )
@@ -853,6 +872,7 @@ _LIBC_OWNERS = frozenset(
         "glibc-headers",
         "glibc-devel",
         "kernel-headers",
+        "libc-dev",
         "libc6-dev",
         "linux-libc-dev",
         "musl-dev",
@@ -862,6 +882,34 @@ _LIBC_OWNERS = frozenset(
         "glibc",
     }
 )
+
+# Exact matching alone misses the real-world spellings of the same material:
+# Debian versioned kernel-header packages (``linux-headers-6.1.0-18-amd64``),
+# multiarch and cross-toolchain libc variants (``libc6-dev-i386``,
+# ``libc6-dev-arm64-cross``) and suffixed rpm devel packages
+# (``glibc-devel-static``, ``glibc-headers-x86``). An owner starting with one
+# of these prefixes is the same libc/kernel material under a decorated name;
+# consult both sets through :func:`is_libc_owner`.
+_LIBC_OWNER_PREFIXES = (
+    "linux-headers",
+    "libc6-dev",
+    "glibc-devel",
+    "glibc-headers",
+    "kernel-headers",
+    "musl-dev",
+    "linux-libc-dev",
+)
+
+
+def is_libc_owner(owner: str) -> bool:
+    """True when distro package *owner* is libc/kernel material rather than a
+    pkg-config package (F6 part 2): an exact :data:`_LIBC_OWNERS` member or a
+    :data:`_LIBC_OWNER_PREFIXES` family member -- the versioned, multiarch
+    and suffixed spellings such as ``linux-headers-6.1.0-18-amd64``,
+    ``libc6-dev-i386`` or ``glibc-devel-static`` that the exact set alone
+    misses."""
+    return owner in _LIBC_OWNERS or owner.startswith(_LIBC_OWNER_PREFIXES)
+
 
 # Backend name -> query tool, in detection priority order.
 _DISTRO_BACKEND_TOOLS: tuple[tuple[str, str], ...] = (
@@ -1124,7 +1172,7 @@ def resolve_via_distro(
     owner query) skips the per-header owner query -- an empty string is the
     batch's definitive "no owner" answer, so a batched miss never triggers a
     second, per-header query. Otherwise: no owner -> ``REASON_NO_OWNER``; a
-    libc/kernel owner (:data:`_LIBC_OWNERS`) -> ``REASON_STD`` (F6 part 2);
+    libc/kernel owner (:func:`is_libc_owner`) -> ``REASON_STD`` (F6 part 2);
     no ``.pc`` in the live search dirs -> ``REASON_NO_PC`` naming the owner;
     one stem -> that package; several -> :func:`tie_break`; a tie-break miss
     -> ``REASON_AMBIGUOUS`` with all stems. Resolver string
@@ -1145,7 +1193,7 @@ def resolve_via_distro(
         owner = owners_for_headers([header_path], backend).get(header_path)
     if not owner:
         return InferenceResult(header, header_path, None, None, (), REASON_NO_OWNER)
-    if owner in _LIBC_OWNERS:
+    if is_libc_owner(owner):
         return InferenceResult(header, header_path, None, None, (), REASON_STD)
     stems = pc_stems_shipped_by(owner, backend)
     if not stems:
