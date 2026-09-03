@@ -537,9 +537,6 @@ def test_locate_header_first_search_dir_wins(tmp_path):
     search_dirs = (str(first), str(second))
     expected = os.path.realpath(str(first / "myown" / "dup.h"))
     assert pkgconfig_infer.locate_header("myown/dup.h", search_dirs) == expected
-    assert pkgconfig_infer.locate_header("myown/dup.h", search_dirs) == pkgconfig_infer._locate(
-        "myown/dup.h", search_dirs
-    )
 
 
 def test_locate_header_absent_everywhere_is_none(tmp_path):

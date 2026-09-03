@@ -808,10 +808,6 @@ def locate_header(name: str, search_dirs) -> str | None:
     return None
 
 
-# Stage 1 spelling, kept working for its existing callers.
-_locate = locate_header
-
-
 def classify_location(header_path: str | None, builtin_dirs) -> str | None:
     """``REASON_COMPILER`` when *header_path* lives under a compiler built-in
     include dir that is not one of :data:`_DEFAULT_INCLUDE_DIRS`; else None.
