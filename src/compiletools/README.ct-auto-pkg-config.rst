@@ -25,7 +25,8 @@ DESCRIPTION
 the verdicts of the inference layer: which ``#include`` was attributed to
 which pkg-config package, and — for every include that was *not* attributed —
 the reason (standard header, project header, covered by an explicit flag,
-ambiguous, no package exports it, ...). It is a diagnostic: it changes
+ambiguous, no package exports it, the declared package that owns the header
+is unavailable, ...). It is a diagnostic: it changes
 nothing on disk, prints nothing for files with no inferences (under
 ``--style magic``), and exits 0 unless ``--fail-on-ambiguous`` is given and
 some include is ambiguous.

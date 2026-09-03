@@ -17,15 +17,20 @@ unresolved):
    built-in include-dir probe (Stage 2: ``compiletools.compiler_macros
    .builtin_include_dirs``) plus :func:`classify_location` complete it.
 3. ``ignore_globs`` -- fnmatch on the include spelling.
-4. :func:`locate_header` -- find the header under ``InferenceConfig.search_dirs``;
+4. ``unresolved_explicit_packages`` -- the header's namespace
+   (:func:`header_namespace`) names a package the user declared and
+   pkg-config cannot find -> ``REASON_DECLARED_MISSING``. Substituting some
+   other package that merely vendors a copy of the header would turn a clean
+   "no such file" into a build that links the wrong libraries.
+5. :func:`locate_header` -- find the header under ``InferenceConfig.search_dirs``;
    not found anywhere -> ``REASON_NOT_FOUND``.
-5. :func:`classify_location` -- the header lives under a compiler built-in
+6. :func:`classify_location` -- the header lives under a compiler built-in
    include dir other than the default dirs -> ``REASON_COMPILER``. This
    completes the static std list (item 2) for compiler-shipped headers:
    ``bits/...``, ``c++/N/...``, ``immintrin.h``, ``omp.h`` and friends.
-6. Covered-by-include-dir -- the header lives under an explicit ``-I``/
+7. Covered-by-include-dir -- the header lives under an explicit ``-I``/
    ``-isystem`` dir -> ``REASON_COVERED``.
-7. Resolver chain: pc-index (``"pc"`` in ``InferenceConfig.resolvers``) ->
+8. Resolver chain: pc-index (``"pc"`` in ``InferenceConfig.resolvers``) ->
    distro (``"distro"``) -> man (``"man"``); each stage runs only when its
    name is listed in ``InferenceConfig.resolvers`` (default
    ``("pc", "distro")``). The pc-index resolver walks the
@@ -33,7 +38,7 @@ unresolved):
    single candidate wins, several go through :func:`tie_break`. An ambiguity
    verdict is terminal for the chain: the diagnostic is the answer, and
    later stages would only overwrite it.
-8. Distro DB (Stage 3): the distro package owning the header is found via
+9. Distro DB (Stage 3): the distro package owning the header is found via
    ONE batched query per TU (rpm -qf / dpkg-query -S / pacman -Qoq / apk
    info --who-owns, see :func:`owners_for_headers`); a libc/kernel owner
    (``_LIBC_OWNERS``) counts as a standard header, an owner shipping no
@@ -43,12 +48,12 @@ unresolved):
    forced or masked with ``CT_DISTRO_BACKEND`` (rpm|dpkg|pacman|apk|none);
    no backend means the stage runs no subprocess at all and only the static
    std fast path (item 2) classifies standard headers.
-9. man (Stage 4): :func:`resolve_via_man` honours the ``"man"`` resolver
+10. man (Stage 4): :func:`resolve_via_man` honours the ``"man"`` resolver
    gate but is an intentional stub -- it always returns unresolved with the
    reason ``"man resolver not implemented"`` and never touches its
    :func:`_run_man_lookup` boundary, which exists as a drop-in slot for the
    deferred implementation.
-10. Post-demotions: an inferred package the user already names explicitly (as a
+11. Post-demotions: an inferred package the user already names explicitly (as a
    pkg-config package or via its first ``-l`` stem) reports ``REASON_COVERED``
    instead of "inferred".
 
@@ -111,6 +116,7 @@ REASON_NO_OWNER = "no pkg-config package exports this header"
 REASON_NO_PC = "owner package ships no .pc file"
 REASON_AMBIGUOUS = "ambiguous"
 REASON_MISSING_PC = "inferred package failed pkg-config --exists"
+REASON_DECLARED_MISSING = "declared pkg-config package is unavailable"
 
 
 @dataclass(frozen=True)
@@ -134,6 +140,7 @@ class InferenceConfig:
     header_map: Mapping[str, str] = MappingProxyType({})  # "openssl/ssl.h" -> "libssl"
     ignore_globs: tuple[str, ...] = ()
     explicit_packages: frozenset[str] = frozenset()  # bare names, TU + conf/CLI
+    unresolved_explicit_packages: frozenset[str] = frozenset()  # declared, but pkg-config cannot find them
     explicit_lib_stems: frozenset[str] = frozenset()  # from explicit -l tokens (TU magic + state LDFLAGS)
     explicit_include_dirs: tuple[str, ...] = ()  # realpaths from explicit -I/-isystem (TU magic + state)
     search_dirs: tuple[str, ...] = ()  # where to locate headers, in order
@@ -524,6 +531,7 @@ _STD_HEADERS = frozenset(
         "stdbit.h",
         "stdckdint.h",
         # C++98
+        "algorithm",
         "cassert",
         "cctype",
         "cerrno",
@@ -588,24 +596,39 @@ _STD_HEADERS = frozenset(
         "future",
         "initializer_list",
         "mutex",
+        "random",
         "ratio",
         "regex",
         "scoped_allocator",
         "system_error",
         "thread",
         "tuple",
+        "type_traits",
         "typeindex",
         "unordered_map",
         "unordered_set",
+        # C++14
+        "shared_mutex",
+        # C++17
+        "any",
+        "charconv",
+        "execution",
+        "filesystem",
+        "memory_resource",
+        "optional",
+        "string_view",
+        "variant",
         # C++20
         "barrier",
         "bit",
-        "charconv",
         "compare",
         "concepts",
         "coroutine",
+        "format",
+        "latch",
         "numbers",
         "ranges",
+        "semaphore",
         "source_location",
         "span",
         "stop_token",
@@ -683,6 +706,61 @@ _STD_PREFIXES = (
 def is_standard_header(name: str) -> bool:
     """True for C/C++/POSIX standard headers and libc/kernel-internal trees."""
     return name in _STD_HEADERS or name.startswith(_STD_PREFIXES)
+
+
+# ---------------------------------------------------------------------------
+# Declared-package namespace
+# ---------------------------------------------------------------------------
+
+
+def normalize_package_name(name: str) -> str:
+    """Casefold *name* and strip one leading ``lib`` so ``libFoo``, ``LibFoo``
+    and ``foo`` all compare equal.
+
+    Deliberately conservative -- no version-suffix or separator munging -- so
+    the comparison it feeds (:func:`declared_missing_owner`) errs towards
+    "these are different packages", which leaves inference running.
+    """
+    lowered = name.strip().casefold()
+    if lowered.startswith("lib") and len(lowered) > 3:
+        return lowered[3:]
+    return lowered
+
+
+def header_namespace(header: str) -> str:
+    """Normalized package namespace an include spelling belongs to.
+
+    ``foo/bar.h`` -> ``foo`` (the directory component packages conventionally
+    take their name from -- the same convention :func:`tie_break` rule 1
+    already relies on); a component-less ``foo.h`` -> ``foo``.
+    """
+    first = _header_first_component(header)
+    stem = first.rsplit(".", 1)[0] if "." in first else first
+    return normalize_package_name(stem)
+
+
+def declared_missing_owner(header: str, unresolved_packages) -> str | None:
+    """The declared-but-unavailable package *header* belongs to, or None.
+
+    A user who wrote ``//#PKG-CONFIG=foo`` has already answered the question
+    inference exists to guess at. When ``foo`` fails ``pkg-config --exists``,
+    attributing ``foo/bar.h`` to whichever installed package happens to
+    vendor a copy of that header replaces a clean "no such file" compile
+    error with a build that silently links the wrong libraries -- and folds
+    those libraries into the CAS key. Matching is by namespace, so the rule
+    covers the whole ``foo/`` tree rather than the one spelling the user
+    happened to hit first. Ties are resolved by sorting, so the reported
+    package is deterministic.
+    """
+    if not unresolved_packages:
+        return None
+    namespace = header_namespace(header)
+    if not namespace:
+        return None
+    for package in sorted(unresolved_packages):
+        if namespace == normalize_package_name(package):
+            return package
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1159,11 +1237,11 @@ def _pre_chain(header: str, config: InferenceConfig, memo: dict) -> tuple[Infere
 
     Returns ``(settled, header_path)``. *settled* is the final
     :class:`InferenceResult` when the header needs no distro stage: a user
-    map hit, standard-header fast path, ignore glob, unlocatable,
-    compiler-shipped, covered by an explicit include dir, a memo hit, or a
-    terminal pc-index verdict (memo hits and pc verdicts already carry their
-    post-demotion). Otherwise ``None`` with the located *header_path* for
-    the batched distro stage.
+    map hit, standard-header fast path, ignore glob, a declared-but-missing
+    package owning the namespace, unlocatable, compiler-shipped, covered by
+    an explicit include dir, a memo hit, or a terminal pc-index verdict
+    (memo hits and pc verdicts already carry their post-demotion). Otherwise
+    ``None`` with the located *header_path* for the batched distro stage.
     """
     # 1. User map wins over everything, including standard headers.
     mapped = config.header_map.get(header)
@@ -1179,19 +1257,25 @@ def _pre_chain(header: str, config: InferenceConfig, memo: dict) -> tuple[Infere
         if fnmatch.fnmatch(header, pattern):
             return InferenceResult(header, None, None, None, (), REASON_IGNORED), None
 
-    # 4. Locate the header.
+    # 4. The header belongs to a package the user declared and pkg-config
+    #    cannot find. Never substitute a different package for it.
+    missing_owner = declared_missing_owner(header, config.unresolved_explicit_packages)
+    if missing_owner is not None:
+        return InferenceResult(header, None, None, None, (), f"{REASON_DECLARED_MISSING}: {missing_owner}"), None
+
+    # 5. Locate the header.
     header_path = locate_header(header, config.search_dirs)
     if header_path is None:
         return InferenceResult(header, None, None, None, (), REASON_NOT_FOUND), None
 
-    # 5. Compiler-shipped: under a compiler built-in include dir other than
+    # 6. Compiler-shipped: under a compiler built-in include dir other than
     #    the default dirs -> compiler/libc territory, not pkg-config material
     #    (F6 part 1; the location half of the std-header guard).
     compiler_reason = classify_location(header_path, config.compiler_builtin_dirs)
     if compiler_reason is not None:
         return InferenceResult(header, header_path, None, None, (), compiler_reason), None
 
-    # 6. Covered by an explicit include dir -> the user's own -I wins.
+    # 7. Covered by an explicit include dir -> the user's own -I wins.
     # Spelling-aware, not realpath-prefix: the user's flag serves the
     # translation unit only if it resolves THIS spelling (the compiler
     # probes <dir>/<spelling>). A prefix test alone would let a catch-all
@@ -1209,7 +1293,7 @@ def _pre_chain(header: str, config: InferenceConfig, memo: dict) -> tuple[Infere
         if os.path.isfile(spelling_candidate) and os.path.realpath(spelling_candidate) == header_path:
             return InferenceResult(header, header_path, None, None, (), REASON_COVERED), None
 
-    # 7. Resolver chain, memoised per (header_path, PKG_CONFIG_PATH,
+    # 8. Resolver chain, memoised per (header_path, PKG_CONFIG_PATH,
     #    config.resolvers). Post-demotions depend on the config, so the memo
     #    holds the pre-demotion verdict only.
     chain_key = (header_path, os.environ.get("PKG_CONFIG_PATH", ""), config.resolvers)

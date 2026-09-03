@@ -26,6 +26,7 @@ from compiletools.pkgconfig_infer import (
     REASON_AMBIGUOUS,
     REASON_COMPILER,
     REASON_COVERED,
+    REASON_DECLARED_MISSING,
     REASON_IGNORED,
     REASON_NO_OWNER,
     REASON_NO_PC,
@@ -159,6 +160,84 @@ def test_covered_by_explicit_include_dir(pkgconfig_env, auto_pkg_config_on):
     assert result.reason == REASON_COVERED
     assert result.package is None
     assert result.resolver is None
+
+
+def test_declared_but_missing_package_is_not_substituted(pkgconfig_env, auto_pkg_config_on):
+    """``autoinfer-vendored/api.h`` is a vendored copy inside the umbrella's
+    exported include dir, and there is no ``autoinfer-vendored.pc``. Baseline:
+    the pc-index resolver attributes it to the umbrella, whose Libs would join
+    the link line. Declaring the (unavailable) package it really belongs to
+    must stop that substitution instead of redirecting it."""
+    baseline = pkgconfig_infer.infer(["autoinfer-vendored/api.h"], _config(pkgconfig_env), memo={})[0]
+    assert baseline.package == "autoinfer-umbrella", "precondition: the vendored header resolves to the umbrella"
+
+    config = _config(pkgconfig_env, unresolved_explicit_packages=frozenset({"autoinfer-vendored"}))
+    result = pkgconfig_infer.infer(["autoinfer-vendored/api.h"], config, memo={})[0]
+    assert result.package is None
+    assert result.resolver is None
+    assert result.reason == f"{REASON_DECLARED_MISSING}: autoinfer-vendored"
+
+
+def test_unrelated_missing_package_does_not_suppress(pkgconfig_env, auto_pkg_config_on):
+    """The must-not-move control for the narrow scope: an unsatisfied
+    declaration for some *other* package leaves inference running."""
+    config = _config(pkgconfig_env, unresolved_explicit_packages=frozenset({"nosuchpackage"}))
+    result = pkgconfig_infer.infer(["autoinfer-vendored/api.h"], config, memo={})[0]
+    assert result.package == "autoinfer-umbrella"
+    assert result.reason == ""
+
+
+def test_declared_missing_suppresses_only_its_own_namespace(pkgconfig_env, auto_pkg_config_on):
+    """One batched call, two headers: only the one in the unavailable
+    package's namespace is suppressed; its sibling still resolves."""
+    config = _config(pkgconfig_env, unresolved_explicit_packages=frozenset({"autoinfer-vendored"}))
+    suppressed, sibling = pkgconfig_infer.infer(["autoinfer-vendored/api.h", "autoinfer/api.h"], config, memo={})
+    assert suppressed.package is None
+    assert suppressed.reason == f"{REASON_DECLARED_MISSING}: autoinfer-vendored"
+    assert sibling.package == "autoinfer"
+    assert sibling.reason == ""
+
+
+def test_header_map_beats_declared_missing_suppression(pkgconfig_env, auto_pkg_config_on):
+    """The map is the documented "wins over everything" override, so it also
+    overrides the suppression -- that is how a user redirects a header whose
+    real package they cannot install."""
+    config = _config(
+        pkgconfig_env,
+        header_map={"autoinfer-vendored/api.h": "autoinfer"},
+        unresolved_explicit_packages=frozenset({"autoinfer-vendored"}),
+    )
+    result = pkgconfig_infer.infer(["autoinfer-vendored/api.h"], config, memo={})[0]
+    assert result.package == "autoinfer"
+    assert result.resolver == "map"
+
+
+@pytest.mark.parametrize(
+    "header,package,expected",
+    [
+        ("foo/bar.h", "foo", "foo"),
+        ("foo/bar.h", "libfoo", "libfoo"),
+        ("Foo/bar.h", "foo", "foo"),
+        ("libfoo/bar.h", "foo", "foo"),
+        ("foo.h", "foo", "foo"),
+        ("foo/bar.h", "foobar", None),
+        ("foo/bar.h", "foo-dev", None),
+        ("bar.h", "foo", None),
+    ],
+)
+def test_declared_missing_owner_namespace_matching(header, package, expected):
+    """Namespace matching casefolds and strips one leading ``lib`` on either
+    side, and does nothing else: near-misses report no owner, which leaves
+    inference running rather than silently disabling it."""
+    assert pkgconfig_infer.declared_missing_owner(header, frozenset({package})) == expected
+
+
+def test_declared_missing_owner_is_deterministic_across_several_matches():
+    """Two unavailable declarations normalizing to the same namespace: the
+    reported owner is the sorted-first one, not dict-iteration order."""
+    packages = frozenset({"libfoo", "foo"})
+    assert pkgconfig_infer.declared_missing_owner("foo/bar.h", packages) == "foo"
+    assert pkgconfig_infer.declared_missing_owner("foo/bar.h", frozenset({"libfoo"})) == "libfoo"
 
 
 def test_header_map_beats_everything_including_std(pkgconfig_env, auto_pkg_config_on):

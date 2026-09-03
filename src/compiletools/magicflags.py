@@ -64,6 +64,13 @@ _AUTO_PKG_CONFIG_RESOLVER_SET = frozenset({"pc", "distro", "man"})
 #: MagicFlagsBase.clear_cache().
 _AUTO_PKG_CONFIG_DIAGNOSED: set = set()
 
+#: Default-visible inference warnings deduped per process, keyed on the whole
+#: message. Separate from _AUTO_PKG_CONFIG_DIAGNOSED because these are NOT
+#: verbosity gated: they fire only when a declared pkg-config package is
+#: unavailable, a state that changes what inference does and that the user
+#: must see at verbose 0. Cleared by MagicFlagsBase.clear_cache().
+_AUTO_PKG_CONFIG_WARNED: set = set()
+
 
 def _auto_pkg_config_entries(value):
     """Split one raw ``--auto-pkg-config-map`` / ``--auto-pkg-config-ignore``
@@ -686,7 +693,9 @@ class MagicFlagsBase:
                 includes (conditional-blind).
         """
         try:
-            candidates, results = self._infer_pkg_config_candidates(file_analysis_data, flagsforfilename, macro_state)
+            candidates, results, unresolved_explicit = self._infer_pkg_config_candidates(
+                file_analysis_data, flagsforfilename, macro_state
+            )
         except SystemExit:
             raise
         except Exception as exc:
@@ -728,6 +737,17 @@ class MagicFlagsBase:
                         file=sys.stderr,
                     )
                     raise SystemExit(1)
+                if result.reason.startswith(compiletools.pkgconfig_infer.REASON_DECLARED_MISSING):
+                    # Default-visible: the TU is about to fail compilation on
+                    # this header, and the reason is a declaration the
+                    # environment did not satisfy, not a missing include path.
+                    _, _, package = result.reason.partition(": ")
+                    self._auto_pkg_config_warn(
+                        f"{header} not inferred: declared package {package!r} is unavailable "
+                        f"(requested by {including_file}). Install it or widen PKG_CONFIG_PATH; "
+                        f"to attribute the header elsewhere use auto-pkg-config-map={header}=<pkg>"
+                    )
+                    continue
                 reason = result.reason or compiletools.pkgconfig_infer.REASON_NO_OWNER
                 if result.reason.startswith(compiletools.pkgconfig_infer.REASON_AMBIGUOUS):
                     reason += "; add auto-pkg-config-map=" + header + "=<pkg>"
@@ -748,14 +768,27 @@ class MagicFlagsBase:
         deduped: dict[str, str] = {}
         for package, including_file in pairs:
             deduped.setdefault(package, including_file)
+
+        if deduped and unresolved_explicit:
+            # Namespace matching only catches headers spelled after their
+            # package. Anything else inferred while a declaration is
+            # unsatisfied is still a candidate substitution, so name both
+            # sides and let the user judge.
+            self._auto_pkg_config_warn(
+                f"inferred {', '.join(sorted(deduped))} for a translation unit whose declared "
+                f"package(s) {', '.join(sorted(unresolved_explicit))} are unavailable; "
+                f"confirm the inferred packages are the ones you want"
+            )
         return sorted(deduped.items())
 
     def _infer_pkg_config_candidates(self, file_analysis_data, flagsforfilename, macro_state):
         """Resolve the candidate headers of one translation unit.
 
-        Returns ``(candidates, results)``: the spelling -> first including file
-        map that was inferred from, and the ``pkgconfig_infer.infer`` verdicts
-        for it (memoised on ``self.context.auto_pkg_config_memo``).
+        Returns ``(candidates, results, unresolved_explicit)``: the spelling ->
+        first including file map that was inferred from, the
+        ``pkgconfig_infer.infer`` verdicts for it (memoised on
+        ``self.context.auto_pkg_config_memo``), and the explicitly declared
+        packages pkg-config cannot find.
         """
         args = self._args
         verbose = getattr(args, "verbose", 0)
@@ -795,7 +828,7 @@ class MagicFlagsBase:
                 candidates.setdefault(spelling, filepath)
 
         if not candidates:
-            return {}, []
+            return {}, [], frozenset()
 
         # 2. Project-ness (F4): a header resolvable through the project's
         # include search (the including file's directory plus the build
@@ -809,7 +842,7 @@ class MagicFlagsBase:
                 del candidates[spelling]
 
         if not candidates:
-            return {}, []
+            return {}, [], frozenset()
 
         # 3. Build the InferenceConfig.
         strict = getattr(args, "pkg_config_errors", "warn") == "error"
@@ -868,6 +901,15 @@ class MagicFlagsBase:
         for spec in compiletools.build_inputs._merged_pkg_config_specs(args):
             explicit_packages.add(compiletools.apptools_pkgconfig._bare_package_name(spec))
 
+        # Declared but unavailable: the user named a package pkg-config cannot
+        # find. Probed with the quiet form so this never duplicates the
+        # explicit path's own "not found" warning or trips its error policy.
+        unresolved_explicit = frozenset(
+            package
+            for package in explicit_packages
+            if package and not compiletools.pkgconfig_infer.pkg_config_exists_quiet(package)
+        )
+
         # Explicit lib stems: this TU's LDFLAGS/LINKFLAGS annotations plus the
         # build state's LDFLAGS tokens.
         explicit_lib_stems: set[str] = set()
@@ -910,6 +952,7 @@ class MagicFlagsBase:
             header_map=header_map,
             ignore_globs=tuple(ignore_globs),
             explicit_packages=frozenset(explicit_packages),
+            unresolved_explicit_packages=unresolved_explicit,
             explicit_lib_stems=frozenset(explicit_lib_stems),
             explicit_include_dirs=tuple(explicit_include_dirs),
             search_dirs=search_dirs,
@@ -919,7 +962,7 @@ class MagicFlagsBase:
         results = compiletools.pkgconfig_infer.infer(
             list(candidates.keys()), config, memo=self.context.auto_pkg_config_memo
         )
-        return candidates, results
+        return candidates, results, unresolved_explicit
 
     def _auto_pkg_config_note(self, header, outcome):
         """Print one inference diagnostic at verbose>=1, deduped per
@@ -931,6 +974,21 @@ class MagicFlagsBase:
             return
         _AUTO_PKG_CONFIG_DIAGNOSED.add(key)
         print(f"auto-pkg-config: {header} {outcome}", file=sys.stderr)
+
+    def _auto_pkg_config_warn(self, message):
+        """Print one auto-pkg-config warning, deduped per message for the
+        process.
+
+        Not verbosity gated, unlike :meth:`_auto_pkg_config_note`: every
+        caller is on the declared-package-unavailable path, where inference
+        either stood down (and the compile is about to fail on the header) or
+        supplied a package the user never asked for. Both are decisions the
+        user has to see without passing ``-v``.
+        """
+        if message in _AUTO_PKG_CONFIG_WARNED:
+            return
+        _AUTO_PKG_CONFIG_WARNED.add(message)
+        print(f"auto-pkg-config: {message}", file=sys.stderr)
 
     def _resolve_readmacros_path(self, flag, source_filename, extra_include_paths=None):
         """Resolve READMACROS flag to absolute path (pure path resolution logic).
@@ -1347,6 +1405,7 @@ class MagicFlagsBase:
         # Inference diagnostics are deduped per process; a fresh parse session
         # (tests re-parse the same files) must be able to re-report them.
         _AUTO_PKG_CONFIG_DIAGNOSED.clear()
+        _AUTO_PKG_CONFIG_WARNED.clear()
         # Clear LRU caches
         compiletools.utils.split_command_cached.cache_clear()
         compiletools.utils.split_command_cached_sz.cache_clear()

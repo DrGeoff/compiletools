@@ -212,6 +212,30 @@ The resolver chain (``--auto-pkg-config-resolvers``, default
 ``pc,distro``) tries the pkg-config include-dir index, then the distro
 package database.
 
+Inference never stands in for a package you already asked for. If a
+translation unit declares ``//#PKG-CONFIG=foo`` (or the conf/CLI list does)
+and ``foo`` fails ``pkg-config --exists``, headers under ``foo/`` stay
+uncovered: the compile fails naming the header, as it would with inference
+off. The alternative is worse — an unrelated installed package whose include
+tree happens to vendor a copy of ``foo/bar.h`` would be substituted, its
+libraries would join the link line, and the wrong flags would be folded into
+the cache key. Umbrella packages that bundle third-party headers make this
+routine. Both the suppression and the converse case (a package inferred while
+some declaration is unsatisfied) are reported at verbose 0, since the state is
+a broken environment rather than a build-tool decision::
+
+    auto-pkg-config: foo/bar.h not inferred: declared package 'foo' is
+    unavailable (requested by src/main.cpp). Install it or widen
+    PKG_CONFIG_PATH; to attribute the header elsewhere use
+    auto-pkg-config-map=foo/bar.h=<pkg>
+
+Matching is by namespace: the header's leading path component against the
+declared package name, casefolded with one leading ``lib`` stripped on either
+side. A header spelled unlike its package is not covered by the suppression,
+which is why the second warning exists. ``auto-pkg-config-map`` still wins
+over everything, so pinning is the way to redirect a header whose real
+package cannot be installed.
+
 Two host-independence aids: ``ct-auto-pkg-config`` (see ct-auto-pkg-config(1))
 reports the verdicts of any source tree — its ``--style magic`` output is the
 freeze workflow: run

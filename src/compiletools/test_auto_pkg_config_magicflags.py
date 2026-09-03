@@ -189,6 +189,56 @@ class TestAutoPkgConfig(tb.BaseCompileToolsTestCase):
         assert "-isystem" in self._strings(result, "CXXFLAGS"), "precondition: explicit -isystem parsed"
         assert "PKG-CONFIG" not in result
 
+    # ------------------------- F1: declared package the environment lacks
+
+    @uth.requires_functional_compiler
+    @pytest.mark.usefixtures("pkgconfig_env", "auto_pkg_config_on")
+    def test_declared_missing_package_is_not_substituted(self, capsys):
+        """``autoinfer-vendored/api.h`` is a vendored copy living inside the
+        umbrella's exported include dir, and no ``autoinfer-vendored.pc``
+        exists. Baseline: inference attributes it to autoinfer-umbrella and
+        ``-lumbrella`` joins the link line. Declaring the package the header
+        really belongs to must stop the substitution rather than redirect it,
+        so the TU keeps only what its author asked for and the compile fails
+        on the missing header instead of linking a foreign library."""
+        include = "#include <autoinfer-vendored/api.h>\nint main() { return 0; }\n"
+
+        _, baseline = self._parse(include)
+        assert self._strings(baseline, "PKG-CONFIG") == ["autoinfer-umbrella"]
+        assert "-lumbrella" in self._strings(baseline, "LDFLAGS")
+
+        _, result = self._parse("//#PKG-CONFIG=autoinfer-vendored\n" + include)
+        assert self._strings(result, "PKG-CONFIG") == ["autoinfer-vendored"]
+        assert "-lumbrella" not in self._strings(result, "LDFLAGS")
+        assert "declared package 'autoinfer-vendored' is unavailable" in capsys.readouterr().err
+
+    @uth.requires_functional_compiler
+    @pytest.mark.usefixtures("pkgconfig_env", "auto_pkg_config_on")
+    def test_unavailable_declaration_warns_about_unrelated_inferences(self, capsys):
+        """Namespace matching cannot cover a header spelled unlike its
+        package, so an inference made while a declaration is unsatisfied is
+        still reported at verbose 0 -- naming both the inferred package and
+        the missing declaration."""
+        text = "//#PKG-CONFIG=nosuchpackage\n#include <autoinfer/api.h>\nint main() { return 0; }\n"
+        _, result = self._parse(text)
+        assert "autoinfer" in self._strings(result, "PKG-CONFIG"), "precondition: the sibling header still infers"
+        err = capsys.readouterr().err
+        assert "inferred autoinfer" in err
+        assert "nosuchpackage" in err
+
+    @uth.requires_functional_compiler
+    @pytest.mark.usefixtures("pkgconfig_env", "auto_pkg_config_on")
+    def test_available_declaration_produces_no_unavailable_warning(self, capsys):
+        """The must-not-move control: a declaration pkg-config *can* satisfy
+        emits neither warning, so the noise is confined to the degraded
+        state."""
+        text = "//#PKG-CONFIG=autoinfer-fam\n#include <autoinfer/api.h>\nint main() { return 0; }\n"
+        _, result = self._parse(text)
+        assert "autoinfer" in self._strings(result, "PKG-CONFIG")
+        err = capsys.readouterr().err
+        assert "is unavailable" not in err
+        assert "are unavailable" not in err
+
     # --------------------------------------- F3: preprocessor conditional gates
 
     @uth.requires_functional_compiler
