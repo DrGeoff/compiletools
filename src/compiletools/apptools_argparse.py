@@ -359,6 +359,9 @@ def add_common_arguments(cap, argv=None, variant=None):
             "served by an explicit -I/-l/pkg-config flag are candidates."
         ),
     )
+    # Validated at use time rather than by argparse choices: conf-file
+    # values bypass choice checking, and an unknown name must disable
+    # inference with a diagnostic instead of aborting the parse.
     cap.add_argument(
         "--auto-pkg-config-resolvers",
         dest="auto_pkg_config_resolvers",
@@ -369,10 +372,7 @@ def add_common_arguments(cap, argv=None, variant=None):
             "tried in order: 'pc' (pkg-config include-dir index), 'distro' "
             "(package database), 'man' (reserved, not yet implemented -- "
             "listed anyway it is stripped from the chain with a one-time "
-            "warning). "
-            "Validated at use time rather than by argparse choices: conf-file "
-            "values bypass choice checking, and an unknown name must disable "
-            "inference with a diagnostic instead of aborting the parse."
+            "warning)."
         ),
     )
     cap.add_argument(

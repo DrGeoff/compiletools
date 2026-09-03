@@ -451,6 +451,7 @@ def auto_pkg_config_on(auto_pkg_config_off):
     fixture's scope ends. Use this in tests that exercise auto-inference
     itself; everything else must keep the autouse default.
     """
+    # no teardown by design: auto_pkg_config_off's finally restores the pre-test value.
     os.environ["CT_AUTO_PKG_CONFIG"] = "1"
 
 
