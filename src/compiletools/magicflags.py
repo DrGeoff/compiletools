@@ -66,10 +66,17 @@ _AUTO_PKG_CONFIG_DIAGNOSED: set = set()
 
 #: Default-visible inference warnings deduped per process, keyed on the whole
 #: message. Separate from _AUTO_PKG_CONFIG_DIAGNOSED because these are NOT
-#: verbosity gated: they fire only when a declared pkg-config package is
-#: unavailable, a state that changes what inference does and that the user
-#: must see at verbose 0. Cleared by MagicFlagsBase.clear_cache().
+#: verbosity gated: the only caller is the per-header declared-missing
+#: failure warning, a state that changes what inference does and that the
+#: user must see at verbose 0. Cleared by MagicFlagsBase.clear_cache().
 _AUTO_PKG_CONFIG_WARNED: set = set()
+
+#: Verbose-gated inference hints deduped per process, keyed on the whole
+#: message. Same process-level dedup as the warn set, but note-style gating:
+#: these document a degraded environment next to an inference that still
+#: succeeded, so they only print at verbose >= 1. Cleared by
+#: MagicFlagsBase.clear_cache().
+_AUTO_PKG_CONFIG_HINTED: set = set()
 
 
 def _auto_pkg_config_entries(value):
@@ -772,9 +779,13 @@ class MagicFlagsBase:
         if deduped and unresolved_explicit:
             # Namespace matching only catches headers spelled after their
             # package. Anything else inferred while a declaration is
-            # unsatisfied is still a candidate substitution, so name both
-            # sides and let the user judge.
-            self._auto_pkg_config_warn(
+            # unsatisfied is still a candidate substitution: name both sides
+            # and let the user judge. Verbose-gated (note-style), unlike the
+            # per-header REASON_DECLARED_MISSING warning above -- that one is
+            # an actionable failure (the TU is about to fail compilation on
+            # the header); this blanket one is only a hint next to an
+            # inference that still succeeded.
+            self._auto_pkg_config_hint(
                 f"inferred {', '.join(sorted(deduped))} for a translation unit whose declared "
                 f"package(s) {', '.join(sorted(unresolved_explicit))} are unavailable; "
                 f"confirm the inferred packages are the ones you want"
@@ -989,15 +1000,31 @@ class MagicFlagsBase:
         """Print one auto-pkg-config warning, deduped per message for the
         process.
 
-        Not verbosity gated, unlike :meth:`_auto_pkg_config_note`: every
-        caller is on the declared-package-unavailable path, where inference
-        either stood down (and the compile is about to fail on the header) or
-        supplied a package the user never asked for. Both are decisions the
-        user has to see without passing ``-v``.
+        Not verbosity gated, unlike :meth:`_auto_pkg_config_note`: the only
+        caller is the per-header ``REASON_DECLARED_MISSING`` warning, an
+        actionable failure -- that translation unit is about to fail
+        compilation on the header, because its declared package is
+        unavailable. Decisions the user has to see without passing ``-v``.
         """
         if message in _AUTO_PKG_CONFIG_WARNED:
             return
         _AUTO_PKG_CONFIG_WARNED.add(message)
+        print(f"auto-pkg-config: {message}", file=sys.stderr)
+
+    def _auto_pkg_config_hint(self, message):
+        """Print one auto-pkg-config hint at verbose>=1, deduped per message
+        for the process.
+
+        Note-style gating, unlike :meth:`_auto_pkg_config_warn`: a hint only
+        documents a degraded environment next to an inference that still
+        succeeded -- context the user can pick up when investigating, not an
+        actionable failure.
+        """
+        if getattr(self._args, "verbose", 0) < 1:
+            return
+        if message in _AUTO_PKG_CONFIG_HINTED:
+            return
+        _AUTO_PKG_CONFIG_HINTED.add(message)
         print(f"auto-pkg-config: {message}", file=sys.stderr)
 
     def _resolve_readmacros_path(self, flag, source_filename, extra_include_paths=None):
@@ -1416,6 +1443,7 @@ class MagicFlagsBase:
         # (tests re-parse the same files) must be able to re-report them.
         _AUTO_PKG_CONFIG_DIAGNOSED.clear()
         _AUTO_PKG_CONFIG_WARNED.clear()
+        _AUTO_PKG_CONFIG_HINTED.clear()
         # Clear LRU caches
         compiletools.utils.split_command_cached.cache_clear()
         compiletools.utils.split_command_cached_sz.cache_clear()

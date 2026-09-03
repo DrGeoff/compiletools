@@ -101,6 +101,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import re
 import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
@@ -715,18 +716,37 @@ def is_standard_header(name: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def normalize_package_name(name: str) -> str:
-    """Casefold *name* and strip one leading ``lib`` so ``libFoo``, ``LibFoo``
-    and ``foo`` all compare equal.
+# Trailing version/ABI suffix of a package name: optional ``+``/``-``
+# separator, then a digit run (possibly dotted), end-anchored. ``_PACKAGE_*``
+# so it is unmistakably private to the normalization below.
+_PACKAGE_VERSION_SUFFIX_RE = re.compile(r"(?:[+-]?\d+(?:\.\d+)*)$")
 
-    Deliberately conservative -- no version-suffix or separator munging -- so
-    the comparison it feeds (:func:`declared_missing_owner`) errs towards
-    "these are different packages", which leaves inference running.
+
+def normalize_package_name(name: str) -> str:
+    """Normalize *name* for the declared-package namespace comparison.
+
+    Casefold, strip one leading ``lib`` (so ``libFoo``, ``LibFoo`` and ``foo``
+    compare equal), then strip a trailing version/ABI suffix -- an
+    end-anchored ``[+-]?<digits>(.<digits>)*`` run plus any trailing ``+`` --
+    so ``libpng16``/``png``, ``gtk+-3.0``/``gtk``, ``libssl3``/``ssl`` and
+    ``glib-2.0``/``glib`` compare equal to their bare library namespaces.
+    The suffix strip repeats until stable, so compound forms
+    (``sigc++-2.0``, ``gtk3+``) normalize the same as their parts.
+
+    Deliberately conservative: only a *trailing* run is stripped, so digits
+    that are part of a word (``sdl2_image``) or names with no trailing digits
+    (``zlib``) are untouched, and the comparison this feeds
+    (:func:`declared_missing_owner`) still errs towards "these are different
+    packages", which leaves inference running.
     """
     lowered = name.strip().casefold()
     if lowered.startswith("lib") and len(lowered) > 3:
-        return lowered[3:]
-    return lowered
+        lowered = lowered[3:]
+    while True:
+        stripped = _PACKAGE_VERSION_SUFFIX_RE.sub("", lowered).rstrip("+")
+        if stripped == lowered:
+            return lowered
+        lowered = stripped
 
 
 def header_namespace(header: str) -> str:

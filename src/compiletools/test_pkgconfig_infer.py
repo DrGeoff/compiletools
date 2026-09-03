@@ -224,13 +224,53 @@ def test_header_map_beats_declared_missing_suppression(pkgconfig_env, auto_pkg_c
         ("foo/bar.h", "foobar", None),
         ("foo/bar.h", "foo-dev", None),
         ("bar.h", "foo", None),
+        # A trailing version/ABI run is the same library as the bare
+        # namespace: a declared "libpng16" owns png.h, "gtk+-3.0" owns gtk/.
+        ("png.h", "libpng16", "libpng16"),
+        ("gtk/gtk.h", "gtk+-3.0", "gtk+-3.0"),
+        # ...but digits that are not a trailing version run keep names apart.
+        ("sdl2_image/engine.h", "sdl2_image", "sdl2_image"),
+        ("png.h", "zlib", None),
     ],
 )
 def test_declared_missing_owner_namespace_matching(header, package, expected):
-    """Namespace matching casefolds and strips one leading ``lib`` on either
-    side, and does nothing else: near-misses report no owner, which leaves
-    inference running rather than silently disabling it."""
+    """Namespace matching casefolds, strips one leading ``lib`` and strips a
+    trailing version/ABI run on either side, and nothing else: near-misses
+    report no owner, which leaves inference running rather than silently
+    disabling it."""
     assert pkgconfig_infer.declared_missing_owner(header, frozenset({package})) == expected
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        # Trailing version/ABI runs strip to the bare library namespace.
+        ("libpng16", "png"),
+        ("gtk+-3.0", "gtk"),
+        ("libssl3", "ssl"),
+        ("glib-2.0", "glib"),
+        # The leading-``lib`` strip happens first: "libz" is the same
+        # library as "z".
+        ("libz", "z"),
+        # No digits, nothing to strip: "zlib" is not "z".
+        ("zlib", "zlib"),
+        # Digits that are part of a word and not trailing are untouched.
+        ("sdl2_image", "sdl2_image"),
+        # Compound suffixes normalize the same as their parts.
+        ("sigc++-2.0", "sigc"),
+        ("gtk3+", "gtk"),
+        # Casefolding and the one leading-``lib`` strip keep working.
+        ("libFoo", "foo"),
+        ("Foo", "foo"),
+        ("lib", "lib"),
+    ],
+)
+def test_normalize_package_name_strips_trailing_version_suffix(raw, expected):
+    """normalize_package_name casefolds, strips one leading ``lib``, then
+    strips the trailing version/ABI run: an end-anchored digits, optional
+    separator and trailing ``+`` pattern, so only a trailing run is ever
+    stripped."""
+    assert pkgconfig_infer.normalize_package_name(raw) == expected
 
 
 def test_declared_missing_owner_is_deterministic_across_several_matches():

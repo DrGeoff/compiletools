@@ -215,17 +215,32 @@ class TestAutoPkgConfig(tb.BaseCompileToolsTestCase):
 
     @uth.requires_functional_compiler
     @pytest.mark.usefixtures("pkgconfig_env", "auto_pkg_config_on")
-    def test_unavailable_declaration_warns_about_unrelated_inferences(self, capsys):
+    def test_unavailable_declaration_hints_about_unrelated_inferences_at_verbose(self, capsys):
         """Namespace matching cannot cover a header spelled unlike its
         package, so an inference made while a declaration is unsatisfied is
-        still reported at verbose 0 -- naming both the inferred package and
-        the missing declaration."""
+        still hinted at verbose >= 1 -- naming both the inferred package and
+        the missing declaration. Verbose-gated, unlike the per-header
+        declared-missing warning: the inference still succeeded, so the
+        blanket note is a hint, not an actionable failure."""
         text = "//#PKG-CONFIG=nosuchpackage\n#include <autoinfer/api.h>\nint main() { return 0; }\n"
-        _, result = self._parse(text)
+        _, result = self._parse(text, extraargs=["--verbose"])
         assert "autoinfer" in self._strings(result, "PKG-CONFIG"), "precondition: the sibling header still infers"
         err = capsys.readouterr().err
         assert "inferred autoinfer" in err
         assert "nosuchpackage" in err
+
+    @uth.requires_functional_compiler
+    @pytest.mark.usefixtures("pkgconfig_env", "auto_pkg_config_on")
+    def test_unrelated_inference_hint_is_silent_at_verbose_0(self, capsys):
+        """The must-not-leak control for the hint gating: the blanket
+        "inferred X while declared Y is unavailable" note does not print at
+        verbose 0 (only the per-header declared-missing failure does), while
+        the inference itself still lands the package."""
+        text = "//#PKG-CONFIG=nosuchpackage\n#include <autoinfer/api.h>\nint main() { return 0; }\n"
+        _, result = self._parse(text)
+        assert "autoinfer" in self._strings(result, "PKG-CONFIG"), "precondition: the sibling header still infers"
+        err = capsys.readouterr().err
+        assert "are unavailable" not in err
 
     @uth.requires_functional_compiler
     @pytest.mark.usefixtures("pkgconfig_env", "auto_pkg_config_on")
