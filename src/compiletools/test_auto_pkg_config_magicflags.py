@@ -418,6 +418,31 @@ class TestAutoPkgConfig(tb.BaseCompileToolsTestCase):
         _, result = self._parse(TU_AUTOINFER, extraargs=["--auto-pkg-config-ignore=autoinfer/*"])
         assert "PKG-CONFIG" not in result
 
+    # --------------------------- reserved resolver name: man stripped with warning
+
+    @uth.requires_functional_compiler
+    @pytest.mark.usefixtures("pkgconfig_env", "auto_pkg_config_on")
+    def test_man_resolver_stripped_with_one_time_warning(self, capsys):
+        """--auto-pkg-config-resolvers=pc,man: the reserved man name is
+        stripped from the chain with a one-time warning, and the remaining
+        pc resolver still infers -- listing man alongside pc must neither
+        hard-disable the whole chain (the unknown-token ValueError path)
+        nor silently no-op. The warning dedups per build session: a second
+        parse through the same parser stays silent while inference keeps
+        landing the package."""
+        parser = self._make_parser(extraargs=["--auto-pkg-config-resolvers=pc,man"])
+        first = parser.parse(self._write_tu(TU_AUTOINFER))
+        assert self._strings(first, "PKG-CONFIG") == ["autoinfer"], "pc must still infer with man in the list"
+        assert capsys.readouterr().err.count("resolver 'man' is not implemented; ignoring") == 1, (
+            "the strip must warn exactly once, not once per parse"
+        )
+
+        second = parser.parse(
+            self._write_tu("#include <autoinfer/api.h>\nint other() { return 1; }\n", name="other.cpp")
+        )
+        assert self._strings(second, "PKG-CONFIG") == ["autoinfer"], "inference must survive past the warned parse"
+        assert capsys.readouterr().err.count("resolver 'man' is not implemented; ignoring") == 0
+
     # ------------------------------- F9: xxpend accumulation across conf + CLI
 
     @uth.requires_functional_compiler

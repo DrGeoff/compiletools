@@ -367,7 +367,9 @@ def add_common_arguments(cap, argv=None, variant=None):
         help=(
             "Comma-separated resolver chain for auto-pkg-config inference, "
             "tried in order: 'pc' (pkg-config include-dir index), 'distro' "
-            "(package database), 'man' (man pages, currently a stub). "
+            "(package database), 'man' (reserved, not yet implemented -- "
+            "listed anyway it is stripped from the chain with a one-time "
+            "warning). "
             "Validated at use time rather than by argparse choices: conf-file "
             "values bypass choice checking, and an unknown name must disable "
             "inference with a diagnostic instead of aborting the parse."

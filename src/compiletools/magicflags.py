@@ -54,7 +54,13 @@ _HARD_ORDERINGS_KEY = sz.Str("_HARD_ORDERINGS")
 
 # Resolver names --auto-pkg-config-resolvers may name, in pkgconfig_infer's
 # vocabulary. Validated at use time in _infer_pkg_config_candidates (conf-file
-# values bypass argparse choice checking) rather than in the parser.
+# values bypass argparse choice checking) rather than in the parser. "man" is
+# an accepted name but never reaches the chain: _infer_pkg_config_candidates
+# strips it with a one-time warning (pkgconfig_infer's Stage 4 resolver is an
+# intentional stub), because both alternatives are worse -- honouring the name
+# verbatim makes the option a silent no-op, and a hard ValueError here would
+# let the F8 wrapper in _infer_pkg_config silently disable the WHOLE chain for
+# a user who listed man alongside pc,distro.
 _AUTO_PKG_CONFIG_RESOLVER_SET = frozenset({"pc", "distro", "man"})
 
 
@@ -859,6 +865,15 @@ class MagicFlagsBase:
                 f"unknown auto-pkg-config resolver(s) {', '.join(unknown)}; "
                 f"allowed: {', '.join(sorted(_AUTO_PKG_CONFIG_RESOLVER_SET))}"
             )
+        if "man" in resolvers:
+            # "man" names a reserved resolver (pkgconfig_infer Stage 4 is an
+            # intentional stub). Honouring it verbatim would make the option a
+            # silent no-op, and raising -- the unknown-token treatment above --
+            # would let the F8 wrapper in _infer_pkg_config silently disable
+            # the whole chain for a user who listed man alongside pc,distro.
+            # Strip the name, say so once, and run the remaining resolvers.
+            self._auto_pkg_config_warn("resolver 'man' is not implemented; ignoring")
+            resolvers = tuple(token for token in resolvers if token != "man")
 
         header_map: dict[str, str] = {}
         ignore_globs: list[str] = []
@@ -987,11 +1002,13 @@ class MagicFlagsBase:
         """Print one auto-pkg-config warning, deduped per message for the
         build session (self.context).
 
-        Not verbosity gated, unlike :meth:`_auto_pkg_config_note`: the only
-        caller is the per-header ``REASON_DECLARED_MISSING`` warning, an
-        actionable failure -- that translation unit is about to fail
-        compilation on the header, because its declared package is
-        unavailable. Decisions the user has to see without passing ``-v``.
+        Not verbosity gated, unlike :meth:`_auto_pkg_config_note`: the callers
+        are decisions the user must see without passing ``-v`` -- the
+        per-header ``REASON_DECLARED_MISSING`` failure (that translation unit
+        is about to fail compilation on the header, because its declared
+        package is unavailable) and the stripping of the reserved
+        ``--auto-pkg-config-resolvers=man`` name (the build would otherwise
+        run a silently different resolver chain than the one requested).
         """
         if message in self.context.auto_pkg_config_warned:
             return
