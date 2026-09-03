@@ -36,8 +36,9 @@ def _clear_auto_pkg_config_caches():
     """Isolation for the process-global caches the parse pipeline reads.
 
     Same contract as test_auto_pkg_config_magicflags: the PKG_CONFIG_PATH-keyed
-    pkgconfig_infer memos and MagicFlagsBase's module-level caches/dedup set
-    must not leak between tests.
+    pkgconfig_infer memos must not leak between tests. MagicFlagsBase's
+    diagnostic dedup sets are BuildContext-owned session state, and the tool
+    builds a fresh context per run, so they reset with each invocation.
     """
     compiletools.pkgconfig_infer.clear_cache()
     compiletools.magicflags.MagicFlagsBase.clear_cache()

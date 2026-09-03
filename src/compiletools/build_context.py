@@ -195,6 +195,18 @@ class BuildContext:
         # verdict. Lives and dies with this BuildContext rather than being
         # cleared in place, exactly like pkg_config_query_cache above.
         self.auto_pkg_config_memo: dict = {}
+        # magicflags inference-diagnostic dedup (plan 2026-09-02 Stage 5),
+        # one set per diagnostic style: _auto_pkg_config_note keys
+        # (header, outcome); _auto_pkg_config_warn and _auto_pkg_config_hint
+        # key the whole message. The same TU is parsed repeatedly in one
+        # process (Hunter's dependency expansion walks sources multiple
+        # times) and the identical diagnostic line must not repeat within a
+        # build session -- while a fresh session must be able to re-report.
+        # Lives and dies with this BuildContext rather than being cleared in
+        # place, exactly like auto_pkg_config_memo above.
+        self.auto_pkg_config_diagnosed: set = set()
+        self.auto_pkg_config_warned: set = set()
+        self.auto_pkg_config_hinted: set = set()
         # Sentinel: True means PKG_CONFIG_PATH was unset before override.
         # str means we saved that prior value. None means no override active.
         self._original_pkg_config_path: str | bool | None = None

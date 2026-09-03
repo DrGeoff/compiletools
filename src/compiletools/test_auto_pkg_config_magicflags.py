@@ -11,8 +11,10 @@ Fixtures: ``pkgconfig_env`` points PKG_CONFIG_PATH at the shared
 examples-features/pkgs directory (autoinfer/umbrella/fam fixtures); the
 autouse conftest fixture keeps ``--auto-pkg-config`` off elsewhere, so every
 test here opts in with ``auto_pkg_config_on`` (env CT_AUTO_PKG_CONFIG=1) or
-explicit argv. ``pkgconfig_infer``'s process-global caches and MagicFlags'
-diagnostic dedup set are cleared around every test.
+explicit argv. ``pkgconfig_infer``'s process-global caches are cleared around
+every test; MagicFlags' diagnostic dedup sets are BuildContext-owned session
+state, and every parse here constructs a fresh BuildContext, so they reset
+with each new parser rather than through clear_cache().
 """
 
 import os
@@ -33,12 +35,15 @@ TU_AUTOINFER = "#include <autoinfer/api.h>\nint main() { return 0; }\n"
 
 @pytest.fixture(autouse=True)
 def _clear_auto_pkg_config_caches():
-    """Isolation for the two process-global caches inference reads and writes.
+    """Isolation for the process-global caches inference reads and writes.
 
     ``pkgconfig_infer.clear_cache()`` resets the PKG_CONFIG_PATH-keyed
     include-dir index so each test sees its own env value;
-    ``MagicFlagsBase.clear_cache()`` resets both the parse cache and the
-    module-global verbose-note dedup set the ambiguity tests assert on.
+    ``MagicFlagsBase.clear_cache()`` clears the shared LRU caches. The
+    verbose-note dedup sets the ambiguity tests assert on are owned by the
+    BuildContext each parser constructs (per-build-session state, like
+    ``auto_pkg_config_memo``), so per-test isolation holds without clearing
+    them here.
     """
     compiletools.pkgconfig_infer.clear_cache()
     compiletools.magicflags.MagicFlagsBase.clear_cache()
@@ -53,14 +58,16 @@ class TestAutoPkgConfig(tb.BaseCompileToolsTestCase):
     def _write_tu(self, text, name="main.cpp"):
         return str(uth.write_sources({name: text})[name])
 
-    def _make_parser(self, extraargs=(), extralines=None, flavour=None):
+    def _make_parser(self, extraargs=(), extralines=None, flavour=None, context=None):
         """Build a MagicFlags parser the way ``tb.create_magic_parser`` does,
         but with extra conf-file lines (for the xxpend-accumulation test).
         The parser class matters: only ``_ComposingArgumentParser`` +
         ``_AccumulatingConfigFileParser`` (what ``apptools.create_parser``
         builds in production) let conf-file ``append-AUTO-PKG-CONFIG-MAP``
         accumulate with the CLI token -- stock configargparse drops the conf
-        value when the same append key appears on the CLI."""
+        value when the same append key appears on the CLI. *context* lets a
+        test share one BuildContext across parsers; the diagnostic dedup
+        sets are session state on it."""
         import compiletools.apptools
         import compiletools.headerdeps
         import compiletools.magicflags
@@ -75,7 +82,7 @@ class TestAutoPkgConfig(tb.BaseCompileToolsTestCase):
         compiletools.apptools.add_common_arguments(cap, argv=argv)
         compiletools.headerdeps.add_arguments(cap)
         compiletools.magicflags.add_arguments(cap)
-        ctx = BuildContext()
+        ctx = context if context is not None else BuildContext()
         args = compiletools.apptools.parseargs(cap, argv, context=ctx)
         headerdeps = compiletools.headerdeps.create(args, context=ctx)
         return compiletools.magicflags.create(args, headerdeps, context=ctx)
@@ -254,6 +261,34 @@ class TestAutoPkgConfig(tb.BaseCompileToolsTestCase):
         err = capsys.readouterr().err
         assert "is unavailable" not in err
         assert "are unavailable" not in err
+
+    # ------------------------------------ diagnostic dedup: per BuildContext
+
+    @uth.requires_functional_compiler
+    @pytest.mark.usefixtures("pkgconfig_env", "auto_pkg_config_on")
+    def test_diagnostic_dedup_is_per_build_context(self, capsys):
+        """The inference-diagnostic dedup sets are BuildContext-owned session
+        state, not module globals: two parsers sharing one context share the
+        dedup (the second parse of the same TU is silent) and a fresh
+        context re-reports. Pinning the ownership keeps
+        MagicFlagsBase.clear_cache() honest about what it can reset -- the
+        sets die with their context, exactly like auto_pkg_config_memo."""
+        text = "//#PKG-CONFIG=autoinfer-vendored\n#include <autoinfer-vendored/api.h>\nint main() { return 0; }\n"
+        tu = self._write_tu(text)
+        marker = "declared package 'autoinfer-vendored' is unavailable"
+
+        shared = BuildContext()
+        first = self._make_parser(context=shared)
+        first.parse(tu)
+        assert marker in capsys.readouterr().err, "precondition: the declared-missing warning prints"
+
+        second = self._make_parser(context=shared)
+        second.parse(tu)
+        assert marker not in capsys.readouterr().err, "a second parser on one session must dedup the warning silent"
+
+        fresh = self._make_parser()
+        fresh.parse(tu)
+        assert marker in capsys.readouterr().err, "a fresh session (fresh BuildContext) must re-report the warning"
 
     # --------------------------------------- F3: preprocessor conditional gates
 

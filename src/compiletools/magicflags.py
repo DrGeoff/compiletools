@@ -57,27 +57,6 @@ _HARD_ORDERINGS_KEY = sz.Str("_HARD_ORDERINGS")
 # values bypass argparse choice checking) rather than in the parser.
 _AUTO_PKG_CONFIG_RESOLVER_SET = frozenset({"pc", "distro", "man"})
 
-#: Inference diagnostics deduped per process, keyed (header, outcome). The
-#: same TU is often parsed repeatedly in one process (Hunter's dependency
-#: expansion walks sources multiple times), and the identical "-> pkg" or
-#: "unresolved: reason" line must not repeat for it. Cleared by
-#: MagicFlagsBase.clear_cache().
-_AUTO_PKG_CONFIG_DIAGNOSED: set = set()
-
-#: Default-visible inference warnings deduped per process, keyed on the whole
-#: message. Separate from _AUTO_PKG_CONFIG_DIAGNOSED because these are NOT
-#: verbosity gated: the only caller is the per-header declared-missing
-#: failure warning, a state that changes what inference does and that the
-#: user must see at verbose 0. Cleared by MagicFlagsBase.clear_cache().
-_AUTO_PKG_CONFIG_WARNED: set = set()
-
-#: Verbose-gated inference hints deduped per process, keyed on the whole
-#: message. Same process-level dedup as the warn set, but note-style gating:
-#: these document a degraded environment next to an inference that still
-#: succeeded, so they only print at verbose >= 1. Cleared by
-#: MagicFlagsBase.clear_cache().
-_AUTO_PKG_CONFIG_HINTED: set = set()
-
 
 def _auto_pkg_config_entries(value):
     """Split one raw ``--auto-pkg-config-map`` / ``--auto-pkg-config-ignore``
@@ -995,18 +974,18 @@ class MagicFlagsBase:
 
     def _auto_pkg_config_note(self, header, outcome):
         """Print one inference diagnostic at verbose>=1, deduped per
-        (header, outcome) for the process."""
+        (header, outcome) for the build session (self.context)."""
         if getattr(self._args, "verbose", 0) < 1:
             return
         key = (header, outcome)
-        if key in _AUTO_PKG_CONFIG_DIAGNOSED:
+        if key in self.context.auto_pkg_config_diagnosed:
             return
-        _AUTO_PKG_CONFIG_DIAGNOSED.add(key)
+        self.context.auto_pkg_config_diagnosed.add(key)
         print(f"auto-pkg-config: {header} {outcome}", file=sys.stderr)
 
     def _auto_pkg_config_warn(self, message):
         """Print one auto-pkg-config warning, deduped per message for the
-        process.
+        build session (self.context).
 
         Not verbosity gated, unlike :meth:`_auto_pkg_config_note`: the only
         caller is the per-header ``REASON_DECLARED_MISSING`` warning, an
@@ -1014,14 +993,14 @@ class MagicFlagsBase:
         compilation on the header, because its declared package is
         unavailable. Decisions the user has to see without passing ``-v``.
         """
-        if message in _AUTO_PKG_CONFIG_WARNED:
+        if message in self.context.auto_pkg_config_warned:
             return
-        _AUTO_PKG_CONFIG_WARNED.add(message)
+        self.context.auto_pkg_config_warned.add(message)
         print(f"auto-pkg-config: {message}", file=sys.stderr)
 
     def _auto_pkg_config_hint(self, message):
         """Print one auto-pkg-config hint at verbose>=1, deduped per message
-        for the process.
+        for the build session (self.context).
 
         Note-style gating, unlike :meth:`_auto_pkg_config_warn`: a hint only
         documents a degraded environment next to an inference that still
@@ -1030,9 +1009,9 @@ class MagicFlagsBase:
         """
         if getattr(self._args, "verbose", 0) < 1:
             return
-        if message in _AUTO_PKG_CONFIG_HINTED:
+        if message in self.context.auto_pkg_config_hinted:
             return
-        _AUTO_PKG_CONFIG_HINTED.add(message)
+        self.context.auto_pkg_config_hinted.add(message)
         print(f"auto-pkg-config: {message}", file=sys.stderr)
 
     def _resolve_readmacros_path(self, flag, source_filename, extra_include_paths=None):
@@ -1449,11 +1428,9 @@ class MagicFlagsBase:
         compiletools.apptools.clear_cache()
         DirectMagicFlags.clear_cache()
         CppMagicFlags.clear_cache()
-        # Inference diagnostics are deduped per process; a fresh parse session
-        # (tests re-parse the same files) must be able to re-report them.
-        _AUTO_PKG_CONFIG_DIAGNOSED.clear()
-        _AUTO_PKG_CONFIG_WARNED.clear()
-        _AUTO_PKG_CONFIG_HINTED.clear()
+        # Inference diagnostics are deduped per BuildContext -- the sets live
+        # on self.context and die with it, so clear_cache() has nothing to
+        # reset for them.
         # Clear LRU caches
         compiletools.utils.split_command_cached.cache_clear()
         compiletools.utils.split_command_cached_sz.cache_clear()
