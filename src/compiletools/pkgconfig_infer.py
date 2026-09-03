@@ -75,7 +75,9 @@ Memo keys:
   honoured even when the memo is populated, so masking never needs to know
   the memo state.
 * :func:`infer` -- caller-supplied ``memo`` dict keyed on
-  ``(header_path, PKG_CONFIG_PATH, config.resolvers)`` holding the pre-post
+  ``(header_path, PKG_CONFIG_PATH, PKG_CONFIG_LIBDIR, config.resolvers,
+  config.compiler_builtin_dirs)`` (via :func:`_chain_memo_key`; the same
+  env/builtin-dir sensitivity as the memos above) holding the pre-post
   resolver-chain verdict (post-demotions depend on the config, so they are
   re-applied per call). ``clear_cache()`` clears only the module-level memos;
   caller-supplied memo dicts are the caller's lifetime.
@@ -1232,6 +1234,30 @@ def _demote(result: InferenceResult, config: InferenceConfig) -> InferenceResult
     return result
 
 
+def _chain_memo_key(
+    header_path: str, config: InferenceConfig
+) -> tuple[str, str, str, tuple[str, ...], tuple[str, ...]]:
+    """Memo key for the resolver-chain verdict, shared by :func:`_pre_chain`
+    (lookup + store of the pc-index stage) and :func:`infer` (store of the
+    distro -> man tail).
+
+    Folds the same inputs the module's other memos do (F10): the header's
+    realpath, the PKG_CONFIG_PATH/PKG_CONFIG_LIBDIR pair, the enabled
+    resolvers, and the compiler built-in dirs the pc-index stage consulted
+    (they feed :func:`build_pc_include_index`'s skip list, so they change
+    which packages an index can attribute). ``_demote``'s inputs are
+    deliberately NOT in the key: the memo holds the pre-demotion verdict and
+    post-demotions are re-applied per call.
+    """
+    return (
+        header_path,
+        os.environ.get("PKG_CONFIG_PATH", ""),
+        os.environ.get("PKG_CONFIG_LIBDIR", ""),
+        config.resolvers,
+        config.compiler_builtin_dirs,
+    )
+
+
 def _pre_chain(header: str, config: InferenceConfig, memo: dict) -> tuple[InferenceResult | None, str | None]:
     """Everything before the distro stage, for one header spelling.
 
@@ -1293,10 +1319,13 @@ def _pre_chain(header: str, config: InferenceConfig, memo: dict) -> tuple[Infere
         if os.path.isfile(spelling_candidate) and os.path.realpath(spelling_candidate) == header_path:
             return InferenceResult(header, header_path, None, None, (), REASON_COVERED), None
 
-    # 8. Resolver chain, memoised per (header_path, PKG_CONFIG_PATH,
-    #    config.resolvers). Post-demotions depend on the config, so the memo
-    #    holds the pre-demotion verdict only.
-    chain_key = (header_path, os.environ.get("PKG_CONFIG_PATH", ""), config.resolvers)
+    # 8. Resolver chain, memoised per :func:`_chain_memo_key` -- the same
+    #    (header_path, PKG_CONFIG_PATH, PKG_CONFIG_LIBDIR, resolvers,
+    #    compiler_builtin_dirs) tuple the module's other memos fold, so a
+    #    verdict computed under one pkg-config env/builtin-dir state never
+    #    serves a different one. Post-demotions depend on the config, so the
+    #    memo holds the pre-demotion verdict only.
+    chain_key = _chain_memo_key(header_path, config)
     if chain_key in memo:
         package, resolver, candidates, reason = memo[chain_key]
         return _demote(InferenceResult(header, header_path, package, resolver, candidates, reason), config), header_path
@@ -1400,7 +1429,7 @@ def infer(headers: Sequence[str], config: InferenceConfig, *, memo: dict) -> lis
             owners = owners_for_headers([path for _header, path in pending], backend)
 
     for header, header_path in pending:
-        chain_key = (header_path, os.environ.get("PKG_CONFIG_PATH", ""), config.resolvers)
+        chain_key = _chain_memo_key(header_path, config)
         # The batch answer is definitive: "" (no owner) must not trigger a
         # second, per-header owner query. With no backend at all there is
         # nothing precomputed -- resolve_via_distro re-detects (memoised) and

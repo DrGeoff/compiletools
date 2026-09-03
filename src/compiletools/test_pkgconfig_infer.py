@@ -14,6 +14,7 @@ boundaries (``_run_pkg_config_index``, ``_run_pkg_config_exists``,
 for real.
 """
 
+import dataclasses
 import os
 import shutil
 
@@ -361,6 +362,78 @@ def test_caller_memo_gains_entry_and_short_circuits(pkgconfig_env, auto_pkg_conf
     fresh = pkgconfig_infer.infer(["autoinfer/api.h"], config, memo={})
     assert fresh[0].package is None
     assert fresh[0].resolver is None
+
+
+def _sequential_index_stub(monkeypatch, include_root: str, packages: tuple[str, ...]):
+    """Stub the pc-index boundary so successive calls attribute *include_root*
+    to successive packages (first call -> packages[0], then packages[1], ...).
+    Returns the call counter. Emulates environments whose pkg-config database
+    answers differently for the same include dir."""
+    calls = {"count": 0}
+
+    def stub():
+        pkg = packages[min(calls["count"], len(packages) - 1)]
+        calls["count"] += 1
+        return ([pkg], {pkg: f"-I{include_root}"})
+
+    monkeypatch.setattr(pkgconfig_infer, "_run_pkg_config_index", stub)
+    return calls
+
+
+def test_chain_memo_does_not_serve_first_verdict_after_libdir_or_builtin_dir_change(
+    pkgconfig_env, auto_pkg_config_on, monkeypatch, tmp_path
+):
+    """The chain memo key folds PKG_CONFIG_LIBDIR and the compiler built-in
+    dirs -- the same inputs the module's other memos key on -- so a verdict
+    computed under one pkg-config env/builtin-dir state never serves another.
+    With one shared memo dict, changing either between two infer() calls
+    re-runs the chain and attributes the header to the package the stubbed
+    boundary now reports."""
+    include_root = tmp_path / "include"
+    (include_root / "myown").mkdir(parents=True)
+    (include_root / "myown" / "dup.h").write_text("#pragma once\n")
+    config = InferenceConfig(search_dirs=(str(include_root),))
+    calls = _sequential_index_stub(monkeypatch, str(include_root), ("myown-pc-a", "myown-pc-b", "myown-pc-c"))
+    # The fallback distro stage stays subprocess-free on every host: only the
+    # stubbed pc-index boundary answers in this scenario.
+    monkeypatch.setenv("CT_DISTRO_BACKEND", "none")
+
+    memo: dict = {}
+    first = pkgconfig_infer.infer(["myown/dup.h"], config, memo=memo)
+    assert first[0].package == "myown-pc-a"
+    assert first[0].resolver == "pc-index"
+    assert len(memo) == 1
+    assert calls["count"] == 1
+
+    # Control: with nothing changed, the same memo dict serves the first
+    # verdict even with the pc resolver poisoned -- the memo, not the
+    # boundary, answered the second call.
+    def poisoned(*args, **kwargs):
+        raise RuntimeError("chain memo should have short-circuited the resolver chain")
+
+    with monkeypatch.context() as poison_ctx:
+        poison_ctx.setattr(pkgconfig_infer, "resolve_via_pc_index", poisoned)
+        served = pkgconfig_infer.infer(["myown/dup.h"], config, memo=memo)
+    assert served == first
+
+    # PKG_CONFIG_LIBDIR is part of the key: the chain re-runs and the
+    # boundary's new answer wins instead of the first call's verdict.
+    monkeypatch.setenv("PKG_CONFIG_LIBDIR", str(tmp_path / "libdir"))
+    second = pkgconfig_infer.infer(["myown/dup.h"], config, memo=memo)
+    assert second[0].package == "myown-pc-b"
+    assert second[0].resolver == "pc-index"
+    assert len(memo) == 2
+    assert calls["count"] == 2
+
+    # So are the compiler built-in dirs: with the env restored, changing only
+    # config.compiler_builtin_dirs still re-runs the chain.
+    monkeypatch.delenv("PKG_CONFIG_LIBDIR")
+    shifted = dataclasses.replace(config, compiler_builtin_dirs=(str(tmp_path / "toolchain" / "include"),))
+    third = pkgconfig_infer.infer(["myown/dup.h"], shifted, memo=memo)
+    assert third[0].package == "myown-pc-c"
+    assert third[0].resolver == "pc-index"
+    assert len(memo) == 3
+    assert calls["count"] == 3
 
 
 # ---------------------------------------------------------------------------
