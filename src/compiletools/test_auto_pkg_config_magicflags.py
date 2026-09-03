@@ -21,6 +21,7 @@ import shutil
 import pytest
 import stringzilla as sz
 
+import compiletools.compiler_macros
 import compiletools.magicflags
 import compiletools.pkgconfig_infer
 import compiletools.test_base as tb
@@ -380,6 +381,41 @@ class TestAutoPkgConfig(tb.BaseCompileToolsTestCase):
         assert len(seen) == 1, f"resolver consulted {len(seen)}x for the same header: {seen} ({first_tu})"
         assert self._strings(first, "PKG-CONFIG") == ["autoinfer"]
         assert self._strings(second, "PKG-CONFIG") == ["autoinfer"]
+
+    # --------------------------- language-aware built-in include-dir probe
+
+    @uth.requires_functional_compiler
+    @pytest.mark.usefixtures("pkgconfig_env", "auto_pkg_config_on")
+    def test_builtin_include_dirs_probed_with_language_matching_compiler(self, monkeypatch):
+        """The TU's main file picks the compiler whose built-in angle-bracket
+        search list inference probes: a .c TU is probed with the config's CC
+        (mirroring the compile rule's CC + cflags dispatch) and a .cpp TU with
+        CXX. The recorder delegates to the real probe, so each parse must
+        still infer autoinfer -- the CC dispatch must not cost the C
+        translation unit its package."""
+        real_builtin_include_dirs = compiletools.compiler_macros.builtin_include_dirs
+        probed = []
+
+        def recording_builtin_include_dirs(compiler_path, verbose=0):
+            probed.append(str(compiler_path))
+            return real_builtin_include_dirs(compiler_path, verbose)
+
+        monkeypatch.setattr(compiletools.compiler_macros, "builtin_include_dirs", recording_builtin_include_dirs)
+        parser = self._make_parser()
+        # Distinct TU contents: the structured-data cache keys on content
+        # hash, so two byte-identical TUs through one parser would collide
+        # on the cache key and the second parse would restore state that was
+        # never populated for its own path (see the memo test above).
+        c_tu = self._write_tu(TU_AUTOINFER, name="main.c")
+        cpp_tu = self._write_tu("#include <autoinfer/api.h>\nint other() { return 1; }\n", name="other.cpp")
+        c_result = parser.parse(c_tu)
+        cpp_result = parser.parse(cpp_tu)
+        assert probed == [parser._args.CC, parser._args.CXX], (
+            f"built-in probe must follow the TU language: probed={probed}, "
+            f"CC={parser._args.CC!r}, CXX={parser._args.CXX!r}"
+        )
+        assert self._strings(c_result, "PKG-CONFIG") == ["autoinfer"]
+        assert self._strings(cpp_result, "PKG-CONFIG") == ["autoinfer"]
 
     # ------------------------------------------------- F6: never raise
 

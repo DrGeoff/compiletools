@@ -659,7 +659,7 @@ class MagicFlagsBase:
             self._infer_direct_headerdeps = instance
         return self._infer_direct_headerdeps
 
-    def _infer_pkg_config(self, file_analysis_data, flagsforfilename, expander, macro_state=None):
+    def _infer_pkg_config(self, file_analysis_data, flagsforfilename, expander, macro_state=None, tu_main_file=None):
         """Infer PKG-CONFIG packages from the settled active #include set.
 
         Plan 2026-09-02 Stage 5. Runs once per ``_parse`` after every explicit
@@ -694,7 +694,7 @@ class MagicFlagsBase:
         """
         try:
             candidates, results, unresolved_explicit = self._infer_pkg_config_candidates(
-                file_analysis_data, flagsforfilename, macro_state
+                file_analysis_data, flagsforfilename, macro_state, tu_main_file=tu_main_file
             )
         except SystemExit:
             raise
@@ -781,7 +781,7 @@ class MagicFlagsBase:
             )
         return sorted(deduped.items())
 
-    def _infer_pkg_config_candidates(self, file_analysis_data, flagsforfilename, macro_state):
+    def _infer_pkg_config_candidates(self, file_analysis_data, flagsforfilename, macro_state, tu_main_file=None):
         """Resolve the candidate headers of one translation unit.
 
         Returns ``(candidates, results, unresolved_explicit)``: the spelling ->
@@ -938,7 +938,17 @@ class MagicFlagsBase:
         # knows how to reach is still locatable and the pc-index resolver can
         # attribute it (the covered-by-explicit guard above only considers
         # user-declared dirs, so these never demote).
-        compiler_builtin_dirs = compiletools.compiler_macros.builtin_include_dirs(getattr(args, "CXX", ""), verbose)
+        #
+        # The built-in probe is language-aware: the TU's main file (the file
+        # _parse was called on, passed explicitly because READMACROS files
+        # precede it in tu_files) selects the compiler whose angle-bracket
+        # search list is probed, mirroring the compile-rule dispatch
+        # (utils.is_c_source -> CC + cflags, else CXX + cxxflags), so a C
+        # translation unit is not searched against the C++ compiler's stdlib
+        # dirs and a C++ one not against the C compiler's list.
+        main_file = tu_main_file or (tu_files[0] if tu_files else "")
+        builtin_compiler = getattr(args, "CC" if compiletools.utils.is_c_source(main_file) else "CXX", "")
+        compiler_builtin_dirs = compiletools.compiler_macros.builtin_include_dirs(builtin_compiler, verbose)
         pc_dirs = compiletools.pkgconfig_infer.build_pc_include_index(compiler_builtin_dirs)
         search_dirs = (
             tuple(explicit_include_dirs)
@@ -1211,7 +1221,7 @@ class MagicFlagsBase:
         # annotation.
         if getattr(self._args, "auto_pkg_config", False):
             for pkg, including_file in self._infer_pkg_config(
-                file_analysis_data, flagsforfilename, expander, macro_state=macro_state
+                file_analysis_data, flagsforfilename, expander, macro_state=macro_state, tu_main_file=filename
             ):
                 self._process_magic_flag(
                     sz.Str("PKG-CONFIG"),
