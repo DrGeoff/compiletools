@@ -179,26 +179,61 @@ def split_compound_args(args: Sequence[str]) -> list[str]:
     return result
 
 
-_DETACHED_ARG_FLAGS: frozenset[str] = frozenset({"-include"})
+_DETACHED_ARG_FLAGS: frozenset[str] = frozenset({"-include", "-imacros"})
 """Compiler flags whose argument is a separate token (the ``-flag value``
 form) and must be preserved in copts as a 2-token pair. Without this
 list, the value would be dropped by the ``not arg.startswith("-")``
 guard in :func:`extract_copts`, producing an orphan flag that the
 receiving backend translates into a malformed compile command (e.g.
 gcc consuming cmake's downstream ``-MD`` as the missing file argument
-to ``-include``)."""
+to ``-include``). gcc has no joined form for these two flags, so the
+pair cannot be collapsed into a single token."""
+
+
+_DETACHED_DIR_FLAGS: frozenset[str] = frozenset({"-isystem", "-iquote", "-idirafter", "-iframework", "-F", "-isysroot"})
+"""Include-search flags whose *split* form (``-isystem <dir>``) carries the
+directory as a separate token. :func:`extract_copts` recombines each such
+pair into the compiler-accepted joined single token (``-isystem<dir>``) so
+the directory can never be lost.
+
+Why join instead of emitting a 2-token copt pair: ``aggregate_rule_sources``
+dedups copts per token across a target's objects, so a 2-token pair is
+fragile — an operand token deduped against an identical token from another
+object would strand its flag. Why not route ``-isystem`` directories to
+cmake ``target_include_directories(... SYSTEM ...)``: SYSTEM is emitted as
+``-isystem``, which is semantics-changing for the other members of this
+family — ``-idirafter`` must search *after* the standard system directories
+and ``-iquote`` *before* ``-I`` — and cmake has no channel at all for
+``-iframework``/``-F``/``-isysroot``. The joined token reproduces gcc's and
+clang's parse of the original split pair exactly (both accept the joined
+form for every flag listed here), preserving the compiler's search order by
+construction, and lands in the same ``target_compile_options`` slot that
+user-written joined ``-isystem<dir>`` flags already occupy.
+
+``strip_includes=True`` (Bazel) emits the joined tokens into ``copts`` as
+well: Bazel's ``includes`` attribute is workspace-relative only, so a
+directory outside the workspace (the pkg-config case) has no other channel
+to reach the compiler action. ``-I`` is still dropped in that mode — Bazel
+re-emits workspace-relative ``-I`` directories via ``includes=[...]``.
+"""
 
 
 def extract_copts(command: Sequence[str], *, strip_includes: bool = False) -> list[str]:
     """Extract compiler flags from a compile command.
 
     Strips the compiler binary, -c, source file, -o, and output file.
-    When strip_includes is True, drops all -I/-isystem/-iquote flags
-    (needed by Bazel which manages include paths itself).
+    When strip_includes is True, drops all -I flags (needed by Bazel
+    which manages include paths itself via includes=[...]).
     When False, recombines space-separated ``-I <dir>`` into ``-I<dir>``.
     Detached-argument flags listed in :data:`_DETACHED_ARG_FLAGS` (e.g.
     ``-include <header>``) are preserved as the original 2-token pair —
     gcc has no joined form for these, so we must not collapse them.
+    Split-form include-directory flags listed in
+    :data:`_DETACHED_DIR_FLAGS` (e.g. pkg-config's ``-isystem <dir>``)
+    are recombined into the compiler-accepted joined single token
+    ``-isystem<dir>`` in BOTH modes — see that constant's docstring for
+    why the joined form is the safe representation. A trailing such flag
+    with no operand is dropped instead of being emitted as an orphan.
     """
     if not command:
         return []
@@ -207,7 +242,12 @@ def extract_copts(command: Sequence[str], *, strip_includes: bool = False) -> li
     skip_next = False
     include_next = False
     keep_next = False
+    join_with = None
     for arg in args:
+        if join_with is not None:
+            copts.append(join_with + arg)
+            join_with = None
+            continue
         if skip_next:
             skip_next = False
             continue
@@ -228,13 +268,11 @@ def extract_copts(command: Sequence[str], *, strip_includes: bool = False) -> li
         if arg == "-I":
             include_next = True
             continue
-        if strip_includes:
-            if arg.startswith(("-isystem", "-iquote")):
-                if arg in ("-isystem", "-iquote"):
-                    skip_next = True
-                continue
-            if arg.startswith("-I") and len(arg) > 2:
-                continue
+        if arg in _DETACHED_DIR_FLAGS:
+            join_with = arg
+            continue
+        if strip_includes and arg.startswith("-I") and len(arg) > 2:
+            continue
         if arg in _DETACHED_ARG_FLAGS:
             copts.append(arg)
             keep_next = True
@@ -336,8 +374,9 @@ def build_obj_info(graph: BuildGraph, *, strip_includes: bool = False) -> dict[s
 
     Args:
         graph: The BuildGraph to extract compile rules from.
-        strip_includes: When True, drop -I/-isystem/-iquote flags from copts
-            (needed by Bazel which manages include paths itself).
+        strip_includes: When True, drop -I flags from copts
+            (needed by Bazel which manages include paths itself;
+            -isystem-family flags are kept as joined single tokens).
     """
     obj_info: dict[str, ObjInfo] = {}
     for rule in graph.rules_by_type("compile"):

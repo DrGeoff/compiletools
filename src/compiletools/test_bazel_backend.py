@@ -358,6 +358,35 @@ class TestCoptsExtraction:
         cmd = ["g++", "-Wall", "-Wextra", "-I/usr/include", "-c", "x.cpp", "-o", "x.o"]
         assert extract_copts(cmd, strip_includes=True) == ["-Wall", "-Wextra"]
 
+    def test_split_isystem_kept_as_joined_copt_in_strip_mode(self):
+        """PKG-CONFIG magic expands to the 2-token ``-isystem <dir>`` form.
+        In strip_includes mode the historic behaviour dropped flag and dir
+        entirely, so a header under a directory outside the workspace (the
+        pkg-config case) could never be found: bazel's ``includes``
+        attribute is workspace-relative only and has no other channel. The
+        paired joined single token in copts is that channel."""
+        cmd = ["g++", "-O2", "-isystem", "/opt/vendor/include", "-c", "x.cpp", "-o", "x.o"]
+        assert extract_copts(cmd, strip_includes=True) == ["-O2", "-isystem/opt/vendor/include"]
+
+    def test_split_dir_flags_all_family_members_in_strip_mode(self):
+        for flag, operand in [
+            ("-isystem", "/d/system"),
+            ("-iquote", "/d/quote"),
+            ("-idirafter", "/d/after"),
+            ("-iframework", "/d/framework"),
+            ("-F", "/d/frameworks"),
+            ("-isysroot", "/d/sdk"),
+        ]:
+            cmd = ["g++", flag, operand, "-c", "x.cpp", "-o", "x.o"]
+            assert extract_copts(cmd, strip_includes=True) == [f"{flag}{operand}"]
+
+    def test_joined_isystem_no_longer_dropped_in_strip_mode(self):
+        """Symmetry: an already-joined ``-isystem<dir>`` copt (user-written
+        //#CXXFLAGS) must survive strip mode exactly like the recombined
+        split form, and -I must still be dropped."""
+        cmd = ["g++", "-isystem/usr/local/x", "-I/usr/local/y", "-c", "x.cpp", "-o", "x.o"]
+        assert extract_copts(cmd, strip_includes=True) == ["-isystem/usr/local/x"]
+
     def test_unbalanced_quote_in_a_compound_token_raises_flag_tokenize_error(self):
         """coverage-gaps Task 9: split_compound_args (reached via
         extract_copts for any compound space-separated token) used to

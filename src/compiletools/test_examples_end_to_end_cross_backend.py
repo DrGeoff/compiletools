@@ -276,18 +276,19 @@ _EXAMPLE_PLANS: dict[str, ExamplePlan] = {
     # --no-auto-pkg-config must fail at the #include -- lives in
     # test_auto_pkg_config_negative. Skips when pkg-config is absent.
     #
-    # bazel/cmake are skipped: PKG-CONFIG magic flags expand to the
-    # 2-token ``-isystem <dir>`` form and those backends' rule emitters
-    # mishandle it -- cmake's extract_copts leaves a bare orphan
-    # ``-isystem`` in target_compile_options (gcc then consumes cmake's
-    # ``-MD`` as the -isystem argument: "cc1plus: error: to generate
-    # dependencies you must specify either '-M' or '-MM'"), and bazel's
-    # strip_includes drops the dir entirely so the compile can't find the
-    # header. Every other PKG-CONFIG magic example already skips these
-    # backends for the same family of reasons; a cmake-backend fix would
-    # be a separate production change, not a Stage-6 test-harness one.
+    # cmake runs here since the backend-side -isystem fix: extract_copts
+    # (backend_command_args.py) pairs the 2-token ``-isystem <dir>`` into
+    # the joined single token ``-isystem<dir>`` in target_compile_options.
+    # Previously it left a bare orphan "-isystem" and gcc consumed cmake's
+    # downstream ``-MD`` as the directory operand ("cc1plus: error: to
+    # generate dependencies you must specify either '-M' or '-MM'").
+    # bazel remains skipped: its ``includes`` attribute is
+    # workspace-relative only and (independently) the bazel e2e cells
+    # cannot run on GPFS (copy_file_range ENOTSUP in the repository
+    # machinery); the backend code change is symmetric and unit-tested in
+    # test_bazel_backend.py::TestCoptsExtraction.
     "auto_pkg_config": ExamplePlan(
-        skip_for_backends=frozenset({"bazel", "cmake"}),
+        skip_for_backends=frozenset({"bazel"}),
         prebuild=_prebuild_auto_pkg_config,
     ),
     # Two subprojects each with a main.cpp — the source-mirrored bindir

@@ -143,6 +143,47 @@ class TestCMakeGenerate:
         assert '"-std=c++17"' in content
         assert '"-DFOO=1"' in content
 
+    def test_split_pkg_config_isystem_becomes_joined_copt(self):
+        """End-to-end guard for the cmake backend vs PKG-CONFIG magic: the
+        2-token ``-isystem <dir>`` from filter_pkg_config_cflags must land
+        in target_compile_options as the single joined token. The historic
+        bug emitted a bare orphan "-isystem" element, and gcc then consumed
+        cmake's own -MD as the directory operand:
+            cc1plus: error: to generate dependencies you must specify
+            either '-M' or '-MM'
+        The dir must also not be silently dropped (it carries the header)."""
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="obj/main.o",
+                inputs=["main.cpp"],
+                command=[
+                    "g++",
+                    "-O2",
+                    "-isystem",
+                    "/opt/vendor/include",
+                    "-c",
+                    "main.cpp",
+                    "-o",
+                    "obj/main.o",
+                ],
+                rule_type="compile",
+            )
+        )
+        graph.add_rule(
+            BuildRule(
+                output="bin/main",
+                inputs=["obj/main.o"],
+                command=["g++", "-o", "bin/main", "obj/main.o"],
+                rule_type="link",
+            )
+        )
+
+        content = self._generate(graph)
+
+        assert '"-isystem/opt/vendor/include"' in content
+        assert '"-isystem"' not in content  # no orphan flag element
+
     def test_link_options(self):
         graph = BuildGraph()
         graph.add_rule(
@@ -347,6 +388,67 @@ class TestCoptsExtraction:
     def test_basic_flags(self):
         cmd = ["g++", "-O2", "-std=c++17", "-c", "foo.cpp", "-o", "obj/foo.o"]
         assert extract_copts(cmd) == ["-O2", "-std=c++17"]
+
+    def test_split_isystem_recombined_into_joined_token(self):
+        """PKG-CONFIG magic flags expand to the 2-token ``-isystem <dir>``
+        form (filter_pkg_config_cflags). extract_copts must pair the flag
+        with its operand into the compiler-identical joined token; leaving
+        the bare ``-isystem`` in copts let cmake's downstream ``-MD`` be
+        consumed as the directory operand (cc1plus: error: to generate
+        dependencies you must specify either '-M' or '-MM')."""
+        cmd = ["g++", "-O2", "-isystem", "/tmp/apc/inc", "-c", "foo.cpp", "-o", "obj/foo.o"]
+        assert extract_copts(cmd) == ["-O2", "-isystem/tmp/apc/inc"]
+
+    def test_split_include_dir_flags_all_family_members(self):
+        """Every two-token include-family flag is paired with its operand
+        (joined single token), in both extraction modes."""
+        pairs = [
+            ("-isystem", "/d/system"),
+            ("-iquote", "/d/quote"),
+            ("-idirafter", "/d/after"),
+            ("-iframework", "/d/framework"),
+            ("-F", "/d/frameworks"),
+            ("-isysroot", "/d/sdk"),
+        ]
+        for flag, operand in pairs:
+            cmd = ["g++", flag, operand, "-c", "foo.cpp", "-o", "obj/foo.o"]
+            assert extract_copts(cmd) == [f"{flag}{operand}"]
+            assert extract_copts(cmd, strip_includes=True) == [f"{flag}{operand}"]
+
+    def test_split_dash_I_unchanged_and_bazel_drop_unchanged(self):
+        """-I keeps its historical behaviour byte-identical: cmake mode
+        recombines to -I<dir>, bazel mode drops it (bazel re-emits
+        workspace-relative dirs via includes=[...])."""
+        cmd = ["g++", "-I", "/d/inc", "-c", "foo.cpp", "-o", "obj/foo.o"]
+        assert extract_copts(cmd) == ["-I/d/inc"]
+        assert extract_copts(cmd, strip_includes=True) == []
+
+    def test_detached_include_and_imacros_kept_as_pair(self):
+        """-include/-imacros have no joined form; the 2-token pair is
+        preserved in copts in both modes. -imacros previously suffered the
+        same orphan-flag bug as -isystem."""
+        for flag in ("-include", "-imacros"):
+            cmd = ["g++", flag, "prelude.h", "-c", "foo.cpp", "-o", "obj/foo.o"]
+            assert extract_copts(cmd) == [flag, "prelude.h"]
+            assert extract_copts(cmd, strip_includes=True) == [flag, "prelude.h"]
+
+    def test_joined_dir_flags_pass_through(self):
+        """Already-joined forms (user-written //#CXXFLAGS=-isystem/x) pass
+        through as single tokens in both modes."""
+        for token in ("-isystem/x", "-iquote/x", "-idirafter/x", "-iframework/x", "-F/x", "-isysroot/x"):
+            cmd = ["g++", token, "-c", "foo.cpp", "-o", "obj/foo.o"]
+            assert extract_copts(cmd) == [token]
+            assert extract_copts(cmd, strip_includes=True) == [token]
+
+    def test_flaglike_operand_joined_like_gcc_parse(self):
+        """The recombine consumes the next token unconditionally, exactly
+        like the compiler driver parses the split form (gcc takes the next
+        token as the -isystem operand whatever its shape) and like the
+        pre-existing detached ``-I`` join. A trailing flag with NO next
+        token is dropped instead of orphaned."""
+        assert extract_copts(["g++", "-isystem", "-c", "foo.cpp", "-o", "obj/foo.o"]) == ["-isystem-c"]
+        assert extract_copts(["g++", "-isystem"], strip_includes=True) == []
+        assert extract_copts(["g++", "-isystem"]) == []
 
     def test_empty_command(self):
         assert extract_copts([]) == []
