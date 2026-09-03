@@ -210,7 +210,8 @@ that ambiguity fatal instead. Pin one header with
 ``append-``/``prepend-`` forms to accumulate across the conf hierarchy.
 The resolver chain (``--auto-pkg-config-resolvers``, default
 ``pc,distro``) tries the pkg-config include-dir index, then the distro
-package database.
+package database. A third name, ``man``, is reserved but not implemented:
+listing it contributes nothing and is ignored with a one-time warning.
 
 Inference never stands in for a package you already asked for. If a
 translation unit declares ``//#PKG-CONFIG=foo`` (or the conf/CLI list does)
@@ -220,9 +221,10 @@ off. The alternative is worse — an unrelated installed package whose include
 tree happens to vendor a copy of ``foo/bar.h`` would be substituted, its
 libraries would join the link line, and the wrong flags would be folded into
 the cache key. Umbrella packages that bundle third-party headers make this
-routine. Both the suppression and the converse case (a package inferred while
-some declaration is unsatisfied) are reported at verbose 0, since the state is
-a broken environment rather than a build-tool decision::
+routine. The suppression is reported at verbose 0, since the state is a
+broken environment rather than a build-tool decision; the converse case (a
+package inferred while some declaration is unsatisfied) prints only at
+``-v``, as a hint next to an inference that still succeeded::
 
     auto-pkg-config: foo/bar.h not inferred: declared package 'foo' is
     unavailable (requested by src/main.cpp). Install it or widen
@@ -231,10 +233,11 @@ a broken environment rather than a build-tool decision::
 
 Matching is by namespace: the header's leading path component against the
 declared package name, casefolded with one leading ``lib`` stripped on either
-side. A header spelled unlike its package is not covered by the suppression,
-which is why the second warning exists. ``auto-pkg-config-map`` still wins
-over everything, so pinning is the way to redirect a header whose real
-package cannot be installed.
+side and a trailing version/ABI suffix dropped — ``libpng16`` matches
+``png``, ``gtk+-3.0`` matches ``gtk``. A header spelled unlike its package is
+not covered by the suppression, which is why the converse hint exists.
+``auto-pkg-config-map`` still wins over everything, so pinning is the way to
+redirect a header whose real package cannot be installed.
 
 Two host-independence aids: ``ct-auto-pkg-config`` (see ct-auto-pkg-config(1))
 reports the verdicts of any source tree — its ``--style magic`` output is the

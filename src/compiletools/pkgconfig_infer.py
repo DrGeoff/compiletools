@@ -41,13 +41,14 @@ unresolved):
 9. Distro DB (Stage 3): the distro package owning the header is found via
    ONE batched query per TU (rpm -qf / dpkg-query -S / pacman -Qoq / apk
    info --who-owns, see :func:`owners_for_headers`); a libc/kernel owner
-   (``is_libc_owner``) counts as a standard header, an owner shipping no
-   ``.pc`` in the live search dirs reports ``REASON_NO_PC``, several stems
-   go through :func:`tie_break`. The backend is detected on PATH
-   (:func:`detect_distro_backend`, rpm -> dpkg -> pacman -> apk) and can be
-   forced or masked with ``CT_DISTRO_BACKEND`` (rpm|dpkg|pacman|apk|none);
-   no backend means the stage runs no subprocess at all and only the static
-   std fast path (item 2) classifies standard headers.
+   (exact or prefix-family match, :func:`is_libc_owner`) counts as a
+   standard header, an owner shipping no ``.pc`` in the live search dirs
+   reports ``REASON_NO_PC``, several stems go through :func:`tie_break`.
+   The backend is detected on PATH (:func:`detect_distro_backend`,
+   rpm -> dpkg -> pacman -> apk) and can be forced or masked with
+   ``CT_DISTRO_BACKEND`` (rpm|dpkg|pacman|apk|none); no backend means the
+   stage runs no subprocess at all and only the static std fast path
+   (item 2) classifies standard headers.
 10. man (Stage 4): :func:`resolve_via_man` honours the ``"man"`` resolver
    gate but is an intentional stub -- it always returns unresolved with the
    reason ``"man resolver not implemented"`` and never touches its

@@ -33,7 +33,13 @@ some include is ambiguous.
 
 The tool forces the feature on by prepending ``--auto-pkg-config`` to the
 command line, so a conf-file ``auto-pkg-config = false`` or
-``CT_AUTO_PKG_CONFIG=0`` cannot turn the report into a silent no-op.
+``CT_AUTO_PKG_CONFIG=0`` cannot turn the report into a silent no-op. It
+also prepends ``--pkg-config-errors=warn`` so a strict conf/env policy
+(``pkg-config-errors = error``) cannot abort the parse on the first
+ambiguous include before the later files are reported; an explicit
+``--pkg-config-errors=error`` on the command line still wins and restores
+the strict abort — the run then exits 1 on the first ambiguity, before any
+report is emitted.
 
 OPTIONS
 =======
@@ -56,11 +62,11 @@ OPTIONS
 
 --fail-on-ambiguous
                     Exit 1 when any include verdict is ambiguous. Under the
-                    default ``--pkg-config-errors=warn`` the parse itself
+                    forced ``--pkg-config-errors=warn`` the parse itself
                     continues and the ambiguity is reported (with the
                     candidates and the ``auto-pkg-config-map`` remedy);
-                    ``--pkg-config-errors=error`` makes the parse abort on
-                    the ambiguity instead.
+                    an explicit ``--pkg-config-errors=error`` makes the
+                    parse abort on the ambiguity instead.
 
 All other flags are the standard ``ct-magicflags`` surface (``--variant``,
 ``--pkg-config``, ``--auto-pkg-config-map``, ``--auto-pkg-config-ignore``,
