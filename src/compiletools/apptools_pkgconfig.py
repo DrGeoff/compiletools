@@ -477,6 +477,10 @@ def scan_pc_files() -> dict[str, str]:
             if not entry.endswith(".pc"):
                 continue
             candidate = os.path.join(directory, entry)
+            # NOT wrappedos: as in _locate_pc_file, PKG_CONFIG_PATH entries may
+            # be relative, so a cached answer keyed on the string would survive
+            # a chdir; the scan is one os.listdir per dir and itself memoised
+            # by the caller, so the cache would buy little anyway.
             if os.path.isfile(candidate):
                 # setdefault, not assignment: the first dir on the search
                 # list wins, later dirs never shadow an already-found stem.
