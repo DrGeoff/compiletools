@@ -1163,6 +1163,23 @@ class TestExpandPcVariables:
 
         assert fields["Cflags"] == "-I/first"
 
+    def test_a_trailing_comment_is_stripped_from_a_field_value(self):
+        """(d) ``#`` starts a comment anywhere on the line, so everything
+        from it to end of line is dropped before the field is matched --
+        pkgconf 1.4.2 measured: ``Libs: -L${libdir} -lhogweed # -lgmp``
+        drops the commented ``-lgmp``, and pkg-config has no ``\\#`` escape
+        that would preserve it."""
+        _variables, fields = pkgconfig.expand_pc_variables(["Cflags: -I/x # -I/y"], pcfiledir="/pc")
+
+        assert fields["Cflags"] == "-I/x"
+
+    def test_a_trailing_comment_is_stripped_from_an_assignment_value(self):
+        """Same anywhere-on-the-line strip for variables: a commented
+        suffix never becomes part of the value."""
+        variables, _fields = pkgconfig.expand_pc_variables(["prefix=/opt # ${pcfiledir}"], pcfiledir="/pc")
+
+        assert variables["prefix"] == "/opt"
+
     def test_never_raises_on_malformed_lines(self):
         """A third-party .pc file is not user input: garbage lines are
         skipped, not promoted to a parse error."""
@@ -1230,18 +1247,35 @@ class TestPcIncludeDirs:
             "/opt/top",
         ]
 
-    def test_requires_private_is_not_followed(self, tmp_path, monkeypatch):
-        """``--cflags-only-I`` is not ``--static``: the private closure only
-        folds in under --static, so the required package sits in the map
-        unused. Its presence in the map is the point -- the closure walk must
-        *choose* not to follow it, not merely fail to resolve it."""
+    def test_requires_private_dirs_are_followed_after_the_requires_ones(self, tmp_path, monkeypatch):
+        """(a) ``Requires.private`` IS followed for ``--cflags``/``--cflags-only-I``
+        (measured against pkgconf 1.4.2: ``--cflags-only-I cairo-ps`` prints
+        glib-2.0's and pixman-1's dirs, which cairo exports only through
+        ``Requires.private`` -- private deps' headers are needed to compile;
+        only ``Libs.private`` is gated behind ``--static``). The private
+        targets fold in AFTER the ``Requires:`` targets', same depth-first
+        walk and same visited set.
+        """
         _write_pc(
-            tmp_path, "top", "Name: T\nDescription: d\nVersion: 1\nCflags: -I/opt/top\nRequires.private: hidden\n"
+            tmp_path,
+            "top",
+            "Name: T\nDescription: d\nVersion: 1\nCflags: -I/opt/top\nRequires: pub\nRequires.private: priv\n",
         )
-        _write_pc(tmp_path, "hidden", "Name: H\nDescription: d\nVersion: 1\nCflags: -I/opt/hidden\n")
+        _write_pc(tmp_path, "pub", "Name: P\nDescription: d\nVersion: 1\nCflags: -I/opt/pub\n")
+        _write_pc(
+            tmp_path,
+            "priv",
+            "Name: V\nDescription: d\nVersion: 1\nCflags: -I/opt/priv\nRequires.private: privdep\n",
+        )
+        _write_pc(tmp_path, "privdep", "Name: Q\nDescription: d\nVersion: 1\nCflags: -I/opt/privdep\n")
         pc_files = self._scan_fixture_dirs(tmp_path, monkeypatch, [tmp_path])
 
-        assert pkgconfig.pc_include_dirs(pc_files["top"], pc_files=pc_files) == ["/opt/top"]
+        assert pkgconfig.pc_include_dirs(pc_files["top"], pc_files=pc_files) == [
+            "/opt/top",
+            "/opt/pub",
+            "/opt/priv",
+            "/opt/privdep",
+        ]
 
     def test_version_constraints_in_requires_never_become_packages(self, tmp_path, monkeypatch):
         """The closure parses the *expanded* Requires value with
@@ -1262,8 +1296,47 @@ class TestPcIncludeDirs:
             "/opt/other",
         ]
 
+    def test_a_trailing_comment_yields_an_empty_requires_and_own_dirs(self, tmp_path, monkeypatch):
+        """(c) ``#`` starts a comment anywhere on a line (measured against
+        pkgconf 1.4.2: ``hogweed.pc`` carries ``Requires: # nettle`` and
+        still exports its own dirs). A commented-out closure expands to an
+        empty requires list -- the commented target is NOT followed even
+        when it is installed and resolvable -- and the package's own
+        ``Cflags:`` dirs are still returned.
+        """
+        _write_pc(
+            tmp_path, "hogweed", "Name: H\nDescription: d\nVersion: 1\nCflags: -I/opt/hogweed\nRequires: # nettle\n"
+        )
+        _write_pc(tmp_path, "nettle", "Name: N\nDescription: d\nVersion: 1\nCflags: -I/opt/nettle\n")
+        pc_files = self._scan_fixture_dirs(tmp_path, monkeypatch, [tmp_path])
+
+        # The expanded Requires value is empty -- the commented target never
+        # enters the closure walk.
+        _variables, fields = pkgconfig.expand_pc_variables(
+            pkgconfig._read_pc_file(pc_files["hogweed"]), os.path.dirname(pc_files["hogweed"])
+        )
+        assert pkgconfig._pc_required_packages(fields.get("Requires", "")) == []
+
+        assert pkgconfig.pc_include_dirs(pc_files["hogweed"], pc_files=pc_files) == ["/opt/hogweed"]
+
     def test_a_missing_requires_target_returns_none(self, tmp_path, monkeypatch):
         _write_pc(tmp_path, "top", "Name: T\nDescription: d\nVersion: 1\nCflags: -I/opt/top\nRequires: ghost\n")
+        pc_files = self._scan_fixture_dirs(tmp_path, monkeypatch, [tmp_path])
+
+        assert pkgconfig.pc_include_dirs(pc_files["top"], pc_files=pc_files) is None
+
+    def test_a_missing_requires_private_target_returns_none(self, tmp_path, monkeypatch):
+        """(b) Same "missing target -> None" rule as ``Requires``: pkgconf
+        fails the whole binary query (returncode 1) when a private dep is
+        unresolvable, so the scan must fail it too rather than silently
+        dropping the private dirs. Test (a) is the control that a *resolvable*
+        private dep is followed, so None here is the missing-stem arm, not
+        the private-closure walk being inert."""
+        _write_pc(
+            tmp_path,
+            "top",
+            "Name: T\nDescription: d\nVersion: 1\nCflags: -I/opt/top\nRequires.private: ghost\n",
+        )
         pc_files = self._scan_fixture_dirs(tmp_path, monkeypatch, [tmp_path])
 
         assert pkgconfig.pc_include_dirs(pc_files["top"], pc_files=pc_files) is None

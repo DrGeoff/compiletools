@@ -49,9 +49,10 @@ process-wide ``PKG_CONFIG_PATH`` override value:
   one-line delegate to it.
 * :func:`pc_include_dirs` -- the ``-I`` dirs ``--cflags-only-I <pkg>``
   would print, computed from the :func:`scan_pc_files` map without a
-  subprocess: own ``Cflags:`` dirs plus the transitive ``Requires:``
-  closure, depth-first in declaration order, first-occurrence dedup;
-  ``None`` models a broken closure (missing stem or unreadable file).
+  subprocess: own ``Cflags:`` dirs plus the transitive ``Requires:`` and
+  ``Requires.private:`` closures, depth-first in declaration order,
+  first-occurrence dedup; ``None`` models a broken closure (missing stem or
+  unreadable file).
 * :func:`compute_pkg_config_path` -- pure merge of the existing environment
   value with the conf/CLI prepend/append lists and the auto-discovered
   candidates, producing the ``PKG_CONFIG_PATH`` the build runs under.
@@ -550,8 +551,14 @@ def expand_pc_variables(lines: list[str], pcfiledir: str) -> tuple[dict[str, str
     freedesktop pkg-config 0.29 and pkgconf agree on, so callers can parse
     ``.pc`` text without a subprocess:
 
-    * blank lines and lines whose first non-space character is ``#`` are
-      skipped (commented-out definitions must not count -- the premise
+    * ``#`` starts a comment ANYWHERE on a line, not only at column 0
+      (pkgconf 1.4.2 measured: ``hogweed.pc``'s ``Requires: # nettle``
+      expands to an empty ``Requires`` and ``Libs: -L${libdir} -lhogweed #
+      -lgmp`` drops the commented ``-lgmp``). There is no escape for it --
+      ``\\#`` is not a form pkg-config knows -- so this strips from the
+      first ``#`` to end of line BEFORE matching the assignment/keyword
+      regexes; a line that becomes blank is skipped entirely
+      (commented-out definitions must not count -- the premise
       :func:`_undefined_pc_variables` measures);
     * a line matching ``_PC_ASSIGNMENT_RE`` defines a variable whose value
       is the remainder after ``=``, stripped and expanded *at definition
@@ -576,9 +583,15 @@ def expand_pc_variables(lines: list[str], pcfiledir: str) -> tuple[dict[str, str
     variables: dict[str, str] = {"pcfiledir": pcfiledir}
     fields: dict[str, str] = {}
     try:
-        for line in lines:
-            stripped = line.lstrip()
-            if not stripped or stripped.startswith("#"):
+        for raw_line in lines:
+            # '#' starts a comment anywhere on the line and pkg-config has
+            # no escape for it: strip from the first '#' to end of line
+            # before matching anything. Commenting out a definition therefore
+            # makes the line blank, which the skip below treats the same way
+            # as a blank line in the file.
+            line = raw_line.split("#", 1)[0]
+            stripped = line.strip()
+            if not stripped:
                 continue
             assignment = _PC_ASSIGNMENT_RE.match(line)
             if assignment is not None:
@@ -632,18 +645,24 @@ def pc_include_dirs(path: str, *, pc_files: Mapping[str, str]) -> list[str] | No
     The ``.pc`` at *path* is parsed with :func:`expand_pc_variables` and
     contributes its own ``Cflags:`` ``-I`` dirs
     (:func:`include_dirs_from_cflags`) first; then every package in its
-    transitive ``Requires:`` closure (:func:`_pc_required_packages` on the
-    *expanded* value) contributes the same way, depth-first, in declaration
-    order. ``Requires.private`` is deliberately not followed: it only folds
-    in under ``--static``, which ``--cflags-only-I`` is not.
+    transitive ``Requires:`` closure contributes the same way, and after
+    those every package in its transitive ``Requires.private:`` closure --
+    depth-first, in declaration order, ``Requires:`` targets before
+    ``Requires.private:`` targets. (Measured against pkgconf 1.4.2:
+    ``--cflags-only-I cairo-ps`` prints glib-2.0's, pixman-1's and
+    freetype2's dirs, which cairo exports only through ``Requires.private``
+    -- private deps' headers are needed to compile, so only ``Libs.private``
+    is gated behind ``--static``. A ``.pc`` whose ``Requires.private``
+    target is missing fails the whole binary query with returncode 1, the
+    same way a missing ``Requires`` target does.)
 
     Each required stem is looked up in *pc_files*, the
     :func:`scan_pc_files` map whose first-wins paths are exactly what a
     ``pkg-config <pkg>`` query reads. ``None`` models "pkg-config fails the
-    whole query": a package in the closure missing from *pc_files*, or a
-    ``.pc`` file that cannot be read (a stale map entry -- the file vanished
-    after the scan). Callers then omit the package entirely, the same
-    treatment the per-package subprocess pattern gave a nonzero
+    whole query": a package in either closure missing from *pc_files*, or
+    a ``.pc`` file that cannot be read (a stale map entry -- the file
+    vanished after the scan). Callers then omit the package entirely, the
+    same treatment the per-package subprocess pattern gave a nonzero
     ``--cflags-only-I`` returncode. The read is inline rather than through
     :func:`_read_pc_file` because that collapses unreadable to ``[]``, which
     must stay distinguishable from a genuinely empty file.
@@ -675,12 +694,14 @@ def pc_include_dirs(path: str, *, pc_files: Mapping[str, str]) -> list[str] | No
                 return False
             _variables, fields = expand_pc_variables(lines, os.path.dirname(pc_path))
             collected.extend(include_dirs_from_cflags(fields.get("Cflags", "")))
-            for required in _pc_required_packages(fields.get("Requires", "")):
-                required_path = pc_files.get(required)
-                if required_path is None:
-                    return False
-                if not visit(required_path):
-                    return False
+            # Requires before Requires.private, depth-first through each.
+            for keyword in ("Requires", "Requires.private"):
+                for required in _pc_required_packages(fields.get(keyword, "")):
+                    required_path = pc_files.get(required)
+                    if required_path is None:
+                        return False
+                    if not visit(required_path):
+                        return False
             return True
 
         if not visit(path):

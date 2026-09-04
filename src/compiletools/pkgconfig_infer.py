@@ -108,6 +108,7 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
@@ -176,24 +177,26 @@ def _run_pkg_config_index() -> tuple[list[str], dict[str, str]]:
     default dirs that ``pkg-config --list-all`` names, at most one memoised
     probe when the defaults must be discovered) and
     :func:`apptools_pkgconfig.pc_include_dirs` supplies each package's own
-    ``Cflags:`` ``-I`` dirs plus its transitive ``Requires:`` closure.
-    ``names`` is sorted; ``outputs[name]`` is one string of space-joined
-    attached ``-I<dir>`` tokens -- the shape :func:`_include_dirs_from_cflags`
-    parses back into directories. The former implementation paid one
+    ``Cflags:`` ``-I`` dirs plus its transitive ``Requires:`` and
+    ``Requires.private:`` closures. ``names`` is sorted; ``outputs[name]``
+    is one ``shlex.join``-ed string of ``-I<dir>`` tokens -- shlex so a
+    directory containing a space round-trips exactly through
+    :func:`_include_dirs_from_cflags`'s shell tokenization, which a plain
+    ``" "`` join would split. The former implementation paid one
     ``--cflags-only-I`` subprocess per package (plus ``--list-all``), and
     that O(N) fork/exec pattern was charged cold to every ct-* process that
     reached inference; the scan answers from the ``.pc`` files themselves.
 
-    A package whose closure cannot resolve (a ``Requires`` target missing
-    from the scan, a vanished ``.pc`` file) is omitted from ``outputs`` --
-    the same treatment the per-package subprocess pattern gave a nonzero
-    returncode. Any exception degrades to ``([], {})`` (never-raise
-    contract). Semantics deliberately NOT reproduced: pkg-config strips
-    ``-I/usr/include``-style system dirs from its output when
-    PKG_CONFIG_ALLOW_SYSTEM_CFLAGS is unset -- :func:`build_pc_include_index`
-    already skips :data:`_DEFAULT_INCLUDE_DIRS` itself, and the oracle
-    (:func:`_run_pkg_config_index_via_binary`) differs from this scan only
-    on such dirs.
+    A package whose closure cannot resolve (a ``Requires`` or
+    ``Requires.private`` target missing from the scan, a vanished ``.pc``
+    file) is omitted from ``outputs`` -- the same treatment the per-package
+    subprocess pattern gave a nonzero returncode. Any exception degrades to
+    ``([], {})`` (never-raise contract). Semantics deliberately NOT
+    reproduced: pkg-config strips ``-I/usr/include``-style system dirs from
+    its output when PKG_CONFIG_ALLOW_SYSTEM_CFLAGS is unset --
+    :func:`build_pc_include_index` already skips :data:`_DEFAULT_INCLUDE_DIRS`
+    itself, and the oracle (:func:`_run_pkg_config_index_via_binary`)
+    differs from this scan only on such dirs.
     """
     try:
         pc_files = _ap.scan_pc_files()
@@ -203,7 +206,7 @@ def _run_pkg_config_index() -> tuple[list[str], dict[str, str]]:
             dirs = _ap.pc_include_dirs(pc_files[name], pc_files=pc_files)
             if dirs is None:
                 continue
-            outputs[name] = " ".join(f"-I{directory}" for directory in dirs)
+            outputs[name] = shlex.join(f"-I{directory}" for directory in dirs)
         return (names, outputs)
     except Exception:
         return ([], {})

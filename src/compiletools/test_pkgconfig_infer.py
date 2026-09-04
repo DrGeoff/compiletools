@@ -1172,3 +1172,27 @@ def test_include_dirs_from_cflags_delegates_to_apptools_pkgconfig():
 
     assert pkgconfig_infer._include_dirs_from_cflags(raw) == ["/opt/attached", "/opt/detached"]
     assert pkgconfig_infer._include_dirs_from_cflags(raw) == apptools_pkgconfig.include_dirs_from_cflags(raw)
+
+
+def test_build_pc_include_index_maps_a_dir_with_a_space_in_its_name(tmp_path, monkeypatch):
+    """``_run_pkg_config_index`` emits ``shlex.join``-ed ``-I`` tokens because
+    :func:`build_pc_include_index` reads them back with a shell tokenizer: a
+    plain ``" "`` join would split a directory whose name contains a space,
+    and the index would map the truncated prefix instead of the realpath the
+    compiler actually searches. The fixture's include dir carries a space in
+    its name and the .pc quotes the path, so only the shlex round trip lands
+    the realpath key."""
+    pc_dir = tmp_path / "spacey pc dir"
+    pc_dir.mkdir()
+    include_dir = pc_dir / "my includes"
+    include_dir.mkdir()
+    (pc_dir / "spacey.pc").write_text(
+        "Name: spacey\nDescription: d\nVersion: 1\nCflags: -I'${pcfiledir}/my includes'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+    monkeypatch.setenv("PKG_CONFIG_LIBDIR", str(pc_dir))
+
+    index = pkgconfig_infer.build_pc_include_index()
+
+    assert index.get(os.path.realpath(str(include_dir))) == ("spacey",)
