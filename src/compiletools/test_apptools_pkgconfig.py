@@ -1,6 +1,7 @@
 """Focused tests for package-spec handling in :mod:`apptools_pkgconfig`."""
 
 import contextlib
+import os
 import signal
 import subprocess
 import time
@@ -997,3 +998,82 @@ class TestRequiresValueParsing:
     )
     def test_version_operands_never_become_package_names(self, value, expected):
         assert pkgconfig._pc_required_packages(value) == expected
+
+
+class TestScanPcFiles:
+    """``scan_pc_files`` must reproduce pkg-config's name set and its search
+    semantics from pure python.
+
+    Every arm sets ``PKG_CONFIG_LIBDIR`` to fixture dirs only: that variable
+    *replaces* the compiled-in default search list outright (see
+    ``_pkg_config_search_dirs``), so the scan never reaches the host's
+    installed packages and the assertions are hermetic. The arms that do
+    not exercise ``PKG_CONFIG_PATH`` ordering must *remove* it, because the
+    search list reads that variable first and this host ships a non-empty
+    ambient value. The missing-dir arm exercises the silent skip; a
+    nonexistent dir on the search list is ordinary for ``PKG_CONFIG_PATH``
+    assembled from several conf layers.
+    """
+
+    def test_first_libdir_dir_wins_for_the_same_stem(self, tmp_path, monkeypatch):
+        """Two dirs on ``PKG_CONFIG_LIBDIR`` both shipping ``foo.pc``: the
+        first dir's path wins, exactly as a ``pkg-config --cflags-only-I
+        foo`` query would read it -- later dirs never shadow a stem."""
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        first.mkdir()
+        second.mkdir()
+        (first / "foo.pc").write_text("Name: foo\nDescription: first\nVersion: 1\n")
+        (second / "foo.pc").write_text("Name: foo\nDescription: second\nVersion: 1\n")
+        (second / "bar.pc").write_text("Name: bar\nDescription: b\nVersion: 1\n")
+        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+        monkeypatch.setenv("PKG_CONFIG_LIBDIR", os.pathsep.join([str(first), str(second)]))
+
+        found = pkgconfig.scan_pc_files()
+
+        assert found["foo"] == str(first / "foo.pc"), "the first dir on the search list must win"
+        assert found["bar"] == str(second / "bar.pc"), "a stem present only in a later dir is still found"
+        assert set(found) == {"foo", "bar"}
+
+    def test_non_pc_files_and_subdirectories_are_ignored(self, tmp_path, monkeypatch):
+        """Only regular files ending in ``.pc`` count: a ``.txt`` file, a
+        directory whose *name* ends in ``.pc``, and a ``.pc`` file nested in
+        a subdirectory (no recursion, one ``os.listdir`` per dir) all stay
+        out of the scan."""
+        (tmp_path / "real.pc").write_text("Name: real\nDescription: r\nVersion: 1\n")
+        (tmp_path / "notes.txt").write_text("not a package\n")
+        (tmp_path / "sub.pc").mkdir()
+        (tmp_path / "nested").mkdir()
+        (tmp_path / "nested" / "deep.pc").write_text("Name: deep\nDescription: d\nVersion: 1\n")
+        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+        monkeypatch.setenv("PKG_CONFIG_LIBDIR", str(tmp_path))
+
+        assert pkgconfig.scan_pc_files() == {"real": str(tmp_path / "real.pc")}
+
+    def test_a_nonexistent_search_dir_is_skipped_and_the_rest_still_scans(self, tmp_path, monkeypatch):
+        missing = tmp_path / "missing"
+        real = tmp_path / "real"
+        real.mkdir()
+        (real / "foo.pc").write_text("Name: foo\nDescription: f\nVersion: 1\n")
+        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+        monkeypatch.setenv("PKG_CONFIG_LIBDIR", os.pathsep.join([str(missing), str(real)]))
+
+        assert pkgconfig.scan_pc_files() == {"foo": str(real / "foo.pc")}
+
+    def test_pkg_config_path_entries_come_before_libdir_entries(self, tmp_path, monkeypatch):
+        """``PKG_CONFIG_PATH`` (user/project overrides) is searched ahead of
+        ``PKG_CONFIG_LIBDIR`` -- the ordering that lets first-wins make an
+        override beat the distro copy."""
+        override = tmp_path / "override"
+        fallback = tmp_path / "fallback"
+        override.mkdir()
+        fallback.mkdir()
+        (override / "foo.pc").write_text("Name: foo\nDescription: override\nVersion: 1\n")
+        (fallback / "foo.pc").write_text("Name: foo\nDescription: fallback\nVersion: 1\n")
+        monkeypatch.setenv("PKG_CONFIG_PATH", str(override))
+        monkeypatch.setenv("PKG_CONFIG_LIBDIR", str(fallback))
+
+        found = pkgconfig.scan_pc_files()
+
+        assert found["foo"] == str(override / "foo.pc"), "PKG_CONFIG_PATH must be searched first"
+        assert set(found) == {"foo"}

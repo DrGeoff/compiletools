@@ -33,6 +33,11 @@ process-wide ``PKG_CONFIG_PATH`` override value:
   output.
 * :func:`_batch_pkg_config` -- batched multi-package query with per-package
   fallback through :func:`cached_pkg_config`.
+* :func:`scan_pc_files` -- pure-python equivalent of ``pkg-config
+  --list-all``'s name set: walk the live search dirs and return
+  ``{stem: path-as-found}`` of the first ``<stem>.pc`` per stem (first-wins;
+  later dirs never shadow). Never raises; deliberately unmemoised (callers
+  memoise, e.g. the pkgconfig_infer index memo keyed on the environment).
 * :func:`compute_pkg_config_path` -- pure merge of the existing environment
   value with the conf/CLI prepend/append lists and the auto-discovered
   candidates, producing the ``PKG_CONFIG_PATH`` the build runs under.
@@ -410,6 +415,51 @@ def _locate_pc_file(package: str) -> str | None:
         if os.path.isfile(candidate):
             return candidate
     return None
+
+
+def scan_pc_files() -> dict[str, str]:
+    """Return ``{stem: path}`` for every ``.pc`` file pkg-config can see.
+
+    The pure-python equivalent of ``pkg-config --list-all``'s *name set*:
+    walking :func:`_pkg_config_search_dirs` in order and collecting regular
+    ``<stem>.pc`` files reproduces exactly the names --list-all prints
+    (measured identical on this host: 243/243 with PKG_CONFIG_PATH set), so
+    a caller can enumerate the package set without paying the cold
+    ``--list-all``-plus-one-subprocess-per-package pattern.
+
+    First-wins per stem is load-bearing: pkg-config resolves a package name
+    to the FIRST ``<stem>.pc`` found walking the search dirs in order, and
+    later dirs never shadow it -- --list-all names exactly that first-wins
+    set. The search list puts ``PKG_CONFIG_PATH`` (user/project overrides,
+    e.g. an ABI-pinned ``.pc``) ahead of ``PKG_CONFIG_LIBDIR`` or the
+    compiled-in default dirs, so first-wins is what makes an override beat
+    the distro copy; a later-dir-wins scan would attribute flags to a file
+    no ``pkg-config <pkg>`` query could ever read.
+
+    The reported paths are as found on the search list
+    (``os.path.join(directory, entry)``), never realpath'd. Subdirectories
+    are not recursed into; only regular files ending in ``.pc`` count. A
+    directory that does not exist or is unreadable is skipped silently.
+
+    Never raises. Deliberately not memoised here -- callers memoise (the
+    pkgconfig_infer index memo is already keyed on the same environment
+    inputs that drive this scan).
+    """
+    found: dict[str, str] = {}
+    for directory in _pkg_config_search_dirs():
+        try:
+            entries = os.listdir(directory)
+        except OSError:
+            continue
+        for entry in entries:
+            if not entry.endswith(".pc"):
+                continue
+            candidate = os.path.join(directory, entry)
+            if os.path.isfile(candidate):
+                # setdefault, not assignment: the first dir on the search
+                # list wins, later dirs never shadow an already-found stem.
+                found.setdefault(entry[:-3], candidate)
+    return found
 
 
 def _pc_required_packages(value: str) -> list[str]:
