@@ -84,13 +84,18 @@ Memo keys:
   caller-supplied memo dicts are the caller's lifetime.
 
 Subprocess boundaries (the ONLY functions here that invoke subprocess, all
-wrapped so they never raise): :func:`_run_pkg_config_index`,
-:func:`_run_pkg_config_exists`, :func:`_run_distro_owner_query` (one batched
-query for all still-unresolved headers of a TU; apk takes one call per path)
-and :func:`_run_distro_list_query` (per owning package). The man boundary
-(:func:`_run_man_lookup`) is a drop-in slot for the deferred man resolver:
-the Stage 4 stub (:func:`resolve_via_man`) never calls it. Everything else is
-pure python; tests stub only the boundaries.
+wrapped so they never raise): :func:`_run_pkg_config_exists`,
+:func:`_run_distro_owner_query` (one batched query for all still-unresolved
+headers of a TU; apk takes one call per path) and
+:func:`_run_distro_list_query` (per owning package). The pc include index
+(:func:`_run_pkg_config_index`) is no longer one of them: it is a
+pure-python scan of the ``.pc`` files, and
+:func:`_run_pkg_config_index_via_binary` -- the retained pkg-config-binary
+implementation -- exists as the differential-test oracle for that scan and is
+never called from production code. The man boundary (:func:`_run_man_lookup`)
+is a drop-in slot for the deferred man resolver: the Stage 4 stub
+(:func:`resolve_via_man`) never calls it. Everything else is pure python;
+tests stub only the boundaries.
 
 Import-surface note: leaf module. Imports stdlib plus
 :mod:`compiletools.apptools_pkgconfig` and NOTHING else from compiletools.
@@ -153,14 +158,62 @@ class InferenceConfig:
 
 
 # ---------------------------------------------------------------------------
-# Subprocess boundaries -- the only functions in this module that invoke
-# subprocess. Each is wrapped so it never raises.
+# pc include-dir index boundary. ``_run_pkg_config_index`` is the
+# pure-python scan production uses (never raises);
+# ``_run_pkg_config_index_via_binary`` is the retained pkg-config-binary
+# implementation, kept as the differential-test oracle -- production code
+# never calls it. The remaining functions in this section DO invoke
+# subprocess and are each wrapped so they never raise.
 # ---------------------------------------------------------------------------
 
 
 def _run_pkg_config_index() -> tuple[list[str], dict[str, str]]:
-    """Return (package names from ``pkg-config --list-all``, dict of
-    ``pkg -> --cflags-only-I`` output).
+    """Return (package names, dict of ``pkg -> --cflags-only-I`` output),
+    computed by a pure-python scan of the ``.pc`` files.
+
+    :func:`apptools_pkgconfig.scan_pc_files` supplies the name set (the
+    first-wins walk over ``PKG_CONFIG_PATH``/``PKG_CONFIG_LIBDIR``/the
+    default dirs that ``pkg-config --list-all`` names, at most one memoised
+    probe when the defaults must be discovered) and
+    :func:`apptools_pkgconfig.pc_include_dirs` supplies each package's own
+    ``Cflags:`` ``-I`` dirs plus its transitive ``Requires:`` closure.
+    ``names`` is sorted; ``outputs[name]`` is one string of space-joined
+    attached ``-I<dir>`` tokens -- the shape :func:`_include_dirs_from_cflags`
+    parses back into directories. The former implementation paid one
+    ``--cflags-only-I`` subprocess per package (plus ``--list-all``), and
+    that O(N) fork/exec pattern was charged cold to every ct-* process that
+    reached inference; the scan answers from the ``.pc`` files themselves.
+
+    A package whose closure cannot resolve (a ``Requires`` target missing
+    from the scan, a vanished ``.pc`` file) is omitted from ``outputs`` --
+    the same treatment the per-package subprocess pattern gave a nonzero
+    returncode. Any exception degrades to ``([], {})`` (never-raise
+    contract). Semantics deliberately NOT reproduced: pkg-config strips
+    ``-I/usr/include``-style system dirs from its output when
+    PKG_CONFIG_ALLOW_SYSTEM_CFLAGS is unset -- :func:`build_pc_include_index`
+    already skips :data:`_DEFAULT_INCLUDE_DIRS` itself, and the oracle
+    (:func:`_run_pkg_config_index_via_binary`) differs from this scan only
+    on such dirs.
+    """
+    try:
+        pc_files = _ap.scan_pc_files()
+        names = sorted(pc_files)
+        outputs: dict[str, str] = {}
+        for name in names:
+            dirs = _ap.pc_include_dirs(pc_files[name], pc_files=pc_files)
+            if dirs is None:
+                continue
+            outputs[name] = " ".join(f"-I{directory}" for directory in dirs)
+        return (names, outputs)
+    except Exception:
+        return ([], {})
+
+
+def _run_pkg_config_index_via_binary() -> tuple[list[str], dict[str, str]]:
+    """Differential-test oracle for :func:`_run_pkg_config_index`: the same
+    ``(names, outputs)`` shape computed with the pkg-config binary
+    (``--list-all`` plus one ``--cflags-only-I`` subprocess per package).
+    Test-oracle only -- production code never calls it.
 
     A single batched ``pkg-config --cflags-only-I <all packages>`` would merge
     every package's flags into one string, losing per-package attribution --
@@ -168,7 +221,9 @@ def _run_pkg_config_index() -> tuple[list[str], dict[str, str]]:
     index exists to report. So: one subprocess per package. Packages whose
     per-package query fails (returncode != 0, e.g. a broken ``Requires``) are
     omitted from the output dict, not fatal. Any exception (pkg-config absent,
-    interrupted) degrades to ``([], {})``.
+    interrupted) degrades to ``([], {})``. Unlike the scan, ``names`` carries
+    ``--list-all``'s print order (and, on pkgconf, one entry per ``.pc`` file
+    rather than a deduplicated first-wins set).
     """
     try:
         listing = subprocess.run(
@@ -318,12 +373,21 @@ def build_pc_include_index(compiler_builtin_dirs: Sequence[str] = ()) -> dict[st
     """Map realpath(include dir) -> sorted tuple of pkg-config packages that
     export it (``--cflags-only-I``).
 
-    Dirs in :data:`_DEFAULT_INCLUDE_DIRS` (bare ``/usr/include`` installs are
-    blind to this resolver by design) and in *compiler_builtin_dirs* are
-    skipped, both compared after realpath. Memoised in a module-level dict
-    keyed on ``(PKG_CONFIG_PATH, PKG_CONFIG_LIBDIR, compiler_builtin_dirs)``
-    (F10, same env sensitivity as ``pkg_config_query_cache``); cleared by
-    :func:`clear_cache`. The returned dict is shared -- treat it as read-only.
+    The index is a pure-python scan (:func:`_run_pkg_config_index` reads the
+    ``.pc`` search dirs, variable expansions and ``Requires:`` closures with
+    no per-package subprocess; at most one memoised search-dir probe when
+    ``PKG_CONFIG_LIBDIR`` is unset). The former implementation paid
+    ``--list-all`` plus one ``--cflags-only-I`` subprocess per package, and
+    that O(N) fork/exec pattern was charged cold to every ct-* process
+    reaching inference. Dirs in :data:`_DEFAULT_INCLUDE_DIRS` (bare
+    ``/usr/include`` installs are blind to this resolver by design -- and
+    are exactly the dirs pkg-config's own system-cflags strip would have
+    removed anyway) and in *compiler_builtin_dirs* are skipped, both
+    compared after realpath. Memoised in a module-level dict keyed on
+    ``(PKG_CONFIG_PATH, PKG_CONFIG_LIBDIR, compiler_builtin_dirs)`` (F10,
+    same env sensitivity as ``pkg_config_query_cache``); cleared by
+    :func:`clear_cache`. The returned dict is shared -- treat it as
+    read-only.
     """
     builtin_key = tuple(compiler_builtin_dirs)
     key = (

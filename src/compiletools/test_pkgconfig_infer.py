@@ -7,8 +7,10 @@ feature with ``auto_pkg_config_on``. The module's memos are keyed on
 autouse fixture clears them before and after every test here.
 
 Conventions honoured here: no compiler names, no ``os.chdir`` (env is changed
-through ``monkeypatch.setenv``), and only the documented subprocess
-boundaries (``_run_pkg_config_index``, ``_run_pkg_config_exists``,
+through ``monkeypatch.setenv``), and only the documented boundaries
+(``_run_pkg_config_index`` -- a pure-python ``.pc`` scan, with
+``_run_pkg_config_index_via_binary`` as its pkg-config-binary
+differential-test oracle -- plus ``_run_pkg_config_exists``,
 ``_run_distro_owner_query``, ``_run_distro_list_query``,
 ``_run_man_lookup``) are ever wrapped/stubbed -- every other function runs
 for real.
