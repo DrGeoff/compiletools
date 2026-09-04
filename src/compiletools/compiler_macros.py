@@ -11,10 +11,19 @@ from functools import lru_cache
 import compiletools.utils
 
 # Built-in include dirs parsed from the macro probe's ``-Wp,-v`` stderr.
-# Keyed on compiler_path; populated by every :func:`get_compiler_macros` run
-# so :func:`builtin_include_dirs` reads the SAME single invocation (plan
-# finding F11: one compiler subprocess for macros + dirs, not two).
-_builtin_include_dirs_memo: dict[str, tuple[str, ...]] = {}
+# Keyed on (compiler_path, language); populated by every
+# :func:`get_compiler_macros` run so :func:`builtin_include_dirs` reads the
+# SAME single invocation (plan finding F11: one compiler subprocess for
+# macros + dirs, not two).
+_builtin_include_dirs_memo: dict[tuple[str, str], tuple[str, ...]] = {}
+
+# ``-x`` language the probe feeds the driver. Reading the source from stdin
+# (``-``) gives the driver no file extension to sniff, and gcc/clang then
+# default to C -- even for ``g++``. That drops ``__cplusplus`` and every
+# ``__cpp_*`` feature macro from the macro set and omits the libstdc++
+# ``c++/<ver>`` trees from the ``-Wp,-v`` search list, so ``<algorithm>``
+# looks like a header the compiler cannot place. ``-x`` pins the language.
+_PROBE_LANGUAGES = frozenset({"c", "c++"})
 
 _SEARCH_START_MARKER = "#include <...> search starts here:"
 _SEARCH_END_MARKER = "End of search list."
@@ -61,12 +70,17 @@ def _parse_builtin_include_dirs(stderr_text: str) -> tuple[str, ...]:
 
 
 @lru_cache(maxsize=32)
-def get_compiler_macros(compiler_path: str, verbose: int = 0) -> dict[str, str]:
+def get_compiler_macros(compiler_path: str, verbose: int = 0, language: str = "c++") -> dict[str, str]:
     """Query a compiler for its predefined macros.
 
     Args:
         compiler_path: Path to the compiler executable (e.g., 'gcc', 'clang')
         verbose: Verbosity level for debug output
+        language: ``"c++"`` (default) or ``"c"`` -- the ``-x`` language the
+            stdin probe is fed as. Must match the slot the compiler came
+            from (``CXX`` -> ``"c++"``, ``CC`` -> ``"c"``): without it the
+            driver treats stdin as C and a C++ compiler's macro set loses
+            ``__cplusplus`` and all ``__cpp_*`` feature macros.
 
     Returns:
         Dictionary of macro names to their values
@@ -75,14 +89,19 @@ def get_compiler_macros(compiler_path: str, verbose: int = 0) -> dict[str, str]:
         if verbose >= 2:
             print("No compiler specified, returning empty macro dict")
         return {}
+    if language not in _PROBE_LANGUAGES:
+        raise ValueError(f"language must be one of {sorted(_PROBE_LANGUAGES)}, got {language!r}")
+    memo_key = (compiler_path, language)
 
     try:
         # Use -dM to dump macros, -E to preprocess only, - to read from stdin.
-        # -Wp,-v asks the preprocessor to print its include search list to
-        # stderr so ONE invocation yields both the macros (stdout) and the
-        # built-in include dirs (stderr) -- F11.
+        # -x pins the language (stdin has no extension to sniff; see
+        # _PROBE_LANGUAGES). -Wp,-v asks the preprocessor to print its
+        # include search list to stderr so ONE invocation yields both the
+        # macros (stdout) and the built-in include dirs (stderr) -- F11.
         # Split compiler_path to handle multi-word commands like "ccache g++"
-        base_cmd = compiletools.utils.split_compiler_command(compiler_path, slot="CXX")
+        slot = "CXX" if language == "c++" else "CC"
+        base_cmd = compiletools.utils.split_compiler_command(compiler_path, slot=slot) + ["-x", language]
         result = subprocess.run(
             base_cmd + ["-Wp,-v", "-dM", "-E", "-"],
             stdin=subprocess.DEVNULL,
@@ -115,7 +134,7 @@ def get_compiler_macros(compiler_path: str, verbose: int = 0) -> dict[str, str]:
         if result.returncode != 0:
             if verbose >= 4:
                 print(f"Compiler {compiler_path} returned non-zero exit code: {result.returncode}")
-            _builtin_include_dirs_memo[compiler_path] = ()
+            _builtin_include_dirs_memo[memo_key] = ()
             return {}
 
         macros = {}
@@ -135,12 +154,12 @@ def get_compiler_macros(compiler_path: str, verbose: int = 0) -> dict[str, str]:
             # The retry ran without -Wp,-v, so no include search list was
             # printed: record () rather than parsing a stderr that cannot
             # contain one.
-            _builtin_include_dirs_memo[compiler_path] = ()
+            _builtin_include_dirs_memo[memo_key] = ()
         else:
             # Probe tests may stub subprocess.run with a mock whose stderr is
             # not a string; guard so a parse always sees probe-shaped text.
             stderr_text = result.stderr if isinstance(result.stderr, str) else ""
-            _builtin_include_dirs_memo[compiler_path] = _parse_builtin_include_dirs(stderr_text)
+            _builtin_include_dirs_memo[memo_key] = _parse_builtin_include_dirs(stderr_text)
 
         if verbose >= 3:
             print(f"Queried {len(macros)} macros from {compiler_path}")
@@ -155,33 +174,36 @@ def get_compiler_macros(compiler_path: str, verbose: int = 0) -> dict[str, str]:
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
         if verbose >= 3:
             print(f"Failed to query macros from {compiler_path}: {e}")
-        _builtin_include_dirs_memo[compiler_path] = ()
+        _builtin_include_dirs_memo[memo_key] = ()
         return {}
 
 
-def builtin_include_dirs(compiler_path: str, verbose: int = 0) -> tuple[str, ...]:
+def builtin_include_dirs(compiler_path: str, verbose: int = 0, language: str = "c++") -> tuple[str, ...]:
     """Directories the compiler searches for angle-bracket includes.
 
     Shares the single ``-Wp,-v`` macro probe invocation with
     :func:`get_compiler_macros` (F11): whichever of the two functions runs
-    first for a compiler triggers the one subprocess and both memoise their
-    half of the parsed result, so calling the pair costs exactly one
-    compiler invocation. Cleared by :func:`clear_cache`. Any failure yields
-    ``()``.
+    first for a (compiler, language) pair triggers the one subprocess and
+    both memoise their half of the parsed result, so calling the pair costs
+    exactly one compiler invocation. *language* selects the ``-x`` mode and
+    therefore which trees appear (``"c++"`` adds libstdc++'s ``c++/<ver>``
+    dirs; ``"c"`` does not). Cleared by :func:`clear_cache`. Any failure
+    yields ``()``.
     """
     if not compiler_path:
         if verbose >= 2:
             print("No compiler specified, returning empty include-dir tuple")
         return ()
 
-    cached = _builtin_include_dirs_memo.get(compiler_path)
+    memo_key = (compiler_path, language)
+    cached = _builtin_include_dirs_memo.get(memo_key)
     if cached is not None:
         return cached
 
     # One run populates both the macro cache and the include-dir memo.
-    get_compiler_macros(compiler_path, verbose)
+    get_compiler_macros(compiler_path, verbose, language)
 
-    return _builtin_include_dirs_memo.get(compiler_path, ())
+    return _builtin_include_dirs_memo.get(memo_key, ())
 
 
 def filter_for_expansion(compiler_macros: dict[str, str]) -> dict[str, str]:

@@ -254,6 +254,45 @@ class TestBuiltinIncludeDirs:
         assert cm.builtin_include_dirs("nonexistent_compiler_xyz_999") == ()
         assert cm.builtin_include_dirs("") == ()
 
+    @requires_functional_compiler
+    def test_cxx_probe_is_run_as_cxx_not_c(self):
+        """Regression: the stdin probe (``-E -``) gives the driver no file
+        extension to sniff, and gcc/clang then default to C -- even for
+        ``g++``. That silently dropped ``__cplusplus`` and every ``__cpp_*``
+        feature macro from the C++ macro set (so ``#if __cplusplus >= ...``
+        guards evaluated false) and omitted the libstdc++ trees from the
+        ``-Wp,-v`` search list (so ``<algorithm>`` was reported as a header
+        the compiler could not place). ``-x c++`` pins the language.
+        """
+        compiler = apptools.get_functional_cxx_compiler()
+        assert compiler, "the requires_functional_compiler decorator guarantees this"
+
+        macros = cm.get_compiler_macros(compiler)
+        dirs = cm.builtin_include_dirs(compiler)
+
+        assert "__cplusplus" in macros, "C++ probe ran in C mode: __cplusplus missing"
+        assert any(os.path.isfile(os.path.join(d, "algorithm")) for d in dirs), (
+            f"no built-in dir ships <algorithm> -- libstdc++ trees missing from the C++ probe: {dirs}"
+        )
+
+    @requires_functional_compiler
+    def test_c_and_cxx_probes_are_memoised_separately(self):
+        """The same driver probed as C and as C++ yields different results
+        and both are cached: a C probe must never serve the C++ answer."""
+        compiler = apptools.get_functional_cxx_compiler()
+        assert compiler, "the requires_functional_compiler decorator guarantees this"
+
+        cxx_macros = cm.get_compiler_macros(compiler, language="c++")
+        c_macros = cm.get_compiler_macros(compiler, language="c")
+
+        assert "__cplusplus" in cxx_macros
+        assert "__cplusplus" not in c_macros
+        assert cm.builtin_include_dirs(compiler, language="c") != cm.builtin_include_dirs(compiler, language="c++")
+
+    def test_unknown_language_is_rejected(self):
+        with pytest.raises(ValueError, match="language must be one of"):
+            cm.get_compiler_macros("g++", language="fortran")
+
 
 class TestFilterForExpansion:
     """Test filter_for_expansion() which strips non-standard legacy macros."""

@@ -500,9 +500,9 @@ class TestAutoPkgConfig(tb.BaseCompileToolsTestCase):
         real_builtin_include_dirs = compiletools.compiler_macros.builtin_include_dirs
         probed = []
 
-        def recording_builtin_include_dirs(compiler_path, verbose=0):
-            probed.append(str(compiler_path))
-            return real_builtin_include_dirs(compiler_path, verbose)
+        def recording_builtin_include_dirs(compiler_path, verbose=0, language="c++"):
+            probed.append((str(compiler_path), language))
+            return real_builtin_include_dirs(compiler_path, verbose, language)
 
         monkeypatch.setattr(compiletools.compiler_macros, "builtin_include_dirs", recording_builtin_include_dirs)
         parser = self._make_parser()
@@ -514,7 +514,9 @@ class TestAutoPkgConfig(tb.BaseCompileToolsTestCase):
         cpp_tu = self._write_tu("#include <autoinfer/api.h>\nint other() { return 1; }\n", name="other.cpp")
         c_result = parser.parse(c_tu)
         cpp_result = parser.parse(cpp_tu)
-        assert probed == [parser._args.CC, parser._args.CXX], (
+        # Both the compiler AND the -x language must follow the TU: a C++
+        # compiler probed as C (the stdin default) omits libstdc++'s dirs.
+        assert probed == [(parser._args.CC, "c"), (parser._args.CXX, "c++")], (
             f"built-in probe must follow the TU language: probed={probed}, "
             f"CC={parser._args.CC!r}, CXX={parser._args.CXX!r}"
         )

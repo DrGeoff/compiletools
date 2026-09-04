@@ -648,6 +648,13 @@ _STD_HEADERS = frozenset(
         "spanstream",
         "stacktrace",
         "stdfloat",
+        # C++26 (names already shipped by recent libstdc++/libc++)
+        "debugging",
+        "hazard_pointer",
+        "inplace_vector",
+        "linalg",
+        "rcu",
+        "text_encoding",
         # POSIX / common libc
         "alloca.h",
         "argp.h",

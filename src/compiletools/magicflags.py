@@ -713,8 +713,8 @@ class MagicFlagsBase:
         # resolved through get_filepath_by_hash -- reuse it instead of
         # re-walking file_analysis_data for the registry lookup.
         if tu_files:
-            tu_realpaths = [compiletools.wrappedos.realpath(filepath) for filepath in tu_files]
-            self.last_inference_results.update(dict.fromkeys(tu_realpaths, results))
+            for filepath in tu_files:
+                self.last_inference_results[str(compiletools.wrappedos.realpath(filepath))] = results
 
         pairs: list[tuple[str, str]] = []
         for result in results:
@@ -960,8 +960,11 @@ class MagicFlagsBase:
         # translation unit is not searched against the C++ compiler's stdlib
         # dirs and a C++ one not against the C compiler's list.
         main_file = tu_main_file or (tu_files[0] if tu_files else "")
-        builtin_compiler = getattr(args, "CC" if compiletools.utils.is_c_source(main_file) else "CXX", "")
-        compiler_builtin_dirs = compiletools.compiler_macros.builtin_include_dirs(builtin_compiler, verbose)
+        is_c = compiletools.utils.is_c_source(main_file)
+        builtin_compiler = getattr(args, "CC" if is_c else "CXX", "")
+        compiler_builtin_dirs = compiletools.compiler_macros.builtin_include_dirs(
+            builtin_compiler, verbose, language="c" if is_c else "c++"
+        )
         pc_dirs = compiletools.pkgconfig_infer.build_pc_include_index(compiler_builtin_dirs)
         search_dirs = (
             tuple(explicit_include_dirs)

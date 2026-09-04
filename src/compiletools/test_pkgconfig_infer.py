@@ -1132,6 +1132,9 @@ def test_std_prefix_fast_path(prefix):
         # C++23
         "expected",
         "print",
+        # C++26
+        "inplace_vector",
+        "text_encoding",
         # POSIX / common libc
         "unistd.h",
         "netdb.h",
@@ -1141,7 +1144,7 @@ def test_std_prefix_fast_path(prefix):
     ],
 )
 def test_every_standard_bucket_kept_a_representative(name):
-    """One pinned representative per standard bucket (C89..C++23, POSIX,
+    """One pinned representative per standard bucket (C89..C++26, POSIX,
     libc/kernel prefixes) so a future edit to the static list cannot silently
     drop a whole bucket; netdb.h also pins one of the newly added libc names
     and linux/ioctl.h one of the prefix trees."""
