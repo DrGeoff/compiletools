@@ -1157,3 +1157,16 @@ def test_package_headers_are_not_standard(name):
     the static list, or every package-owned include would short-circuit as
     standard and never resolve to a package."""
     assert pkgconfig_infer.is_standard_header(name) is False
+
+
+def test_include_dirs_from_cflags_delegates_to_apptools_pkgconfig():
+    """``pkgconfig_infer._include_dirs_from_cflags`` is a one-line delegate to
+    the public ``apptools_pkgconfig.include_dirs_from_cflags``, which now owns
+    the attached/detached body (shared with the subprocess-free
+    ``apptools_pkgconfig.pc_include_dirs``); the private name is kept for
+    ``build_pc_include_index``'s call site. The trailing bare ``-I`` pinning
+    the detached form comes from the moved docstring's contract."""
+    raw = "-I/opt/attached -I /opt/detached -I"
+
+    assert pkgconfig_infer._include_dirs_from_cflags(raw) == ["/opt/attached", "/opt/detached"]
+    assert pkgconfig_infer._include_dirs_from_cflags(raw) == apptools_pkgconfig.include_dirs_from_cflags(raw)

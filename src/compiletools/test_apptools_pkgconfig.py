@@ -1077,3 +1077,293 @@ class TestScanPcFiles:
 
         assert found["foo"] == str(override / "foo.pc"), "PKG_CONFIG_PATH must be searched first"
         assert set(found) == {"foo"}
+
+
+class TestExpandPcVariables:
+    """``expand_pc_variables`` is the subprocess-free .pc parser: assignments
+    expand at definition time, fields keep their first occurrence, and an
+    undefined ``${var}`` (including the other builtins) collapses to "" the
+    way pkgconf does at exit 0 -- the premise
+    ``TestUndefinedPkgConfigVariables`` pins against the real binary."""
+
+    def test_nested_chain_resolves_through_exec_prefix(self):
+        variables, _fields = pkgconfig.expand_pc_variables(
+            ["prefix=/opt/toolkit", "exec_prefix=${prefix}", "libdir=${exec_prefix}/lib"],
+            pcfiledir="/pc",
+        )
+
+        assert variables["prefix"] == "/opt/toolkit"
+        assert variables["exec_prefix"] == "/opt/toolkit"
+        assert variables["libdir"] == "/opt/toolkit/lib"
+
+    def test_pcfiledir_is_preseeded_to_the_argument(self):
+        variables, fields = pkgconfig.expand_pc_variables(
+            ["includedir=${pcfiledir}/include"], pcfiledir="/opt/pc/toolkit"
+        )
+
+        assert variables["pcfiledir"] == "/opt/pc/toolkit"
+        assert variables["includedir"] == "/opt/pc/toolkit/include"
+        assert fields == {}
+
+    def test_an_undefined_variable_expands_to_empty(self):
+        """pkgconf expands a name no assignment defines to the empty string
+        and still exits 0, so the expanded text carries the flag silently
+        truncated rather than an error."""
+        variables, fields = pkgconfig.expand_pc_variables(["Cflags: -I${no_such_variable}/inc"], pcfiledir="/pc")
+
+        assert variables == {"pcfiledir": "/pc"}
+        assert fields == {"Cflags": "-I/inc"}
+
+    def test_the_other_builtin_variables_expand_to_empty_too(self):
+        """Only ``pcfiledir`` is pre-seeded: the remaining
+        ``_PC_BUILTIN_VARIABLES`` are global installation properties a .pc
+        file never assigns, so a reference to one resolves to "" here."""
+        _variables, fields = pkgconfig.expand_pc_variables(["Cflags: -I${pc_sysrootdir}usr/include"], pcfiledir="/pc")
+
+        assert fields["Cflags"] == "-Iusr/include"
+
+    def test_an_assignment_takes_effect_at_the_end_of_its_own_line(self):
+        """``prefix=${prefix}/x`` must read the *previous* ``prefix``: the
+        order-sensitivity ``_undefined_pc_variables`` documents, which is
+        what makes ``a=${a}x`` terminate instead of growing forever."""
+        variables, fields = pkgconfig.expand_pc_variables(
+            ["prefix=/opt", "prefix=${prefix}/x", "Cflags: -I${prefix}"], pcfiledir="/pc"
+        )
+
+        assert variables["prefix"] == "/opt/x"
+        assert fields["Cflags"] == "-I/opt/x"
+
+    def test_a_self_referential_definition_terminates(self):
+        variables, _fields = pkgconfig.expand_pc_variables(["a=${a}x"], pcfiledir="/pc")
+
+        assert variables["a"] == "x"
+
+    def test_an_unterminated_reference_terminates_at_the_round_cap(self):
+        """``${`` with no closing brace matches neither the reference regex
+        nor any definition, so the expansion pass stops making progress and
+        the round cap returns the text as-is rather than spinning."""
+        variables, fields = pkgconfig.expand_pc_variables(["a=${x", "Cflags: -I${a}"], pcfiledir="/pc")
+
+        assert variables["a"] == "${x"
+        # Substituting ${a} consumes the closing brace after it, so the
+        # residue is the unterminated ${x the cap returned as-is.
+        assert fields["Cflags"] == "-I${x"
+
+    def test_first_keyword_occurrence_wins_and_comments_and_blanks_are_skipped(self):
+        _variables, fields = pkgconfig.expand_pc_variables(
+            [
+                "# Cflags: -I/commented",
+                "",
+                "   ",
+                "Cflags: -I/first",
+                "Cflags: -I/second",
+            ],
+            pcfiledir="/pc",
+        )
+
+        assert fields["Cflags"] == "-I/first"
+
+    def test_never_raises_on_malformed_lines(self):
+        """A third-party .pc file is not user input: garbage lines are
+        skipped, not promoted to a parse error."""
+        variables, fields = pkgconfig.expand_pc_variables(
+            ["===", "no space keyword:no value", "ok=1", "Cflags: -I/ok"], pcfiledir="/pc"
+        )
+
+        assert variables == {"pcfiledir": "/pc", "ok": "1"}
+        assert fields == {"Cflags": "-I/ok"}
+
+
+class TestPcIncludeDirs:
+    """``pc_include_dirs`` is the subprocess-free ``--cflags-only-I``: own
+    ``Cflags:`` dirs plus the transitive ``Requires:`` closure, resolved
+    against ``scan_pc_files``' first-wins map.
+
+    Every arm sets ``PKG_CONFIG_LIBDIR`` to fixture dirs only (that variable
+    replaces the compiled-in default search list outright, so the host's
+    installed packages are out of the picture) and removes
+    ``PKG_CONFIG_PATH`` (the search list reads it first, and this host ships
+    a non-empty ambient value) -- the same hermetic pattern
+    ``TestScanPcFiles`` uses."""
+
+    @staticmethod
+    def _scan_fixture_dirs(tmp_path, monkeypatch, dirs):
+        """Hermetic ``scan_pc_files`` over exactly *dirs*."""
+        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+        monkeypatch.setenv("PKG_CONFIG_LIBDIR", os.pathsep.join(str(d) for d in dirs))
+        return pkgconfig.scan_pc_files()
+
+    def test_attached_and_detached_i_are_both_extracted(self, tmp_path, monkeypatch):
+        _write_pc(tmp_path, "forms", "Name: F\nDescription: d\nVersion: 1\nCflags: -I/opt/attached -I /opt/detached\n")
+        pc_files = self._scan_fixture_dirs(tmp_path, monkeypatch, [tmp_path])
+
+        assert pkgconfig.pc_include_dirs(pc_files["forms"], pc_files=pc_files) == [
+            "/opt/attached",
+            "/opt/detached",
+        ]
+
+    def test_own_dirs_come_first_then_requires_depth_first_in_declaration_order(self, tmp_path, monkeypatch):
+        _write_pc(tmp_path, "top", "Name: T\nDescription: d\nVersion: 1\nCflags: -I/opt/top\nRequires: left right\n")
+        _write_pc(tmp_path, "left", "Name: L\nDescription: d\nVersion: 1\nCflags: -I/opt/left\nRequires: deep\n")
+        _write_pc(tmp_path, "deep", "Name: D\nDescription: d\nVersion: 1\nCflags: -I/opt/deep\n")
+        _write_pc(tmp_path, "right", "Name: R\nDescription: d\nVersion: 1\nCflags: -I/opt/right\n")
+        pc_files = self._scan_fixture_dirs(tmp_path, monkeypatch, [tmp_path])
+
+        # Depth-first: `left`'s own closure (deep) completes before `right`
+        # is visited, and every package contributes before its requirements.
+        assert pkgconfig.pc_include_dirs(pc_files["top"], pc_files=pc_files) == [
+            "/opt/top",
+            "/opt/left",
+            "/opt/deep",
+            "/opt/right",
+        ]
+
+    def test_directories_are_deduplicated_preserving_first_occurrence(self, tmp_path, monkeypatch):
+        _write_pc(
+            tmp_path, "top", "Name: T\nDescription: d\nVersion: 1\nCflags: -I/opt/shared -I/opt/top\nRequires: dep\n"
+        )
+        _write_pc(tmp_path, "dep", "Name: D\nDescription: d\nVersion: 1\nCflags: -I/opt/shared\n")
+        pc_files = self._scan_fixture_dirs(tmp_path, monkeypatch, [tmp_path])
+
+        assert pkgconfig.pc_include_dirs(pc_files["top"], pc_files=pc_files) == [
+            "/opt/shared",
+            "/opt/top",
+        ]
+
+    def test_requires_private_is_not_followed(self, tmp_path, monkeypatch):
+        """``--cflags-only-I`` is not ``--static``: the private closure only
+        folds in under --static, so the required package sits in the map
+        unused. Its presence in the map is the point -- the closure walk must
+        *choose* not to follow it, not merely fail to resolve it."""
+        _write_pc(
+            tmp_path, "top", "Name: T\nDescription: d\nVersion: 1\nCflags: -I/opt/top\nRequires.private: hidden\n"
+        )
+        _write_pc(tmp_path, "hidden", "Name: H\nDescription: d\nVersion: 1\nCflags: -I/opt/hidden\n")
+        pc_files = self._scan_fixture_dirs(tmp_path, monkeypatch, [tmp_path])
+
+        assert pkgconfig.pc_include_dirs(pc_files["top"], pc_files=pc_files) == ["/opt/top"]
+
+    def test_version_constraints_in_requires_never_become_packages(self, tmp_path, monkeypatch):
+        """The closure parses the *expanded* Requires value with
+        ``_pc_required_packages``, so spaced and attached constraint
+        spellings resolve to the bare stems."""
+        _write_pc(
+            tmp_path,
+            "top",
+            "Name: T\nDescription: d\nVersion: 1\nCflags: -I/opt/top\nRequires: dep >= 1.2, other<3\n",
+        )
+        _write_pc(tmp_path, "dep", "Name: D\nDescription: d\nVersion: 1.3\nCflags: -I/opt/dep\n")
+        _write_pc(tmp_path, "other", "Name: O\nDescription: d\nVersion: 1\nCflags: -I/opt/other\n")
+        pc_files = self._scan_fixture_dirs(tmp_path, monkeypatch, [tmp_path])
+
+        assert pkgconfig.pc_include_dirs(pc_files["top"], pc_files=pc_files) == [
+            "/opt/top",
+            "/opt/dep",
+            "/opt/other",
+        ]
+
+    def test_a_missing_requires_target_returns_none(self, tmp_path, monkeypatch):
+        _write_pc(tmp_path, "top", "Name: T\nDescription: d\nVersion: 1\nCflags: -I/opt/top\nRequires: ghost\n")
+        pc_files = self._scan_fixture_dirs(tmp_path, monkeypatch, [tmp_path])
+
+        assert pkgconfig.pc_include_dirs(pc_files["top"], pc_files=pc_files) is None
+
+    def test_a_missing_transitive_requires_target_returns_none(self, tmp_path, monkeypatch):
+        """``None`` is about the whole query: a package pkg-config itself
+        could not resolve anywhere in the closure fails the query the same
+        way a direct requirement does."""
+        _write_pc(tmp_path, "top", "Name: T\nDescription: d\nVersion: 1\nRequires: mid\n")
+        _write_pc(tmp_path, "mid", "Name: M\nDescription: d\nVersion: 1\nCflags: -I/opt/mid\nRequires: ghost\n")
+        pc_files = self._scan_fixture_dirs(tmp_path, monkeypatch, [tmp_path])
+
+        assert pkgconfig.pc_include_dirs(pc_files["top"], pc_files=pc_files) is None
+
+    def test_a_dangling_map_entry_returns_none(self, tmp_path, monkeypatch):
+        """The unreadable arm: the stem is in *pc_files* but its file cannot
+        be read (it vanished after the scan). _read_pc_file would collapse
+        this to an empty file and silently drop the package's dirs, which is
+        why the read is inline."""
+        pc_files = {"dangling": str(tmp_path / "dangling.pc")}
+        assert not os.path.exists(pc_files["dangling"]), "the premise is a stale map entry"
+
+        assert pkgconfig.pc_include_dirs(pc_files["dangling"], pc_files=pc_files) is None
+
+    @pytest.mark.parametrize(
+        "entry,expected",
+        [("cyc-a", ["/opt/a", "/opt/b"]), ("cyc-b", ["/opt/b", "/opt/a"])],
+    )
+    def test_a_requires_cycle_terminates_and_returns_both_packages_dirs(self, tmp_path, monkeypatch, entry, expected):
+        """A cycle is not a broken closure: the visited set stops the second
+        visit and each package on the cycle still contributes its own dirs,
+        depth-first from the entry point. Entered from either end, like
+        ``TestTheRequiresClosureTerminatesOnCycles``."""
+        _write_pc(tmp_path, "cyc-a", "Name: A\nDescription: d\nVersion: 1\nCflags: -I/opt/a\nRequires: cyc-b\n")
+        _write_pc(tmp_path, "cyc-b", "Name: B\nDescription: d\nVersion: 1\nCflags: -I/opt/b\nRequires: cyc-a\n")
+        pc_files = self._scan_fixture_dirs(tmp_path, monkeypatch, [tmp_path])
+
+        with _fails_if_it_does_not_terminate():
+            dirs = pkgconfig.pc_include_dirs(pc_files[entry], pc_files=pc_files)
+
+        assert dirs == expected
+
+    def test_a_self_require_terminates_with_its_own_dirs(self, tmp_path, monkeypatch):
+        """The degenerate cycle: the entry point is visited once, its
+        self-requirement resolves to itself, and the visited set stops there."""
+        _write_pc(tmp_path, "selfy", "Name: S\nDescription: d\nVersion: 1\nCflags: -I/opt/s\nRequires: selfy\n")
+        pc_files = self._scan_fixture_dirs(tmp_path, monkeypatch, [tmp_path])
+
+        with _fails_if_it_does_not_terminate():
+            dirs = pkgconfig.pc_include_dirs(pc_files["selfy"], pc_files=pc_files)
+
+        assert dirs == ["/opt/s"]
+
+    def test_pcfiledir_expansion_lands_in_the_i_dirs(self, tmp_path, monkeypatch):
+        """The pre-seeded ``pcfiledir`` is what lets a relocated fixture .pc
+        point its Cflags at its own directory."""
+        _write_pc(tmp_path, "local", "Name: L\nDescription: d\nVersion: 1\nCflags: -I${pcfiledir}/include\n")
+        pc_files = self._scan_fixture_dirs(tmp_path, monkeypatch, [tmp_path])
+
+        assert pkgconfig.pc_include_dirs(pc_files["local"], pc_files=pc_files) == [
+            os.path.join(str(tmp_path), "include")
+        ]
+
+    def test_requires_value_is_expanded_before_parsing(self, tmp_path, monkeypatch):
+        """``Requires: ${deps}`` resolves like any other field before the
+        closure walk parses it -- the expansion is not Cflags-only."""
+        _write_pc(
+            tmp_path, "top", "Name: T\nDescription: d\nVersion: 1\ndeps=dep\nCflags: -I/opt/top\nRequires: ${deps}\n"
+        )
+        _write_pc(tmp_path, "dep", "Name: D\nDescription: d\nVersion: 1\nCflags: -I/opt/dep\n")
+        pc_files = self._scan_fixture_dirs(tmp_path, monkeypatch, [tmp_path])
+
+        assert pkgconfig.pc_include_dirs(pc_files["top"], pc_files=pc_files) == [
+            "/opt/top",
+            "/opt/dep",
+        ]
+
+    def test_first_wins_map_resolves_an_override_stem(self, tmp_path, monkeypatch):
+        """Two fixture dirs both shipping the required stem: the first-wins
+        map (which is what a real ``pkg-config <pkg>`` query reads) resolves
+        the closure to the first dir's file, so later dirs never shadow."""
+        override = tmp_path / "override"
+        fallback = tmp_path / "fallback"
+        override.mkdir()
+        fallback.mkdir()
+        _write_pc(override, "top", "Name: T\nDescription: d\nVersion: 1\nCflags: -I/opt/top\nRequires: dep\n")
+        _write_pc(override, "dep", "Name: D\nDescription: d\nVersion: 1\nCflags: -I/opt/dep-override\n")
+        _write_pc(fallback, "dep", "Name: D\nDescription: d\nVersion: 1\nCflags: -I/opt/dep-fallback\n")
+        pc_files = self._scan_fixture_dirs(tmp_path, monkeypatch, [override, fallback])
+
+        assert pkgconfig.pc_include_dirs(pc_files["top"], pc_files=pc_files) == [
+            "/opt/top",
+            "/opt/dep-override",
+        ]
+
+    def test_an_empty_cflags_contributes_no_dirs(self, tmp_path, monkeypatch):
+        """A closure package that exports no ``Cflags:`` is not a failure: it
+        contributes nothing and the query still succeeds."""
+        _write_pc(tmp_path, "top", "Name: T\nDescription: d\nVersion: 1\nCflags: -I/opt/top\nRequires: dep\n")
+        _write_pc(tmp_path, "dep", "Name: D\nDescription: d\nVersion: 1\n")
+        pc_files = self._scan_fixture_dirs(tmp_path, monkeypatch, [tmp_path])
+
+        assert pkgconfig.pc_include_dirs(pc_files["top"], pc_files=pc_files) == ["/opt/top"]

@@ -305,22 +305,13 @@ _pc_include_index_memo: dict[tuple[str, str, tuple[str, ...]], dict[str, tuple[s
 def _include_dirs_from_cflags(raw: str) -> list[str]:
     """Extract the directory of each ``-I`` flag in pkg-config output.
 
-    Handles both the attached (``-I/usr/include``) and detached (``-I
-    /usr/include``) forms; a trailing bare ``-I`` is dropped.
+    One-line delegate to the public
+    :func:`apptools_pkgconfig.include_dirs_from_cflags`, which now owns the
+    body (moved so the subprocess-free :func:`apptools_pkgconfig
+    .pc_include_dirs` shares one attached/detached implementation); the name
+    is kept for this module's internal call site.
     """
-    tokens = _ap.tokenize_pkg_config_output(raw, package="?", option="--cflags-only-I")
-    dirs: list[str] = []
-    index = 0
-    while index < len(tokens):
-        token = tokens[index]
-        if token == "-I" and index + 1 < len(tokens):
-            dirs.append(tokens[index + 1])
-            index += 2
-            continue
-        if token.startswith("-I") and len(token) > 2:
-            dirs.append(token[2:])
-        index += 1
-    return dirs
+    return _ap.include_dirs_from_cflags(raw)
 
 
 def build_pc_include_index(compiler_builtin_dirs: Sequence[str] = ()) -> dict[str, tuple[str, ...]]:

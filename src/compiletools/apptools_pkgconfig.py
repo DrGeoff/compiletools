@@ -38,6 +38,20 @@ process-wide ``PKG_CONFIG_PATH`` override value:
   ``{stem: path-as-found}`` of the first ``<stem>.pc`` per stem (first-wins;
   later dirs never shadow). Never raises; deliberately unmemoised (callers
   memoise, e.g. the pkgconfig_infer index memo keyed on the environment).
+* :func:`expand_pc_variables` -- parse ``.pc`` file lines into expanded
+  ``(variables, fields)``: ``name=value`` assignments expanded at
+  definition time, ``Keyword: value`` fields with first occurrence winning,
+  ``pcfiledir`` pre-seeded, undefined ``${var}`` -> "" (pkgconf
+  semantics), iteration capped so a self-referential file terminates.
+* :func:`include_dirs_from_cflags` -- extract the ``-I`` directories from
+  pkg-config output or an expanded ``Cflags:`` value (attached and
+  detached forms). ``pkgconfig_infer._include_dirs_from_cflags`` is now a
+  one-line delegate to it.
+* :func:`pc_include_dirs` -- the ``-I`` dirs ``--cflags-only-I <pkg>``
+  would print, computed from the :func:`scan_pc_files` map without a
+  subprocess: own ``Cflags:`` dirs plus the transitive ``Requires:``
+  closure, depth-first in declaration order, first-occurrence dedup;
+  ``None`` models a broken closure (missing stem or unreadable file).
 * :func:`compute_pkg_config_path` -- pure merge of the existing environment
   value with the conf/CLI prepend/append lists and the auto-discovered
   candidates, producing the ``PKG_CONFIG_PATH`` the build runs under.
@@ -72,6 +86,7 @@ import shlex
 import subprocess
 import sys
 import warnings
+from collections.abc import Mapping
 from typing import Literal
 
 import stringzilla as sz
@@ -315,6 +330,12 @@ _PC_ASSIGNMENT_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_.+-]*)\s*=")
 _PC_REFERENCE_RE = re.compile(r"\$\{([^}]*)\}")
 _PC_KEYWORD_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_.]*)\s*:\s*(.*)$")
 
+# Expansion is iterative (a substituted value may itself contain ``${...}``),
+# so this round cap is what terminates a self-referential or unterminated
+# ``${`` in a third-party ``.pc`` file: the pass loop stops and returns
+# whatever is left rather than spinning forever.
+_PC_EXPANSION_ROUNDS = 32
+
 # Flags whose argument may be detached. A bare one at the end of the output,
 # or immediately before another flag, is what an ``-I${undefined}`` collapses
 # to once the expansion eats the whole path.
@@ -496,6 +517,183 @@ def _read_pc_file(path: str) -> list[str]:
             return handle.read().splitlines()
     except OSError:
         return []
+
+
+def _expand_pc_text(text: str, variables: Mapping[str, str]) -> str:
+    """Replace every ``${name}`` in *text* with its current value.
+
+    One pass substitutes each reference with ``variables.get(name, "")`` --
+    pkgconf semantics: a name the file has not (yet) assigned, including the
+    other :data:`_PC_BUILTIN_VARIABLES`, expands to the empty string and is
+    never an error. Because a substituted value may itself contain
+    ``${...}``, the pass repeats until none remains;
+    :data:`_PC_EXPANSION_ROUNDS` caps the passes so a self-referential or
+    unterminated ``${`` terminates with whatever is left. A pass that cannot
+    change the text (a ``${`` the reference regex cannot match) stops the
+    loop early -- the cap exists for the passes that *do* make progress.
+    """
+    for _ in range(_PC_EXPANSION_ROUNDS):
+        if "${" not in text:
+            break
+        expanded = _PC_REFERENCE_RE.sub(lambda match: variables.get(match.group(1), ""), text)
+        if expanded == text:
+            break
+        text = expanded
+    return text
+
+
+def expand_pc_variables(lines: list[str], pcfiledir: str) -> tuple[dict[str, str], dict[str, str]]:
+    """Parse ``.pc`` file *lines* into ``(variables, fields)`` with every
+    ``${name}`` reference expanded.
+
+    The pure-python reproduction of the variable/field semantics both
+    freedesktop pkg-config 0.29 and pkgconf agree on, so callers can parse
+    ``.pc`` text without a subprocess:
+
+    * blank lines and lines whose first non-space character is ``#`` are
+      skipped (commented-out definitions must not count -- the premise
+      :func:`_undefined_pc_variables` measures);
+    * a line matching ``_PC_ASSIGNMENT_RE`` defines a variable whose value
+      is the remainder after ``=``, stripped and expanded *at definition
+      time* against the variables defined so far. An assignment takes
+      effect at the end of its own line, so ``a=${a}x`` expands against the
+      *previous* ``a`` while a later ``prefix=${prefix}/x`` accumulates --
+      the order-sensitivity :func:`_undefined_pc_variables` documents;
+    * a line matching ``_PC_KEYWORD_RE`` defines a field; the first
+      occurrence of a keyword wins;
+    * ``pcfiledir`` is pre-seeded to *pcfiledir* (the directory the ``.pc``
+      was read from); every other reference to a name the file has not (yet)
+      assigned -- including the remaining :data:`_PC_BUILTIN_VARIABLES` --
+      expands to the empty string, matching pkgconf.
+
+    Expansion iterates until no ``${...}`` remains, capped at
+    :data:`_PC_EXPANSION_ROUNDS` passes, so a self-referential or
+    unterminated ``${`` in a third-party file terminates and returns
+    whatever is left rather than spinning.
+
+    Never raises.
+    """
+    variables: dict[str, str] = {"pcfiledir": pcfiledir}
+    fields: dict[str, str] = {}
+    try:
+        for line in lines:
+            stripped = line.lstrip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            assignment = _PC_ASSIGNMENT_RE.match(line)
+            if assignment is not None:
+                # The right-hand side reads the variables defined so far,
+                # which do not yet include the name being assigned.
+                variables[assignment.group(1)] = _expand_pc_text(line[assignment.end() :].strip(), variables)
+                continue
+            keyword = _PC_KEYWORD_RE.match(line)
+            if keyword is not None and keyword.group(1) not in fields:
+                fields[keyword.group(1)] = _expand_pc_text(keyword.group(2).strip(), variables)
+    except Exception:
+        return variables, fields
+    return variables, fields
+
+
+def include_dirs_from_cflags(raw: str) -> list[str]:
+    """Extract the directory of each ``-I`` flag in pkg-config output.
+
+    Handles both the attached (``-I/usr/include``) and detached (``-I
+    /usr/include``) forms; a trailing bare ``-I`` is dropped. The tokenizer
+    is :func:`tokenize_pkg_config_output` with a placeholder package/option:
+    the text is third-party pkg-config output (or an expanded ``Cflags:``
+    value from a ``.pc`` file, which the same third-party-authorship
+    rationale covers), so a malformed value degrades to a whitespace split
+    rather than raising.
+
+    The body moved here (public) from ``pkgconfig_infer
+    ._include_dirs_from_cflags`` -- now a one-line delegate -- so the
+    subprocess index and the subprocess-free :func:`pc_include_dirs` share
+    one attached/detached implementation.
+    """
+    tokens = tokenize_pkg_config_output(raw, package="?", option="--cflags-only-I")
+    dirs: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "-I" and index + 1 < len(tokens):
+            dirs.append(tokens[index + 1])
+            index += 2
+            continue
+        if token.startswith("-I") and len(token) > 2:
+            dirs.append(token[2:])
+        index += 1
+    return dirs
+
+
+def pc_include_dirs(path: str, *, pc_files: Mapping[str, str]) -> list[str] | None:
+    """Return the ``-I`` directories ``pkg-config --cflags-only-I <stem>``
+    would print for the ``.pc`` file at *path*, without a subprocess.
+
+    The ``.pc`` at *path* is parsed with :func:`expand_pc_variables` and
+    contributes its own ``Cflags:`` ``-I`` dirs
+    (:func:`include_dirs_from_cflags`) first; then every package in its
+    transitive ``Requires:`` closure (:func:`_pc_required_packages` on the
+    *expanded* value) contributes the same way, depth-first, in declaration
+    order. ``Requires.private`` is deliberately not followed: it only folds
+    in under ``--static``, which ``--cflags-only-I`` is not.
+
+    Each required stem is looked up in *pc_files*, the
+    :func:`scan_pc_files` map whose first-wins paths are exactly what a
+    ``pkg-config <pkg>`` query reads. ``None`` models "pkg-config fails the
+    whole query": a package in the closure missing from *pc_files*, or a
+    ``.pc`` file that cannot be read (a stale map entry -- the file vanished
+    after the scan). Callers then omit the package entirely, the same
+    treatment the per-package subprocess pattern gave a nonzero
+    ``--cflags-only-I`` returncode. The read is inline rather than through
+    :func:`_read_pc_file` because that collapses unreadable to ``[]``, which
+    must stay distinguishable from a genuinely empty file.
+
+    A ``Requires`` cycle is not an error: the visited set (keyed on the
+    normpath of each file) stops the second visit, so each package on the
+    cycle still contributes its own dirs exactly once, depth-first from the
+    entry point. Directories are de-duplicated preserving first occurrence.
+
+    Never raises.
+    """
+    try:
+        collected: list[str] = []
+        visited: set[str] = set()
+
+        def visit(pc_path: str) -> bool:
+            """Append *pc_path*'s dirs; False when the closure is broken."""
+            key = os.path.normpath(pc_path)
+            if key in visited:
+                return True
+            visited.add(key)
+            # NOT wrappedos and not _read_pc_file: pc paths may be relative
+            # (PKG_CONFIG_PATH entries), and an unreadable file must return
+            # None here rather than collapsing to an empty line list.
+            try:
+                with open(pc_path, encoding="utf-8", errors="replace") as handle:
+                    lines = handle.read().splitlines()
+            except OSError:
+                return False
+            _variables, fields = expand_pc_variables(lines, os.path.dirname(pc_path))
+            collected.extend(include_dirs_from_cflags(fields.get("Cflags", "")))
+            for required in _pc_required_packages(fields.get("Requires", "")):
+                required_path = pc_files.get(required)
+                if required_path is None:
+                    return False
+                if not visit(required_path):
+                    return False
+            return True
+
+        if not visit(path):
+            return None
+        deduplicated: list[str] = []
+        seen_dirs: set[str] = set()
+        for directory in collected:
+            if directory not in seen_dirs:
+                seen_dirs.add(directory)
+                deduplicated.append(directory)
+        return deduplicated
+    except Exception:
+        return None
 
 
 def _undefined_pc_variables(path: str) -> list[str]:
