@@ -1196,3 +1196,171 @@ def test_build_pc_include_index_maps_a_dir_with_a_space_in_its_name(tmp_path, mo
     index = pkgconfig_infer.build_pc_include_index()
 
     assert index.get(os.path.realpath(str(include_dir))) == ("spacey",)
+
+
+# ---------------------------------------------------------------------------
+# Differential oracle + hermetic end-to-end for the pure-python .pc scan
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(shutil.which("pkg-config") is None, reason="pkg-config binary not on PATH on this host")
+def test_run_pkg_config_index_agrees_with_pkg_config_binary(monkeypatch):
+    """Differential oracle: the pure-python ``.pc`` scan
+    (:func:`pkgconfig_infer._run_pkg_config_index`) must agree with the real
+    pkg-config binary (:func:`pkgconfig_infer._run_pkg_config_index_via_binary`)
+    on this host's live ``.pc`` set.
+
+    The environment is left otherwise untouched (ambient ``PKG_CONFIG_PATH`` /
+    ``PKG_CONFIG_LIBDIR`` stand, so both sides resolve exactly the host's live
+    search list), and of the two sanctioned ways to neutralise pkg-config's
+    system-include strip this test does BOTH (belt and braces):
+    ``PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1`` is monkeypatched so the binary emits
+    every ``-I`` it computed rather than filtering its system dirs -- the scan
+    never strips -- and both dir sets are additionally narrowed by removing
+    the realpath'd ``/usr/include`` and ``/usr/local/include``
+    (:data:`pkgconfig_infer._DEFAULT_INCLUDE_DIRS`), so the comparison is
+    valid whichever stripping convention the host binary follows.
+
+    Compared, in order: the package name set (pkgconf's ``--list-all`` prints
+    one entry per ``.pc`` file -- duplicates included -- while the scan is
+    first-wins per stem, so the *sets* must match); for every package present
+    in BOTH outputs, the realpath'd ``-I`` dir set (first differing package in
+    sorted order names itself in the failure); and the omission sets -- a
+    package whose ``Requires``/``Requires.private`` closure cannot resolve
+    must be omitted by both implementations, exactly the way the former
+    per-package subprocess pattern treated a nonzero returncode.
+
+    Self-checks keep the oracle non-vacuous, each degrading to a skip with a
+    clear reason: at least one binary-reported package must export a non-empty
+    ``-I`` set at all, and at least one must carry a *Requires-sourced* ``-I``
+    dir (one its own ``Cflags:`` line does not name -- read from the host's
+    real ``.pc`` files with the same expansion the scan uses), so the
+    Requires-closure machinery this feature exists to reproduce is actually
+    exercised by the host's live set.
+    """
+    monkeypatch.setenv("PKG_CONFIG_ALLOW_SYSTEM_CFLAGS", "1")
+
+    scan_names, scan_outputs = pkgconfig_infer._run_pkg_config_index()
+    binary_names, binary_outputs = pkgconfig_infer._run_pkg_config_index_via_binary()
+    if not binary_names:
+        pytest.skip("pkg-config --list-all reported no packages on this host; nothing to compare")
+
+    # Oracle self-check (non-vacuousness): a host whose packages export no -I
+    # dirs at all satisfies every comparison below trivially.
+    exports_include_dir = [
+        name for name, raw in binary_outputs.items() if pkgconfig_infer._include_dirs_from_cflags(raw)
+    ]
+    if not exports_include_dir:
+        pytest.skip(
+            "no pkg-config package on this host exports a non-empty -I set; the differential comparison would be vacuous"
+        )
+
+    # Oracle self-check (Requires-closure coverage): the host's live .pc set
+    # must exercise the Requires machinery, not just own-Cflags parsing --
+    # at least one package whose transitive -I output carries a dir its own
+    # Cflags line does not name. Parsed from the same host .pc files the
+    # scan walks, with the same variable expansion, so the check is exactly
+    # as strong as the scan it guards.
+    pc_files = apptools_pkgconfig.scan_pc_files()
+    has_requires_sourced_dir = False
+    for name, raw in binary_outputs.items():
+        path = pc_files.get(name)
+        if path is None:
+            continue
+        _variables, fields = apptools_pkgconfig.expand_pc_variables(
+            apptools_pkgconfig._read_pc_file(path), os.path.dirname(path)
+        )
+        own = {os.path.realpath(d) for d in pkgconfig_infer._include_dirs_from_cflags(fields.get("Cflags", ""))}
+        transitive = {os.path.realpath(d) for d in pkgconfig_infer._include_dirs_from_cflags(raw)}
+        if transitive - own:
+            has_requires_sourced_dir = True
+            break
+    if not has_requires_sourced_dir:
+        pytest.skip(
+            "no pkg-config package on this host carries a Requires-sourced -I dir; "
+            "the differential run would not exercise the Requires closure"
+        )
+
+    scan_set = set(scan_names)
+    binary_set = set(binary_names)
+    assert scan_set == binary_set, (
+        f"package name sets differ: only the scan has {sorted(scan_set - binary_set)[:8]}, "
+        f"only --list-all has {sorted(binary_set - scan_set)[:8]} "
+        f"({len(scan_set)} scan names vs {len(binary_set)} distinct --list-all names)"
+    )
+
+    shared = sorted(set(scan_outputs) & set(binary_outputs))
+    for name in shared:
+        scan_dirs = {os.path.realpath(d) for d in pkgconfig_infer._include_dirs_from_cflags(scan_outputs[name])}
+        binary_dirs = {os.path.realpath(d) for d in pkgconfig_infer._include_dirs_from_cflags(binary_outputs[name])}
+        assert scan_dirs == binary_dirs, (
+            f"first differing package {name!r}: scan -I dirs {sorted(scan_dirs)} "
+            f"vs binary -I dirs {sorted(binary_dirs)}"
+        )
+
+    scan_only = sorted(set(scan_outputs) - set(binary_outputs))
+    binary_only = sorted(set(binary_outputs) - set(scan_outputs))
+    assert not scan_only and not binary_only, (
+        f"broken-Requires omissions differ: only the scan omits {scan_only[:8]}, "
+        f"only the binary omits {binary_only[:8]}"
+    )
+
+
+def test_build_pc_include_index_hermetic_requires_closure_and_omits_broken_requires(tmp_path, monkeypatch):
+    """End-to-end, no-binary run of :func:`build_pc_include_index` over a
+    hermetic ``.pc`` tree: ``PKG_CONFIG_LIBDIR`` points at a tmp dir (which
+    replaces the host's default search dirs entirely) with ``PKG_CONFIG_PATH``
+    cleared, so the index can only be built from the fixtures -- the exact key
+    set asserted below would catch any host-dir leakage.
+
+    ``b``'s transitive ``Requires: a`` closure must attribute a's include dir
+    (reached through ``${prefix}``/``${includedir}`` variable expansion) to
+    BOTH packages. A package whose ``Requires`` names a missing package must
+    be omitted -- its own ``Cflags`` dir must appear nowhere in the index --
+    exactly the way the former per-package subprocess pattern treated a
+    nonzero ``--cflags-only-I`` returncode, while the other packages keep
+    mapping normally (one broken package must not poison the scan).
+    """
+    pc_dir = tmp_path / "pc"
+    pc_dir.mkdir()
+    include_root = tmp_path / "include"
+    (include_root / "a").mkdir(parents=True)
+    (include_root / "b").mkdir(parents=True)
+    (pc_dir / "a.pc").write_text(
+        "Name: a\n"
+        "Description: a\n"
+        "Version: 1\n"
+        f"prefix={tmp_path}\n"
+        "includedir=${prefix}/include\n"
+        "Cflags: -I${includedir}/a\n",
+        encoding="utf-8",
+    )
+    (pc_dir / "b.pc").write_text(
+        f"Name: b\nDescription: b\nVersion: 1\nCflags: -I{tmp_path}/include/b\nRequires: a\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+    monkeypatch.setenv("PKG_CONFIG_LIBDIR", str(pc_dir))
+    pkgconfig_infer.clear_cache()
+
+    index = pkgconfig_infer.build_pc_include_index()
+
+    expected_a = os.path.realpath(str(include_root / "a"))
+    expected_b = os.path.realpath(str(include_root / "b"))
+    assert set(index) == {expected_a, expected_b}
+    assert index[expected_a] == ("a", "b")
+    assert index[expected_b] == ("b",)
+
+    # c's Requires target does not exist: the scan must omit c the way a
+    # nonzero --cflags-only-I returncode omitted it, without disturbing a/b.
+    (pc_dir / "c.pc").write_text(
+        f"Name: c\nDescription: c\nVersion: 1\nCflags: -I{tmp_path}/include/c\nRequires: nosuch\n",
+        encoding="utf-8",
+    )
+    pkgconfig_infer.clear_cache()
+    index = pkgconfig_infer.build_pc_include_index()
+
+    assert set(index) == {expected_a, expected_b}
+    assert index[expected_a] == ("a", "b")
+    assert index[expected_b] == ("b",)
+    assert all("c" not in packages for packages in index.values())
