@@ -48,10 +48,13 @@ Deliberate generator exclusions (documented, not accidental)
   declines (``#``, ``##``, ``__VA_ARGS__``) would dominate a random stream and
   are diagnosed rather than evaluated. Directed oracle coverage of the
   supported subset lives in ``test_function_like_macros.py``.
-* Integer suffixes (``U`` / ``L`` / ``UL`` ...) -- SimplePreprocessor strips
-  them, losing signedness; see the KNOWN-DIVERGENCE xfail list below.
+* Integer suffixes (``U`` / ``L`` / ``UL`` ...) -- excluded because the shapes
+  they arbitrate (signedness and intmax_t precision) are directed-covered by
+  ``_FORMERLY_DIVERGENT_CASES`` and ``_SIGNEDNESS_CASES`` below; the generator
+  stays in the subset where Python bignum and intmax_t arithmetic agree.
 * Leading-zero (octal) literals -- kept out of the generator so the ``08``
-  invalid-octal divergence (also an xfail) can't pollute the random stream.
+  invalid-octal shape (rejected since the intmax-semantics fix, directed-covered
+  below) can't pollute the random stream.
 * NEGATIVE shift counts -- the RHS of ``<<`` / ``>>`` is forced to a
   non-negative literal. A negative count is undefined in C (C99 6.5.7p3) and the
   compilers genuinely disagree: for ``#if (1 >> (0 - 1))`` gcc 16.1 keeps the
@@ -80,11 +83,11 @@ Deliberate generator exclusions (documented, not accidental)
   overflow gcc does not diagnose: it warns for ``9223372036854775807 + 1``,
   ``4294967296 * 4294967296`` and ``(1 << 62) * 4``, but is silent for
   ``(4 << 62)`` (exactly 2**64) and ``((1 << 62) << 1)``. C evaluates ``#if`` in
-  ``intmax_t`` and wraps, so gcc drops those blocks while compiletools' Python
-  bignums keep them -- the bignum-vs-``intmax_t`` divergence already recorded as
-  a strict xfail below, reached through a shift instead of an addition, and
-  invisible to the ``assume`` gate. Measured at 2 failures in 6 fresh
-  default-budget runs before this bound.
+  ``intmax_t`` and wraps, so both compilers drop those blocks; before the
+  intmax-semantics fix compiletools' Python bignums kept them -- the
+  bignum-vs-``intmax_t`` divergence fixed by that branch, reached through a
+  shift instead of an addition and invisible to the ``assume`` gate. Measured at
+  2 failures in 6 fresh default-budget runs before this bound.
   A computed LHS cannot be allowed even with a small count, because an inner
   shift can already have produced ``2**62``. Bounding the count alone is not
   sufficient either: at ``_expr(3)`` each level can multiply (adding subtree
@@ -96,16 +99,17 @@ Deliberate generator exclusions (documented, not accidental)
   cannot overflow. Any overflow *downstream* of a shift travels through an
   operator gcc does diagnose, so the gate still catches it.
 
-Known expected divergences
----------------------------
-Three real, confirmed differences between SimplePreprocessor and C are recorded
-as ``strict`` xfails in :func:`test_known_divergence_is_still_present` below,
-NOT fixed here (preprocessor fixes are owned elsewhere). ``strict=True`` means
-that the day any of them is fixed the xfail turns into an XPASS *failure*, so
-this test actively alerts us to flip it to a normal assertion. The random
-generator is separately kept from producing these shapes so the property test
-stays a clean green that would go red the instant a genuine new divergence
-appears.
+Formerly divergent shapes, now fixed
+------------------------------------
+Three real differences between SimplePreprocessor and C -- the signed-unsigned
+comparison, intmax_t wraparound on overflow, and invalid octal constants --
+used to be recorded as strict xfails; the intmax-semantics branch fixed all
+three, and they are now plain assertions in
+:func:`test_formerly_divergent_shapes_match_c`, with a directed family in
+``_SIGNEDNESS_CASES`` pinning the signedness and precision semantics that fix
+introduced. The random generator is still kept from producing these shapes, so
+the property test stays a clean green that would go red the instant a genuine
+new divergence appears.
 """
 
 import os
@@ -582,7 +586,14 @@ def test_macro_dump_name_set_matches_compiler(ops):
 # installed compiler is a gcc-family preprocessor, the compiletools half runs
 # everywhere.
 #
-# expr, gcc keeps the block, gcc diagnoses it
+# The DIAGNOSTIC is only recorded where it is stable across the supported
+# range. A flipped count that overflows SIGNED intmax_t pedwarns under gcc 12
+# ("integer overflow in preprocessor expression") but gcc 16 stopped emitting
+# that pedwarn, so '1 >> (0 - 63)' (-> 1 << 63) is recorded as None and
+# asserted by neither; '1 >> (0 - 64)' (count >= width) warns on every
+# supported gcc and clang.
+#
+# expr, gcc keeps the block, gcc diagnoses it (None: versions differ)
 _NEGATIVE_SHIFT_CASES = [
     ("1 >> (0 - 1)", True, False),  # -> 1 << 1 == 2; the branch R5 used to drop
     ("4 >> (0 - 2)", True, False),  # -> 4 << 2 == 16
@@ -591,7 +602,7 @@ _NEGATIVE_SHIFT_CASES = [
     ("8 << (0 - 2)", True, False),  # -> 8 >> 2 == 2; a TRUE flipped left shift
     ("(0 - 8) >> (0 - 1)", True, False),  # -> -8 << 1 == -16, still non-zero
     ("(0 - 1) << (0 - 70)", True, False),  # -> -1 >> 70 sign-fills to -1
-    ("1 >> (0 - 63)", True, False),  # -> 1 << 63, the last representable count
+    ("1 >> (0 - 63)", True, None),  # -> 1 << 63: gcc 12 pedwarns the overflow, gcc 16 silent
     ("1 >> (0 - 64)", False, True),  # -> 1 << 64, every bit shifted out
 ]
 
@@ -661,7 +672,8 @@ def test_negative_shift_count_matches_a_gcc_family_oracle(expr, gcc_keeps, gcc_d
     returncode, kept, diagnosed = _compiler_keeps_and_diagnoses(expr)
     assert returncode == 0, f"the oracle rejected '#if {expr}' outright"
     assert kept is gcc_keeps, f"the oracle disagrees with the recorded gcc answer for '#if {expr}'"
-    assert diagnosed is gcc_diagnoses, f"the oracle's diagnostic for '#if {expr}' is not the recorded one"
+    if gcc_diagnoses is not None:
+        assert diagnosed is gcc_diagnoses, f"the oracle's diagnostic for '#if {expr}' is not the recorded one"
     assert _ct_if_active(expr) is kept
 
 
@@ -742,14 +754,13 @@ def test_oversized_shift_count_matches_the_oracle(expr, compilers_keep, compiler
 
 
 # ----------------------------------------------------------------------------
-# KNOWN DIVERGENCES -- confirmed real differences between SimplePreprocessor
-# and C. Recorded as *strict* xfails: they fail today (documenting the bug) and
-# will turn into XPASS *failures* the moment the preprocessor is fixed, forcing
-# whoever fixes it to convert these to plain assertions. Fixes are owned by a
-# separate preprocessor branch; this test only tracks the divergences.
+# FORMERLY DIVERGENT SHAPES -- fixed by the intmax-semantics branch.
 #
-# Each case runs ONLY through compiletools and asserts the C-standard-correct
-# answer, so it needs no compiler and cannot be masked by a missing toolchain.
+# These were recorded as strict xfails while SimplePreprocessor still diverged
+# (stripped suffixes, bignum arithmetic, silent invalid octal). The fix made
+# them plain assertions: each runs ONLY through compiletools and asserts the
+# C-standard-correct answer, so it needs no compiler and cannot be masked by a
+# missing toolchain.
 # ----------------------------------------------------------------------------
 def _ct_if_active(expr: str) -> bool:
     """True iff compiletools keeps the sentinel guarded by ``#if <expr>``."""
@@ -757,54 +768,88 @@ def _ct_if_active(expr: str) -> bool:
     return 0 in _ct_active_sentinels(src)
 
 
-_KNOWN_DIVERGENCES = [
-    pytest.param(
-        "-1 > 0u",
-        True,
-        id="signed-unsigned-comparison",
-        marks=pytest.mark.xfail(
-            strict=True,
-            reason="U/L suffixes are stripped, so signedness is lost: C evaluates "
-            "'-1 > 0u' as an unsigned comparison (true), SimplePreprocessor as "
-            "signed (false).",
-        ),
-    ),
-    pytest.param(
-        "9223372036854775807 + 1 < 0",
-        True,
-        id="intmax-overflow-wraparound",
-        marks=pytest.mark.xfail(
-            strict=True,
-            reason="C #if arithmetic is intmax_t and wraps on overflow "
-            "(INTMAX_MAX + 1 -> INTMAX_MIN < 0, true); SimplePreprocessor uses "
-            "Python bignums, so no wraparound (false).",
-        ),
-    ),
-    pytest.param(
-        "08",
-        False,
-        id="invalid-octal-accepted",
-        marks=pytest.mark.xfail(
-            strict=True,
-            reason="'08' is an invalid octal constant that C rejects (line "
-            "dropped); SimplePreprocessor silently accepts it as non-zero and "
-            "keeps the line.",
-        ),
-    ),
+_FORMERLY_DIVERGENT_CASES = [
+    pytest.param("-1 > 0u", True, id="signed-unsigned-comparison"),
+    pytest.param("9223372036854775807 + 1 < 0", True, id="intmax-overflow-wraparound"),
+    pytest.param("08", False, id="invalid-octal-rejected"),
     # NOTE: the former "deep-nesting-recursionerror" divergence was fixed by the
     # preprocessor-bugfix change (explicit _MAX_DEPTH guard + PreprocessorExpressionError
     # instead of a swallowed RecursionError->false). Deeply-nested valid expressions now
-    # evaluate correctly, so the case is no longer a known divergence and has been
+    # evaluate correctly, so the case is no longer a divergence and has been
     # removed from this list. See test_simple_preprocessor.py for its regression tests.
 ]
 
 
-@requires_functional_compiler
-@pytest.mark.parametrize("expr, c_correct_active", _KNOWN_DIVERGENCES)
-def test_known_divergence_is_still_present(expr, c_correct_active):
-    """Assert the C-standard-correct outcome. Each is a strict xfail today: the
-    assertion fails because SimplePreprocessor diverges. When the preprocessor
-    is fixed the assertion passes -> XPASS -> strict failure -> we get alerted
-    to delete the xfail marker and (if desired) fold the case into the property
-    tests' allowed grammar."""
+@pytest.mark.parametrize("expr, c_correct_active", _FORMERLY_DIVERGENT_CASES)
+def test_formerly_divergent_shapes_match_c(expr, c_correct_active):
+    """Assert the C-standard-correct outcome for the three shapes that used to
+    be strict xfails. They are plain assertions now: if any of them fails, the
+    intmax-semantics behaviour has regressed."""
     assert _ct_if_active(expr) is c_correct_active
+
+
+# ----------------------------------------------------------------------------
+# SIGNEDNESS AND INTMAX PRECISION -- directed, never generated.
+#
+# The intmax-semantics fix did more than un-xfail the shapes above: integer
+# literals now carry signedness, #if arithmetic truncates to intmax_t
+# precision, and the usual arithmetic conversions decide mixed comparisons.
+# The directed cases below pin the interesting corners of those semantics.
+# As with the shift families the DIAGNOSTIC is only recorded where the
+# compilers agree; measured on gcc 12.3.0 and clang 23.1.0, both of which
+# agree with each other (and with gcc 8.5 / clang 13) on every keep/diagnose
+# pair here except the mixed-sign ternary, where gcc warns and clang is
+# silent -- recorded as None, asserted by neither.
+#
+# expr, the compilers keep the block, the compilers diagnose it (None: they differ)
+_SIGNEDNESS_CASES = [
+    ("-1 > 0u", True, True),  # the comparison goes unsigned; -1 converts to 2**64-1
+    ("1 - 2u > 0", True, False),  # unsigned LHS expression: no negative literal, no warning
+    ("9223372036854775808 < 0", False, True),  # decimal too large for intmax_t -> unsigned; both pedwarn
+    ("18446744073709551615 == 0xffffffffffffffffu", True, True),  # fits unsigned intmax_t exactly
+    ("0x8000000000000000 < 0", False, False),  # hex so-large is silently unsigned
+    ("(0u ? 1 : -1) < 0", True, False),  # both arms int -> int result, and -1 < 0 holds
+    ("(0 ? 1u : -1) < 0", False, None),  # arms converted to unsigned; gcc warns, clang silent
+    ("9223372036854775807 + 1 < 0", True, True),  # INTMAX_MAX + 1 -> INTMAX_MIN, pedwarned
+]
+
+
+@pytest.mark.parametrize("expr, compilers_keep", [(e, k) for e, k, _d in _SIGNEDNESS_CASES])
+def test_signedness_semantics_match_c(expr, compilers_keep):
+    """compiletools keeps exactly the blocks the compilers keep. Needs no
+    compiler, so a box with no toolchain still pins the semantics."""
+    assert _ct_if_active(expr) is compilers_keep
+
+
+@requires_functional_compiler
+@pytest.mark.parametrize("expr, compilers_keep, compilers_diagnose", _SIGNEDNESS_CASES)
+def test_signedness_semantics_match_the_oracle(expr, compilers_keep, compilers_diagnose):
+    """The same cases against the installed compiler.
+
+    The expected answers are spelled out rather than read off the oracle, so a
+    compiler that disagrees with the recorded behaviour fails here instead of
+    silently redefining what the test proves.
+    """
+    returncode, kept, diagnosed = _compiler_keeps_and_diagnoses(expr)
+    assert returncode == 0, f"the oracle rejected '#if {expr}' outright"
+    assert kept is compilers_keep, f"the oracle disagrees with the recorded answer for '#if {expr}'"
+    if compilers_diagnose is not None:
+        assert diagnosed is compilers_diagnose, f"the oracle's diagnostic for '#if {expr}' is not the recorded one"
+    assert _ct_if_active(expr) is kept
+
+
+@requires_functional_compiler
+def test_invalid_octal_digit_hard_errors_in_the_oracle():
+    """C rejects '08' at the token level: gcc and clang both fail the
+    translation unit with "invalid digit '8' in octal constant" rather than
+    merely warning. compiletools' counterpart is raising
+    UnsafeExpressionError, which degrades the condition to a warned-false, so
+    the line is dropped either way.
+    """
+    assert _CXX is not None  # guaranteed by @requires_functional_compiler
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "invalid_octal.cpp")
+        with open(path, "w") as fh:
+            fh.write("#if 08\nSENTINEL_0\n#endif\n")
+        proc = subprocess.run([_CXX, "-E", "-P", path], capture_output=True, text=True, timeout=_SUBPROCESS_TIMEOUT)
+    assert proc.returncode != 0, "the oracle accepted the invalid octal constant '08'"

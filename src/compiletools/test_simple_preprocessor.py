@@ -15,7 +15,6 @@ from compiletools.build_context import BuildContext
 from compiletools.file_analyzer import FileAnalysisResult, PreprocessorDirective
 from compiletools.preprocessing_cache import MacroState, get_or_compute_preprocessing
 from compiletools.simple_preprocessor import (
-    _RE_INTEGER_SUFFIXES,
     PreprocessorExpressionError,
     SimplePreprocessor,
     UnsafeExpressionError,
@@ -182,20 +181,24 @@ class TestSimplePreprocessor:
         pp-token (e.g. '1defined'), so the 'defined' operator must NOT fire.
 
         The identifier-continuation class includes digits, so the left-boundary
-        check rejects 'defined' as an operator here. The malformed token degrades:
-        '1defined(FOO)' is left literally unexpanded by _expand_defined_sz (NOT
-        rewritten to 1/0), and the whole expression then evaluates to 0 (the
-        inactive result the degraded/unrecognized path produces) regardless of
-        whether FOO is defined.
+        check rejects 'defined' as an operator here. The malformed token is left
+        literally unexpanded by _expand_defined_sz (NOT rewritten to 1/0). At
+        evaluation time it is a pp-number that is not an integer constant -- no
+        ``_RE_INT_LITERAL`` match covers ``1d...`` -- so _evaluate_expression_sz
+        raises UnsafeExpressionError and the #if caller degrades to warned-false,
+        matching libcpp's hard error on the invalid pp-token (the pre-intmax
+        evaluator answered a silent 0, which kept no block but hid the typo).
         """
         # FOO defined: still must not be recognized as the defined() operator.
         assert str(self.processor._expand_defined_sz(sz.Str("1defined(TEST_MACRO)"))) == "1defined(TEST_MACRO)"
-        assert self.processor._evaluate_expression_sz(sz.Str("1defined(TEST_MACRO)")) == 0
+        with pytest.raises(UnsafeExpressionError, match="malformed integer constant"):
+            self.processor._evaluate_expression_sz(sz.Str("1defined(TEST_MACRO)"))
         # FOO undefined: same degraded result.
         assert (
             str(self.processor._expand_defined_sz(sz.Str("1defined(UNDEFINED_MACRO)"))) == "1defined(UNDEFINED_MACRO)"
         )
-        assert self.processor._evaluate_expression_sz(sz.Str("1defined(UNDEFINED_MACRO)")) == 0
+        with pytest.raises(UnsafeExpressionError, match="malformed integer constant"):
+            self.processor._evaluate_expression_sz(sz.Str("1defined(UNDEFINED_MACRO)"))
 
     def test_digit_right_adjacent_defined_not_treated_as_operator_sz(self):
         """A6: a digit immediately AFTER 'defined' makes it part of a larger
@@ -235,15 +238,15 @@ class TestSimplePreprocessor:
         assert self.processor._evaluate_expression_sz(sz.Str("0 == 0")) == 1
 
     def test_integer_suffixes_on_nondecimal_literals_sz(self):
-        """C integer suffixes (U/L/UL/LL/ULL, any order) must strip on hex/bin/oct literals (A8).
+        """C integer suffixes (U/L/UL/LL/ULL, any order) classify on hex/bin/oct literals (A8).
 
-        The A8 bug was specific to HEX: the old regex ``(\\d+)[LlUu]+\\b`` only matched
-        decimal digit runs, so ``\\d+`` couldn't span the hex letters and a suffixed hex
-        literal like ``0xFFUL`` survived unstripped, reaching the tokenizer and raising
-        ValueError. Binary/octal/decimal suffixed literals already worked under the old
-        regex (``\\d+`` matched the digit run after the ``0b``/``0`` prefix); they are
-        retained here as defense-in-depth coverage against future regex changes. The
-        literal value itself must be preserved.
+        The A8 bug was specific to HEX: the old strip-and-normalize pre-passes used
+        ``(\\d+)[LlUu]+\\b``, which only matched decimal digit runs, so ``\\d+`` couldn't
+        span the hex letters and a suffixed hex literal like ``0xFFUL`` survived
+        unnormalized, reached the tokenizer as a hex letter run, and raised ValueError.
+        The tokenizer now owns literal classification via one ``_RE_INT_LITERAL`` match
+        per digit run (body plus suffix), so the u suffix -- which decides signedness in
+        comparisons like ``-1 > 0u`` -- is kept and the value is preserved.
         """
         # Hex with suffixes (the A8 break: previously raised ValueError)
         assert self.processor._evaluate_expression_sz(sz.Str("0xFFUL == 255")) == 1
@@ -288,40 +291,35 @@ class TestSimplePreprocessor:
         assert self.processor._evaluate_expression_sz(sz.Str("1ull == 1")) == 1
         assert self.processor._evaluate_expression_sz(sz.Str("1ULL == 1")) == 1
         assert self.processor._evaluate_expression_sz(sz.Str("42LLU == 42")) == 1
-        # Non-decimal bodies keep their suffixes stripped under the new alternation
+        # Non-decimal bodies keep their suffix classified under the new alternation
         assert self.processor._evaluate_expression_sz(sz.Str("0xFFu == 255")) == 1
         assert self.processor._evaluate_expression_sz(sz.Str("0xFFUL == 255")) == 1
         assert self.processor._evaluate_expression_sz(sz.Str("0b101L == 5")) == 1
-        # Direct regex check: the suffix is removed, leaving the bare body
-        assert _RE_INTEGER_SUFFIXES.sub(r"\1", "1ULL") == "1"
-        assert _RE_INTEGER_SUFFIXES.sub(r"\1", "0xFFu") == "0xFF"
+        # Direct tokenizer check: the suffix is classified, leaving (value, unsigned)
+        assert SimplePreprocessor._tokenize_c_expression("1ULL") == [(1, True), "EOF"]
+        assert SimplePreprocessor._tokenize_c_expression("0xFFu") == [(255, True), "EOF"]
 
     def test_invalid_integer_suffix_runs_not_silently_accepted_sz(self):
-        """Invalid suffix runs must NOT be stripped to the bare valid value (A5 fix).
+        """Invalid suffix runs must NOT be accepted as the bare valid value (A5 fix).
 
-        The old ``[LlUu]+`` alternation matched ANY run of suffix letters, so
+        The old strip-and-normalize pre-passes matched ANY run of suffix letters, so
         malformed literals like ``1UU``/``1LLL``/``1lL`` were silently rewritten to
         ``1`` and evaluated truthy. C permits only ``U?(L|LL)?`` / ``(L|LL)U?`` with
-        at most one ``u`` and a matching-case long part. The constrained regex no
-        longer matches these runs, so the literal survives to the parser, which
-        rejects it ("trailing tokens" SyntaxError) and ``_safe_eval`` degrades the
-        directive to 0 (inactive) rather than accepting the bare integer.
+        at most one ``u`` and a matching-case long part. The tokenizer's single
+        ``_RE_INT_LITERAL`` match now fails for these runs -- a pp-number that is not
+        an integer constant -- so the evaluator raises UnsafeExpressionError and the
+        #if caller answers 0 (inactive, with a warning) rather than accepting the
+        bare integer silently.
         """
-        # Doubled unsigned, triple/over-long, and mixed-case long parts: all invalid C.
-        assert self.processor._evaluate_expression_sz(sz.Str("1UU")) == 0
-        assert self.processor._evaluate_expression_sz(sz.Str("1ULUL")) == 0
-        assert self.processor._evaluate_expression_sz(sz.Str("1LLL")) == 0
-        assert self.processor._evaluate_expression_sz(sz.Str("1lL")) == 0
-        assert self.processor._evaluate_expression_sz(sz.Str("1Ll")) == 0
-        # In a comparison the bogus literal must not satisfy "== bare value".
-        assert self.processor._evaluate_expression_sz(sz.Str("1UU == 1")) == 0
-        assert self.processor._evaluate_expression_sz(sz.Str("1LLL == 1")) == 0
-        # Direct regex check: invalid runs leave the literal untouched (no strip).
-        assert _RE_INTEGER_SUFFIXES.sub(r"\1", "1UU") == "1UU"
-        assert _RE_INTEGER_SUFFIXES.sub(r"\1", "1ULUL") == "1ULUL"
-        assert _RE_INTEGER_SUFFIXES.sub(r"\1", "1LLL") == "1LLL"
-        assert _RE_INTEGER_SUFFIXES.sub(r"\1", "1lL") == "1lL"
-        assert _RE_INTEGER_SUFFIXES.sub(r"\1", "1Ll") == "1Ll"
+        # Doubled unsigned, over-long, and mixed-case long parts: all invalid C.
+        for bad in ("1UU", "1ULUL", "1LLL", "1lL", "1Ll"):
+            with pytest.raises(UnsafeExpressionError, match="malformed integer constant"):
+                self.processor._evaluate_expression_sz(sz.Str(bad))
+        # In a comparison the bogus literal must not satisfy "== bare value" either.
+        with pytest.raises(UnsafeExpressionError, match="malformed integer constant"):
+            self.processor._evaluate_expression_sz(sz.Str("1UU == 1"))
+        with pytest.raises(UnsafeExpressionError, match="malformed integer constant"):
+            self.processor._evaluate_expression_sz(sz.Str("1LLL == 1"))
 
     def test_bitwise_operators_sz(self):
         """Test bitwise and shift operators in expressions with StringZilla"""
@@ -1557,7 +1555,7 @@ class TestSimplePreprocessorEdgeCases:
         reaches ``intmax_t``'s precision, so the flipped left shift saturates at
         0 rather than growing a Python bignum (which would also make a hostile
         ``1 >> (0 - 10000000000)`` allocate gigabytes)."""
-        assert self.processor._evaluate_expression_sz(sz.Str("1 >> (0 - 63)")) == 1 << 63
+        assert self.processor._evaluate_expression_sz(sz.Str("1 >> (0 - 63)")) == -(1 << 63)
         assert self.processor._evaluate_expression_sz(sz.Str("1 >> (0 - 64)")) == 0
         assert self.processor._evaluate_expression_sz(sz.Str("1 >> (0 - 70)")) == 0
 
@@ -1570,23 +1568,121 @@ class TestSimplePreprocessorEdgeCases:
         clamp did not become blanket suppression. The oracle half lives in
         ``test_preprocessor_differential.py``.
         """
-        assert self.processor._evaluate_expression_sz(sz.Str("1 << 63")) == 1 << 63
+        assert self.processor._evaluate_expression_sz(sz.Str("1 << 63")) == -(1 << 63)
         assert self.processor._evaluate_expression_sz(sz.Str("1 << 64")) == 0
         assert self.processor._evaluate_expression_sz(sz.Str("1 << 200")) == 0
         assert self.processor._evaluate_expression_sz(sz.Str("(0 - 1) << 70")) == 0
 
-    def test_a_shift_count_too_large_to_evaluate_answers_instead_of_raising(self, capsys):
-        """R10: an oversized count must reach a defined 0, not the fallback path.
+    def test_unsigned_suffix_makes_the_comparison_unsigned_sz(self):
+        """The u suffix must survive to the parser: it decides comparison signedness.
 
-        A count past Python's digit limit raised ``OverflowError`` out of the
-        arithmetic, which ``_handle_if_structured`` catches as "malformed user
-        expression" -- so the block was dropped, matching gcc by accident, and
-        the user was told compiletools ``cannot evaluate`` a condition it is
-        perfectly able to evaluate. The answer alone cannot distinguish the two
-        eras (false either way); the diagnostic is what moves, so it is what is
-        asserted.
+        The old strip-and-normalize pre-passes discarded it, so ``-1 > 0u``
+        compared two signed values and dropped the block -- one of the three
+        strict-mode divergences vs libcpp. C11 6.3.1.8: one unsigned operand
+        converts the other to uintmax_t, so -1 becomes 2**64-1 and the block is
+        kept. gcc and clang agree (clang adds -Wsign-compare in C++ mode; this
+        is C, silent with -Wall in both).
         """
-        assert self.processor._evaluate_expression_sz(sz.Str("1 << 1000000000000000000000000000000")) == 0
+        assert self.processor._evaluate_expression_sz(sz.Str("-1 > 0u")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("1 - 2u > 0")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("0u - 1 == 18446744073709551615")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("~0u == 18446744073709551615")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("-1 < 0u")) == 0
+        # And the signed partner stays signed: no suffix, no conversion.
+        assert self.processor._evaluate_expression_sz(sz.Str("-1 < 0")) == 1
+
+    def test_arithmetic_wraps_at_intmax_precision_sz(self):
+        """#if arithmetic truncates to intmax_t width, it does not grow bignums.
+
+        C11 6.10.1p4: the controlling expression is evaluated with intmax_t /
+        uintmax_t. Signed overflow wraps (libcpp pedwarns and uses the wrapped
+        value, so ``INTMAX_MAX + 1 < 0`` keeps the block); unsigned arithmetic
+        wraps mod 2**64 (defined, silent); INTMAX_MIN / -1 wraps to INTMAX_MIN
+        and INTMAX_MIN % -1 is 0 (libcpp's num_div_op, which warns and answers);
+        unsigned division of a reinterpreted negative operand follows from the
+        conversion in test_unsigned_suffix_makes_the_comparison_unsigned_sz.
+        All values verified against g++ -E -P and clang -E -P.
+        """
+        assert self.processor._evaluate_expression_sz(sz.Str("9223372036854775807 + 1 < 0")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("9223372036854775807 + 1 == -9223372036854775808")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("(0u - 1) >> 63 == 1")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("-1 >> 1 == -1")) == 1
+        assert (
+            self.processor._evaluate_expression_sz(sz.Str("(-9223372036854775807 - 1) / -1 == -9223372036854775808"))
+            == 1
+        )
+        assert self.processor._evaluate_expression_sz(sz.Str("(-9223372036854775807 - 1) % -1")) == 0
+        assert self.processor._evaluate_expression_sz(sz.Str("-1 / 2u == 9223372036854775807")) == 1
+        # A decimal constant too big for intmax_t but fitting uintmax_t is unsigned
+        # (C11 6.4.4.1p5), so it is NOT < 0 -- and 0x8000000000000000 likewise.
+        assert self.processor._evaluate_expression_sz(sz.Str("9223372036854775808 < 0")) == 0
+        assert self.processor._evaluate_expression_sz(sz.Str("0x8000000000000000 < 0")) == 0
+
+    def test_oversized_and_malformed_integer_constants_are_unevaluable_sz(self):
+        """A pp-number that is not an integer constant is the unsafe signal.
+
+        A digit too many for uintmax_t (gcc truncates with a pedwarn, clang
+        hard-errors -- no common C answer, so warned-false is honest), an
+        invalid octal digit (``08``; libcpp errors), or a bogus suffix run are
+        each UnsafeExpressionError from the tokenizer, which the #if caller
+        turns into the warned-false path.
+        """
+        for expr in (
+            "08",
+            "09 == 9",
+            "0128",
+            "1 || 08",
+            "18446744073709551616 == 0",
+            "0x10000000000000000",
+            "1e3",
+        ):
+            with pytest.raises(UnsafeExpressionError):
+                self.processor._evaluate_expression_sz(sz.Str(expr))
+
+    def test_a_directive_with_an_invalid_octal_constant_warns_false(self, capsys):
+        """End to end: ``#if 08`` is dropped AND reported, not silently 0.
+
+        The old normalize pre-pass int()-ed ``08`` to 8 -- silently accepting a
+        non-octal digit and possibly keeping a block no compiler would compile.
+        libcpp hard-errors on it; warned-false is the honest degradation.
+        """
+        text = dedent("""
+            #if 08
+            dropped
+            #endif
+        """).strip()
+        processor = SimplePreprocessor(dict(self.macros), verbose=1)
+        active = processor.process_structured(_make_file_analysis_result(text), self.ctx)
+        assert 1 not in active
+        assert "SimplePreprocessor warning" in capsys.readouterr().err
+
+    def test_a_directive_with_mixed_signedness_keeps_its_branch_silently(self, capsys):
+        """End to end: ``#if -1 > 0u`` keeps its branch and reports nothing."""
+        text = dedent("""
+            #if -1 > 0u
+            kept
+            #endif
+        """).strip()
+        processor = SimplePreprocessor(dict(self.macros), verbose=1)
+        active = processor.process_structured(_make_file_analysis_result(text), self.ctx)
+        assert 1 in active
+        assert "SimplePreprocessor warning" not in capsys.readouterr().err
+
+    def test_a_shift_count_too_large_for_intmax_warns_false(self, capsys):
+        """A count past uintmax_t makes the CONSTANT unevaluable, not the shift.
+
+        R10 kept ``1 << 10**30`` answering 0 by clamping in ``_c_shift``; the
+        intmax_t rework moved the boundary -- the count literal itself no longer
+        fits ``uintmax_t``, so ``_literal`` raises and the #if follows the
+        unevaluable-condition path: branch dropped, warning emitted. (Both
+        compilers pedwarn on the constant too: gcc "integer constant is too
+        large", clang "integer literal is too large" -- warned-false is the
+        honest common answer.) The count-larger-than-64-but-fitting case is
+        covered by ``test_an_oversized_shift_allocates_nothing`` and stays
+        silent -- the clamp there is a property of the shift, not the constant.
+        """
+        with pytest.raises(UnsafeExpressionError, match="too large for its type"):
+            self.processor._evaluate_expression_sz(sz.Str("1 << 1000000000000000000000000000000"))
         text = dedent("""
             #if (1 << 1000000000000000000000000000000)
             dropped
@@ -1594,8 +1690,8 @@ class TestSimplePreprocessorEdgeCases:
         """).strip()
         processor = SimplePreprocessor(dict(self.macros), verbose=1)
         active = processor.process_structured(_make_file_analysis_result(text), self.ctx)
-        assert 1 not in active, "the block must stay dropped (both compilers drop it)"
-        assert "SimplePreprocessor warning" not in capsys.readouterr().err
+        assert 1 not in active, "the block must stay dropped (both compilers pedwarn)"
+        assert "SimplePreprocessor warning" in capsys.readouterr().err
 
     def test_an_oversized_shift_allocates_nothing(self):
         """R10's other half: the clamp bounds the work, not just the answer.

@@ -31,6 +31,8 @@ import shutil
 import subprocess
 import sys
 
+from compiletools import wrappedos
+
 
 def venv_mismatch_reason(expected_src_root: str) -> str | None:
     """Return ``None`` when ct-cake's compiletools resolves to
@@ -98,7 +100,7 @@ def venv_mismatch_reason(expected_src_root: str) -> str | None:
         if match is None:
             return None
         exec_target = match.group(1).decode("utf-8", errors="replace")
-        if not os.path.isfile(exec_target):
+        if not wrappedos.isfile(exec_target):
             # A re-exec line we don't recognise -- don't probe through
             # it, but don't fail the check over it either.
             return None

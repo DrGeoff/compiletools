@@ -39,7 +39,10 @@ class UnsafeExpressionError(ValueError):
     """The tokenizer's deliberate "this is not an arithmetic expression" signal.
 
     Raised only by ``_tokenize_c_expression``, for a byte that is neither part
-    of a number, an operator, nor a ``[A-Za-z_][A-Za-z0-9_]*`` identifier. The
+    of a number, an operator, nor a ``[A-Za-z_][A-Za-z0-9_]*`` identifier -- or
+    for a pp-number that is not a valid integer constant (an invalid octal
+    digit as in ``08``, an invalid suffix run as in ``1UU``, or a value too
+    large even for ``uintmax_t``). The
     ``#if``/``#elif`` handlers turn it into an unevaluable-condition report and
     assume false.
 
@@ -91,35 +94,18 @@ _NO_EXPANSION_SITE = ("<none>", -1)
 # Precompiled regex patterns for _safe_eval
 _RE_BACKSLASH_WHITESPACE = re.compile(r"\\\s*")
 _RE_MALFORMED_NUMBERS = re.compile(r"(\d+)\s*\(\s*(\d+)\s*\)")
-# Strip C integer suffixes from a complete integer literal. The captured body
-# must cover all four C literal forms, since the suffix letters differ from the
-# literal's own digits:
-#   - hex  0x.. / 0X..  (body digits 0-9A-Fa-f overlap the suffix letter 'L')
-#   - bin  0b.. / 0B..
-#   - oct/dec  bare digit run (C octal is a leading-0 digit run; normalized later)
-# A naive ``(\d+)`` body only matches decimal, so ``0xFFUL`` was left unstripped
-# (then rejected by the tokenizer) and ``0xFFu`` had no suffix removed.
-#
-# The suffix alternation is constrained to the VALID C forms only:
-# ``U?(L|LL)?`` / ``(L|LL)U?`` — an optional unsigned ``u``/``U`` and an optional
-# long ``l``/``L``/``ll``/``LL`` (matching case for the two-letter long), in
-# either order, with at most one ``u``. A naive ``[LlUu]+`` would also strip
-# *invalid* runs (``1UU``, ``1ULUL``, ``1LLL``, mixed-case ``1lL``/``1Ll``),
-# silently treating them as the bare value; the constrained form leaves them
-# untouched so the tokenizer rejects them (degrading the directive to 0) instead
-# of accepting a malformed literal. The regex still only fires when a suffix is
-# present, so a bare body is never matched.
-# The ``(?![0-9A-Za-z_])`` lookahead (replacing ``\b``) ensures we strip a suffix
-# only at a true literal boundary — ``0xF`` alone is never shortened to ``0x``
-# because there is no U/L run after the hex body.
-_RE_INTEGER_SUFFIXES = re.compile(
-    r"(0[xX][0-9A-Fa-f]+|0[bB][01]+|\d+)(?:[uU](?:ll|LL|l|L)?|(?:ll|LL|l|L)[uU]?)(?![0-9A-Za-z_])"
+# Strip-and-forget is gone: integer suffixes are no longer removed by a regex
+# pre-pass (that threw away the U bit, making ``-1 > 0u`` a signed comparison)
+# and numeric literals are no longer rewritten to decimal text (which silently
+# accepted ``08`` as 8). Instead one ``_RE_INT_LITERAL`` match per digit run
+# classifies the whole literal -- body, valid suffix, and boundary -- and
+# ``_literal`` decides the value's signedness. Only the two text cleanups
+# below survive as pre-passes.
+_RE_INT_LITERAL = re.compile(
+    r"(0[xX][0-9A-Fa-f]+|0[bB][01]+|[0-9]+)"
+    r"((?:[uU](?:ll|LL|l|L)?|(?:ll|LL|l|L)[uU]?)?)"
+    r"(?![0-9A-Za-z_])"
 )
-
-# Precompiled regex patterns for _normalize_numeric_literals
-_RE_HEX_LITERAL = re.compile(r"\b0[xX][0-9A-Fa-f]+\b")
-_RE_BIN_LITERAL = re.compile(r"\b0[bB][01]+\b")
-_RE_OCT_LITERAL = re.compile(r"\b0[0-7]+\b")
 
 # Reserved words that should not be treated as macros
 _RESERVED_WORDS = frozenset([sz.Str("and"), sz.Str("or"), sz.Str("not")])
@@ -153,7 +139,11 @@ _stats: dict[str, Any] = {
 }
 
 
-_CExprToken = int | str
+# A value token carries its C signedness alongside the int: True = the
+# constant is unsigned (uintmax_t), False = signed (intmax_t). Operators keep
+# the pair together so the usual arithmetic conversions can act on it.
+_CValue = tuple[int, bool]
+_CExprToken = _CValue | str
 
 
 def _split_macro_arguments(expr_sz: sz.Str, open_paren: int) -> tuple[list[sz.Str], int] | None:
@@ -216,11 +206,67 @@ def _replace_identifiers_sz(body_sz: sz.Str, replacements: dict[sz.Str, sz.Str])
     return concat_sz(*result_parts) if result_parts else sz.Str("")
 
 
-# Width of the type C evaluates ``#if`` arithmetic in (``intmax_t``). The
-# evaluator otherwise works in Python bignums -- a documented divergence from
-# C's wraparound -- so this is used only where a bound is needed to keep an
-# operation total: the left-shift count clamp in ``_CExpressionParser._c_shift``.
+# Width of the type C evaluates ``#if`` arithmetic in (``intmax_t``). Every
+# arithmetic result is truncated to this width (``_wrap``); the constant is
+# used directly by the left-shift count clamp in
+# ``_CExpressionParser._c_shift`` -- a count at or past the width shifts every
+# bit out and yields 0, before any wrapping happens.
 _INTMAX_PRECISION = 64
+
+# The uintmax_t mask and the intmax_t maximum. ``_wrap`` and ``_literal`` keep
+# every value inside their range, which is the invariant that lets the
+# parser's plain Python ``<``, ``//`` and ``>>`` produce the C answers once
+# both operands of an operator are converted.
+_UMASK = (1 << 64) - 1
+_SMAX = (1 << 63) - 1
+
+
+def _wrap(value: int, unsigned: bool) -> int:
+    """Truncate an arithmetic result to intmax_t/uintmax_t width (C11 6.10.1p4).
+
+    ``#if`` arithmetic is evaluated in intmax_t (signed) or uintmax_t
+    (unsigned). A signed result that left that range wraps two's-complement --
+    libcpp pedwarns "integer overflow in preprocessor expression" and uses the
+    wrapped value, so ``9223372036854775807 + 1 < 0`` keeps the block. An
+    unsigned result wraps mod 2**64 (defined, silent). Keeping every signed
+    value inside [-2**63, 2**63) is also the invariant that makes Python's own
+    comparisons and shifts produce the C answers once both operands are
+    converted.
+    """
+    value &= _UMASK
+    return value if unsigned or value <= _SMAX else value - (1 << 64)
+
+
+def _literal(body: str, suffix: str) -> _CValue:
+    """Classify one integer constant: parse the value and fix its signedness.
+
+    Implements C11 6.4.4.1p5 the way libcpp does. An explicit ``u``/``U``
+    suffix makes the constant unsigned; without one, a constant that does not
+    fit intmax_t but fits uintmax_t is unsigned -- silently for a
+    hex/octal/binary constant, with a pedwarn from the compiler for a decimal
+    one (the value is the same either way, so the diagnostic is not
+    reproduced). ``l``/``ll`` change nothing: inside ``#if`` every signed type
+    evaluates as intmax_t (C11 6.10.1p4).
+
+    A pp-number that is not a valid integer constant raises
+    UnsafeExpressionError: an invalid digit in an octal constant (``08``), or
+    a value too large even for uintmax_t -- there gcc truncates mod 2**64 with
+    a warning while clang hard-errors, so there is no common C answer to
+    emulate and warned-false is the honest outcome.
+    """
+    if body[:2] in ("0x", "0X"):
+        value = int(body, 16)
+    elif body[:2] in ("0b", "0B"):
+        value = int(body, 2)
+    elif len(body) > 1 and body[0] == "0":
+        if "8" in body or "9" in body:
+            raise UnsafeExpressionError(f"invalid digit in octal constant: {body}")
+        value = int(body, 8)
+    else:
+        value = int(body)
+    if value > _UMASK:
+        raise UnsafeExpressionError(f"integer constant is too large for its type: {body}{suffix}")
+    return value, ("u" in suffix or "U" in suffix) or value > _SMAX
 
 
 class _CExpressionParser:
@@ -264,7 +310,7 @@ class _CExpressionParser:
             value = self._parse_conditional(evaluate=True)
             if self._peek() != "EOF":
                 raise SyntaxError("trailing tokens")
-            return value
+            return value[0]
         except RecursionError as e:
             # Defence in depth: should be unreachable because the ``_MAX_DEPTH``
             # guard trips first, but if some other recursion path overflows,
@@ -299,7 +345,7 @@ class _CExpressionParser:
             return token
         return None
 
-    def _parse_conditional(self, evaluate: bool) -> int:
+    def _parse_conditional(self, evaluate: bool) -> _CValue:
         # A7: conditional-expression := logical-or ( '?' expression ':'
         # conditional )?  — lower precedence than ``||``, right-associative.
         # Only the taken branch is evaluated; the untaken branch is parsed with
@@ -312,76 +358,76 @@ class _CExpressionParser:
             condition = self._parse_logical_or(evaluate)
             if not self._match("?"):
                 return condition
-            take_true = evaluate and condition != 0
+            take_true = evaluate and condition[0] != 0
             true_value = self._parse_conditional(evaluate=take_true)
             if not self._match(":"):
                 raise SyntaxError("expected ':' in conditional expression")
-            false_value = self._parse_conditional(evaluate=evaluate and condition == 0)
-            return true_value if condition != 0 else false_value
+            false_value = self._parse_conditional(evaluate=evaluate and condition[0] == 0)
+            # C11 6.5.15p5: the usual arithmetic conversions apply to BOTH arms
+            # even though only one is evaluated, so ``(0u ? 1 : -1) < 0`` keeps
+            # the block (signed arms -> signed -1) while ``(0 ? 1u : -1) < 0``
+            # drops it (an unsigned arm makes the result
+            # uintmax_t(-1) = 2**64-1, which is not < 0). Verified against
+            # libcpp's CPP_COLON reduction.
+            unsigned = true_value[1] or false_value[1]
+            return _wrap(true_value[0] if condition[0] != 0 else false_value[0], unsigned), unsigned
         finally:
             self._depth -= 1
 
-    def _parse_logical_or(self, evaluate: bool) -> int:
+    def _parse_logical_or(self, evaluate: bool) -> _CValue:
         value = self._parse_logical_and(evaluate)
         while self._match("||"):
             # A6: once the LHS is true the result is 1 and the RHS is dead.
-            rhs_live = evaluate and value == 0
+            rhs_live = evaluate and value[0] == 0
             rhs = self._parse_logical_and(rhs_live)
-            value = 1 if value != 0 or rhs != 0 else 0
+            # ``||`` yields a signed ``int`` 0/1 (C11 6.5.14), so the result
+            # carries no operand signedness. With no operator matched the
+            # operand tuple is returned as-is: a lone ``18446744073709551615``
+            # must stay unsigned, or the value invariant would break.
+            value = (1 if value[0] != 0 or rhs[0] != 0 else 0, False)
         return value
 
-    def _parse_logical_and(self, evaluate: bool) -> int:
+    def _parse_logical_and(self, evaluate: bool) -> _CValue:
         value = self._parse_bitwise_or(evaluate)
         while self._match("&&"):
             # A6: once the LHS is false the result is 0 and the RHS is dead.
-            rhs_live = evaluate and value != 0
+            rhs_live = evaluate and value[0] != 0
             rhs = self._parse_bitwise_or(rhs_live)
-            value = 1 if value != 0 and rhs != 0 else 0
+            # ``&&`` yields a signed ``int`` 0/1 (C11 6.5.13).
+            value = (1 if value[0] != 0 and rhs[0] != 0 else 0, False)
         return value
 
-    def _parse_bitwise_or(self, evaluate: bool) -> int:
+    def _parse_bitwise_or(self, evaluate: bool) -> _CValue:
         value = self._parse_bitwise_xor(evaluate)
         while self._match("|"):
-            value |= self._parse_bitwise_xor(evaluate)
+            value = self._apply_binary("|", value, self._parse_bitwise_xor(evaluate), evaluate)
         return value
 
-    def _parse_bitwise_xor(self, evaluate: bool) -> int:
+    def _parse_bitwise_xor(self, evaluate: bool) -> _CValue:
         value = self._parse_bitwise_and(evaluate)
         while self._match("^"):
-            value ^= self._parse_bitwise_and(evaluate)
+            value = self._apply_binary("^", value, self._parse_bitwise_and(evaluate), evaluate)
         return value
 
-    def _parse_bitwise_and(self, evaluate: bool) -> int:
+    def _parse_bitwise_and(self, evaluate: bool) -> _CValue:
         value = self._parse_equality(evaluate)
         while self._match("&"):
-            value &= self._parse_equality(evaluate)
+            value = self._apply_binary("&", value, self._parse_equality(evaluate), evaluate)
         return value
 
-    def _parse_equality(self, evaluate: bool) -> int:
+    def _parse_equality(self, evaluate: bool) -> _CValue:
         value = self._parse_relational(evaluate)
         while op := self._match("==", "!="):
-            rhs = self._parse_relational(evaluate)
-            if op == "==":
-                value = 1 if value == rhs else 0
-            else:
-                value = 1 if value != rhs else 0
+            value = self._apply_binary(op, value, self._parse_relational(evaluate), evaluate)
         return value
 
-    def _parse_relational(self, evaluate: bool) -> int:
+    def _parse_relational(self, evaluate: bool) -> _CValue:
         value = self._parse_shift(evaluate)
         while op := self._match("<", "<=", ">", ">="):
-            rhs = self._parse_shift(evaluate)
-            if op == "<":
-                value = 1 if value < rhs else 0
-            elif op == "<=":
-                value = 1 if value <= rhs else 0
-            elif op == ">":
-                value = 1 if value > rhs else 0
-            else:
-                value = 1 if value >= rhs else 0
+            value = self._apply_binary(op, value, self._parse_shift(evaluate), evaluate)
         return value
 
-    def _parse_shift(self, evaluate: bool) -> int:
+    def _parse_shift(self, evaluate: bool) -> _CValue:
         value = self._parse_additive(evaluate)
         while op := self._match("<<", ">>"):
             rhs = self._parse_additive(evaluate)
@@ -389,16 +435,19 @@ class _CExpressionParser:
                 # Dead subtree (A6/A7): skip the shift entirely. The returned
                 # value is discarded, so there is nothing to compute. (A live
                 # oversized shift is bounded too, by ``_c_shift``'s clamp.)
-                value = 0
+                value = (0, value[1])
             else:
-                value = self._c_shift(value, op, rhs)
+                # Shifts do NOT go through ``_apply_binary``: they are exempt
+                # from the usual arithmetic conversions (C11 6.5.7p3), so the
+                # LEFT operand's signedness alone decides the result's.
+                value = (self._c_shift(value[0], op, rhs[0], value[1]), value[1])
         return value
 
     @classmethod
-    def _c_shift(cls, value: int, op: str, count: int) -> int:
-        """Apply ``<<``/``>>`` the way libcpp's ``num_binary_op`` does.
+    def _c_shift(cls, value: int, op: str, count: int, unsigned: bool) -> int:
+        """Apply ``<<``/``>>`` the way libcpp's ``num_binary_op``/``num_lshift`` do.
 
-        Two rules, both measured against ``g++ -E -P -Wall -Wextra -pedantic``.
+        Three rules, all measured against ``g++ -E -P -Wall -Wextra -pedantic``.
 
         A NEGATIVE count is undefined in C99 6.5.7p3, and Python's shift
         operators raise ``ValueError`` on one. libcpp instead reverses the
@@ -415,6 +464,15 @@ class _CExpressionParser:
         and evaluating it in Python bignums kept it. Right shifts need no clamp:
         Python's arithmetic shift already sign-fills to 0 or -1 as libcpp does.
 
+        Below the clamp, a left shift's result wraps to the LEFT operand's
+        width -- shifts are exempt from the usual arithmetic conversions (C11
+        6.5.7p3), so the count never participates and ``unsigned`` is the left
+        operand's signedness. ``1 << 63`` is INTMAX_MIN, the truthy value
+        behind a block gcc keeps. A right shift needs no wrap (the value
+        invariant already keeps it in range); an unsigned right shift falls out
+        of the stored non-negative representation as a logical shift, a signed
+        one sign-fills, both as libcpp does.
+
         The clamp is also what keeps the operation total. A live
         ``1 << 10000000000`` would otherwise materialise a gigabyte-wide bignum
         before being tested for truth, and a count past ``PY_SSIZE_T_MAX``
@@ -425,55 +483,48 @@ class _CExpressionParser:
             count = -count
         if op == "<<" and count >= _INTMAX_PRECISION:
             return 0
-        return value << count if op == "<<" else value >> count
+        if op == "<<":
+            return _wrap(value << count, unsigned)
+        return value >> count
 
-    def _parse_additive(self, evaluate: bool) -> int:
+    def _parse_additive(self, evaluate: bool) -> _CValue:
         value = self._parse_multiplicative(evaluate)
         while op := self._match("+", "-"):
-            rhs = self._parse_multiplicative(evaluate)
-            if op == "+":
-                value += rhs
-            else:
-                value -= rhs
+            value = self._apply_binary(op, value, self._parse_multiplicative(evaluate), evaluate)
         return value
 
-    def _parse_multiplicative(self, evaluate: bool) -> int:
+    def _parse_multiplicative(self, evaluate: bool) -> _CValue:
         value = self._parse_unary(evaluate)
         while op := self._match("*", "/", "%"):
-            rhs = self._parse_unary(evaluate)
-            if op == "*":
-                value *= rhs
-            elif not evaluate:
-                # Dead subtree (A6/A7): skip the div/mod so a dead ``x / 0``
-                # never raises. The returned value is discarded.
-                value = 0
-            elif op == "/":
-                value = self._c_trunc_div(value, rhs)
-            else:
-                value = value - self._c_trunc_div(value, rhs) * rhs
+            value = self._apply_binary(op, value, self._parse_unary(evaluate), evaluate)
         return value
 
-    def _parse_unary(self, evaluate: bool) -> int:
+    def _parse_unary(self, evaluate: bool) -> _CValue:
         # Track depth here too: stacked prefix operators (``!!!...``) recurse
         # through ``_parse_unary`` without passing ``_parse_conditional``, so
         # this is the other unbounded-recursion vector.
         self._enter()
         try:
             if self._match("+"):
-                return +self._parse_unary(evaluate)
+                return self._parse_unary(evaluate)
             if self._match("-"):
-                return -self._parse_unary(evaluate)
+                value, unsigned = self._parse_unary(evaluate)
+                # Unary minus keeps the operand's signedness and wraps: in
+                # libcpp -INTMAX_MIN stays INTMAX_MIN, it does not overflow.
+                return _wrap(-value, unsigned), unsigned
             if self._match("!"):
-                return 0 if self._parse_unary(evaluate) else 1
+                value, _ = self._parse_unary(evaluate)
+                return (0 if value else 1, False)
             if self._match("~"):
-                return ~self._parse_unary(evaluate)
+                value, unsigned = self._parse_unary(evaluate)
+                return _wrap(~value, unsigned), unsigned
             return self._parse_primary(evaluate)
         finally:
             self._depth -= 1
 
-    def _parse_primary(self, evaluate: bool) -> int:
+    def _parse_primary(self, evaluate: bool) -> _CValue:
         token = self._peek()
-        if isinstance(token, int):
+        if not isinstance(token, str):
             self.pos += 1
             return token
         if self._match("("):
@@ -482,6 +533,57 @@ class _CExpressionParser:
                 raise SyntaxError("missing closing parenthesis")
             return value
         raise SyntaxError("expected integer or parenthesized expression")
+
+    def _apply_binary(self, op: str, lhs: _CValue, rhs: _CValue, evaluate: bool) -> _CValue:
+        """Apply a non-shift binary operator under the usual arithmetic
+        conversions (C11 6.3.1.8): if either operand is unsigned, both are
+        reinterpreted as uintmax_t and the result is unsigned; the six
+        comparisons yield a signed ``int`` 0/1 either way. Arithmetic results
+        wrap via ``_wrap``. Mirrors libcpp's ``num_binary_op``/``num_div_op``;
+        shifts bypass this (see ``_parse_shift``).
+        """
+        lv, lu = lhs
+        rv, ru = rhs
+        unsigned = lu or ru
+        if unsigned:
+            lv &= _UMASK  # reinterpret a negative signed operand
+            rv &= _UMASK
+        if op == "==":
+            return (1 if lv == rv else 0), False
+        if op == "!=":
+            return (1 if lv != rv else 0), False
+        if op == "<":
+            return (1 if lv < rv else 0), False
+        if op == "<=":
+            return (1 if lv <= rv else 0), False
+        if op == ">":
+            return (1 if lv > rv else 0), False
+        if op == ">=":
+            return (1 if lv >= rv else 0), False
+        if op in ("/", "%"):
+            if not evaluate:
+                # Dead subtree (A6/A7): skip the div/mod so a dead ``x / 0``
+                # never raises. The returned value is discarded.
+                return (0, unsigned)
+            quotient = self._c_trunc_div(lv, rv)
+            if op == "/":
+                # INTMAX_MIN / -1 wraps to INTMAX_MIN, exactly as libcpp's
+                # num_div_op does (it warns, and uses the wrapped value).
+                return _wrap(quotient, unsigned), unsigned
+            return _wrap(lv - quotient * rv, unsigned), unsigned
+        if op == "+":
+            return _wrap(lv + rv, unsigned), unsigned
+        if op == "-":
+            return _wrap(lv - rv, unsigned), unsigned
+        if op == "*":
+            return _wrap(lv * rv, unsigned), unsigned
+        if op == "&":
+            return _wrap(lv & rv, unsigned), unsigned
+        if op == "^":
+            return _wrap(lv ^ rv, unsigned), unsigned
+        if op == "|":
+            return _wrap(lv | rv, unsigned), unsigned
+        raise AssertionError(f"unreachable binary operator: {op!r}")
 
     @staticmethod
     def _c_trunc_div(lhs: int, rhs: int) -> int:
@@ -1676,12 +1778,11 @@ class SimplePreprocessor:
         # Fix cases like "0(0)" which occur when macros expand to adjacent numbers
         expr = _RE_MALFORMED_NUMBERS.sub(r"\1 * \2", expr)
 
-        # Remove C-style integer suffixes (L, UL, LL, ULL, etc.)
-        expr = _RE_INTEGER_SUFFIXES.sub(r"\1", expr)
-
-        # Normalize C-style numeric literals to Python ints (hex, bin, octal)
-        expr = self._normalize_numeric_literals(expr)
-
+        # Integer-literal handling (hex/bin/octal, u/ll suffixes, intmax_t
+        # classification) lives entirely in the tokenizer via _RE_INT_LITERAL +
+        # _literal: unlike the old strip-and-normalize pre-passes, that keeps
+        # the u suffix, which decides signedness in comparisons like -1 > 0u,
+        # and rejects pp-numbers like 08 that are not integer constants.
         # Tokenizing and parsing are separate try blocks so the two failure
         # channels stay separate. The tokenizer's UnsafeExpressionError means
         # "this is not an arithmetic expression"; anything the PARSER raises is
@@ -1731,11 +1832,15 @@ class SimplePreprocessor:
                 continue
 
             if ch.isdigit():
-                start = i
-                i += 1
-                while i < len(expr) and expr[i].isdigit():
-                    i += 1
-                tokens.append(int(expr[start:i]))
+                m = _RE_INT_LITERAL.match(expr, i)
+                if m is None:
+                    # A digit run that _RE_INT_LITERAL cannot match is a
+                    # pp-number that is not an integer constant: a bad octal
+                    # digit (``08``), a trailing garbage suffix (``123abc``),
+                    # or a suffix run like ``1UU``. Raise rather than guess.
+                    raise UnsafeExpressionError(f"malformed integer constant near {expr[i : i + 8]!r}")
+                tokens.append(_literal(m.group(1), m.group(2) or ""))
+                i = m.end()
                 continue
 
             matched_op = None
@@ -1768,7 +1873,7 @@ class SimplePreprocessor:
                 # handled by the catch-all below.) Emitting 0 instead of raising
                 # lets the parser run, which is what makes the A6 short-circuit
                 # reachable (a raise here would discard the whole expression).
-                tokens.append(0)
+                tokens.append((0, False))
                 continue
 
             # A stray byte that is neither part of a number, operator, nor a
@@ -1779,35 +1884,6 @@ class SimplePreprocessor:
 
         tokens.append("EOF")
         return tokens
-
-    def _normalize_numeric_literals(self, expr: str) -> str:
-        """Convert C-style numeric literals (hex, bin, oct) to decimal strings.
-
-        - 0x... or 0X... -> decimal
-        - 0b... or 0B... -> decimal
-        - 0... (octal) -> decimal, but leave single '0' as is and ignore 0x/0b prefixes
-        """
-
-        def repl_hex(m: re.Match[str]) -> str:
-            return str(int(m.group(0), 16))
-
-        def repl_bin(m: re.Match[str]) -> str:
-            return str(int(m.group(0), 2))
-
-        def repl_oct(m: re.Match[str]) -> str:
-            s = m.group(0)
-            # avoid replacing just '0'
-            if s == "0":
-                return s
-            return str(int(s, 8))
-
-        # Replace hex first
-        expr = _RE_HEX_LITERAL.sub(repl_hex, expr)
-        # Replace binary
-        expr = _RE_BIN_LITERAL.sub(repl_bin, expr)
-        # Replace octal: leading 0 followed by one or more octal digits, not 0x/0b already handled
-        expr = _RE_OCT_LITERAL.sub(repl_oct, expr)
-        return expr
 
 
 def flush_pending_warnings(context: Any) -> int:
