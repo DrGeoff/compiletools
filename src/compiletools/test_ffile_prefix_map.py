@@ -286,7 +286,11 @@ _PCH_BMI_BYTES_DIVERGE_NOTE = (
     "build-cwd path LENGTH (empirically: same-length cwds yield identical "
     "bytes; differing lengths shift internal pointer offsets). This is NOT "
     "controllable via -ffile-prefix-map, -fdebug-compilation-dir, "
-    "PWD=/proc/self/cwd, or any other compile-time flag we tested. Two "
+    "PWD=/proc/self/cwd, or any other compile-time flag we tested. "
+    "Equal-length symlinked cwds with $PWD aimed at the symlink DO "
+    "normalise the layout (libiberty's getpwd() honours $PWD when it "
+    "stats equal to `.'), but requiring every user and CI box to build "
+    "from a fixed-length path is not actionable for compiletools. Two "
     "users at distinct workspace paths therefore produce different .gch / "
     ".pcm bytes for the same logical compile -- but the cache key is the "
     "same, and consumption produces byte-identical .o (see "
@@ -295,6 +299,23 @@ _PCH_BMI_BYTES_DIVERGE_NOTE = (
     "The negative-control test below pins the empirical divergence so any "
     "future change that accidentally achieves byte-identity is noticed."
 )
+
+
+def _pch_bmi_xfail() -> pytest.MarkDecorator:
+    """The PCH/BMI divergence is empirically pinned under a gcc-family
+    oracle (cwd-length-dependent pointer offsets, re-verified on gcc 12
+    through 16; header-unit .gcm is additionally non-deterministic
+    run-to-run in the same cwd), so those cells are strict xfails: an
+    XPASS fails the suite and forces re-evaluation instead of slipping
+    through as a lone 'x' nobody reads. clang's PCH/BMI layout behaviour
+    is unmeasured, so clang-only hosts keep the lenient marker rather
+    than gambling the suite on an unverified property.
+    """
+    import compiletools.apptools
+
+    cxx = compiletools.apptools.get_functional_cxx_compiler()
+    strict = bool(cxx) and compiletools.apptools.compiler_kind(cxx) == "gcc"
+    return pytest.mark.xfail(strict=strict, reason=_PCH_BMI_BYTES_DIVERGE_NOTE)
 
 
 def _build_with_shared_pchdir(
@@ -425,7 +446,7 @@ def test_two_checkouts_produce_byte_identical_o_with_shared_cas_pcmdir(backend_n
     _assert_cas_layer_byte_identical(alice, bob, "cas-objdir", suffixes=(".o",))
 
 
-@pytest.mark.xfail(strict=False, reason=_PCH_BMI_BYTES_DIVERGE_NOTE)
+@_pch_bmi_xfail()
 @uth.requires_backend_tool()
 @uth.requires_functional_compiler
 @pytest.mark.parametrize("backend_name", available_backends())
@@ -449,7 +470,7 @@ def test_two_checkouts_produce_byte_identical_cas_pchdir(backend_name, tmp_path)
     _assert_cas_layer_byte_identical(alice, bob, "cas-pchdir", suffixes=(".gch",))
 
 
-@pytest.mark.xfail(strict=False, reason=_PCH_BMI_BYTES_DIVERGE_NOTE)
+@_pch_bmi_xfail()
 @uth.requires_backend_tool()
 @uth.requires_functional_compiler
 @pytest.mark.parametrize("backend_name", available_backends())
