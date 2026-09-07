@@ -214,6 +214,70 @@ def test_handles_env_style_shebang(monkeypatch, tmp_path):
     assert check_venv.venv_mismatch_reason("/expected/src") is None
 
 
+def test_handles_uv_sh_polyglot_shebang(monkeypatch, tmp_path):
+    """Recent `uv pip install` generates console scripts as a /bin/sh
+    polyglot:
+
+        #!/bin/sh
+        '''exec' '/abs/.venv/bin/python3' "$0" "$@"
+        ' '''
+
+    The script runs fine, but the probe must not hand its python `-c`
+    payload to /bin/sh (guaranteed SyntaxError -> bogus "failed to
+    introspect" skip on every fresh uv venv). It must step through the
+    exec line to the real interpreter. The stub interpreter here is a
+    shell script just like in the env-shebang test: if the polyglot
+    were parsed wrongly the payload would reach /bin/sh and the probe
+    would report introspect failure instead of the clean None.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_python = bin_dir / "fake_python"
+    fake_python.write_text(
+        textwrap.dedent("""\
+        #!/bin/bash
+        printf '%s\\n' "/expected/src"
+        """)
+    )
+    fake_python.chmod(fake_python.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    cake = bin_dir / "ct-cake"
+    cake.write_text(f"#!/bin/sh\n'''exec' '{fake_python}' \"$0\" \"$@\"\n' '''\nimport sys\n")
+    cake.chmod(cake.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    assert check_venv.venv_mismatch_reason("/expected/src") is None
+    reason = check_venv.venv_mismatch_reason("/other/worktree/src")
+    assert reason is not None
+    assert "venv mismatch" in reason
+
+
+def test_returns_none_when_sh_shebang_has_no_exec_pattern(monkeypatch, tmp_path):
+    """A shell-shebang script whose second line is NOT a recognisable
+    re-exec line must be declined (None), not probed -- handing the
+    payload to /bin/sh would only produce a bogus introspect failure.
+    Same graceful stance as the native-binary branch."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    cake = bin_dir / "ct-cake"
+    cake.write_text("#!/bin/sh\necho just a shell script\n")
+    cake.chmod(cake.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    assert check_venv.venv_mismatch_reason("/anywhere") is None
+
+
+def test_returns_none_when_uv_polyglot_exec_target_is_missing(monkeypatch, tmp_path):
+    """A re-exec line naming a nonexistent interpreter (uninstalled
+    venv, moved checkout) must be declined, not surfaced as a hard
+    'can't run' failure -- the probe's job is a cheap sanity check, and
+    a dangling exec target means it cannot verify anything."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    cake = bin_dir / "ct-cake"
+    cake.write_text("#!/bin/sh\n'''exec' '/no/such/.venv/bin/python3' \"$0\" \"$@\"\n' '''\n")
+    cake.chmod(cake.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    assert check_venv.venv_mismatch_reason("/anywhere") is None
+
+
 def test_returns_reason_when_interpreter_missing(monkeypatch, tmp_path):
     _make_fake_ct_cake(
         tmp_path,

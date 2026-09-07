@@ -26,6 +26,7 @@ The check works by:
 
 import functools
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -71,6 +72,37 @@ def venv_mismatch_reason(expected_src_root: str) -> str | None:
         # don't generate env-shebangs today but pipx and other shim
         # installers might.
         interpreter = parts[1]
+    if os.path.basename(interpreter) in ("sh", "bash", "dash", "ash"):
+        # Recent `uv pip install` writes console scripts as a /bin/sh
+        # polyglot whose second line re-execs the venv interpreter:
+        #
+        #     #!/bin/sh
+        #     '''exec' '/abs/path/.venv/bin/python3' "$0" "$@"
+        #     ' '''
+        #
+        # The script itself runs fine, but this probe runs the
+        # interpreter with a ``-c`` payload of PYTHON code -- handing
+        # that to /bin/sh is a guaranteed SyntaxError, which used to
+        # surface as a bogus "failed to introspect" skip on every
+        # freshly-created uv venv. Step through to the exec'd
+        # interpreter instead. If line 2 doesn't match the pattern,
+        # decline to verify (same graceful stance as the
+        # native-binary branch above) rather than guessing.
+        try:
+            with open(cake, "rb") as f:
+                f.readline()  # shebang (already parsed)
+                second = f.readline()
+        except OSError:
+            return None
+        match = re.match(rb"'''[^']*'\s*'([^']+)'", second)
+        if match is None:
+            return None
+        exec_target = match.group(1).decode("utf-8", errors="replace")
+        if not os.path.isfile(exec_target):
+            # A re-exec line we don't recognise -- don't probe through
+            # it, but don't fail the check over it either.
+            return None
+        interpreter = exec_target
     try:
         r = subprocess.run(
             [
