@@ -215,7 +215,8 @@ class TestAutoPkgConfig(tb.BaseCompileToolsTestCase):
         assert self._strings(baseline, "PKG-CONFIG") == ["autoinfer-umbrella"]
         assert "-lumbrella" in self._strings(baseline, "LDFLAGS")
 
-        _, result = self._parse("//#PKG-CONFIG=autoinfer-vendored\n" + include)
+        with pytest.warns(UserWarning, match="autoinfer-vendored' not found"):
+            _, result = self._parse("//#PKG-CONFIG=autoinfer-vendored\n" + include)
         assert self._strings(result, "PKG-CONFIG") == ["autoinfer-vendored"]
         assert "-lumbrella" not in self._strings(result, "LDFLAGS")
         assert "declared package 'autoinfer-vendored' is unavailable" in capsys.readouterr().err
@@ -230,7 +231,8 @@ class TestAutoPkgConfig(tb.BaseCompileToolsTestCase):
         declared-missing warning: the inference still succeeded, so the
         blanket note is a hint, not an actionable failure."""
         text = "//#PKG-CONFIG=nosuchpackage\n#include <autoinfer/api.h>\nint main() { return 0; }\n"
-        _, result = self._parse(text, extraargs=["--verbose"])
+        with pytest.warns(UserWarning, match="nosuchpackage' not found"):
+            _, result = self._parse(text, extraargs=["--verbose"])
         assert "autoinfer" in self._strings(result, "PKG-CONFIG"), "precondition: the sibling header still infers"
         err = capsys.readouterr().err
         assert "inferred autoinfer" in err
@@ -244,7 +246,8 @@ class TestAutoPkgConfig(tb.BaseCompileToolsTestCase):
         verbose 0 (only the per-header declared-missing failure does), while
         the inference itself still lands the package."""
         text = "//#PKG-CONFIG=nosuchpackage\n#include <autoinfer/api.h>\nint main() { return 0; }\n"
-        _, result = self._parse(text)
+        with pytest.warns(UserWarning, match="nosuchpackage' not found"):
+            _, result = self._parse(text)
         assert "autoinfer" in self._strings(result, "PKG-CONFIG"), "precondition: the sibling header still infers"
         err = capsys.readouterr().err
         assert "are unavailable" not in err
@@ -279,7 +282,8 @@ class TestAutoPkgConfig(tb.BaseCompileToolsTestCase):
 
         shared = BuildContext()
         first = self._make_parser(context=shared)
-        first.parse(tu)
+        with pytest.warns(UserWarning, match="autoinfer-vendored' not found"):
+            first.parse(tu)
         assert marker in capsys.readouterr().err, "precondition: the declared-missing warning prints"
 
         second = self._make_parser(context=shared)
