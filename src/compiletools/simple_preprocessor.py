@@ -1,9 +1,11 @@
 """Simple C preprocessor for handling conditional compilation directives."""
 
 import contextlib
+import operator
 import re
 import sys
 from collections import Counter
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import stringzilla as sz
@@ -267,6 +269,46 @@ def _literal(body: str, suffix: str) -> _CValue:
     if value > _UMASK:
         raise UnsafeExpressionError(f"integer constant is too large for its type: {body}{suffix}")
     return value, ("u" in suffix or "U" in suffix) or value > _SMAX
+
+
+def _c_trunc_div(lhs: int, rhs: int) -> int:
+    """C truncating division (round toward zero), unlike Python's floor ``//``."""
+    if rhs == 0:
+        raise ZeroDivisionError("integer division by zero")
+    quotient = abs(lhs) // abs(rhs)
+    return -quotient if (lhs < 0) != (rhs < 0) else quotient
+
+
+# Binary-operator dispatch for ``_CExpressionParser._apply_binary``. Both
+# tables receive operands ALREADY converted (C11 6.3.1.8): when either side is
+# unsigned both have been masked to uintmax_t, so plain Python comparison and
+# arithmetic give the C answer. Comparisons yield a signed int 0/1 and never
+# wrap; arithmetic results are wrapped to the converted width by the caller.
+# Shifts are absent by design -- they are exempt from the conversions and
+# handled in ``_parse_shift``. ``/`` and ``%`` mirror libcpp's ``num_div_op``:
+# INTMAX_MIN / -1 wraps back to INTMAX_MIN (it warns, then uses the wrapped
+# value) and the remainder is defined from the truncated quotient.
+_COMPARISON_OPS: dict[str, Callable[[int, int], bool]] = {
+    "==": operator.eq,
+    "!=": operator.ne,
+    "<": operator.lt,
+    "<=": operator.le,
+    ">": operator.gt,
+    ">=": operator.ge,
+}
+_ARITHMETIC_OPS: dict[str, Callable[[int, int], int]] = {
+    "+": operator.add,
+    "-": operator.sub,
+    "*": operator.mul,
+    "&": operator.and_,
+    "^": operator.xor,
+    "|": operator.or_,
+    "/": _c_trunc_div,
+    "%": lambda lv, rv: lv - _c_trunc_div(lv, rv) * rv,
+}
+# The operators that can raise ZeroDivisionError and so must be skipped in a
+# dead subtree (A6/A7) rather than evaluated and discarded.
+_DIVISION_OPS = frozenset(("/", "%"))
 
 
 class _CExpressionParser:
@@ -548,49 +590,13 @@ class _CExpressionParser:
         if unsigned:
             lv &= _UMASK  # reinterpret a negative signed operand
             rv &= _UMASK
-        if op == "==":
-            return (1 if lv == rv else 0), False
-        if op == "!=":
-            return (1 if lv != rv else 0), False
-        if op == "<":
-            return (1 if lv < rv else 0), False
-        if op == "<=":
-            return (1 if lv <= rv else 0), False
-        if op == ">":
-            return (1 if lv > rv else 0), False
-        if op == ">=":
-            return (1 if lv >= rv else 0), False
-        if op in ("/", "%"):
-            if not evaluate:
-                # Dead subtree (A6/A7): skip the div/mod so a dead ``x / 0``
-                # never raises. The returned value is discarded.
-                return (0, unsigned)
-            quotient = self._c_trunc_div(lv, rv)
-            if op == "/":
-                # INTMAX_MIN / -1 wraps to INTMAX_MIN, exactly as libcpp's
-                # num_div_op does (it warns, and uses the wrapped value).
-                return _wrap(quotient, unsigned), unsigned
-            return _wrap(lv - quotient * rv, unsigned), unsigned
-        if op == "+":
-            return _wrap(lv + rv, unsigned), unsigned
-        if op == "-":
-            return _wrap(lv - rv, unsigned), unsigned
-        if op == "*":
-            return _wrap(lv * rv, unsigned), unsigned
-        if op == "&":
-            return _wrap(lv & rv, unsigned), unsigned
-        if op == "^":
-            return _wrap(lv ^ rv, unsigned), unsigned
-        if op == "|":
-            return _wrap(lv | rv, unsigned), unsigned
-        raise AssertionError(f"unreachable binary operator: {op!r}")
-
-    @staticmethod
-    def _c_trunc_div(lhs: int, rhs: int) -> int:
-        if rhs == 0:
-            raise ZeroDivisionError("integer division by zero")
-        quotient = abs(lhs) // abs(rhs)
-        return -quotient if (lhs < 0) != (rhs < 0) else quotient
+        if (compare := _COMPARISON_OPS.get(op)) is not None:
+            return (1 if compare(lv, rv) else 0), False
+        if not evaluate and op in _DIVISION_OPS:
+            # Dead subtree (A6/A7): skip the div/mod so a dead ``x / 0``
+            # never raises. The returned value is discarded.
+            return (0, unsigned)
+        return _wrap(_ARITHMETIC_OPS[op](lv, rv), unsigned), unsigned
 
 
 class SimplePreprocessor:
