@@ -1477,8 +1477,11 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
         if len(streams) < 2:
             return streams
 
+        # configargparse >= 1.8 returns (stream, source_label) pairs;
+        # earlier versions return bare streams. Hand back the shape we got.
+        paired = isinstance(streams[0], tuple)
         parts = []
-        for stream in streams:
+        for stream in (s for s, _ in streams) if paired else streams:
             try:
                 content = stream.read()
             finally:
@@ -1494,7 +1497,7 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
 
         merged = io.StringIO("".join(parts))
         merged.name = f"<merged: {len(streams)} conf files>"
-        return [merged]
+        return [(merged, merged.name)] if paired else [merged]
 
     def _extract_cli_append_prepend(self, args):
         """Pop ``--append-*`` / ``--prepend-*`` tokens out of *args*.
@@ -1613,6 +1616,22 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
             if len(matched) == 1 and matched & targets:
                 return True
         return False
+
+    def _option_strings_that_override(self, action):
+        """configargparse >= 1.8 hook (absent before, so inert there).
+
+        1.8 drops a conf/env value when any member of its mutually exclusive
+        group is on the command line, before
+        ``convert_item_to_command_line_arg`` runs -- which would skip that
+        method's validate-before-suppress for flag pairs, so ``no-x = maybe``
+        plus ``--x`` stopped being diagnosed. Leave the pair's partner to
+        ``convert_item_to_command_line_arg``; other groups keep 1.8's rule.
+        """
+        strings = super()._option_strings_that_override(action)  # pyright: ignore[reportAttributeAccessIssue]  # 1.8+ only
+        partner = self._boolean_negation_partner(action)
+        if partner is None:
+            return strings
+        return [s for s in strings if s not in partner.option_strings]
 
     def convert_item_to_command_line_arg(self, action, key, value):
         """Make a *falsey* conf-file / env-var value turn a flag OFF.

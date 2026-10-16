@@ -112,7 +112,7 @@ import shlex
 import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 
 from compiletools import apptools_pkgconfig as _ap
@@ -147,7 +147,7 @@ class InferenceConfig:
     is a valid no-op configuration."""
 
     resolvers: tuple[str, ...] = ("pc", "distro")  # subset of ("pc", "distro", "man"), ordered
-    header_map: Mapping[str, str] = MappingProxyType({})  # "openssl/ssl.h" -> "libssl"
+    header_map: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))  # "openssl/ssl.h" -> "libssl"
     ignore_globs: tuple[str, ...] = ()
     explicit_packages: frozenset[str] = frozenset()  # bare names, TU + conf/CLI
     unresolved_explicit_packages: frozenset[str] = frozenset()  # declared, but pkg-config cannot find them

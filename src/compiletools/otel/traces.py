@@ -33,6 +33,20 @@ def _to_wall_ns(monotonic_s: float, mono_to_wall_offset: float) -> int:
     return int((monotonic_s - mono_to_wall_offset) * 1_000_000_000)
 
 
+_ATTR_SCALARS = (str, bool, int, float)
+
+
+def _set_attribute(span, key, value) -> None:
+    """``span.set_attribute``, but raising TypeError on a non-OTel type. The
+    SDK's own handling of one varies by version (logged and dropped before
+    1.45, ``str()``'d from 1.45), so the drop is decided here instead."""
+    if not isinstance(value, _ATTR_SCALARS) and not (
+        isinstance(value, (list, tuple)) and all(isinstance(v, _ATTR_SCALARS) for v in value)
+    ):
+        raise TypeError(f"unsupported attribute type {type(value).__name__}")
+    span.set_attribute(key, value)
+
+
 def _rule_span_name(event: TimingEvent) -> str:
     """Build a rule span name, disambiguating siblings that share a basename.
 
@@ -94,7 +108,7 @@ def _emit_event(tracer, event: TimingEvent, parent_ctx, mono_to_wall_offset: flo
             if value is None:
                 continue
             try:
-                span.set_attribute(key, value)
+                _set_attribute(span, key, value)
             except (TypeError, ValueError) as exc:
                 # One bad attribute should not poison the whole export.
                 # Surface it at verbose>=1 so a producer wiring bug is
@@ -183,7 +197,7 @@ def export_buildtimer(timer: BuildTimer, args, *, _processor=None) -> str | None
             if value is None:
                 continue
             try:
-                root_span.set_attribute(key, value)
+                _set_attribute(root_span, key, value)
             except (TypeError, ValueError) as exc:
                 if getattr(args, "verbose", 0) >= 1:
                     print(f"otel: dropped root span attr {key!r}: {exc}", file=sys.stderr)
