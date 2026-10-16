@@ -861,6 +861,21 @@ def test_detect_distro_backend_env_override_and_memo(monkeypatch):
     assert pkgconfig_infer.detect_distro_backend() == "apk"
 
 
+def test_detect_distro_backend_skips_a_tool_its_own_db_does_not_own(monkeypatch):
+    """The GitHub ubuntu runner shape: ``rpm`` is on PATH but the host is
+    dpkg-managed, so the rpm DB owns nothing. Picking rpm by PATH alone made
+    every owner query come back empty; dpkg must win instead."""
+    monkeypatch.delenv("CT_DISTRO_BACKEND", raising=False)
+    pkgconfig_infer.clear_cache()
+    monkeypatch.setattr(pkgconfig_infer.shutil, "which", lambda tool: f"/usr/bin/{tool}")
+    monkeypatch.setattr(
+        pkgconfig_infer,
+        "_run_distro_owner_query",
+        lambda paths, backend: "dpkg: /usr/bin/dpkg-query\n" if backend == "dpkg" else "",
+    )
+    assert pkgconfig_infer.detect_distro_backend() == "dpkg"
+
+
 def test_infer_batches_one_owner_query_per_call(pkgconfig_env, auto_pkg_config_on, monkeypatch, tmp_path):
     """Plan §0: ONE distro owner query per TU. Five unresolved headers in a
     private include dir -> exactly one _run_distro_owner_query call carrying
@@ -957,7 +972,7 @@ def test_pc_stems_memoised_per_owner_and_env(pkgconfig_env, auto_pkg_config_on, 
     assert calls["count"] == 3
 
 
-@pytest.mark.skipif(not shutil.which("rpm"), reason="rpm not available on this host")
+@pytest.mark.skipif(pkgconfig_infer.detect_distro_backend() != "rpm", reason="not an rpm-managed host")
 @pytest.mark.skipif(not os.path.isfile("/usr/include/stdio.h"), reason="/usr/include/stdio.h not present")
 def test_live_rpm_owner_smoke(pkgconfig_env, auto_pkg_config_on):
     """Live distro-DB boundary: /usr/include/stdio.h has an owning package on

@@ -995,7 +995,8 @@ _distro_backend_memo: dict[str, str | None] = {}
 
 
 def detect_distro_backend() -> str | None:
-    """First distro package DB whose query tool is on PATH, or None.
+    """First distro package DB whose query tool is on PATH and owned by that
+    same DB, or None.
 
     Priority: rpm, dpkg (via ``dpkg-query``), pacman, apk. Memoised --
     including a real None result -- and cleared by :func:`clear_cache`. The
@@ -1017,7 +1018,12 @@ def detect_distro_backend() -> str | None:
         for name, tool in _DISTRO_BACKEND_TOOLS:
             # NOT cached: shutil.which probes PATH, which tests change between
             # calls; the memo above is the cache.
-            if shutil.which(tool):
+            path = shutil.which(tool)
+            # A tool on PATH is not a distro: Ubuntu can carry rpm over an
+            # empty rpm DB, which would shadow dpkg. The DB must own its own
+            # query tool (realpath: usrmerge /bin vs the recorded /usr/bin).
+            # NOT wrappedos: one-shot per process, behind the memo above.
+            if path and owners_for_headers([os.path.realpath(path)], name):
                 backend = name
                 break
     except Exception:
