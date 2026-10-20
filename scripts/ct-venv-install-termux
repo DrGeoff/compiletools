@@ -192,28 +192,46 @@ STRINGZILLA_CFLAGS=(
     "-Wno-incompatible-function-pointer-types"
 )
 
+# On Termux/Android the interpreter's libpython is NOT in the dlopen global
+# namespace, so a C extension that only references C-API symbols (PyExc_*,
+# PyErr_*, ...) -- the default setuptools build -- fails to load with
+# "cannot locate symbol". Termux's own stdlib extensions are linked against
+# libpython for exactly this reason. Inject the same link via LDFLAGS
+# (setuptools appends $LDFLAGS to the linker command), deriving the lib
+# name/dir from the venv's python so it tracks the interpreter version.
+if [[ "$DRY_RUN" -eq 0 ]]; then
+    SZ_LDVERSION=$(python -c 'import sysconfig; print(sysconfig.get_config_var("LDVERSION"))')
+    SZ_LIBDIR=$(python -c 'import sysconfig, os; print(os.path.normpath(sysconfig.get_config_var("LIBDIR")))')
+    STRINGZILLA_LDFLAGS="-L${SZ_LIBDIR} -lpython${SZ_LDVERSION}"
+fi
+
 if [[ "$DRY_RUN" -eq 0 ]] && python -c 'import stringzilla' 2>/dev/null; then
     sz_ver=$(python -c 'import stringzilla; print(stringzilla.__version__)')
     info "stringzilla already installed (${sz_ver}); skipping rebuild"
 else
-    info "installing stringzilla with clang-21 CFLAGS workaround"
-    # CFLAGS only need to be live for stringzilla's compile. Save+restore
-    # any pre-existing parent-shell value so we don't clobber it (`unset`
-    # would drop it entirely rather than restoring it).
-    if [[ -v CFLAGS ]]; then
-        _saved_cflags="$CFLAGS"
-        _had_cflags=1
-    else
-        _had_cflags=0
-    fi
+    info "installing stringzilla (clang-21 CFLAGS + libpython link workaround)"
+    # A previously-failed build leaves a broken wheel in uv's cache that would
+    # be reused verbatim; drop it so this build actually re-links.
+    run uv cache clean stringzilla
+    # CFLAGS/LDFLAGS only need to be live for stringzilla's build. Save+restore
+    # any pre-existing parent-shell values so we don't clobber them (`unset`
+    # would drop them entirely rather than restoring them).
+    _saved_cflags="${CFLAGS-}"; _had_cflags=0; [[ -v CFLAGS ]] && _had_cflags=1
+    _saved_ldflags="${LDFLAGS-}"; _had_ldflags=0; [[ -v LDFLAGS ]] && _had_ldflags=1
     export CFLAGS="${STRINGZILLA_CFLAGS[*]}"
+    [[ -n "${STRINGZILLA_LDFLAGS-}" ]] && export LDFLAGS="${STRINGZILLA_LDFLAGS}"
     run uv pip install "stringzilla>=4.6.0"
     if [[ "$_had_cflags" -eq 1 ]]; then
         export CFLAGS="$_saved_cflags"
     else
         unset CFLAGS
     fi
-    unset _saved_cflags _had_cflags
+    if [[ "$_had_ldflags" -eq 1 ]]; then
+        export LDFLAGS="$_saved_ldflags"
+    else
+        unset LDFLAGS
+    fi
+    unset _saved_cflags _had_cflags _saved_ldflags _had_ldflags
 fi
 
 # ---------- step 4: compiletools + dev tooling -----------------------------
