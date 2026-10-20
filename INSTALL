@@ -144,6 +144,12 @@ Step 2: create and activate a venv
 
     uv venv && source .venv/bin/activate
 
+    # NOTE: `uv venv` does not install pip into the venv, so a bare `pip`
+    # after activation resolves to the SYSTEM pip and installs into the
+    # system site-packages (the venv has include-system-site-packages=false,
+    # so it never sees those packages). For in-venv installs always use
+    # `uv pip ...` or `.venv/bin/python -m pip ...`.
+
 Step 3: build stringzilla with downgraded errors
 
     export CFLAGS="-Wno-error=incompatible-function-pointer-types \
