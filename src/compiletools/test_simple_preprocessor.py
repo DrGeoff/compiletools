@@ -1700,19 +1700,26 @@ class TestSimplePreprocessorEdgeCases:
         1.25 GB of bignum before being tested for truth -- a hostile ``#if`` in
         any header the dep walk reaches. Run under a 512 MiB address-space cap
         in a child process, so a regression fails here in bounded memory rather
-        than by exhausting whichever machine runs the suite.
+        than exhausting whichever machine runs the suite. Skipped on
+        platforms whose import alone exceeds the cap (e.g. Termux/Android
+        reserves ~10 GB of VA at import), where the bound is infeasible.
         """
         child = dedent("""
             import resource, sys
             resource.setrlimit(resource.RLIMIT_AS, (512 * 1024**2, 512 * 1024**2))
             sys.path.insert(0, sys.argv[1])
             from compiletools.simple_preprocessor import SimplePreprocessor
-            print(SimplePreprocessor({}, verbose=0)._safe_eval("1 << 10000000000"))
+            print("IMPORT_OK", flush=True)
+            print(SimplePreprocessor({}, verbose=0)._safe_eval("1 << 10000000000"), flush=True)
         """)
         src_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         proc = subprocess.run([sys.executable, "-c", child, src_root], capture_output=True, text=True, timeout=120)
+        if proc.returncode != 0 and "IMPORT_OK" not in proc.stdout:
+            pytest.skip(
+                "the import itself exceeds the 512 MiB address-space cap on this platform; the bounded-memory check is infeasible here"
+            )
         assert proc.returncode == 0, f"the child died evaluating a bounded shift:\n{proc.stderr}"
-        assert proc.stdout.strip() == "0", proc.stdout
+        assert proc.stdout.strip().splitlines()[-1] == "0", proc.stdout
 
     def test_the_unsafe_expression_signal_has_its_own_type_sz(self):
         """R5: the tokenizer's deliberate unsafe-expression signal must be

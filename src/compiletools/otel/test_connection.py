@@ -39,6 +39,24 @@ from compiletools.otel._connection import (
 )
 from compiletools.otel.traces import export_buildtimer
 
+
+# The gRPC OTLP exporter is an optional dependency (the ``otel`` extra). On
+# platforms where grpcio cannot be built (e.g. Termux/Android) it is absent
+# even when api+sdk+http are present. The grpc-specific tests below need the
+# real module to patch, so they skip when it is unavailable rather than
+# erroring at collection time.
+def _grpc_exporter_available() -> bool:
+    import importlib
+
+    try:
+        importlib.import_module("opentelemetry.exporter.otlp.proto.grpc.trace_exporter")
+    except ImportError:
+        return False
+    return True
+
+
+_GRPC_EXPORTER_AVAILABLE = _grpc_exporter_available()
+
 # ----------------------------------------------------------------- test helpers
 
 
@@ -267,6 +285,10 @@ class TestHttpEndpointTracesPath:
         _build_processor(args)
         assert captured["endpoint"] == "https://api.honeycomb.io/v1/traces"
 
+    @pytest.mark.skipif(
+        not _GRPC_EXPORTER_AVAILABLE,
+        reason="gRPC OTLP exporter not installed (grpcio unavailable on this platform, e.g. Termux/Android)",
+    )
     def test_grpc_endpoint_is_not_modified(self, monkeypatch):
         captured = _capture_exporter_kwargs(monkeypatch, "grpc")
         args = _make_args(otel_protocol="grpc", otel_endpoint="http://tempo:4317")
@@ -287,6 +309,10 @@ class TestExporterRequestTimeout:
         assert captured["timeout"] == _DEFAULT_EXPORT_REQUEST_TIMEOUT_SECONDS
         assert captured["timeout"] == 5
 
+    @pytest.mark.skipif(
+        not _GRPC_EXPORTER_AVAILABLE,
+        reason="gRPC OTLP exporter not installed (grpcio unavailable on this platform, e.g. Termux/Android)",
+    )
     def test_grpc_exporter_has_request_timeout(self, monkeypatch):
         captured = _capture_exporter_kwargs(monkeypatch, "grpc")
         args = _make_args(otel_protocol="grpc", otel_endpoint="http://tempo:4317")
@@ -298,6 +324,10 @@ class TestExporterRequestTimeout:
 class TestGrpcInsecureTriState:
     """gRPC ``insecure`` kwarg honours the tri-state of args.otel_insecure."""
 
+    @pytest.mark.skipif(
+        not _GRPC_EXPORTER_AVAILABLE,
+        reason="gRPC OTLP exporter not installed (grpcio unavailable on this platform, e.g. Termux/Android)",
+    )
     def test_grpc_insecure_omitted_when_args_is_none(self, monkeypatch):
         captured = _capture_exporter_kwargs(monkeypatch, "grpc")
         args = _make_args(
@@ -308,6 +338,10 @@ class TestGrpcInsecureTriState:
         _build_processor(args)
         assert "insecure" not in captured
 
+    @pytest.mark.skipif(
+        not _GRPC_EXPORTER_AVAILABLE,
+        reason="gRPC OTLP exporter not installed (grpcio unavailable on this platform, e.g. Termux/Android)",
+    )
     def test_grpc_insecure_true_when_args_true(self, monkeypatch):
         captured = _capture_exporter_kwargs(monkeypatch, "grpc")
         args = _make_args(
@@ -318,6 +352,10 @@ class TestGrpcInsecureTriState:
         _build_processor(args)
         assert captured["insecure"] is True
 
+    @pytest.mark.skipif(
+        not _GRPC_EXPORTER_AVAILABLE,
+        reason="gRPC OTLP exporter not installed (grpcio unavailable on this platform, e.g. Termux/Android)",
+    )
     def test_grpc_insecure_false_when_args_false(self, monkeypatch):
         captured = _capture_exporter_kwargs(monkeypatch, "grpc")
         args = _make_args(

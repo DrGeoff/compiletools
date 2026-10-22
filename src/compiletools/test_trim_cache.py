@@ -2928,6 +2928,10 @@ class TestListResolvableMode:
         assert rc == 1
 
 
+@pytest.mark.skipif(
+    not hasattr(os, "link"),
+    reason="platform lacks os.link (e.g. Termux/Android); CA-sibling pairs cannot exist",
+)
 class TestPurgeCaSiblingsCli:
     """``--purge-ca-siblings`` is a DESTRUCTIVE sweep MODIFIER (a boolean like
     ``--dry-run``), not a standalone pool mode.

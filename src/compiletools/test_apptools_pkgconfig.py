@@ -2,8 +2,10 @@
 
 import contextlib
 import os
+import pathlib
 import signal
 import subprocess
+import tempfile
 import time
 import warnings
 
@@ -525,6 +527,37 @@ def _write_pc(directory, name, body):
     return path
 
 
+def _pkg_config_silently_expands_undefined_variables() -> bool:
+    """The premise :class:`TestUndefinedPkgConfigVariables` is built on: the
+    local pkg-config exits 0 with a truncated flag when a ``.pc`` references
+    an undefined variable (pkgconf behavior). freedesktop pkg-config 0.29.2
+    errors instead, so the query fails before the detector's advisory path
+    can run and the class is skipped rather than failing."""
+    with tempfile.TemporaryDirectory() as directory:
+        _write_pc(
+            pathlib.Path(directory), "undefvar", "Name: U\nDescription: d\nVersion: 1\nCflags: -I${includedir_typo}/u\n"
+        )
+        env = {**os.environ, "PKG_CONFIG_PATH": directory}
+        try:
+            result = subprocess.run(
+                ["pkg-config", "--print-errors", "--cflags", "undefvar"],
+                capture_output=True,
+                env=env,
+                check=False,
+            )
+        except FileNotFoundError:
+            return False
+        return result.returncode == 0
+
+
+@pytest.mark.skipif(
+    not _pkg_config_silently_expands_undefined_variables(),
+    reason=(
+        "the local pkg-config does not silently expand undefined .pc variables "
+        "(it errors, e.g. freedesktop 0.29.2, or is not installed); "
+        "the detector's advisory path is unreachable"
+    ),
+)
 class TestUndefinedPkgConfigVariables:
     """pkgconf expands a ``${var}`` no assignment defines to the empty string
     and exits 0, so a typo'd ``${includedir}`` silently truncates a flag.

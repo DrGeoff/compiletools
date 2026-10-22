@@ -168,6 +168,10 @@ class TestPublishExdevFallback:
         )
 
 
+@pytest.mark.skipif(
+    not hasattr(os, "link"),
+    reason="platform lacks os.link (e.g. Termux/Android); the link-failure branches are unreachable",
+)
 class TestPublishPermissionDiagnostic:
     """EPERM/EACCES from ``os.link`` still re-raise (a silent symlink
     fallback here was the prior bug this module fixed), but the raw errno

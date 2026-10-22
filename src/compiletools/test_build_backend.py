@@ -3232,6 +3232,10 @@ class TestAllOutputsCurrent:
         assert backend._all_outputs_current(graph) is False
 
 
+@pytest.mark.skipif(
+    not hasattr(os, "link"),
+    reason="platform lacks os.link (e.g. Termux/Android); the stale published hardlink cannot be created",
+)
 class TestPublishedCasEntryFreshening:
     """``execute`` marks the CAS entries a build uses, even when it builds nothing.
 
@@ -4138,6 +4142,13 @@ class TestClangModuleInterfaceRules:
         assert str(source) not in _cmd(pcm_rule)
 
 
+@pytest.mark.skipif(
+    compiletools.apptools.compiler_kind("g++", slot="CXX") != "gcc",
+    reason=(
+        "the machine's g++ is not a real GCC (e.g. Termux ships clang as g++); "
+        "the gcc module-mapper path is unreachable"
+    ),
+)
 class TestEmptyBindirModuleMapper:
     """``--bindir=''`` is a supported configuration (build_state.stage_resolve_names
     maps it through as the empty string), and it is the mapper dir the gcc

@@ -1465,7 +1465,19 @@ class TestFreshenedEntryStaysUpToDate:
             text=True,
         ).returncode
 
-    @pytest.mark.parametrize("wiring", ["hardlink", "symlink"])
+    @pytest.mark.parametrize(
+        "wiring",
+        [
+            pytest.param(
+                "hardlink",
+                marks=pytest.mark.skipif(
+                    not hasattr(os, "link"),
+                    reason="platform lacks os.link (e.g. Termux/Android); the hardlink wiring cannot be created",
+                ),
+            ),
+            "symlink",
+        ],
+    )
     def test_make_still_considers_the_published_target_current(self, wiring, tmp_path):
         cas_rel = "cas-exe/aa/foo_abc.exe"
         user_rel = "bin/foo"
