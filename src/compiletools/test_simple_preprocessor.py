@@ -1700,9 +1700,10 @@ class TestSimplePreprocessorEdgeCases:
         1.25 GB of bignum before being tested for truth -- a hostile ``#if`` in
         any header the dep walk reaches. Run under a 512 MiB address-space cap
         in a child process, so a regression fails here in bounded memory rather
-        than exhausting whichever machine runs the suite. Skipped on
-        platforms whose import alone exceeds the cap (e.g. Termux/Android
-        reserves ~10 GB of VA at import), where the bound is infeasible.
+        than exhausting whichever machine runs the suite. Skipped on Android
+        (Termux) when the import alone exceeds the cap (~10 GB of VA reserved
+        at import), where the bound is infeasible; anywhere else an import
+        that dies under the cap is a regression and fails.
         """
         child = dedent("""
             import resource, sys
@@ -1714,7 +1715,8 @@ class TestSimplePreprocessorEdgeCases:
         """)
         src_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         proc = subprocess.run([sys.executable, "-c", child, src_root], capture_output=True, text=True, timeout=120)
-        if proc.returncode != 0 and "IMPORT_OK" not in proc.stdout:
+        # sys.getandroidapilevel exists only on Android builds of CPython (Termux included).
+        if proc.returncode != 0 and "IMPORT_OK" not in proc.stdout and hasattr(sys, "getandroidapilevel"):
             pytest.skip(
                 "the import itself exceeds the 512 MiB address-space cap on this platform; the bounded-memory check is infeasible here"
             )
