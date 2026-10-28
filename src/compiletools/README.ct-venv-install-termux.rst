@@ -19,8 +19,9 @@ ct-venv-install-termux [--skip-pkg] [--skip-venv] [--dry-run] [-y|--yes] [-h|--h
 DESCRIPTION
 ===========
 ``ct-venv-install-termux`` bootstraps a complete compiletools development
-environment on Termux. A plain ``uv pip install -e ".[dev]"`` does not work on
-Termux for two independent reasons; this script handles both automatically:
+environment on Termux. A plain ``uv pip install -e ".[dev]"`` does not
+work on Termux for three independent reasons; the script handles all of
+them automatically:
 
 1. **stringzilla fails to compile under Termux's clang 21+.**
    The compiler emits hard errors for incompatible function-pointer types in
@@ -37,9 +38,19 @@ Termux for two independent reasons; this script handles both automatically:
    ``-C lto=fat -C codegen-units=16``, which spikes RAM at the LTO link
    stage and OOM-kills the device (Android sends ``SIGKILL`` to the whole
    shell). The script installs the prebuilt aarch64 ruff binary via
-   ``pkg install ruff`` and then asks ``uv`` to install every other dev
-   dependency *except* ruff. Pre-commit and command-line ``ruff check``
-   still work because the binary is on ``$PATH``.
+   ``pkg install ruff`` and then asks ``uv`` to install the rest of the
+   ``[dev]`` extra (derived from ``pyproject.toml`` at run time),
+   excluding ruff and the blocker-3 packages. prek hooks and
+   command-line ``ruff check`` still work because the binary is on
+   ``$PATH``.
+
+3. **some ``[dev]``-extra dependencies have no android wheel and cannot
+   be built on a phone:** ``grpcio`` (via the ``compiletools[otel]``
+   entry, a C++ build) and ``grimp`` (via ``import-linter``, a Rust
+   build). The script installs the rest of the ``[dev]`` extra and
+   skips these; the otel tests skip cleanly without the otel extra, and
+   the import-linter pre-commit hook must run on a desktop (or be
+   skipped with ``SKIP=import-linter``).
 
 The script is idempotent: re-running on a complete install hits only the
 verify block.
@@ -66,13 +77,15 @@ PHASES
    ``stringzilla>=4.6.0`` with the four-flag ``CFLAGS`` workaround.
 
 5. **compiletools + dev tooling.** Editable install of compiletools, then
-   ``bump-my-version pytest pytest-xdist pytest-cov pyright prek
-   textual``. The ``[dev]`` extra is deliberately not used because it
-   would pull in ruff and trigger the cargo OOM.
+   every requirement in the ``[dev]`` extra of ``pyproject.toml`` except
+   ``ruff`` (blocker 2) and ``compiletools[otel]``/``import-linter``
+   (blocker 3). The list is derived from ``pyproject.toml`` at run time
+   so it cannot drift from the dev extra -- a hand-maintained copy once
+   silently dropped ``hypothesis`` and broke the property tests.
 
-6. **Verify.** Imports stringzilla, imports compiletools, and runs
-   ``--version`` on ruff/prek/pytest/pyright. Any failure aborts
-   with a non-zero exit code.
+6. **Verify.** Imports stringzilla, imports compiletools, imports
+   hypothesis, and runs ``--version`` on ruff/prek/pytest/pyright. Any
+   failure aborts with a non-zero exit code.
 
 OPTIONS
 =======

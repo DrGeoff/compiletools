@@ -5,9 +5,11 @@
 #   1. install required Termux pkgs (clang, nodejs, ruff, uv, git, ...)
 #   2. create a venv if missing
 #   3. install stringzilla with the clang-21+ CFLAGS workaround
-#   4. install compiletools (editable) and dev tooling, EXCLUDING ruff
-#      (ruff is satisfied by the Termux pkg; building it from sdist via
-#      cargo OOM-kills the device at the LTO link stage)
+#   4. install compiletools (editable) and the [dev] extra's packages
+#      (derived from pyproject.toml at run time), EXCLUDING ruff
+#      (satisfied by the Termux pkg; its sdist build OOM-kills the
+#      device), compiletools[otel] (pulls grpcio, which cannot be
+#      built on Termux) and import-linter (pulls grimp, a Rust build)
 #
 # Run from anywhere; the script auto-detects the repo root from its own
 # location.
@@ -239,19 +241,36 @@ fi
 info "installing compiletools (editable, runtime deps only)"
 run uv pip install -e "$REPO_ROOT"
 
-# DEV deps minus ruff. Ruff is provided by the Termux pkg installed in
-# step 1; do not let pip try to build it from sdist (cargo OOM).
-DEV_PKGS=(
-    bump-my-version
-    pytest
-    pytest-xdist
-    pytest-cov
-    pyright
-    prek
-    textual
-)
+# Dev tooling: derive from the [dev] extra in pyproject.toml so this
+# list can never drift from it again (a hand-maintained copy once
+# silently dropped hypothesis, breaking the property tests). Three
+# entries are excluded because they cannot be built on Termux:
+#   ruff               -- no aarch64-android wheel; the sdist build
+#                         (cargo, -C lto=fat) OOM-kills the device.
+#                         The prebuilt binary from `pkg install ruff`
+#                         (step 1) is used instead.
+#   compiletools[otel] -- pulls grpcio, a C++ build with no android
+#                         wheel. The otel tests skip cleanly without it.
+#   import-linter      -- pulls grimp, a Rust (pyo3) build with no
+#                         android wheel. Consequence: the import-linter
+#                         pre-commit hook cannot run on Termux; commit
+#                         with `SKIP=import-linter` (or run the hook on
+#                         a desktop).
+dev_list=$(python - "$REPO_ROOT/pyproject.toml" <<'PYEOF'
+import re, sys, tomllib
+dev = tomllib.load(open(sys.argv[1], "rb"))["project"]["optional-dependencies"]["dev"]
+skip = {"ruff", "compiletools", "import-linter"}
+for req in dev:
+    # PEP 508: the name is the leading identifier, before any
+    # extras/version/marker. Compare case-insensitively.
+    name = re.match(r"[A-Za-z0-9][A-Za-z0-9._-]*", req.split(";", 1)[0]).group(0).lower()
+    if name not in skip:
+        print(req)
+PYEOF
+) || { err "could not derive the dev package list from pyproject.toml"; exit 1; }
+mapfile -t DEV_PKGS <<< "$dev_list"
 
-info "installing dev tooling (excluding ruff): ${DEV_PKGS[*]}"
+info "installing dev tooling ([dev] minus ruff/otel/import-linter): ${DEV_PKGS[*]}"
 run uv pip install "${DEV_PKGS[@]}"
 
 # ---------- verify ---------------------------------------------------------
@@ -277,6 +296,7 @@ verify() {
 
 verify "stringzilla import"   python -c 'import stringzilla; assert stringzilla.hash(b"abc") != 0'
 verify "compiletools import"  python -c 'import compiletools'
+verify "hypothesis import"    python -c 'import hypothesis'
 verify "ruff on PATH"         ruff --version
 verify "prek installed"       prek --version
 verify "pytest installed"     pytest --version

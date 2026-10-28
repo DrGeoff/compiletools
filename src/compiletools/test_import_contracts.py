@@ -30,16 +30,22 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 IMPORTLINTER_CONFIG = REPO_ROOT / ".importlinter"
 
 
-def _lint_imports_argv() -> list[str]:
-    """Return the argv that invokes import-linter's CLI.
+def _lint_imports_argv() -> list[str] | None:
+    """Return the argv that invokes import-linter's CLI, or None if absent.
 
     Prefer the installed ``lint-imports`` console script; fall back to
     ``python -m importlinter`` so the test still runs if the script shim
-    is missing from PATH (e.g. odd venv layouts).
+    is missing from PATH (e.g. odd venv layouts). Returns None when the
+    ``importlinter`` module is not importable, so the caller can skip
+    instead of failing on a subprocess that can only exit non-zero.
     """
     script = shutil.which("lint-imports")
     if script:
         return [script]
+    try:
+        import importlinter  # noqa: F401
+    except ImportError:
+        return None
     return [sys.executable, "-m", "importlinter"]
 
 
@@ -62,9 +68,12 @@ def test_import_contracts_are_kept() -> None:
     new edge is genuinely sound — adjust ``.importlinter`` with a comment
     explaining why.
     """
+    argv = _lint_imports_argv()
+    if argv is None:  # pragma: no cover - import-linter is a dev dependency
+        pytest.skip("import-linter (lint-imports) is not installed")
     try:
         result = subprocess.run(
-            _lint_imports_argv(),
+            argv,
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
