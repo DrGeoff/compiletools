@@ -1356,6 +1356,15 @@ def _external_include_dirs(externals_dir: str, resolved_roots: list[str]) -> lis
     for root in resolved_roots:
         include_dirs.append(root)
         include_dirs.append(compiletools.wrappedos.join(root, "include"))
+        # The checkout's PARENT, so a `#include "<name>/..."` that
+        # self-documents the external's name resolves when the checkout lives
+        # OUTSIDE externals_dir (a --git-path / CT_GIT_PATH_* override). For a
+        # managed clone the parent IS externals_dir, which is appended LAST
+        # (below) to keep the "specific roots before the broad siblings-parent"
+        # ordering — skip it here so externals_dir stays last.
+        parent = compiletools.wrappedos.dirname(root)
+        if parent != externals_dir:
+            include_dirs.append(parent)
     include_dirs.append(externals_dir)
     return include_dirs
 

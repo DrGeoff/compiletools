@@ -1311,6 +1311,32 @@ def test_augmented_headerdeps_threads_include_dirs_without_deepcopy() -> None:
         assert os.path.join(space_root, "include") in hd.includes
 
 
+def test_external_include_dirs_includes_parent_of_out_of_tree_checkout() -> None:
+    """A --git-path / CT_GIT_PATH_* override puts the checkout OUTSIDE
+    externals_dir; the include `#include "<name>/..."` that self-documents the
+    external's name resolves against the checkout's PARENT, so that parent must
+    be widened onto the include search. For a managed clone the parent IS
+    externals_dir (already appended), so the extra entry is a no-op there."""
+    from compiletools.fetch import _external_include_dirs
+
+    # Override layout: the checkout lives at /home/user/code/sudoku, whose
+    # parent /home/user/code is NOT the externals dir.
+    externals = "/tmp/externals"
+    override_root = "/home/user/code/sudoku"
+    dirs = _external_include_dirs(externals, [override_root])
+    assert override_root in dirs
+    assert os.path.join(override_root, "include") in dirs
+    assert os.path.dirname(override_root) in dirs  # the parent
+    assert externals in dirs
+
+    # Managed layout: the parent of <externals>/<name> IS externals, so the
+    # parent entry collapses onto the already-appended externals dir.
+    managed_root = os.path.join(externals, "sudoku")
+    dirs = _external_include_dirs(externals, [managed_root])
+    assert os.path.dirname(managed_root) == externals
+    assert externals in dirs
+
+
 @requires_functional_compiler
 def test_augmented_headerdeps_searches_externals_dir_last() -> None:
     """externals_dir is appended LAST so a same-named dir inside a resolved root

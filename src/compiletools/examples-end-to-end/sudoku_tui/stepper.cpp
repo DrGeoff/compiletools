@@ -44,8 +44,8 @@ using Sudoku::Constraint;
 using Sudoku::ConstraintRegion;
 using Sudoku::Grid;
 
-const std::vector<Constraint::Type> kAllTypes = {Constraint::square, Constraint::row,
-                                                 Constraint::column};
+const std::vector<Constraint::Type> kAllTypes = {Constraint::Type::square, Constraint::Type::row,
+                                                 Constraint::Type::column};
 
 // Run one functor over the given constraint-region types, harvesting the
 // out-params the upstream rules already fill (upstream's sudoku.cpp prints
@@ -81,11 +81,11 @@ bool apply_first_rule(Grid& grid, Step& out) {
     if (sweep(grid, Sudoku::UniquePerConstraintRegion(), kAllTypes, out)) return true;
     if (sweep(grid, Sudoku::LockedTuples(), kAllTypes, out)) return true;
     if (sweep(grid, Sudoku::HiddenTuples(), kAllTypes, out)) return true;
-    if (sweep(grid, Sudoku::XYZWing(), {Constraint::square}, out)) return true;
+    if (sweep(grid, Sudoku::XYZWing(), {Constraint::Type::square}, out)) return true;
     if (sweep(grid, Sudoku::IntersectReject(), kAllTypes, out)) return true;
-    if (sweep(grid, Sudoku::Gridlock(), {Constraint::row, Constraint::column}, out)) return true;
-    if (sweep(grid, Sudoku::SingleValueChains(), {Constraint::row}, out)) return true;
-    if (sweep(grid, Sudoku::MultiValueChains(), {Constraint::row}, out)) return true;
+    if (sweep(grid, Sudoku::Gridlock(), {Constraint::Type::row, Constraint::Type::column}, out)) return true;
+    if (sweep(grid, Sudoku::SingleValueChains(), {Constraint::Type::row}, out)) return true;
+    if (sweep(grid, Sudoku::MultiValueChains(), {Constraint::Type::row}, out)) return true;
     return false;
 }
 

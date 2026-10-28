@@ -82,9 +82,12 @@ class Cake:
 
         Collects the settled target source files, drives
         ``fetch.fetch_externals`` to clone/update every reachable //#GIT=
-        external to a fixpoint, then appends each resolved external's root
-        (and its ``include/`` subdir, when present) plus ``externals_dir`` to
-        ``args.INCLUDE``.
+        external to a fixpoint, then appends, for each resolved external, its
+        root, its ``include/`` subdir (when present), and the checkout's
+        parent (so a ``#include "<name>/..."`` that self-documents the
+        external's name resolves when the checkout lives outside
+        ``externals_dir``, e.g. a ``--git-path`` / ``CT_GIT_PATH_*`` override),
+        plus ``externals_dir`` itself, to ``args.INCLUDE``.
 
         Returns ``True`` if anything was appended to ``args.INCLUDE`` (so the
         caller re-runs ``apptools.resubstitute`` to re-gather and recompute
@@ -157,6 +160,15 @@ class Cake:
             # pre-fetch probe would be stale.
             if os.path.isdir(include_subdir):
                 _add(include_subdir)
+            # The checkout's PARENT, so a `#include "<name>/..."` that
+            # self-documents the external's name resolves when the checkout
+            # lives OUTSIDE externals_dir (a --git-path / CT_GIT_PATH_*
+            # override). For a managed clone the parent IS externals_dir,
+            # which is added LAST (below) to keep the "specific roots before
+            # the broad siblings-parent" ordering — skip it here.
+            parent = os.path.dirname(r.path)
+            if parent != externals_dir:
+                _add(parent)
         _add(externals_dir)
 
         if not new_dirs:
