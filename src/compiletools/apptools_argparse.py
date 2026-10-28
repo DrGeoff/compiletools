@@ -1466,8 +1466,10 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
         #
         # configargparse skips this method entirely when a caller passes
         # config_file_contents, so on that path the stash keeps the
-        # un-widened argv and an env var contradicting a conf key for a flag
-        # pair exits 2 instead of winning. Nothing in compiletools passes
+        # un-widened argv and an env var contradicting a conf key naming the
+        # opposite half of a flag pair exits 2 instead of winning (a conf key
+        # naming the same option is discarded by configargparse itself from
+        # 1.9). Nothing in compiletools passes
         # that argument (pinned by
         # test_conf_boolean_flags.TestTheConfigFileContentsPath); reading
         # os.environ here instead is refuted by measurement, because the env
@@ -1670,8 +1672,10 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
         it splices any of them into the argv, so neither call can see the
         other. And a caller passing ``config_file_contents`` directly, where
         configargparse skips ``_open_config_files`` entirely, leaving the
-        stash un-widened so an env var contradicting a conf key exits 2
-        instead of winning -- no compiletools caller does (pinned by
+        stash un-widened so an env var contradicting a conf key naming the
+        opposite half of the pair exits 2 instead of winning (a conf key
+        naming the same option is discarded by configargparse itself from
+        1.9) -- no compiletools caller does (pinned by
         ``test_conf_boolean_flags.TestTheConfigFileContentsPath``).
         """
         partner = self._boolean_negation_partner(action)

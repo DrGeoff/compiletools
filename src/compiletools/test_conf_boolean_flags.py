@@ -525,8 +525,10 @@ class TestTheConfigFileContentsPath:
     configargparse's env-var tokens. configargparse skips
     ``_open_config_files`` entirely when a caller passes
     ``config_file_contents``, so on that path the stash keeps the un-widened
-    argv, the conf entry is not suppressed, and a contradicting env var exits
-    2 rather than winning.
+    argv, the conf entry is not suppressed, and an env var contradicting a
+    conf key that names the *opposite* half of a flag pair exits 2 rather
+    than winning. A conf key naming the same option the env var sets is
+    discarded by configargparse itself from 1.9.
 
     Reading ``os.environ`` inside the suppression instead is refuted by
     measurement rather than by argument: the env-sourced item would match its
@@ -570,8 +572,12 @@ class TestTheConfigFileContentsPath:
         """The degradation itself, so a future caller inherits a named test
         instead of a surprise. Exit 2 from the mutually exclusive group, not
         a silently wrong boolean -- which is why it is tolerable while the
-        case above keeps it unreachable."""
-        monkeypatch.setenv(_env_var_for("auto"), "0")
+        case above keeps it unreachable. The conf key names the opposite half
+        of the pair: since configargparse 1.9 a same-key contradiction is
+        resolved upstream (env wins), so the partner spelling is the case that
+        still reaches the mutually exclusive group on every supported
+        version."""
+        monkeypatch.setenv(_env_var_for("auto"), "1")
         parser = compiletools.apptools._ComposingArgumentParser(
             auto_env_var_prefix=_PROBE_ENV_PREFIX,
             add_help=False,
@@ -580,7 +586,7 @@ class TestTheConfigFileContentsPath:
         )
         compiletools.utils.add_flag_argument(parser, "auto", dest="auto", default=False)
         with pytest.raises(SystemExit) as excinfo:
-            parser.parse_known_args([], config_file_contents="auto = True\n")
+            parser.parse_known_args([], config_file_contents="no-auto = True\n")
         assert excinfo.value.code == 2
 
     def test_the_falsey_conf_fix_itself_still_holds_on_that_path(self, monkeypatch):
