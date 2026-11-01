@@ -200,7 +200,8 @@ fi
 # password = pypi-<your-token>
 # (recommended: chmod 600 ~/.pypirc)
 # Publish to PyPI using uv (check PyPI Simple API to avoid re-upload conflicts)
-uv publish --token "$PYPI_API_TOKEN" --check-url https://pypi.org/simple
+# Token via env, not --token: argv is visible to other users in ps.
+UV_PUBLISH_TOKEN="$PYPI_API_TOKEN" uv publish --check-url https://pypi.org/simple
 popd >/dev/null
 
 # Verify the release actually landed on PyPI.
@@ -227,7 +228,7 @@ if command -v curl >/dev/null 2>&1; then
     else
         echo "Error: compiletools ${version} did not appear on PyPI after publishing." >&2
         echo "       The dist artifacts are in dist/. Re-run the publish step:" >&2
-        echo "         uv publish --token \"\$PYPI_API_TOKEN\" --check-url https://pypi.org/simple" >&2
+        echo "         UV_PUBLISH_TOKEN=\"\$PYPI_API_TOKEN\" uv publish --check-url https://pypi.org/simple" >&2
         exit 1
     fi
 else
